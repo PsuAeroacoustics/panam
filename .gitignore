@@ -122,3 +122,25 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Ported old ignores from hg
+.idea
+__pycache__
+*.pdf
+*.eps
+*.mp4
+*.wav
+*.dot
+*.mat
+*.ps
+.DS_Store
+*~
+cyclo_rotor_noise
+cyclo_rotor_noise_belt
+distance_7ft
+distance_12ft
+distance_14ft
+distance_16p7
+output
+rellis
+wav_analysis
