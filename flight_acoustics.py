@@ -15,16 +15,6 @@ from netCDF4 import Dataset
 
 import unit_conversion
 
-font_dirs = ['/Library/Fonts/', ]
-font_files = fm.findSystemFonts(fontpaths=font_dirs)
-font_list = fm.createFontList(font_files)
-fm.fontManager.ttflist.extend(font_list)
-
-font = {'family': 'Arial',
-        'weight': 'normal',
-        'size': 10}
-
-matplotlib.rc('font', **font)
 style.use('fivethirtyeight')
 matplotlib.rcParams.update({'mathtext.fontset': 'dejavuserif'})
 matplotlib.rcParams.update({'figure.autolayout': True})
