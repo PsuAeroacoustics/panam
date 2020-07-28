@@ -5,7 +5,6 @@ from glob import glob
 
 import acoustics
 import h5py
-import matplotlib.font_manager as fm
 import openpyxl
 import scipy.signal
 from brewer2mpl import brewer2mpl
@@ -494,11 +493,11 @@ def plot_fried_eggs(directory_names, metric='mean', dimensionless=False, altitud
                     input_frequencies=None, fpa_climb_cutoff=5,
                     atmosphere=acoustics.atmosphere.Atmosphere(temperature=293.15, pressure=101.325,
                                                                relative_humidity=20.0),
-                    climb_rates=False, duration_correction=None, threshhold=0.65, cull_noisy_fpa=None, xlim=(35, 140),
+                    climb_rates=False, duration_correction=None, threshold=0.65, cull_noisy_fpa=None, xlim=(35, 140),
                     ylim=(-2000, 750), save_figures=False):
     for directory_name in directory_names:
         fig, ax, cs = fried_egg_plot(directory_name, metric, dimensionless, altitude, cutoff, input_frequencies,
-                                     fpa_climb_cutoff, atmosphere, climb_rates, duration_correction, threshhold,
+                                     fpa_climb_cutoff, atmosphere, climb_rates, duration_correction, threshold,
                                      cull_noisy_fpa)
         ax.set_xlim(xlim)
         ax.set_ylim(ylim)
@@ -512,7 +511,7 @@ def plot_fried_eggs(directory_names, metric='mean', dimensionless=False, altitud
 def fried_egg_plot(directory_name, metric='mean', dimensionless=False, altitude=500, cutoff=30, input_frequencies=None,
                    fpa_climb_cutoff=5, atmosphere=acoustics.atmosphere.Atmosphere(temperature=293.15, pressure=101.325,
                                                                                   relative_humidity=20.0),
-                   climb_rates=False, duration_correction=None, threshhold=0.65, cull_noisy_fpa=None,
+                   climb_rates=False, duration_correction=None, threshold=0.65, cull_noisy_fpa=None,
                    suppress_classification=False):
     (speeds, flight_path_angles, Lmax, Lmean, advance_ratios, weight_coefficients, hover_tip_mach_numbers, alphas,
      runs, number_of_blades, number_of_tail_rotor_blades,
@@ -540,8 +539,8 @@ def fried_egg_plot(directory_name, metric='mean', dimensionless=False, altitude=
     else:
         Lmetric = Lmax
 
-    if cull_noisy_fpa is not None and threshhold is not None:
-        mask = data_filter(levels=Lmetric, flight_path_angles=flight_path_angles, threshhold=threshhold,
+    if cull_noisy_fpa is not None and threshold is not None:
+        mask = data_filter(levels=Lmetric, flight_path_angles=flight_path_angles, threshold=threshold,
                            cull_noisy_fpa=cull_noisy_fpa)
         x = x[mask]
         y = y[mask]
@@ -570,8 +569,8 @@ def fried_egg_plot(directory_name, metric='mean', dimensionless=False, altitude=
             cb.set_label('Peak Ground Noise Level, dBA')
         else:
             cb.set_label('Ground Noise Exposure Level, dBA')
-    if suppress_classification is False and threshhold is not None:
-        noisy_index = is_noisy(Lmetric, threshhold)
+    if suppress_classification is False and threshold is not None:
+        noisy_index = is_noisy(Lmetric, threshold)
         quiet_index = np.logical_not(noisy_index)
         ax.plot(x[quiet_index], y[quiet_index], 'ko', alpha=.8, markeredgecolor='w', markersize=10)
         ax.plot(x[noisy_index], y[noisy_index], 'ro', alpha=.8, markeredgecolor='k', markersize=10)
@@ -728,13 +727,13 @@ def nc_lambert_ea(filename, input_frequencies=None, weight=None, SPL_range=None)
     return fig, ax, cs
 
 
-def data_filter(levels, flight_path_angles, threshhold=0.65, cull_noisy_fpa=-1.0):
-    cull_index = np.logical_and(is_noisy(levels, threshhold), flight_path_angles > cull_noisy_fpa)
+def data_filter(levels, flight_path_angles, threshold=0.65, cull_noisy_fpa=-1.0):
+    cull_index = np.logical_and(is_noisy(levels, threshold), flight_path_angles > cull_noisy_fpa)
     mask = np.logical_not(cull_index)
     return mask
 
 
-def is_noisy(level, threshhold=0.65):
-    cutoff = (np.max(level) - np.min(level)) * threshhold + np.min(level)
+def is_noisy(level, threshold=0.65):
+    cutoff = (np.max(level) - np.min(level)) * threshold + np.min(level)
     noisy = level > cutoff
     return noisy
