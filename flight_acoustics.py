@@ -7,10 +7,12 @@ import acoustics
 import h5py
 import openpyxl
 import scipy.signal
+import simplekml
 from brewer2mpl import brewer2mpl
 from matplotlib import tri
 from matplotlib.pyplot import *
 from netCDF4 import Dataset
+from pymap3d import geodetic2enu, enu2geodetic
 
 import unit_conversion
 
@@ -97,6 +99,14 @@ def dedopplerize(time, pressure, speed_of_sound, track_time, position, observers
     return emission_times, dpres
 
 
+def linear_array_plan(nmics, altitude, min_elevation=10.0, target_elv=90.0):
+    # Slant distance to target elevation center line position
+    r = altitude / np.sin(np.radians(target_elv))
+    # Now, determine spacing for equal angular resolution on target elv plane
+    angles = np.linspace(-90. + min_elevation, 90.0 - min_elevation, nmics)
+    return r * np.tan(np.radians(angles))
+
+
 def hemigen(time, source, velocity, observers, speed_of_sound):
     number_of_mics = observers.shape[0]
     number_of_times = time.shape[0]
@@ -138,6 +148,29 @@ def hemigen(time, source, velocity, observers, speed_of_sound):
     azimuth[right_side] = azimuth[right_side] + 180
     azimuth[left_side] = azimuth[left_side] - 180
     return azimuth, elevation, r, t_observer, mach_r
+
+
+def array_coverage(ymics, altitude, xmin=-1000, xmax=1000, speed=100, rate=0.1, speed_of_sound=1135.):
+    observers = np.zeros((len(ymics), 3))
+    observers[:, 1] = ymics
+    tmin = 0
+    tmax = (xmax - xmin) / speed
+    time = np.arange(tmin, tmax, rate)
+    source = np.zeros((len(time), 3))
+    source[:, 0] = xmin + time * speed
+    source[:, 2] = altitude
+
+    velocity = np.zeros_like(source)
+    velocity[:, 0] = speed
+
+    azimuth, elevation, r, t_observer, mach_r = hemigen(time, source, velocity, observers, speed_of_sound)
+    return azimuth, elevation, r
+
+
+def array_coverage_plot(ymics, altitude, xmin=-1000, xmax=1000, speed=100, rate=0.1, speed_of_sound=1135.):
+    azimuth, elevation, _ = array_coverage(ymics, altitude, xmin, xmax, speed, rate, speed_of_sound)
+    fig, ax, cs = lambert_ea_points(np.radians(azimuth), np.radians(elevation))
+    return fig, ax, cs
 
 
 def load_nc_sphere(filename):
@@ -727,6 +760,54 @@ def nc_lambert_ea(filename, input_frequencies=None, weight=None, SPL_range=None)
     return fig, ax, cs
 
 
+def lambert_ea_points(azimuth, elevation):
+    lat = elevation
+    lon = azimuth - np.pi
+    x, y = lambert_ea(lat, lon)
+    fig, ax = subplots(facecolor='white')
+    ax.patch.set_visible(False)
+    cs = ax.plot(x, y, 'ro', markersize=4)
+    # make sure aspect ratio preserved
+    ax.set_aspect('equal')
+    # turn off rectangular frame.
+    ax.set_frame_on(False)
+    # turn off axis ticks.
+    ax.set_xticks([])
+    ax.set_yticks([])
+    # Draw meridians
+    meridians = np.arange(0, 360, 45)
+    for meridian in meridians:
+        lats = np.linspace(0, 0.5 * np.pi, 1000)
+        lons = (np.deg2rad(meridian) - np.pi) * np.ones(len(lats))
+        xm, ym = lambert_ea(lats, lons)
+        ax.plot(xm, ym, 'k--')
+        # Add label
+        xl, yl = lambert_ea(np.deg2rad(-11.0), np.deg2rad(meridian) - np.pi)
+        ax.text(xl, yl, "%d°" % np.fmod(360 - meridian, 360), horizontalalignment='center', verticalalignment='center')
+    # Draw parallels
+    parallels = np.arange(0, 90, 30)
+    for parallel in parallels:
+        lons = np.linspace(-np.pi, np.pi, 1000)
+        lats = np.deg2rad(parallel) * np.ones(len(lons))
+        xm, ym = lambert_ea(lats, lons)
+        ax.plot(xm, ym, 'k--')
+        # Add label
+        xl, yl = lambert_ea(np.deg2rad(parallel + 7.5), np.deg2rad(0.0))
+        xpad = 0.025
+        ypad = -0.025
+        ax.text(xl + xpad, yl + ypad, "%d°" % parallel, horizontalalignment='left', verticalalignment='center')
+
+    # Change cursor to display polar coordinates
+    def format_coord(xx, yy):
+        cazi = np.mod(90 - np.degrees(np.arctan2(-yy, xx)), 360)
+        cq = np.sqrt(np.square(xx) + np.square(yy))
+        celv = np.degrees(np.pi / 2 - 2 * np.arcsin(cq / 2))
+        return 'ψ = %0.1f, θ = %0.1f' % (cazi, celv)
+
+    ax.format_coord = format_coord
+    return fig, ax, cs
+
+
 def data_filter(levels, flight_path_angles, threshold=0.65, cull_noisy_fpa=-1.0):
     cull_index = np.logical_and(is_noisy(levels, threshold), flight_path_angles > cull_noisy_fpa)
     mask = np.logical_not(cull_index)
@@ -737,3 +818,39 @@ def is_noisy(level, threshold=0.65):
     cutoff = (np.max(level) - np.min(level)) * threshold + np.min(level)
     noisy = level > cutoff
     return noisy
+
+
+def geodetic2array(geodetic, reference, heading, units='ft'):
+    east, north, up = geodetic2enu(geodetic[:, 0], geodetic[:, 1], geodetic[:, 2], reference[0], reference[1],
+                                   reference[2])
+    rotation = np.radians(90.0 - heading)
+    local = np.zeros((len(east), 3))
+    local[:, 0] = east * np.cos(rotation) + north * np.sin(rotation)
+    local[:, 1] = -east * np.sin(rotation) + north * np.cos(rotation)
+    local[:, 2] = up
+    local = unit_conversion.len_conv(local, from_units='m', to_units=units)
+    return local
+
+
+def array2geodetic(local, reference, heading, units='ft'):
+    local = unit_conversion.len_conv(local, from_units=units, to_units=units)
+    rotation = np.radians(heading - 90.0)
+    # Convert local to ENU
+    east = local[:, 0] * np.cos(rotation) + local[:, 1] * np.sin(rotation)
+    north = -local[:, 0] * np.sin(rotation) + local[:, 1] * np.cos(rotation)
+    up = local[:, 2]
+    lat, lon, h = enu2geodetic(east, north, up, reference[0], reference[1], reference[2])
+    geodetic = np.zeros_like(local)
+    geodetic[:, 0] = lat
+    geodetic[:, 1] = lon
+    geodetic[:, 2] = h
+    return geodetic
+
+
+def write_kml(geodetic, savename, testname='Array', channel_prefix="M"):
+    kml = simplekml.Kml()
+    kml.document.name = testname
+    for (i, row) in enumerate(geodetic):
+        pnt = kml.newpoint(name=channel_prefix + "{}".format(i + 1), coords=[(row[1], row[0])])
+        pnt.style.iconstyle.icon.href = 'http://maps.google.com/mapfiles/kml/shapes/placemark_circle.png'
+    kml.savekmz(savename)
