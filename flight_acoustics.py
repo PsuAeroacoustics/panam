@@ -22,21 +22,59 @@ matplotlib.rcParams.update({'figure.autolayout': True})
 
 
 def psd(signal, sampling_rate, cal=0.0):
+    """
+    Compute the acoustic power spectral density of a signal
+
+    Args:
+        signal: Array-like acoustic signal
+        sampling_rate: Sampling rate of signal, Hz
+        cal: Optional calibration factor to apply to signal (dB)
+    Returns: tuple (frequency, psd_db, level)
+           WHERE
+           frequency is an array of band frequencies
+           psd_db is the power spectral density in dB/Hz**2
+           level is the integrated sound pressure level over all bands in dB
+    """
     kcal = 10 ** (cal / 20)
-    frequency, psd = scipy.signal.periodogram(kcal * signal, sampling_rate)
+    frequency, power_spectral_density = scipy.signal.periodogram(kcal * signal, sampling_rate)
     df = frequency[1] - frequency[0]
     pref = 2.0e-5
-    spl = 10.0 * np.log10(psd / (pref ** 2))
-    level = 20.0 * np.log10(np.sqrt(np.sum(psd * df)) / pref)
-    return frequency, spl, level
+    psd_db = 10.0 * np.log10(power_spectral_density / (pref ** 2))
+    level = 20.0 * np.log10(np.sqrt(np.sum(power_spectral_density * df)) / pref)
+    return frequency, psd_db, level
 
 
 def nextpow2(x):
+    """
+    Compute the smallest integer N for x <= 2**N
+    Args:
+        x: number or array-like of values for which to compute N
+
+    Returns:
+        number or array like of integral N
+    """
     return np.ceil(np.log2(np.abs(x)))
 
 
 def spectrogram(signal, sampling_rate, window_time=1.0, window_type="hann", window_overlap=7.0 / 8.0,
                 detrend='constant', dbref=20e-6):
+    """
+    Computes the spectrogram of a signal
+    Args:
+        signal: array-like containing acoustic signal
+        sampling_rate: sampling rate of signal, Hz
+        window_time: duration of windows, s
+        window_type: optional type of window to us, see scipy.signal.window, default="hann"
+        window_overlap: optional proportion of overlap for windows, default=7.0/8.0
+        detrend: optional detrending mode for signal, see scipy.signal.detrend
+        dbref: optional reference value for calculating decibels, default 20e-6
+
+    Returns: tuple (f, t, SPL)
+    WHERE
+    f is an array of frequencies
+    t is an array of times
+    SPL is a frequency x time power spectral density spectrogram, dB/Hz**2
+    """
     # Pick next power of two that captures the window time, and generate the window
     binwidth = int(2.0 ** nextpow2(window_time * sampling_rate))
     window = scipy.signal.get_window(window_type, binwidth)
@@ -50,6 +88,27 @@ def spectrogram(signal, sampling_rate, window_time=1.0, window_type="hann", wind
 
 def plot_spectrogram(signal, sampling_rate, window_time=1.0, window_type="hann", window_overlap=7.0 / 8.0,
                      detrend='constant', dbref=20e-6, save_name=None, time0=0, clim=None, flim=None):
+    """
+    Plot a spectrogram of signal
+    Args:
+        signal: array-like containing acoustic signal
+        sampling_rate: sampling rate of signal, Hz
+        window_time: duration of windows, s
+        window_type: optional type of window to us, see scipy.signal.window, default="hann"
+        window_overlap: optional proportion of overlap for windows, default=7.0/8.0
+        detrend: optional detrending mode for signal, see scipy.signal.detrend
+        dbref: optional reference value for calculating decibels, default 20e-6
+        save_name: optional path to image file to save figure, default None
+        time0: optional start time for signal, default 0
+        clim: optional level scale color limits, default None
+        flim: optional frequency scale limits, default None
+
+    Returns: tuple (fig, ax, cs)
+    WHERE
+    fig is a matplotlib handle to the figure
+    ax is a matplotlib handle to the plot axis
+    cs is a matplotlib handle to the contour quadmesh
+    """
     f, t, SPL = spectrogram(signal, sampling_rate, window_time, window_type, window_overlap, detrend, dbref)
     if flim is not None:
         fidx = np.logical_and(f >= flim[0], f <= flim[1])
