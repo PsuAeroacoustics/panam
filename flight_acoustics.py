@@ -133,7 +133,24 @@ def plot_spectrogram(signal, sampling_rate, window_time=1.0, window_type="hann",
 
 
 def dedopplerize(time, pressure, speed_of_sound, track_time, position, observers,
-                 radius=None, output_sample_rate=None):
+                 radius=None, output_sample_rate=None, time_offset=0.0):
+    """
+    Time domain de-Dopplerization of an acoustic signal
+    Args:
+        time: observers x time points matrix of observer times
+        pressure: observers x time point matrix of acoustic pressures
+        speed_of_sound: speed of sound
+        track_time: array of source times
+        position: track times x 3 matrix of source positions
+        observers: observers x 3 matrix of observer positions
+        radius: optional virtual observer radius
+        output_sample_rate: optional source time sample rate
+
+    Returns: tuple (emission_times, dpres)
+    WHERE
+    emission_times is an array emission times
+    dpres is an observer x emission times matrix of de-Dopplerized acoustic pressures
+    """
     # If not set, infer sample rate from measured data
     if output_sample_rate is None:
         output_sample_rate = 1 / (time[0, 1] - time[0, 0])
@@ -159,6 +176,16 @@ def dedopplerize(time, pressure, speed_of_sound, track_time, position, observers
 
 
 def linear_array_plan(nmics, altitude, min_elevation=10.0, target_elv=90.0):
+    """
+    Design a linear microphone array
+    Args:
+        nmics: number of microphones
+        altitude: flight altitude of the vehicle
+        min_elevation: desired sideline elevation angle relative to horizon
+        target_elv: target elevation for equal angle sideline spacing
+
+    Returns: array of microphone sideline locations
+    """
     # Slant distance to target elevation center line position
     r = altitude / np.sin(np.radians(target_elv))
     # Now, determine spacing for equal angular resolution on target elv plane
@@ -167,6 +194,23 @@ def linear_array_plan(nmics, altitude, min_elevation=10.0, target_elv=90.0):
 
 
 def hemigen(time, source, velocity, observers, speed_of_sound):
+    """
+    Compute the time of emission observer angles for a moving source
+    Args:
+        time: Array of source times
+        source: time x 3 matrix of source positions
+        velocity: time x 3 matrix of source velocities
+        observers: number of mics x 3 matrix of observer positions
+        speed_of_sound: speed of sound
+
+    Returns: tuple (azimuth, elevation, r, t_observer, mach_r)
+    WHERE
+    azimith are the azimuth angles on the sphere for each emission time
+    elevation are the elevation angles on the sphere for each emission time
+    r are the propagation distances for each emission time
+    t_observer are the observer times associated with each emission time
+    mach_r is the Mach number of the source in the propagation direction
+    """
     number_of_mics = observers.shape[0]
     number_of_times = time.shape[0]
     # Expand data into number_of_times x number_of_mics arrays
@@ -210,6 +254,23 @@ def hemigen(time, source, velocity, observers, speed_of_sound):
 
 
 def array_coverage(ymics, altitude, xmin=-1000, xmax=1000, speed=100, rate=0.1, speed_of_sound=1135.):
+    """
+    Calculate the spherical coverage for an overflight of a linear microphone array
+    Args:
+        ymics: sideline distances of observers (at X=0 where +X is direction the vehicle is traveling)
+        altitude: altitude of the vehicle
+        xmin: optional, start distance of vehicle trajectory (default -1000)
+        xmax: optional, end distance of vehicle trajectory (default 1000)
+        speed: optional, default 100
+        rate: optional, sampling period of emission time points, default 0.1
+        speed_of_sound: optional, speed of sound, default 1135
+
+    Returns: tuple (azimuth, elevation, r)
+    WHERE
+    azimith are the azimuth angles on the sphere for each emission time
+    elevation are the elevation angles on the sphere for each emission time
+    r are the propagation distances for each emission time
+    """
     observers = np.zeros((len(ymics), 3))
     observers[:, 1] = ymics
     tmin = 0
@@ -227,12 +288,44 @@ def array_coverage(ymics, altitude, xmin=-1000, xmax=1000, speed=100, rate=0.1, 
 
 
 def array_coverage_plot(ymics, altitude, xmin=-1000, xmax=1000, speed=100, rate=0.1, speed_of_sound=1135.):
+    """
+    Plots the spherical coverage for an overflight of a linear microphone array
+    Args:
+        ymics: sideline distances of observers (at X=0 where +X is direction the vehicle is traveling)
+        altitude: altitude of the vehicle
+        xmin: optional, start distance of vehicle trajectory (default -1000)
+        xmax: optional, end distance of vehicle trajectory (default 1000)
+        speed: optional, default 100
+        rate: optional, sampling period of emission time points, default 0.1
+        speed_of_sound: optional, speed of sound, default 1135
+
+    Returns: tuple (fig, ax, cs)
+    WHERE
+    fig is a matplotlib handle to the figure
+    ax is a matplotlib handle to the plot axis
+    cs is a matplotlib handle to the data points
+    """
     azimuth, elevation, _ = array_coverage(ymics, altitude, xmin, xmax, speed, rate, speed_of_sound)
     fig, ax, cs = lambert_ea_points(np.radians(azimuth), np.radians(elevation))
     return fig, ax, cs
 
 
 def load_nc_sphere(filename):
+    """
+    Load data from an AAM/RNM style acoustic hemisphere
+    Args:
+        filename: path to netCDF sphere file
+
+    Returns: tuple (amplitude, phi, theta, frequency, radius, speed, flight_path_angle)
+    WHERE
+    amplitude is a phi x theta x frequency matrix of SPL amplitudes, dB
+    phi is an array of lateral angles (degrees)
+    theta is an array of longitudinal angles (degree)
+    frequency is an array of frequencies, Hz
+    radius is the sphere radius (feet)
+    speed is the sphere speed (knots)
+    flight_path_angle is the sphere flight path angle (degrees)
+    """
     file_handle = Dataset(filename, mode='r')
     # Noise spheres sometimes contain NaN; we'll handle them later, so suppress the warning
     np_error_settings = np.seterr()
@@ -251,10 +344,24 @@ def load_nc_sphere(filename):
 
 
 def OASPL(amplitudes):
+    """
+    Integrate an array of SPL amplitudes to compute the OASPL
+    Args:
+        amplitudes: array of SPL amplitudes
+    Returns:
+        OASPL, dB
+    """
     return 10.0 * safe_log10(np.sum(np.power(10.0, amplitudes / 10.0)))
 
 
 def safe_log10(x):
+    """
+    Safe version of log10, where values below zero are returned as NaN and values equal to zero are -inf
+    Args:
+        x: array of values
+
+    Returns: checked log10 value
+    """
     if x == 0:
         return -np.inf
     if x < 0:
@@ -264,6 +371,13 @@ def safe_log10(x):
 
 
 def dBAw(f):
+    """
+    A-weighting curve
+    Args:
+        f: frequencies to evaluate
+
+    Returns: weighting (in dB) at each frequency
+    """
     aweights = (10.0 * np.log10(1.562339 * f ** 4.0 / ((f ** 2.0 + 107.65265 ** 2.0) * (f ** 2.0 + 737.86223 ** 2.0)))
                 + 10.0 * np.log10(2.242881E16 * f ** 4.0 /
                                   ((f ** 2.0 + 20.598997 ** 2.0) ** 2.0 * (f ** 2.0 + 12194.22 ** 2.0) ** 2.0)))
@@ -271,6 +385,17 @@ def dBAw(f):
 
 
 def load_nc_signal(filename):
+    """
+    Load NASA-formatted netCDF acoustic signal
+    Args:
+        filename: path to netCDF file
+
+    Returns: tuple (pressure, time, location)
+    WHERE
+    pressure is an array of acoustic pressures
+    time is an array of sampled times
+    location is an array of the x,y,z location of the microphone
+    """
     file_handle = Dataset(filename, mode='r')
     pressure = file_handle.variables['pressure'][:].astype(float)
     x = file_handle.X
@@ -285,6 +410,15 @@ def load_nc_signal(filename):
 
 
 def load_h5_signal(filename, datasetname='Table1', signalname=None):
+    """
+    Load HDF5 files from BKConnect
+    Args:
+        filename: path to file
+        datasetname: optional dataset name (default 'Table1')
+        signalname: optional signal name (default None, loads all signals)
+
+    Returns: h5py dataset for entire group or specific signal
+    """
     file = h5py.File(filename, 'r')
     if signalname is None:
         return file[datasetname]
@@ -293,14 +427,43 @@ def load_h5_signal(filename, datasetname='Table1', signalname=None):
 
 
 def highpass(x, fpass, fs, zero_phase=True):
+    """
+    Applies a high pass filter to a signal
+    Args:
+        x: signal array
+        fpass: high pass frequency
+        fs: sampling rate of x
+        zero_phase: optional, use phase preserving filter, default True
+
+    Returns: filtered signal
+    """
     return np.array(acoustics.Signal(x, fs).highpass(fpass, zero_phase=zero_phase))
 
 
 def lowpass(x, fpass, fs, zero_phase=True):
+    """
+    Applies a low pass filter to a signal
+    Args:
+        x: signal array
+        fpass: low pass frequency
+        fs: sampling rate of x
+        zero_phase: optional, use phase preserving filter, default True
+
+    Returns: filtered signal
+    """
     return np.array(acoustics.Signal(x, fs).lowpass(fpass, zero_phase=zero_phase))
 
 
 def art2umapr(phi, theta):
+    """
+    Convert between ART (AAM/RNM/ANOPP) coordinates and UMAPR coordinates
+    Args:
+        phi: array of phi angles (radians)
+        theta: array of theta angles (radians)
+
+    Returns: tuple (azimuth, elevation) angles (radians)
+
+    """
     x = -np.sin(theta) * np.sin(phi)
     y = np.cos(theta)
     z = -np.sin(theta) * np.cos(phi)
@@ -311,6 +474,15 @@ def art2umapr(phi, theta):
 
 
 def lambert_ea(lat, lon):
+    """
+    Lambert equal-area projection of spherical angles
+    Args:
+        lat: array of lateral angles, radians
+        lon: array of longitudinal angles, radians
+
+    Returns: tuple, (x, y)
+
+    """
     q = 2.0 * np.sin((np.pi / 2.0 - lat) / 2.0)
     x = q * np.sin(lon)
     y = q * np.cos(lon)
@@ -703,7 +875,7 @@ def extract_SPL(filename, infreqs=None, distance=1000,
     # Compute excess atmospheric attenuation
     alpha = atmosphere.attenuation_coefficient(frequency)
     SPLAa = np.apply_along_axis(OASPL, 2, amplitude + Aweight - distance * alpha)
-    # SPLs may contain -inf, which is expected, so supress numpy warning
+    # SPLs may contain -inf, which is expected, so suppress numpy warning
     np_error_settings = np.seterr()
     np.seterr(invalid='ignore')
     EAA = SPLA - SPLAa
