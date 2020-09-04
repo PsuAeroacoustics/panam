@@ -63,7 +63,7 @@ def overall_SPL(signal, sampling_rate):
 
 def level_history(signal, sampling_rate, period=1.0):
     """
-
+    Compute time history of SPL
     Args:
         signal: pressure time history signal, Pa
         sampling_rate: sampling rate of signal, Hz
