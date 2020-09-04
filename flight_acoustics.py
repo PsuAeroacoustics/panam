@@ -44,6 +44,44 @@ def psd(signal, sampling_rate, cal=0.0):
     return frequency, psd_db, level
 
 
+def overall_SPL(signal, sampling_rate):
+    """
+    Computed A-weighted and unweighted sound pressure levels
+    Args:
+        signal: pressure time history signal, Pa
+        sampling_rate: sampling rate of signal, Hz
+
+    Returns:
+    tuple (A-weighted Level, Unweighted Level)
+    """
+    f, spl, levelZ = psd(signal, sampling_rate)
+    weight = dBAw(f)
+    df = f[1] - f[0]
+    levelA = 10.0 * np.log10(df * np.sum(10.0 ** ((spl + weight) / 10.0)))
+    return levelA, levelZ
+
+
+def level_history(signal, sampling_rate, period=1.0):
+    """
+
+    Args:
+        signal: pressure time history signal, Pa
+        sampling_rate: sampling rate of signal, Hz
+        period: integration time for SPL calculations, sec
+
+    Returns:
+        tuple (time, A-weighted level, Unweighted level)
+    """
+    binwidth = period * sampling_rate
+    edges = np.arange(0, len(signal), binwidth)
+
+    time = edges[0:-1] / sampling_rate
+    level_a = np.zeros_like(time)
+    level_z = np.zeros_like(time)
+    for i in range(0, len(edges) - 1, 1):
+        level_a[i], level_z[i] = overall_SPL(signal[int(edges[i]):int(edges[i + 1])], sampling_rate)
+
+
 def nextpow2(x):
     """
     Compute the smallest integer N for x <= 2**N
@@ -1064,7 +1102,7 @@ def geodetic2array(geodetic, reference, heading, units='ft'):
 
 
 def array2geodetic(local, reference, heading, units='ft'):
-    local = unit_conversion.len_conv(local, from_units=units, to_units=units)
+    local = unit_conversion.len_conv(local, from_units=units, to_units='m')
     rotation = np.radians(heading - 90.0)
     # Convert local to ENU
     east = local[:, 0] * np.cos(rotation) + local[:, 1] * np.sin(rotation)
