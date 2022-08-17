@@ -44,6 +44,46 @@ def psd(signal, sampling_rate, cal=0.0):
     return frequency, psd_db, level
 
 
+def psd_welch(signal, sampling_rate, cal=0.0, window_time=1.0, window_type='hann', window_overlap=0.5, medfilter=None, passband = None):
+    """
+    Compute the acoustic power spectral density of a signal
+
+    Args:
+        signal: Array-like acoustic signal
+        sampling_rate: Sampling rate of signal, Hz
+        cal: Optional calibration factor to apply to signal (dB)
+        window_time: duration of windows, s
+        window_type: optional type of window to us, see scipy.signal.window, default="hann"
+        window_overlap: optional proportion of overlap for windows, default=0.5
+        medfilter: width (in Hz) of the median filter, if None, no filter applied (default)
+        passband: pair of values (in Hz) defining the lower and upper regions of the passband.  Default None.
+    Returns: tuple (frequency, psd_db, level)
+           WHERE
+           frequency is an array of band frequencies
+           psd_db is the power spectral density in dB/Hz**2
+           level is the integrated sound pressure level over all bands in dB
+    """
+    kcal = 10 ** (cal / 20)
+    binwidth = int(2.0 ** nextpow2(window_time * sampling_rate))
+    window = scipy.signal.get_window(window_type, binwidth)
+    frequency, power_spectral_density = scipy.signal.welch(kcal * signal, sampling_rate,
+                                                           window=window, noverlap=int(binwidth * window_overlap))
+    if passband is not None:
+        pass_indicies = np.logical_and(frequency >= passband[0], frequency <= passband[1])
+        power_spectral_density = power_spectral_density[pass_indicies]
+        frequency = frequency[pass_indicies]
+    df = frequency[1] - frequency[0]
+    if medfilter is not None:
+        medfilter_width = int(np.ceil(medfilter) // 2 * 2 + 1)
+        power_spectral_density = scipy.signal.medfilt(power_spectral_density, medfilter_width)
+    pref = 2.0e-5
+    psd_db = 10.0 * np.log10(power_spectral_density / (pref ** 2))
+    level = 20.0 * np.log10(np.sqrt(np.sum(power_spectral_density * df)) / pref)
+    weight = 10**(dBAw(frequency) / 2)
+    level_A = 20.0 * np.log10(np.sqrt(np.sum(weight * power_spectral_density * df)) / pref)
+    return frequency, psd_db, level, level_A
+
+
 def overall_SPL(signal, sampling_rate):
     """
     Computed A-weighted and unweighted sound pressure levels
@@ -164,7 +204,7 @@ def plot_spectrogram(signal, sampling_rate, window_time=1.0, window_type="hann",
     cb = colorbar(cs, format='%.0f')
     ax.set_ylabel('Frequency, Hz')
     ax.set_xlabel('Time, s')
-    cb.set_label('PSD, dB/Hz')
+    cb.set_label('Power Spectral Density, dB')
     if save_name is not None:
         fig.savefig(os.path.abspath(os.path.expanduser(save_name)))
     return fig, ax, cs
