@@ -144,3 +144,12 @@ distance_16p7
 output
 rellis
 wav_analysis
+Cases/wav/
+
+*.icloud
+
+*.kmz
+
+*.csv
+
+*.zip
