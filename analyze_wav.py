@@ -20,7 +20,7 @@ matplotlib.rcParams.update({'figure.autolayout': True})
 xlim = (0, 5000)
 ylim = (35, 100)
 
-amb, fsamb = sf.read('calibration.wav')
+amb, fsamb = sf.read('Cases/calibration.wav')
 lnom = 70
 
 famb, psdamb, lamb = psd(amb[:, 0], fsamb)
@@ -31,8 +31,10 @@ famb, psdamb, lamb = psd(amb[:, 0], fsamb, cal)
 print('Calibrated level is {:0.1f} with {:0.1f} expected.'.format(lamb, lnom))
 print('Calibration factor is {:0.1f} dB.'.format(cal))
 
-files = glob.glob('wav_analysis/*.wav')
+files = glob.glob('Cases/wav/*.wav')
 figl, axl = plt.subplots()
+
+print(files)
 
 rs = [0.125, 0.25, 0.5, 1, 2, 4]
 # Mach 0.20
@@ -59,7 +61,7 @@ ax.plot(f4, p4, label='0.250R, Mach 0.20')
 ax.plot(f2, p2, label='0.500R, Mach 0.20')
 ax.plot(f3, p3, label='2.000R, Mach 0.20')
 
-savemat('wav_analysis/M20.mat',
+savemat('Cases/M20.mat',
         {'f125': f1, 'f250': f4, 'f500': f2, 'f2000': f3, 'p125': p1, 'p250': p4, 'p500': p2, 'p2000': p3})
 
 ax.set_xlim(xlim)
@@ -68,7 +70,7 @@ ax.set_xlabel('Frequency, Hz')
 ax.set_ylabel('SPL, dB')
 ax.legend()
 
-fig.savefig('wav_analysis/M20.pdf')
+fig.savefig('Cases/M20.pdf')
 
 # Mach 0.25
 data1, fs = sf.read(files[1])
@@ -93,7 +95,7 @@ ax.plot(f1, p1, label='0.125R, Mach 0.25')
 ax.plot(f4, p4, label='0.250R, Mach 0.25')
 ax.plot(f2, p2, label='0.500R, Mach 0.25')
 ax.plot(f3, p3, label='2.000R, Mach 0.25')
-savemat('wav_analysis/M25.mat',
+savemat('Cases/M25.mat',
         {'f125': f1, 'f250': f4, 'f500': f2, 'f2000': f3, 'p125': p1, 'p250': p4, 'p500': p2, 'p2000': p3})
 
 ax.set_xlim(xlim)
@@ -101,7 +103,7 @@ ax.set_ylim(ylim)
 ax.set_xlabel('Frequency, Hz')
 ax.set_ylabel('SPL, dB')
 ax.legend()
-fig.savefig('wav_analysis/M25.pdf')
+fig.savefig('Cases/M25.pdf')
 
 # Mach 0.30
 data1, fs = sf.read(files[2])
@@ -129,7 +131,7 @@ ax.plot(f1, p1, label='0.125R, Mach 0.30')
 ax.plot(f4, p4, label='0.250R, Mach 0.30')
 ax.plot(f2, p2, label='0.500R, Mach 0.30')
 ax.plot(f3, p3, label='2.000R, Mach 0.30')
-savemat('wav_analysis/M30.mat',
+savemat('Cases/M30.mat',
         {'f125': f1, 'f250': f4, 'f500': f2, 'f2000': f3, 'p125': p1, 'p250': p4, 'p500': p2, 'p2000': p3})
 
 ax.set_xlim(xlim)
@@ -137,8 +139,8 @@ ax.set_ylim(ylim)
 ax.set_xlabel('Frequency, Hz')
 ax.set_ylabel('SPL, dB')
 ax.legend()
-fig.savefig('wav_analysis/M30.pdf')
+fig.savefig('Cases/M30.pdf')
 
-savemat('wav_analysis/trends.mat', {'radii': rs, 'M20': M20, 'M25': M25, 'M30': M30})
-figl.savefig('wav_analysis/trends.pdf')
+savemat('Cases/trends.mat', {'radii': rs, 'M20': M20, 'M25': M25, 'M30': M30})
+figl.savefig('Cases/trends.pdf')
 plt.show(block=True)
