@@ -3,6 +3,7 @@ import os
 from configparser import ConfigParser
 from glob import glob
 
+import numpy as np
 import acoustics
 import h5py
 import openpyxl
