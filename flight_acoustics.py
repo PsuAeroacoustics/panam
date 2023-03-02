@@ -10,6 +10,7 @@ import openpyxl
 import scipy.signal
 import simplekml
 from brewer2mpl import brewer2mpl
+import matplotlib
 from matplotlib import tri
 from matplotlib.pyplot import *
 from netCDF4 import Dataset
