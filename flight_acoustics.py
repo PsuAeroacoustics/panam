@@ -664,13 +664,13 @@ def add_sphere_group(ncdatabase, groupname, phi, theta, radius, SPLA, EAA, speed
     # Define acoustic data
     this_group.createDimension("channels", phi.size)
     this_group.createVariable("phi", 'f8', ("channels",))
-    this_group.variables['phi'][:] = phi
+    this_group.variables['phi'][:] = phi.flatten()
     this_group.createVariable("theta", 'f8', ("channels",))
-    this_group.variables['theta'][:] = theta
+    this_group.variables['theta'][:] = theta.flatten()
     this_group.createVariable("dBA", 'f8', ("channels",))
-    this_group.variables['dBA'][:] = SPLA + 20 * np.log10(load_factor)
+    this_group.variables['dBA'][:] = SPLA.flatten() + 20 * np.log10(load_factor)
     this_group.createVariable("EAA", 'f8', ("channels",))
-    this_group.variables['EAA'][:] = EAA
+    this_group.variables['EAA'][:] = EAA.flatten()
 
 
 def project_sphere(filename, altitude, elv_cutoff, infreqs=None,
