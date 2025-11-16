@@ -1,0 +1,10 @@
+numpy
+acoustics
+h5py
+openpyxl
+scipy
+simplekml
+brewer2mpl
+matplotlib
+netCDF4
+pymap3d
