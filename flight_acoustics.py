@@ -1216,4 +1216,131 @@ def atmosorb(freq, temp, humid, pstat):
     dBpft = 0.3048 * a
     return dBpft
 
+def geodist(elv1, azi1, elv2, azi2):
+    """
+    Compute geodesic arc length (degrees) on a sphere 
+
+    Args:
+        elv1, azi1, elv2, azi2: Scalars or array-like angles in degrees.
+
+    Returns:
+        numpy.ndarray (or scalar) of arc length in degrees.
+    """
+    elv1 = np.asarray(elv1, dtype=float)
+    elv2 = np.asarray(elv2, dtype=float)
+    azi1 = np.asarray(azi1, dtype=float)
+    azi2 = np.asarray(azi2, dtype=float)
+
+    # Convert degrees to radians
+    r_elv1 = np.deg2rad(elv1)
+    r_elv2 = np.deg2rad(elv2)
+    r_azi1 = np.deg2rad(azi1)
+    r_azi2 = np.deg2rad(azi2)
+
+    # Spherical law of cosines
+    arcs = np.sin(r_elv1) * np.sin(r_elv2) + np.cos(r_elv1) * np.cos(r_elv2) * np.cos(r_azi2 - r_azi1)
+
+    # Clamp for numerical safety
+    arcs = np.clip(arcs, -1.0, 1.0)
+
+    # Arc length in degrees
+    arclength = np.degrees(np.arccos(arcs))
+    return arclength
+
+
+def IDWweights(ielv, iazi, felv, fazi, rmax):
+    """
+    Inverse Distance Weights (Shepard) with Franke & Nielson adjustments.
+
+    Mirrors the MATLAB implementation:
+        function wi = IDWweights(ielv,iazi,felv,fazi,rmax)
+
+    Args:
+        ielv: Interpolation point elevation (deg)
+        iazi: Interpolation point azimuth (deg)
+        felv: Field elevations (deg), array-like
+        fazi: Field azimuths (deg), array-like (same shape/broadcastable with felv)
+        rmax: Maximum radius (deg) for weighting neighborhood
+
+    Returns:
+        numpy.ndarray of weights with the same broadcasted shape as felv/fazi.
+    """
+    felv = np.asarray(felv, dtype=float)
+    fazi = np.asarray(fazi, dtype=float)
+    # Broadcast to common shape if needed
+    felv, fazi = np.broadcast_arrays(felv, fazi)
+
+    # Build arrays for the interpolation point to match shape
+    ielv_arr = np.full(felv.shape, float(ielv))
+    iazi_arr = np.full(fazi.shape, float(iazi))
+
+    # Geodesic distances (degrees)
+    hi = geodist(ielv_arr, iazi_arr, felv, fazi)
+
+    # Threshold exact data points to avoid division by zero
+    eps = np.finfo(float).eps
+    if np.any(hi <= 10.0 * eps):
+        wi = np.zeros_like(hi, dtype=float)
+        b = np.argmin(hi)
+        wi.flat[b] = 1.0
+        return wi
+
+    # Neighborhood mask within rmax (up to 2D as in MATLAB)
+    mask = hi <= float(rmax)
+    m = np.zeros_like(hi, dtype=float)
+    # Franke & Nielson measure
+    m[mask] = ((float(rmax) - hi[mask]) / (float(rmax) * hi[mask])) ** 2
+
+    # Normalization
+    M = m.sum()
+    if M > 0.0:
+        wi = m / M
+    else:
+        # No neighbors within rmax — return zeros (matches safe behavior)
+        wi = m
+    return wi
+
+
+def shepIDW(ielv, iazi, felv, fazi, f, rmax):
+    """
+    Modified Shepard's Inverse Distance Weighting interpolation.
+
+    Python version of the MATLAB function:
+        function fi = shepIDW(ielv, iazi, felv, fazi, f, rmax)
+
+    Args:
+        ielv, iazi: Interpolant locations (deg). Scalars or array-like; must have same shape.
+        felv, fazi: Data locations (deg). Arrays broadcastable to a common shape.
+        f: Data values at (felv, fazi). Broadcastable to shape of felv/fazi.
+        rmax: Maximum radius (deg) for neighborhood in weighting.
+
+    Returns:
+        numpy.ndarray of interpolated values with the same shape as `ielv` (or scalar if scalar inputs).
+    """
+    # Ensure numpy arrays and broadcasting for data fields
+    felv = np.asarray(felv, dtype=float)
+    fazi = np.asarray(fazi, dtype=float)
+    fvals = np.asarray(f, dtype=float)
+    felv, fazi, fvals = np.broadcast_arrays(felv, fazi, fvals)
+
+    # Prepare interpolant inputs and preserve original shape
+    ielv_arr = np.asarray(ielv, dtype=float)
+    iazi_arr = np.asarray(iazi, dtype=float)
+    if ielv_arr.shape != iazi_arr.shape:
+        ielv_arr, iazi_arr = np.broadcast_arrays(ielv_arr, iazi_arr)
+    orig_shape = ielv_arr.shape
+    ielv_flat = ielv_arr.ravel()
+    iazi_flat = iazi_arr.ravel()
+
+    fi_flat = np.empty_like(ielv_flat, dtype=float)
+    for i in range(ielv_flat.size):
+        wi = IDWweights(ielv_flat[i], iazi_flat[i], felv, fazi, rmax)
+        fi_flat[i] = np.sum(fvals * wi)
+
+    fi = fi_flat.reshape(orig_shape)
+    if fi.size == 1:
+        return float(fi)
+    return fi
+
+
 
