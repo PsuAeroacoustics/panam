@@ -9,7 +9,7 @@ import h5py
 import openpyxl
 import scipy.signal
 import simplekml
-from brewer2mpl import brewer2mpl
+# Colormap helper will import palettable lazily
 import matplotlib
 from matplotlib import tri
 from matplotlib.pyplot import *
@@ -899,9 +899,9 @@ def fried_egg_plot(directory_name, metric='mean', dimensionless=False, altitude=
     maxSPL = np.max(Li)
     num_levels = 9
     levels = np.linspace(minSPL, maxSPL, num_levels)
-    color_map = brewer2mpl.get_map('YlOrRd', 'sequential', num_levels)
+    color_map = get_ylorrd_cmap(num_levels)
     fig, ax = subplots(facecolor='white')
-    cs = ax.contourf(xi, yi, Li, levels=levels, colors=color_map.mpl_colors)
+    cs = ax.contourf(xi, yi, Li, levels=levels, cmap=color_map)
     cb = colorbar(cs, format='%.0f')
     if metric == 'mean':
         if duration_correction is None:
@@ -973,8 +973,8 @@ def nc_unwrapped(filename, infreqs=None, weight=None):
     maxSPL = np.max(SPL)
     num_levels = 9
     levels = np.round(np.linspace(minSPL, maxSPL, num_levels))
-    color_map = brewer2mpl.get_map('YlOrRd', 'sequential', num_levels)
-    contourf(phi, theta, np.transpose(SPL), levels=levels, colors=color_map.mpl_colors)
+    color_map = get_ylorrd_cmap(num_levels)
+    contourf(phi, theta, np.transpose(SPL), levels=levels, cmap=color_map)
     colorbar()
 
 
@@ -989,10 +989,10 @@ def plot_projection(filename, altitude=500, cutoff=30, infreqs=None, units='m'):
     li = interpolator(xim, yim)
     num_levels = 9
     levels = np.round(10 * np.linspace(np.min(LA), np.max(LA), num_levels)) / 10
-    color_map = brewer2mpl.get_map('YlOrRd', 'sequential', num_levels)
+    color_map = get_ylorrd_cmap(num_levels)
     xi = unit_conversion.len_conv(xi, from_units='m', to_units=units)
     yi = unit_conversion.len_conv(yi, from_units='m', to_units=units)
-    cs = ax.contourf(xi, yi, li, levels=levels, colors=color_map.mpl_colors)
+    cs = ax.contourf(xi, yi, li, levels=levels, cmap=color_map)
     ax.axis('equal')
     ax.set_xlabel('Cross Track Direction, ' + units)
     ax.set_ylabel('Flight Track Direction, ' + units)
@@ -1017,14 +1017,14 @@ def nc_lambert_ea(filename, input_frequencies=None, weight=None, SPL_range=None)
     SPL[np.isnan(SPL)] = 0.0
     num_levels = 9
     levels = np.round(np.linspace(minSPL, maxSPL, num_levels))
-    color_map = brewer2mpl.get_map('YlOrRd', 'sequential', num_levels)
+    color_map = get_ylorrd_cmap(num_levels)
     # Project to Cartesian
     lat = elv
     lon = azi - np.pi
     x, y = lambert_ea(lat, lon)
     fig, ax = subplots(facecolor='white')
     ax.patch.set_visible(False)
-    cs = ax.contourf(x, y, SPL, levels=levels, colors=color_map.mpl_colors)
+    cs = ax.contourf(x, y, SPL, levels=levels, cmap=color_map)
     # make sure aspect ratio preserved 
     ax.set_aspect('equal')
     # turn off rectangular frame. 
@@ -1165,6 +1165,22 @@ def write_kml(geodetic, savename, testname='Array', channel_prefix="M"):
         pnt = kml.newpoint(name=channel_prefix + "{}".format(i + 1), coords=[(row[1], row[0])])
         pnt.style.iconstyle.icon.href = 'http://maps.google.com/mapfiles/kml/shapes/placemark_circle.png'
     kml.savekmz(savename)
+
+
+def get_ylorrd_cmap(num_levels=9):
+    """
+    Return a YlOrRd colormap with approximately `num_levels` discrete levels.
+    Uses palettable when an exact discrete palette exists (3..9),
+    otherwise falls back to Matplotlib's continuous 'YlOrRd'.
+    """
+    try:
+        import palettable.colorbrewer.sequential as cbseq
+        attr = f"YlOrRd_{int(num_levels)}"
+        if hasattr(cbseq, attr):
+            return getattr(cbseq, attr).mpl_colormap
+    except Exception:
+        pass
+    return matplotlib.cm.get_cmap('YlOrRd')
 
 def atmosorb(freq, temp, humid, pstat):
     """
