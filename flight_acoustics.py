@@ -136,7 +136,7 @@ def nextpow2(x):
     return np.ceil(np.log2(np.abs(x)))
 
 
-def spectrogram(signal, sampling_rate, window_time=1.0, window_type="hann", window_overlap=7.0 / 8.0,
+def spectrogram(signal, sampling_rate, window_time=0.5, window_type="hann", window_overlap=7.0 / 8.0,
                 detrend='constant', dbref=20e-6):
     """
     Computes the spectrogram of a signal
@@ -1188,15 +1188,15 @@ def atmosorb(freq, temp, humid, pstat):
 
     Args:
         freq: Array-like of frequencies in Hz.
-        temp: Temperature in degrees Fahrenheit.
+        temp: Temperature in degrees Celsius.
         humid: Relative humidity in percent (e.g., 85% -> 85). 
         pstat: Static pressure in mbar.
 
     Returns:
-        numpy.ndarray of attenuation in dB per ft (same shape as `freq`).
+        numpy.ndarray of attenuation in dB per meter (same shape as `freq`).
     """
     # Convert inputs to SI units for acoustics.atmosphere
-    temp_kelvin = (np.asarray(temp, dtype=float) + 459.67) * (5.0 / 9.0)  # F -> K
+    temp_kelvin = np.asarray(temp, dtype=float) + 273.15  # C -> K
     pressure_pa = np.asarray(pstat, dtype=float) * 100.0  # mbar -> Pa
     
     # Create atmosphere object
@@ -1209,9 +1209,7 @@ def atmosorb(freq, temp, humid, pstat):
     # Get attenuation coefficient in dB/m
     alpha = atm.attenuation_coefficient(freq)
     
-    # Convert to dB/ft
-    dBpft = 0.3048 * alpha
-    return dBpft
+    return alpha
 
 def geodist(elv1, azi1, elv2, azi2):
     """
@@ -1339,5 +1337,52 @@ def shepIDW(ielv, iazi, felv, fazi, f, rmax):
         return float(fi)
     return fi
 
+def load_NASA_track(trackfile):
+    """
+    Load NASA track file and return data in a structured format.
 
+    Args:
+        trackfile: Path to NASA CSV format tracking data file.
+    Returns:
+        dict with keys:
+            'time': numpy.ndarray of UTC time in seconds
+            'latitude': numpy.ndarray of latitude in degrees
+            'longitude': numpy.ndarray of longitude in degrees
+            'altitude': numpy.ndarray of altitude in feet
+            'heading': numpy.ndarray of heading in degrees  
+            'pitch': numpy.ndarray of pitch in degrees
+            'roll': numpy.ndarray of roll in degrees
+            'x', 'y', 'z': numpy.ndarray of position in feet (local coordinates)
+            'vx', 'vy', 'vz': numpy.ndarray of velocity in feet/second (local coordinates)
+    """    
+    data = np.genfromtxt(trackfile, delimiter=',', names=True)
+    time = data['utcsec']
+    latitude = data['lat']
+    longitude = data['lon']
+    altitude = data['alt']  
+    heading = data['heading']
+    pitch = data['pitch']
+    roll = data['roll']
+    x = data['x']
+    y = data['y']
+    z = data['z']
+    vx = data['vx']
+    vy = data['vy']
+    vz = data['vz']   
+
+    return {
+        'time': time,
+        'latitude': latitude,
+        'longitude': longitude,
+        'altitude': altitude,
+        'heading': heading,
+        'pitch': pitch,
+        'roll': roll,
+        'x': x,
+        'y': y,
+        'z': z,
+        'vx': vx,
+        'vy': vy,
+        'vz': vz,
+    }
 

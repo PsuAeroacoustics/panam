@@ -39,13 +39,13 @@ def main():
     pressures_atm = np.linspace(press_min, press_max, 1000)  # atm
     pstat_mbar = pressures_atm * 1013.25  # mbar
     humidity = args.humidity  # % RH (percent, not fraction)
-    temperatures_F = np.linspace(temp_min, temp_max, 100)  # deg F
+    temperatures_F = np.linspace(temp_min, temp_max, 100)  # deg C
 
     freq_hz = args.frequency  # Hz
 
     TT, PP = np.meshgrid(temperatures_F, pstat_mbar)
 
-    dBpft = atmosorb(freq_hz, TT, humidity, PP)
+    dBpm = atmosorb(freq_hz, TT, humidity, PP)
 
     # Build filled contours and labeled contour lines (similar to MATLAB's contourf + clabel)
     fig, ax = plt.subplots(figsize=(7, 5))
@@ -54,20 +54,20 @@ def main():
     y_atm = PP / 1013.25
 
     # Filled contours
-    cf = ax.contourf(TT, y_atm, dBpft, levels=50, cmap='viridis')
+    cf = ax.contourf(TT, y_atm, dBpm, levels=50, cmap='viridis')
     cbar = fig.colorbar(cf, ax=ax)
-    cbar.set_label('Absorption (dB/ft)')
+    cbar.set_label('Absorption (dB/m)')
 
     # Overlay contour lines in black, thicker lines, and label them
-    c = ax.contour(TT, y_atm, dBpft, colors='k', linewidths=2)
+    c = ax.contour(TT, y_atm, dBpm, colors='k', linewidths=2)
     ax.clabel(c, fontsize=14)
 
-    ax.set_ylim(0.0, 30.0)
+    #ax.set_ylim(0.0, 30.0)
 
-    ax.set_xlabel('Temperature, °F')
+    ax.set_xlabel('Temperature, °C')
     ax.set_ylabel('Pressure, atm')
 
-    title_line1 = f"Absorption at {freq_hz/1000.0:g} kHz dB/ft"
+    title_line1 = f"Absorption at {freq_hz/1000.0:g} kHz dB/m"
     title_line2 = f"for {humidity:g} % relative humidity"
     ax.set_title(f"{title_line1}\n{title_line2}")
 
