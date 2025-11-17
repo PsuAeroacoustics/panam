@@ -1,3 +1,7 @@
+#!/usr/bin/env python
+import argparse
+
+import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -5,13 +9,39 @@ from flight_acoustics import atmosorb
 
 
 def main():
-    # Parameters (mirroring the MATLAB script)
-    pressures_atm = np.linspace(1.0, 30.0, 1000)  # atm
+    parser = argparse.ArgumentParser(description='Generate atmospheric absorption map')
+    parser.add_argument('-t', '--temperature', type=str, default='50:100',
+                        help='Temperature range in °F as "min:max" (default: 50:100)')
+    parser.add_argument('-p', '--pressure', type=str, default='1:30',
+                        help='Pressure range in atm as "min:max" (default: 1:30)')
+    parser.add_argument('-f', '--frequency', type=float, default=10000.0,
+                        help='Frequency in Hz (default: 10000.0)')
+    parser.add_argument('-H', '--humidity', type=float, default=10.0,
+                        help='Relative humidity in percent (default: 10.0)')
+    parser.add_argument('-o', '--output', type=str, default='atmomap.pdf',
+                        help='Output filename (default: atmomap.pdf)')
+    
+    args = parser.parse_args()
+    
+    # Parse temperature range
+    temp_values = args.temperature.split(':')
+    if len(temp_values) != 2:
+        raise ValueError('Temperature range must be in format "min:max"')
+    temp_min, temp_max = map(float, temp_values)
+    
+    # Parse pressure range
+    press_values = args.pressure.split(':')
+    if len(press_values) != 2:
+        raise ValueError('Pressure range must be in format "min:max"')
+    press_min, press_max = map(float, press_values)
+    
+    # Parameters
+    pressures_atm = np.linspace(press_min, press_max, 1000)  # atm
     pstat_mbar = pressures_atm * 1013.25  # mbar
-    humidity = 10.0  # % RH (percent, not fraction)
-    temperatures_F = np.linspace(50.0, 100.0, 100)  # deg F
+    humidity = args.humidity  # % RH (percent, not fraction)
+    temperatures_F = np.linspace(temp_min, temp_max, 100)  # deg F
 
-    freq_hz = 10e3  # Hz
+    freq_hz = args.frequency  # Hz
 
     TT, PP = np.meshgrid(temperatures_F, pstat_mbar)
 
@@ -42,9 +72,7 @@ def main():
     ax.set_title(f"{title_line1}\n{title_line2}")
 
     fig.tight_layout()
-    fig.savefig('atmomap.pdf', bbox_inches='tight')
-    print('Saved atmomap.pdf')
-
+    fig.savefig(args.output, bbox_inches='tight')
 
 if __name__ == '__main__':
     main()
