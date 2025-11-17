@@ -1184,7 +1184,7 @@ def get_ylorrd_cmap(num_levels=9):
 
 def atmosorb(freq, temp, humid, pstat):
     """
-    Atmospheric absorption (Sutherland & Bass model)
+    Atmospheric absorption using acoustics.atmosphere module
 
     Args:
         freq: Array-like of frequencies in Hz.
@@ -1194,42 +1194,23 @@ def atmosorb(freq, temp, humid, pstat):
 
     Returns:
         numpy.ndarray of attenuation in dB per ft (same shape as `freq`).
-
-    Reference:
-        Huber, J. "Noise Propagation Model for the Design of Weather Specific Noise Abatement Procedures",
-        Thesis, MIT, May 2003, Appendix C.
     """
-    # Ensure array broadcasting and numeric operations
-    f = np.asarray(freq, dtype=float)
-    T = (np.asarray(temp, dtype=float) + 459.67) * (5.0 / 9.0)  # F -> K
-    ps = np.asarray(pstat, dtype=float) * 100.0  # mbar -> Pa
-
-    t01 = 273.16  # K, triple point temperature
-    ps0 = 1.013e5  # Pa, reference atmospheric pressure
-
-    # Find Psat/P0
-    C = -6.8346 * (t01 / T) ** 1.261 + 4.6151
-    psatps0 = np.power(10.0, C)
-
-    # NOTE: humid is expected as 'percent' (85 -> 85) per MATLAB header; no /100 applied here.
-    h = np.asarray(humid, dtype=float) * psatps0 * ps0 / ps
-
-    # Reference temperature
-    T0 = 293.15
-
-    # Relaxation frequencies for O2 and N2
-    frO = (ps / ps0) * (24.0 + 4.04e4 * h * (0.02 + h) / (0.391 + h))
-    frN = (ps / ps0) * np.sqrt(T0 / T) * (9.0 + 280.0 * h * np.exp(-4.17 * ((T0 / T) ** (1.0 / 3.0) - 1.0)))
-
-    # Atmospheric absorption coefficient in dB/m
-    A = 1.84e-11 * np.sqrt(T / T0) * ps0 / ps
-    B = (T / T0) ** (-2.5)
-    o2 = 0.01275 * np.exp(-2239.1 / T) / ((frO ** 2 + f ** 2) / frO)
-    n2 = 0.1068 * np.exp(-3352.0 / T) / ((frN ** 2 + f ** 2) / frN)
-    a = 8.686 * f ** 2 * (A + B * (o2 + n2))  # dB/m
-
+    # Convert inputs to SI units for acoustics.atmosphere
+    temp_kelvin = (np.asarray(temp, dtype=float) + 459.67) * (5.0 / 9.0)  # F -> K
+    pressure_pa = np.asarray(pstat, dtype=float) * 100.0  # mbar -> Pa
+    
+    # Create atmosphere object
+    atm = acoustics.atmosphere.Atmosphere(
+        temperature=temp_kelvin,
+        pressure=pressure_pa / 1000.0,  # Pa to kPa for acoustics module
+        relative_humidity=np.asarray(humid, dtype=float)
+    )
+    
+    # Get attenuation coefficient in dB/m
+    alpha = atm.attenuation_coefficient(freq)
+    
     # Convert to dB/ft
-    dBpft = 0.3048 * a
+    dBpft = 0.3048 * alpha
     return dBpft
 
 def geodist(elv1, azi1, elv2, azi2):
