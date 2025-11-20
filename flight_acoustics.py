@@ -7,12 +7,13 @@ import numpy as np
 import acoustics
 from acoustics.atmosphere import Atmosphere
 import h5py
+from typing import cast
 import openpyxl
 import scipy.signal
 import simplekml
 # Colormap helper will import palettable lazily
 import matplotlib
-from matplotlib import tri
+from matplotlib import cm, tri
 from matplotlib.pyplot import plot, subplots, colorbar, style, contourf, show
 from netCDF4 import Dataset
 from pymap3d import geodetic2enu, enu2geodetic
@@ -502,9 +503,16 @@ def load_h5_signal(filename, datasetname='Table1', signalname=None):
     """
     file = h5py.File(filename, 'r')
     if signalname is None:
-        return file[datasetname]
+        grp = file[datasetname]
+        # Return the group, type checker might complain but runtime is fine
+        return cast(h5py.Group, grp)  # type: ignore[return-value]
     else:
-        return file[datasetname][signalname]
+        grp = file[datasetname]
+        if isinstance(grp, h5py.Group):
+            ds = grp[signalname]
+            return cast(h5py.Dataset, ds)  # type: ignore[return-value]
+        else:
+            raise ValueError(f"Dataset {datasetname} is not a Group")
 
 
 def highpass(x, fpass, fs, zero_phase=True):
@@ -590,7 +598,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     absolute_glob = os.path.abspath(local_glob)
     file_list = glob(absolute_glob)
 
-    min_speed = np.Inf
+    min_speed = np.inf
     sphere_index = 0
     for filename in file_list:
         # Load the sphere data
@@ -715,6 +723,8 @@ def read_vehicle_data(directory_name, runs=None, speeds=None, flight_path_angles
         absolute_path_to_list = os.path.abspath(local_path_to_list)
         wb = openpyxl.load_workbook(absolute_path_to_list, read_only=True, data_only=True)
         ws = wb.active
+        if ws is None:
+            raise ValueError("Workbook has no active sheet")
         # Grab run values over the range in which they exist
         max_row = ws.max_row
         r_start = 'B2'
@@ -863,7 +873,9 @@ def plot_fried_eggs(directory_names, metric='mean', dimensionless=False, altitud
                                      cull_noisy_fpa)
         ax.set_xlim(xlim)
         ax.set_ylim(ylim)
-        fig.canvas.set_window_title(directory_name)
+        mgr = getattr(fig.canvas, "manager", None)
+        if mgr is not None and hasattr(mgr, "set_window_title"):
+            mgr.set_window_title(directory_name)
         if save_figures:
             save_name = os.path.basename(directory_name) + '_fried_egg.pdf'
             fig.savefig(save_name)
@@ -885,15 +897,19 @@ def fried_egg_plot(directory_name, metric='mean', dimensionless=False, altitude=
                                                                  atmosphere, duration_correction)
     samples = 1000
     if dimensionless:
+        if advance_ratios is None or alphas is None:
+            raise ValueError("Nondimensional data not available; set dimensionless=False or provide reflist.")
         x = advance_ratios
         y = alphas
     else:
         if climb_rates:
+            assert speeds is not None and flight_path_angles is not None
             x = speeds
             y = 60 * 1.6878 * speeds * np.sin(np.radians(flight_path_angles))
         else:
             x = speeds
             y = flight_path_angles
+    assert x is not None and y is not None
     xi = np.linspace(np.min(x), np.max(x), samples)
     yi = np.linspace(np.min(y), np.max(y), samples)
     if metric == 'mean':
@@ -1153,9 +1169,9 @@ def nc_lambert_ea(filename, input_frequencies=None, weight=None, SPL_range=None)
         ax.text(xl + xpad, yl + ypad, "%d°" % parallel, horizontalalignment='left', verticalalignment='center')
 
     # Change cursor to display polar coordinates
-    def format_coord(xx, yy):
-        cazi = np.mod(90 - np.degrees(np.arctan2(-yy, xx)), 360)
-        cq = np.sqrt(np.square(xx) + np.square(yy))
+    def format_coord(x, y):
+        cazi = np.mod(90 - np.degrees(np.arctan2(-y, x)), 360)
+        cq = np.sqrt(np.square(x) + np.square(y))
         celv = np.degrees(np.pi / 2 - 2 * np.arcsin(cq / 2))
         return 'ψ = %0.1f, θ = %0.1f' % (cazi, celv)
 
@@ -1229,9 +1245,9 @@ def lambert_ea_points(azimuth, elevation):
         ax.text(xl + xpad, yl + ypad, "%d°" % parallel, horizontalalignment='left', verticalalignment='center')
 
     # Change cursor to display polar coordinates
-    def format_coord(xx, yy):
-        cazi = np.mod(90 - np.degrees(np.arctan2(-yy, xx)), 360)
-        cq = np.sqrt(np.square(xx) + np.square(yy))
+    def format_coord(x, y):
+        cazi = np.mod(90 - np.degrees(np.arctan2(-y, x)), 360)
+        cq = np.sqrt(np.square(x) + np.square(y))
         celv = np.degrees(np.pi / 2 - 2 * np.arcsin(cq / 2))
         return 'ψ = %0.1f, θ = %0.1f' % (cazi, celv)
 
@@ -1396,7 +1412,7 @@ def get_ylorrd_cmap(num_levels=9):
             return getattr(cbseq, attr).mpl_colormap
     except Exception:
         pass
-    return matplotlib.cm.get_cmap('YlOrRd')
+    return cm.get_cmap('YlOrRd')
 
 def atmosorb(freq, temp, humid, pstat):
     """
