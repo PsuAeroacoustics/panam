@@ -5,6 +5,7 @@ from glob import glob
 
 import numpy as np
 import acoustics
+from acoustics.atmosphere import Atmosphere
 import h5py
 import openpyxl
 import scipy.signal
@@ -12,7 +13,7 @@ import simplekml
 # Colormap helper will import palettable lazily
 import matplotlib
 from matplotlib import tri
-from matplotlib.pyplot import *
+from matplotlib.pyplot import plot, subplots, colorbar, style, contourf, show
 from netCDF4 import Dataset
 from pymap3d import geodetic2enu, enu2geodetic
 
@@ -571,8 +572,8 @@ def lambert_ea(lat, lon):
 
 def build_empirical_database(directory_name, database_filename, load_factors=np.linspace(0.7, 2.3, 5), infreqs=None,
                              distance=1000,
-                             atmosphere=acoustics.atmosphere.Atmosphere(temperature=293.15, pressure=101.325,
-                                                                        relative_humidity=20.0)):
+                             atmosphere=Atmosphere(temperature=293.15, pressure=101.325,
+                                                   relative_humidity=20.0)):
     # TODO extend FPA range
     # TODO pack in redimensionalization data
     # TODO add reinterpolation flag
@@ -676,8 +677,8 @@ def add_sphere_group(ncdatabase, groupname, phi, theta, radius, SPLA, EAA, speed
 
 
 def project_sphere(filename, altitude, elv_cutoff, infreqs=None,
-                   atmosphere=acoustics.atmosphere.Atmosphere(temperature=293.15, pressure=101.325,
-                                                              relative_humidity=20.0)):
+                   atmosphere=Atmosphere(temperature=293.15, pressure=101.325,
+                                         relative_humidity=20.0)):
     distance = 1000  # reference distance for EAA
     azi, elv, phi, theta, radius, SPLO, SPLA, EAA, speed, flight_path_angle = extract_SPL(filename, infreqs, distance,
                                                                                           atmosphere)
@@ -787,8 +788,8 @@ def read_vehicle_data(directory_name, runs=None, speeds=None, flight_path_angles
 
 
 def project_directory(directory_name, altitude=500, cutoff=30, input_frequencies=None, fpa_climb_cutoff=5,
-                      atmosphere=acoustics.atmosphere.Atmosphere(temperature=293.15, pressure=101.325,
-                                                                 relative_humidity=20.0), duration_correction=None):
+                      atmosphere=Atmosphere(temperature=293.15, pressure=101.325,
+                                            relative_humidity=20.0), duration_correction=None):
     # Get list of full paths to netCDF files in directory
     local_glob = os.path.expanduser(directory_name) + '/*.nc'
     absolute_glob = os.path.abspath(local_glob)
@@ -844,7 +845,7 @@ def expand_if_single(x, r):
         array-like: If x is a scalar or single-element array, returns an array of
             the same shape as r with all elements equal to x. Otherwise, returns x
             unchanged.
-
+    """
     if np.isscalar(x) or len(x) == 1:
         x = x * np.ones_like(r)
     return x
@@ -852,8 +853,8 @@ def expand_if_single(x, r):
 
 def plot_fried_eggs(directory_names, metric='mean', dimensionless=False, altitude=500, cutoff=30,
                     input_frequencies=None, fpa_climb_cutoff=5,
-                    atmosphere=acoustics.atmosphere.Atmosphere(temperature=293.15, pressure=101.325,
-                                                               relative_humidity=20.0),
+                    atmosphere=Atmosphere(temperature=293.15, pressure=101.325,
+                                          relative_humidity=20.0),
                     climb_rates=False, duration_correction=None, threshold=0.65, cull_noisy_fpa=None, xlim=(35, 140),
                     ylim=(-2000, 750), save_figures=False):
     for directory_name in directory_names:
@@ -870,8 +871,8 @@ def plot_fried_eggs(directory_names, metric='mean', dimensionless=False, altitud
 
 
 def fried_egg_plot(directory_name, metric='mean', dimensionless=False, altitude=500, cutoff=30, input_frequencies=None,
-                   fpa_climb_cutoff=5, atmosphere=acoustics.atmosphere.Atmosphere(temperature=293.15, pressure=101.325,
-                                                                                  relative_humidity=20.0),
+                   fpa_climb_cutoff=5, atmosphere=Atmosphere(temperature=293.15, pressure=101.325,
+                                                             relative_humidity=20.0),
                    climb_rates=False, duration_correction=None, threshold=0.65, cull_noisy_fpa=None,
                    suppress_classification=False):
     (speeds, flight_path_angles, Lmax, Lmean, advance_ratios, weight_coefficients, hover_tip_mach_numbers, alphas,
@@ -949,8 +950,8 @@ def fried_egg_plot(directory_name, metric='mean', dimensionless=False, altitude=
 
 
 def extract_SPL(filename, infreqs=None, distance=1000,
-                atmosphere=acoustics.atmosphere.Atmosphere(temperature=293.15, pressure=101.325,
-                                                           relative_humidity=20.0)):
+                atmosphere=Atmosphere(temperature=293.15, pressure=101.325,
+                                      relative_humidity=20.0)):
     # Get data from netCDF file
     amplitude, phi, theta, frequency, radius, speed, flight_path_angle = load_nc_sphere(filename)
     # Convert radius to meters
@@ -1404,27 +1405,55 @@ def atmosorb(freq, temp, humid, pstat):
     Args:
         freq: Array-like of frequencies in Hz.
         temp: Temperature in degrees Celsius.
-        humid: Relative humidity in percent (e.g., 85% -> 85). 
+        humid: Relative humidity in percent (e.g., 85% -> 85).
         pstat: Static pressure in mbar.
 
     Returns:
         numpy.ndarray of attenuation in dB per meter (same shape as `freq`).
     """
-    # Convert inputs to SI units for acoustics.atmosphere
-    temp_kelvin = np.asarray(temp, dtype=float) + 273.15  # C -> K
-    pressure_pa = np.asarray(pstat, dtype=float) * 100.0  # mbar -> Pa
-    
-    # Create atmosphere object
-    atm = acoustics.atmosphere.Atmosphere(
-        temperature=temp_kelvin,
-        pressure=pressure_pa / 1000.0,  # Pa to kPa for acoustics module
-        relative_humidity=np.asarray(humid, dtype=float)
-    )
-    
-    # Get attenuation coefficient in dB/m
-    alpha = atm.attenuation_coefficient(freq)
-    
-    return alpha
+    # Convert inputs to Atmosphere() expected units
+    tempK = np.asarray(temp, dtype=float) + 273.15  # C -> K
+    pres_kpa = np.asarray(pstat, dtype=float) * 0.1  # mbar -> kPa
+    rh_pct = np.asarray(humid, dtype=float)
+    f = np.asarray(freq, dtype=float)
+
+    # Scalar case: fast path
+    if tempK.ndim == 0 and pres_kpa.ndim == 0 and rh_pct.ndim == 0:
+        atm = Atmosphere(
+            temperature=float(tempK),
+            pressure=float(pres_kpa),
+            relative_humidity=float(rh_pct),
+        )
+        alpha_db_per_m = atm.attenuation_coefficient(f)
+        return alpha_db_per_m
+
+    # Broadcast atmospheric inputs to common grid
+    tempK_b, pres_kpa_b, rh_b = np.broadcast_arrays(tempK, pres_kpa, rh_pct)
+
+    if f.ndim == 0:
+        out = np.empty_like(tempK_b, dtype=float)
+        it = np.nditer(tempK_b, flags=['multi_index'])
+        while not it.finished:
+            idx = it.multi_index
+            atm = Atmosphere(
+                temperature=float(tempK_b[idx]),
+                pressure=float(pres_kpa_b[idx]),
+                relative_humidity=float(rh_b[idx]),
+            )
+            out[idx] = float(atm.attenuation_coefficient(float(f)))
+            it.iternext()
+        return out
+    else:
+        # Frequency array: return array with shape (grid_shape + f.shape)
+        out = np.empty(tempK_b.shape + f.shape, dtype=float)
+        for idx in np.ndindex(tempK_b.shape):
+            atm = Atmosphere(
+                temperature=float(tempK_b[idx]),
+                pressure=float(pres_kpa_b[idx]),
+                relative_humidity=float(rh_b[idx]),
+            )
+            out[idx] = atm.attenuation_coefficient(f)
+        return out
 
 def geodist(elv1, azi1, elv2, azi2):
     """

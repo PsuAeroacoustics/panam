@@ -1,7 +1,5 @@
 #!/usr/bin/env python
 import argparse
-
-import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -10,8 +8,8 @@ from flight_acoustics import atmosorb
 
 def main():
     parser = argparse.ArgumentParser(description='Generate atmospheric absorption map')
-    parser.add_argument('-t', '--temperature', type=str, default='50:100',
-                        help='Temperature range in °F as "min:max" (default: 50:100)')
+    parser.add_argument('-t', '--temperature', type=str, default='0:40',
+                        help='Temperature range in °C as "min:max" (default: 0:40)')
     parser.add_argument('-p', '--pressure', type=str, default='1:30',
                         help='Pressure range in atm as "min:max" (default: 1:30)')
     parser.add_argument('-f', '--frequency', type=float, default=10000.0,
@@ -39,11 +37,11 @@ def main():
     pressures_atm = np.linspace(press_min, press_max, 1000)  # atm
     pstat_mbar = pressures_atm * 1013.25  # mbar
     humidity = args.humidity  # % RH (percent, not fraction)
-    temperatures_F = np.linspace(temp_min, temp_max, 100)  # deg C
+    temperatures_C = np.linspace(temp_min, temp_max, 100)  # deg C
 
     freq_hz = args.frequency  # Hz
 
-    TT, PP = np.meshgrid(temperatures_F, pstat_mbar)
+    TT, PP = np.meshgrid(temperatures_C, pstat_mbar)
 
     dBpm = atmosorb(freq_hz, TT, humidity, PP)
 
