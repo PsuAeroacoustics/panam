@@ -828,6 +828,23 @@ def project_directory(directory_name, altitude=500, cutoff=30, input_frequencies
 
 
 def expand_if_single(x, r):
+    """
+    Expand a scalar or single-element array to match the shape of a reference array.
+
+    This function takes a value (scalar or array) and expands it to match the shape
+    of a reference array if it's a scalar or contains only one element. If the input
+    already has multiple elements, it's returned unchanged.
+
+    Args:
+        x (scalar or array-like): The value to potentially expand. Can be a scalar
+            or an array-like object.
+        r (array-like): The reference array whose shape will be used for expansion.
+
+    Returns:
+        array-like: If x is a scalar or single-element array, returns an array of
+            the same shape as r with all elements equal to x. Otherwise, returns x
+            unchanged.
+
     if np.isscalar(x) or len(x) == 1:
         x = x * np.ones_like(r)
     return x
@@ -964,6 +981,28 @@ def extract_SPL(filename, infreqs=None, distance=1000,
 
 
 def nc_unwrapped(filename, infreqs=None, weight=None):
+    """
+    Generate an unwrapped noise contour plot from a netCDF acoustic sphere.
+
+    This function extracts sound pressure level (SPL) data from a file and creates
+    a filled contour plot showing the acoustic field distribution in azimuth-elevation
+    coordinates.
+
+    Parameters
+    ----------
+    filename : str
+        Path to the file containing netCDF formatted acoustic sphere data.
+    infreqs : array-like, optional
+        Input frequencies for SPL extraction. Default is None.
+    weight : str, optional
+        Frequency weighting to apply. If 'A', uses A-weighted SPL (SPLA),
+        otherwise uses overall SPL (SPLO). Default is None.
+
+    Returns
+    -------
+    None
+
+    """
     azi, elv, phi, theta, radius, SPLO, SPLA, EAA, speed, flight_path_angle = extract_SPL(filename, infreqs)
     if weight == 'A':
         SPL = SPLA
@@ -979,6 +1018,33 @@ def nc_unwrapped(filename, infreqs=None, weight=None):
 
 
 def plot_projection(filename, altitude=500, cutoff=30, infreqs=None, units='m'):
+    """
+    Generate a contour plot of sound pressure levels projected onto a ground plane.
+
+    This function computes the acoustic footprint of an aircraft at a specified altitude
+    by projecting sound pressure levels onto a horizontal plane and creating a contour plot.
+
+    Args:
+        filename (str): Path to the file containing netCDF formatted acoustic sphere data
+        altitude (float, optional): Aircraft altitude in meters. Defaults to 500.
+        cutoff (float, optional): Cutoff angle in degrees for projection calculations. 
+            Defaults to 30.
+        infreqs (array-like, optional): Input frequencies for analysis. Defaults to None.
+        units (str, optional): Units for plot axes ('m' for meters, 'ft' for feet, etc.). 
+            Defaults to 'm'.
+
+    Returns:
+        tuple: A tuple containing:
+            - fig (matplotlib.figure.Figure): The figure object
+            - ax (matplotlib.axes.Axes): The axes object
+            - cs (matplotlib.contour.QuadContourSet): The contour set object
+
+    Notes:
+        - The function uses triangulation and linear interpolation to create smooth contours
+        - Sound pressure levels are displayed in dBA (A-weighted decibels)
+        - The plot uses a YlOrRd colormap with 9 levels
+        - Coordinate system: cross-track (x-axis) and along-track (y-axis) directions
+    """
     x, y, LA, speed, flight_path_angle = project_sphere(filename, altitude, cutoff, infreqs)
     fig, ax = subplots(facecolor='white')
     xi = np.linspace(np.min(x), np.max(x), 100)
@@ -1002,6 +1068,36 @@ def plot_projection(filename, altitude=500, cutoff=30, infreqs=None, units='m'):
 
 
 def nc_lambert_ea(filename, input_frequencies=None, weight=None, SPL_range=None):
+    """
+    Generate a Lambert equal-area azimuthal projection contour plot of sound pressure levels 
+    on a netCDF formatted acoustic sphere.
+
+    This function creates a polar plot of acoustic data using Lambert equal-area projection,
+    displaying sound pressure levels (SPL) as contours with azimuth and elevation coordinates.
+
+    Parameters
+    ----------
+    filename : str
+        Path to the file containing acoustic data to be extracted and plotted.
+    input_frequencies : array-like, optional
+        Specific frequencies to extract from the data. If None, all frequencies are used.
+    weight : str, optional
+        Weighting scheme for SPL calculation. Use 'A' for A-weighted SPL, otherwise
+        overall SPL is used. Default is None.
+    SPL_range : tuple of float, optional
+        Tuple specifying (min_SPL, max_SPL) for the contour levels. If None, the range
+        is automatically determined from the data. Default is None.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        The generated figure object.
+    ax : matplotlib.axes.Axes
+        The axes object containing the plot.
+    cs : matplotlib.contour.QuadContourSet
+        The contour set object from the contourf plot.
+
+    """
     azi, elv, phi, theta, radius, SPLO, SPLA, EAA, speed, flight_path_angle = extract_SPL(filename, input_frequencies)
     if weight == 'A':
         SPL = SPLA
@@ -1072,6 +1168,29 @@ def nc_lambert_ea(filename, input_frequencies=None, weight=None, SPL_range=None)
 
 
 def lambert_ea_points(azimuth, elevation):
+    """
+    Plot levels on an acoustic sphere using the Lambert equal-area azimuthal projection.
+
+    This function creates a polar plot using Lambert equal-area projection to visualize
+    acoustic directivity patterns on a hemisphere.
+
+    Parameters
+    ----------
+    azimuth : array_like
+        Azimuth angles in radians. Convention: 0 at rear, increasing counterclockwise.
+    elevation : array_like
+        Elevation angles in radians. Convention: 0 at horizon, π/2 below the sphere.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        The figure object containing the plot.
+    ax : matplotlib.axes.Axes
+        The axes object with the Lambert projection plot.
+    cs : list of matplotlib.lines.Line2D
+        Plot objects for the data points.
+
+    """
     lat = elevation
     lon = azimuth - np.pi
     x, y = lambert_ea(lat, lon)
@@ -1132,6 +1251,35 @@ def is_noisy(level, threshold=0.65):
 
 
 def geodetic2array(geodetic, reference, heading, units='ft'):
+    """
+    Convert geodetic coordinates to a local array coordinate system.
+
+    This function transforms geodetic coordinates (latitude, longitude, altitude) into a local
+    coordinate system centered at a reference point, rotated according to a specified heading.
+
+    Args:
+        geodetic (numpy.ndarray): An Nx3 array of geodetic coordinates where each row contains
+            [latitude, longitude, altitude].
+        reference (array-like): A 3-element array containing the reference point's geodetic
+            coordinates [latitude, longitude, altitude].
+        heading (float): The heading angle in degrees, measured clockwise from north (0-360).
+            The local coordinate system is rotated so that the x-axis aligns with this heading.
+        units (str, optional): The desired output length units. Defaults to 'ft' (feet).
+            The function converts from meters to the specified units.
+
+    Returns:
+        numpy.ndarray: An Nx3 array of local coordinates where:
+            - Column 0: x-coordinate (aligned with heading direction)
+            - Column 1: y-coordinate (perpendicular to heading, positive left)
+            - Column 2: z-coordinate (up, altitude above reference)
+
+    Notes:
+        - Input geodetic coordinates are first converted to ENU (East-North-Up) coordinates
+          relative to the reference point.
+        - The coordinate system is then rotated so that the x-axis points in the direction
+          of the specified heading.
+        - The rotation angle is computed as 90° - heading to align the x-axis with the heading.
+    """
     east, north, up = geodetic2enu(geodetic[:, 0], geodetic[:, 1], geodetic[:, 2], reference[0], reference[1],
                                    reference[2])
     rotation = np.radians(90.0 - heading)
@@ -1144,6 +1292,46 @@ def geodetic2array(geodetic, reference, heading, units='ft'):
 
 
 def array2geodetic(local, reference, heading, units='ft'):
+    """
+    Convert local coordinate array to geodetic coordinates (latitude, longitude, height).
+
+    This function transforms an array of points from a local coordinate system to geodetic 
+    coordinates (WGS84) by first rotating the local coordinates based on a heading angle 
+    to align with East-North-Up (ENU) convention, then converting to geodetic coordinates 
+    relative to a reference point.
+
+    Parameters
+    ----------
+    local : numpy.ndarray
+        Array of shape (N, 3) containing local coordinates [x, y, z] where:
+        - x: lateral position (positive right)
+        - y: longitudinal position (positive forward)
+        - z: vertical position (positive up)
+    reference : array-like
+        Reference point in geodetic coordinates [latitude, longitude, height] in degrees 
+        and meters respectively, used as the origin for the ENU coordinate system.
+    heading : float
+        Heading angle in degrees (typically 0-360), measured clockwise from North.
+        Used to rotate the local coordinates to align with true North.
+    units : str, optional
+        Units of the input local coordinates. Default is 'ft' (feet).
+        Coordinates are converted to meters internally.
+
+    Returns
+    -------
+    numpy.ndarray
+        Array of shape (N, 3) containing geodetic coordinates where:
+        - Column 0: latitude in degrees
+        - Column 1: longitude in degrees
+        - Column 2: height in meters
+
+    Notes
+    -----
+    The conversion process involves:
+    1. Converting input coordinates from specified units to meters
+    2. Rotating coordinates by (heading - 90°) to convert from local to ENU frame
+    3. Converting ENU coordinates to geodetic using the reference point
+    """
     local = unit_conversion.len_conv(local, from_units=units, to_units='m')
     rotation = np.radians(heading - 90.0)
     # Convert local to ENU
@@ -1159,6 +1347,33 @@ def array2geodetic(local, reference, heading, units='ft'):
 
 
 def write_kml(geodetic, savename, testname='Array', channel_prefix="M"):
+    """
+    Write geodetic coordinates to a KML/KMZ file for visualization in mapping applications.
+
+    Parameters
+    ----------
+    geodetic : array-like
+        An iterable of coordinate pairs where each row contains [latitude, longitude].
+        Coordinates should be in decimal degrees.
+    savename : str
+        The output file path where the KMZ file will be saved.
+    testname : str, optional
+        The name of the KML document. Default is 'Array'.
+    channel_prefix : str, optional
+        The prefix to use for naming each point/placemark. Default is 'M'.
+        Points will be named as '{channel_prefix}{number}' (e.g., 'M1', 'M2', etc.).
+
+    Returns
+    -------
+    None
+        The function saves the KMZ file to disk but does not return a value.
+
+    Notes
+    -----
+    - Each point is displayed with a circular placemark icon from Google Maps.
+    - Point numbering starts from 1 (i.e., channel_prefix + '1' for the first point).
+    - The geodetic input should have longitude at index 1 and latitude at index 0.
+    """
     kml = simplekml.Kml()
     kml.document.name = testname
     for (i, row) in enumerate(geodetic):
