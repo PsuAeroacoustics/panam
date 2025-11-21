@@ -8,3 +8,4 @@ palettable
 matplotlib
 netCDF4
 pymap3d
+pytest
