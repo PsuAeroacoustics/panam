@@ -153,3 +153,6 @@ Cases/wav/
 *.csv
 
 *.zip
+
+# Working plots directory
+demo_plots/
