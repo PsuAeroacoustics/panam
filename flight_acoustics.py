@@ -66,6 +66,7 @@ def psd_welch(signal, sampling_rate, cal=0.0, window_time=1.0, window_type='hann
            frequency is an array of band frequencies
            psd_db is the power spectral density in dB/Hz**2
            level is the integrated sound pressure level over all bands in dB
+           level_A is the A-weighted integrated sound pressure level over all bands in dB
     """
     kcal = 10 ** (cal / 20)
     binwidth = int(2.0 ** nextpow2(window_time * sampling_rate))
@@ -479,7 +480,7 @@ def load_nc_signal(filename):
     location is an array of the x,y,z location of the microphone
     """
     file_handle = Dataset(filename, mode='r')
-    pressure = file_handle.variables['pressure'][:].astype(float)
+    pressure = file_handle.variables['pressure'][:].astype(float).flatten()
     x = file_handle.X
     y = file_handle.Y
     z = file_handle.Z
