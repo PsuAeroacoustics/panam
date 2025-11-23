@@ -57,17 +57,19 @@ def filter_microphones(nc_files, miclocs, pressures, times, x_range=(-2500,-1500
     filtered_times = [times[idx_by_file[f]] for f in filtered_nc_files]
     return filtered_nc_files, filtered_miclocs, filtered_pressures, filtered_times
 
-def plot_trajectory(track, filter_track):
+def plot_trajectory(track, filter_track=None):
     fig1 = plt.figure()
     plt.plot(track['x'],track['z'],c='tab:green',lw=2)
-    plt.plot(filter_track['x'],filter_track['z'],c='tab:red',lw=2)
+    if filter_track is not None:
+        plt.plot(filter_track['x'],filter_track['z'],c='tab:red',lw=2)
     plt.xlabel('X,ft')
     plt.ylabel('Z,ft')
     plt.title('2D Flight Trajectory')
     plt.grid(True, ls=':')
     fig2 = plt.figure()
     plt.plot(track['x'], track['y'], c='tab:green', lw=2)
-    plt.plot(filter_track['x'], filter_track['y'], c='tab:red', lw=2)
+    if filter_track is not None:
+        plt.plot(filter_track['x'], filter_track['y'], c='tab:red', lw=2)
     plt.xlabel('X,ft')
     plt.ylabel('Y,ft')
     plt.title('Flight Trajectory (XY)')
@@ -75,12 +77,13 @@ def plot_trajectory(track, filter_track):
     plt.grid(True, ls=':')
     return [fig1, fig2]
 
-def plot_array(xs, ys, xf, yf, track, filter_track):
+def plot_array(xs, ys, xf, yf, track, filter_track = None):
     fig = plt.figure()
     plt.scatter(xs, ys, c='tab:blue', edgecolors='k')
     plt.scatter(xf, yf, c='tab:red', edgecolors='k')
     plt.plot(track['x'], track['y'], c='tab:green', lw=2)
-    plt.plot(filter_track['x'], filter_track['y'], c='tab:red', lw=2)
+    if filter_track is not None:
+        plt.plot(filter_track['x'], filter_track['y'], c='tab:red', lw=2)
     plt.xlabel('X,ft')
     plt.ylabel('Y,ft')
     plt.title('Microphone Array and Flight Trajectory')
