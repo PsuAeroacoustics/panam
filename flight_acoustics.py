@@ -1647,3 +1647,35 @@ def load_NASA_track(trackfile):
         'vz': vz,
     }
 
+def filter_track(track, xlims = None, ylims = None, zlims = None):
+    """
+    Filter track data based on specified limits for x, y, z coordinates.
+
+    Args:
+        track: dict containing track data with keys 'x', 'y', 'z'.
+        xlims: tuple (xmin, xmax) for filtering x coordinates.
+        ylims: tuple (ymin, ymax) for filtering y coordinates.
+        zlims: tuple (zmin, zmax) for filtering z coordinates.
+    Returns:
+        dict containing filtered track data with the same keys as input.
+    """    
+    x = track['x']
+    y = track['y']
+    z = track['z']
+    mask = np.ones_like(x, dtype=bool)
+
+    if xlims is not None:
+        mask = np.logical_and(mask, x >= xlims[0])
+        mask = np.logical_and(mask, x <= xlims[1])
+    if ylims is not None:
+        mask = np.logical_and(mask, y >= ylims[0])
+        mask = np.logical_and(mask, y <= ylims[1])
+    if zlims is not None:
+        mask = np.logical_and(mask, z >= zlims[0])
+        mask = np.logical_and(mask, z <= zlims[1])
+
+    filtered_track = {}
+    for key in track:
+        filtered_track[key] = track[key][mask]
+
+    return filtered_track   

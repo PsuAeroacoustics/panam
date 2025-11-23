@@ -80,9 +80,13 @@ yf = [loc[1] for loc in filtered_miclocs]
 
 # Load trajectory data
 track = fa.load_NASA_track(os.path.join(basepath, 'Tracking','289108AC.csv'))
+# Filter trajectory data
+filter_track = fa.filter_track(track, xlims=(-4000,0), zlims=(50,1500))
+
 logging.info(f'Loaded trajectory with {len(track["time"])} points from 289108AC.csv')
 plt.figure()
 plt.plot(track['x'],track['z'],c='tab:green',lw=2)
+plt.plot(filter_track['x'],filter_track['z'],c='tab:red',lw=2)
 plt.xlabel('X,ft')
 plt.ylabel('Z,ft')
 plt.title('2D Flight Trajectory')
@@ -92,6 +96,7 @@ plt.figure()
 plt.scatter(xs, ys, c='tab:blue', edgecolors='k')
 plt.scatter(xf, yf, c='tab:red', edgecolors='k')
 plt.plot(track['x'], track['y'], c='tab:green', lw=2)
+plt.plot(filter_track['x'], filter_track['y'], c='tab:red', lw=2)
 plt.xlabel('X,ft')
 plt.ylabel('Y,ft')
 plt.title('Microphone Array and Flight Trajectory')
@@ -99,11 +104,11 @@ plt.axis('equal')
 plt.grid(True, ls=':')
 
 # Plot array coverage
-source = np.array([track['x'], track['y'], track['z']]).transpose()
-velocity = np.array([track['vx'], track['vy'], track['vz']]).transpose()
-azimuths, elevations, ranges, tobs, mach_rs = fa.hemigen(track['time'], source, velocity, filtered_miclocs, speed_of_sound=1135.0)
+source = np.array([filter_track['x'], filter_track['y'], filter_track['z']]).transpose()
+velocity = np.array([filter_track['vx'], filter_track['vy'], filter_track['vz']]).transpose()
+azimuths, elevations, ranges, tobs, mach_rs = fa.hemigen(filter_track['time'], source, velocity, filtered_miclocs, speed_of_sound=1135.0)
 fa.lambert_ea_points(np.radians(azimuths),np.radians(elevations))
-
+    
 # Plot reference hemisphere
 AAM_path = os.path.join(basepath, 'AAM')
 AAM_sphere = 'AS350B3108.nc'
