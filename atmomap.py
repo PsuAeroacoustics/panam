@@ -60,8 +60,6 @@ def main():
     c = ax.contour(TT, y_atm, dBpm, colors='k', linewidths=2)
     ax.clabel(c, fontsize=14)
 
-    #ax.set_ylim(0.0, 30.0)
-
     ax.set_xlabel('Temperature, °C')
     ax.set_ylabel('Pressure, atm')
 
