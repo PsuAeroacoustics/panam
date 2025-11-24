@@ -19,7 +19,7 @@ def plot_ambient_spectra(ambient_path):
     ambient_spectra = []
     for nc_file in nc_files:
         ambient_pressure, ambient_time, ambient_location = fa.load_nc_signal(nc_file)
-        fs = 1.0 / (ambient_time[1] - ambient_time[0])
+        fs = np.round(1.0 / (ambient_time[1] - ambient_time[0]))
         freq_amb, psd_amb, _, _ = fa.psd_welch(ambient_pressure, fs, window_time=0.01)
         ambient_frequencies.append(freq_amb)
         ambient_spectra.append(psd_amb)
@@ -91,10 +91,7 @@ def plot_array(xs, ys, xf, yf, track, filter_track = None):
     plt.grid(True, ls=':')
     return fig
 
-def plot_array_coverage(filter_track, filtered_miclocs):
-    source = np.array([filter_track['x'], filter_track['y'], filter_track['z']]).transpose()
-    velocity = np.array([filter_track['vx'], filter_track['vy'], filter_track['vz']]).transpose()
-    azimuths, elevations, ranges, tobs, mach_rs = fa.hemigen(filter_track['time'], source, velocity, filtered_miclocs, speed_of_sound=1135.0)
+def plot_array_coverage(azimuths, elevations):
     fig, ax, _ = fa.lambert_ea_points(np.radians(azimuths),np.radians(elevations))
     return fig
 
@@ -143,6 +140,16 @@ def main():
     xf = [loc[0] for loc in filtered_miclocs]
     yf = [loc[1] for loc in filtered_miclocs]
 
+    # Compute spectrograms for filtered microphones
+    spectrograms = []
+    for i, (pressure, time) in enumerate(zip(filtered_pressures, filtered_times)):
+        fs = np.round(1.0 / (time[1] - time[0]))
+        pressure *= 0.5 # Adjust for pressure doubling at the ground board
+        f, t, psd_dB = fa.spectrogram(pressure, fs, window_time=0.5, window_overlap=0.5)
+        t += time[0]  # Adjust time vector to absolute time
+        logging.debug(f'Computed spectrogram for microphone {i+1}/{len(filtered_pressures)}')
+        spectrograms.append((f, t, psd_dB))
+
     # Trajectory
     track = fa.load_NASA_track(os.path.join(basepath, 'Tracking','289108AC.csv'))
     filter_track = fa.filter_track(track, xlims=(-4000,0), zlims=(50,1500))
@@ -154,9 +161,28 @@ def main():
     figs.append(plot_array(xs, ys, xf, yf, track, filter_track))
     names.append('microphone_array')
 
+    # Compute emission time geometry
+    source = np.array([filter_track['x'], filter_track['y'], filter_track['z']]).transpose()
+    velocity = np.array([filter_track['vx'], filter_track['vy'], filter_track['vz']]).transpose()
+    azimuths, elevations, ranges, tobs, mach_rs = fa.hemigen(filter_track['time'], source, velocity, filtered_miclocs, speed_of_sound=1135.0)
+
     # Coverage plot
-    figs.append(plot_array_coverage(filter_track, filtered_miclocs))
+    figs.append(plot_array_coverage(azimuths, elevations))
     names.append('array_coverage_lambert')
+
+    # Depropagate the appropriate spectrum for each time of observation
+    for im in range(len(filtered_miclocs)):
+        mtimes = tobs[:,im]
+        ff, tt, psd_dB = spectrograms[im]
+        # Linear interpolation in time (debug needed)
+        t0 = np.searchsorted(tt, mtimes, side='left')
+        t1 = np.searchsorted(tt, mtimes, side='right')
+        dt = t1 - t0
+        w0 = (t1 - mtimes)/dt
+        w1 = (mtimes - t0)/dt
+        psd_dB_interp = w0 * psd_dB[:, t0] + w1 * psd_dB[:, t1]
+        # Depropagate based on spherical spreading
+        psd_dB_deprop = psd_dB_interp + 20 * np.log10(ranges[:,im] / 100.0)  # Reference distance 100 ft
 
     # Reference hemisphere
     figs.append(plot_reference_hemisphere(AAM_path, AAM_sphere, freqs, SPL_range=[85,105]))
