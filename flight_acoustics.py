@@ -461,9 +461,13 @@ def dBAw(f):
 
     Returns: weighting (in dB) at each frequency
     """
-    aweights = (10.0 * np.log10(1.562339 * f ** 4.0 / ((f ** 2.0 + 107.65265 ** 2.0) * (f ** 2.0 + 737.86223 ** 2.0)))
-                + 10.0 * np.log10(2.242881E16 * f ** 4.0 /
-                                  ((f ** 2.0 + 20.598997 ** 2.0) ** 2.0 * (f ** 2.0 + 12194.22 ** 2.0) ** 2.0)))
+    f = np.asarray(f, dtype=float)
+    # Avoid division by zero for f=0; A-weighting is undefined at DC -- just set the correction to -inf
+    f_safe = np.where(f > 0, f, -np.inf)
+    
+    aweights = (10.0 * np.log10(1.562339 * f_safe ** 4.0 / ((f_safe ** 2.0 + 107.65265 ** 2.0) * (f_safe ** 2.0 + 737.86223 ** 2.0)))
+                + 10.0 * np.log10(2.242881E16 * f_safe ** 4.0 /
+                                  ((f_safe ** 2.0 + 20.598997 ** 2.0) ** 2.0 * (f_safe ** 2.0 + 12194.22 ** 2.0) ** 2.0)))
     return aweights
 
 
