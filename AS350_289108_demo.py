@@ -8,7 +8,7 @@ import logging
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def plot_ambient(ambient_path):
+def plot_ambient_spectra(ambient_path):
     nc_files = []
     for root, _, files in os.walk(ambient_path):
         for name in files:
@@ -131,7 +131,7 @@ def main():
     names = []
 
     # Ambient spectra
-    figs.append(plot_ambient(ambient_path))
+    figs.append(plot_ambient_spectra(ambient_path))
     names.append('ambient_noise_spectra')
 
     # Acoustic files & microphones
