@@ -12,6 +12,46 @@ import matplotlib.pyplot as plt
 from flight_acoustics import ega
 
 
+def nice_levels(vmin, vmax, max_levels=50):
+    """
+    Generate nice rounded contour levels between vmin and vmax.
+    
+    Args:
+        vmin: Minimum value
+        vmax: Maximum value
+        max_levels: Maximum number of levels to generate
+    
+    Returns:
+        numpy array of nicely rounded level values
+    """
+    range_val = vmax - vmin
+    
+    # Determine nice step sizes based on range
+    if range_val <= 0:
+        return np.array([vmin])
+    
+    # Calculate order of magnitude
+    magnitude = 10 ** np.floor(np.log10(range_val))
+    
+    # Try nice fractions of the magnitude
+    nice_steps = [0.1, 0.2, 0.25, 0.5, 1.0, 2.0, 2.5, 5.0, 10.0]
+    
+    for base_step in nice_steps:
+        step = base_step * magnitude
+        n_steps = int(np.ceil(range_val / step))
+        if n_steps <= max_levels:
+            # Round start to nearest step
+            start = np.floor(vmin / step) * step
+            end = np.ceil(vmax / step) * step
+            levels = np.arange(start, end + step/2, step)
+            # Filter to actual range
+            levels = levels[(levels >= vmin - step/10) & (levels <= vmax + step/10)]
+            return levels
+    
+    # Fallback to linear spacing if no nice step found
+    return np.linspace(vmin, vmax, max_levels)
+
+
 def parse_range(range_str):
     """Parse 'min:max' string into (min, max) tuple."""
     parts = range_str.split(':')
@@ -107,6 +147,8 @@ Examples:
                         help='Number of contour levels (default: 50)')
     parser.add_argument('--resolution', type=int, default=100,
                         help='Grid resolution per axis (default: 100)')
+    parser.add_argument('--clim', type=str, default=None,
+                        help='Colorbar range as "min:max" in dB (default: automatic)')
     
     # Output
     parser.add_argument('-o', '--output', type=str, default='demo_plots/ega_plot.pdf',
@@ -137,6 +179,15 @@ Examples:
     pt = not args.broadband
     cturb = args.turbulence
     c = args.speed_of_sound
+    
+    # Parse colorbar limits if provided
+    if args.clim:
+        try:
+            clim_min, clim_max = parse_range(args.clim)
+        except ValueError as e:
+            parser.error(f'Invalid --clim argument: {e}')
+    else:
+        clim_min, clim_max = None, None
     
     # Create meshgrid and compute EGA
     if args.plot_type == 'frequency_distance':
@@ -171,8 +222,18 @@ Examples:
     fig, ax = plt.subplots(figsize=(10, 6))
     
     if args.plot_type in ['frequency_distance', 'distance_height']:
-        # Contour plot
-        cf = ax.contourf(X, Y, Z, levels=args.levels, cmap='RdYlGn_r')
+        # Contour plot with optional colorbar limits
+        contour_kwargs = {'cmap': 'RdYlGn_r'}
+        if clim_min is not None and clim_max is not None:
+            # Generate nice rounded levels when limits are specified
+            contour_kwargs['levels'] = nice_levels(clim_min, clim_max, args.levels)
+            contour_kwargs['extend'] = 'both'  # Show arrows for out-of-range values
+        else:
+            # Generate nice levels from data range
+            data_min, data_max = np.min(Z), np.max(Z)
+            contour_kwargs['levels'] = nice_levels(data_min, data_max, args.levels)
+        
+        cf = ax.contourf(X, Y, Z, **contour_kwargs)
         cbar = fig.colorbar(cf, ax=ax)
         cbar.set_label('Excess Attenuation (dB)')
     
