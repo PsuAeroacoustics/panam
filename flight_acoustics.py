@@ -1744,84 +1744,75 @@ def ega(hs, hr, d2, f, a, flores, pt=True, cturb=0.0):
     flores = np.asarray(flores, dtype=float)
     cturb = np.asarray(cturb, dtype=float)
     
-    mu = 0.727477
-    eta = 6.325159
+    mu = 0.727477  # Spherical spreading coefficient
+    eta = 6.325159  # Ground reflection coefficient
     
     # Calculate geometric values
-    r1 = np.sqrt(d2**2 + (hs - hr)**2)
-    r2 = np.sqrt(d2**2 + (hs + hr)**2)
-    phi = np.arccos((hs + hr) / r2)  # phi in radians
-    t1 = r1 / a
-    t2 = r2 / a
-    dt = t2 - t1
-    rprime = r2 / r1
+    direct_range = np.sqrt(d2**2 + (hs - hr)**2)  # Direct acoustic path distance
+    image_range = np.sqrt(d2**2 + (hs + hr)**2)  # Image source acoustic path distance
+    grazing_angle = np.arccos((hs + hr) / image_range)  # Grazing angle (radians)
+    path_delay = (image_range - direct_range) / a  # Time delay between direct and image paths
+    range_ratio = image_range / direct_range  # Ratio of distances
     
-    # Compute ground impedance ratio
-    fflo = f / flores
-    r = 1.0 + 9.08 / (fflo**0.75)
-    x = 11.9 / (fflo**0.73)
-    zrat = 1.0 / (r + 1j * x)
+    # Compute ground impedance and reflection coefficient
+    freq_resistance_ratio = f / flores  # Normalized frequency-to-resistance ratio
+    inv_freq_ratio = freq_resistance_ratio ** (-0.73)  # Inverse frequency ratio (Delany-Bazley)
+    impedance_ratio = 1.0 / (1.0 + 9.08 * inv_freq_ratio / (freq_resistance_ratio ** 0.02) + 1j * 11.9 * inv_freq_ratio)
     
-    # Compute plane wave reflection coefficient
-    rp = (np.cos(phi) - zrat) / (np.cos(phi) + zrat)
+    cos_grazing = np.cos(grazing_angle)  # Cosine of grazing angle
+    plane_wave_coeff = (cos_grazing - impedance_ratio) / (cos_grazing + impedance_ratio)  # Plane wave reflection coefficient
     
-    # Compute numerical distance
-    k1 = 2.0 * np.pi * f / a
-    pe = np.sqrt(0.5j * k1 * r2 / (1.0 + zrat * np.cos(phi))) * (zrat + np.cos(phi))
-    w = pe ** 2
+    # Compute numerical distance (simplified: 0.5*k1 = π*f/a)
+    ground_effect_param = np.sqrt(1j * np.pi * f * image_range / a / (1.0 + impedance_ratio * cos_grazing)) * (cos_grazing + impedance_ratio)
+    w = ground_effect_param ** 2  # Numerical distance parameter
     
-    # Compute boundary loss factor
-    bloss = np.zeros_like(w, dtype=complex)
+    # Compute boundary loss factor (ground surface effect)
+    boundary_loss = np.zeros_like(w, dtype=complex)
     mask = np.abs(w) <= 500
-    w_masked = w[mask]
-    bloss[mask] = 1 + 1j * np.sqrt(np.pi * w_masked) * np.exp(-w_masked) * (
-        1 - erf(-1j * np.sqrt(w_masked))
-    )
+    sqrt_boundary = np.sqrt(w[mask])
+    boundary_loss[mask] = 1 + 1j * np.sqrt(np.pi * w[mask]) * np.exp(-w[mask]) * (1 - erf(-1j * sqrt_boundary))
     
     # Compute image source strength
-    q = rp + bloss * (1.0  - rp)
-    qmag = np.abs(q)
-    theta = np.angle(q)
+    image_source_coeff = plane_wave_coeff + boundary_loss * (1.0 - plane_wave_coeff)  # Combined reflection + boundary loss
+    image_source_magnitude = np.abs(image_source_coeff)  # Magnitude of image source term
+    image_source_phase = np.angle(image_source_coeff)  # Phase of image source term
     
     # Compute excess ground attenuation
     if pt:
         # Pure tone expression (Chessell's Equation 19)
-        arg1 = 1j * 2.0 * np.pi * f * dt
-        ampl = 1.0 + q * np.exp(arg1) / rprime
-        amplr = np.real(ampl)
-        ampli = np.imag(ampl)
-        phase = np.arctan2(ampli, amplr)
-        attn = np.abs(ampl)**2
+        phase_delay = 1j * 2.0 * np.pi * f * path_delay  # Phase delay between paths
+        resultant_amplitude = 1.0 + image_source_coeff * np.exp(phase_delay) / range_ratio  # Direct + image amplitude
+        phase = np.angle(resultant_amplitude)
+        attn = np.abs(resultant_amplitude)**2
     else:
         # Broadband mode (Chessell's Equations 20, 21)
-        drmu = mu * f * dt
-        dreta = eta * f * dt
-        qor = qmag / rprime
+        freq_path_delay = f * path_delay  # Normalized frequency-path delay product
+        normalized_image_mag = image_source_magnitude / range_ratio  # Normalized image magnitude
+        normalized_image_mag_sq = normalized_image_mag ** 2
         
         # Add turbulence factor (Chessell Equations 25, 27)
-        if np.any(cturb > 0.0):
-            tfact = 0.5 * cturb * f * np.sqrt(r1)
-            tfact = np.exp(-tfact**2)
-        else:
-            tfact = 1.0
+        turbulence_factor = np.exp(-(0.5 * cturb * f * np.sqrt(direct_range))**2) if np.any(cturb > 0.0) else 1.0
         
-        attn = 1.0 + qor**2 + 2.0 * qor * np.cos(dreta + theta) * tfact
+        # Combine attenuation computation
+        ground_phase_term = eta * freq_path_delay + image_source_phase  # Ground reflection phase
+        spherical_phase_term = mu * freq_path_delay  # Spherical spreading phase
+        cosine_factor = np.cos(ground_phase_term) * turbulence_factor
         
-        # For dt > 0, use modified formula
-        mask_dt = dt > 0.0
+        attn = 1.0 + normalized_image_mag_sq + 2.0 * normalized_image_mag * cosine_factor
+        mask_positive_delay = path_delay > 0.0
         attn = np.where(
-            mask_dt,
-            1.0 + qor**2 + 2.0 * qor * np.sin(drmu) * np.cos(dreta + theta) / drmu * tfact,
+            mask_positive_delay,
+            1.0 + normalized_image_mag_sq + 2.0 * normalized_image_mag * np.sin(spherical_phase_term) * cosine_factor / spherical_phase_term,
             attn
         )
         
         # Phase has no meaning for broadband, so set to NaN
         phase = np.full_like(attn, np.nan)
     
-    # Check for physical attenuations, then turn magnitude into dB
+    # Convert magnitude to dB
     if np.all(attn > 0.0):
-        atten = 10.0 * np.log10(attn)
+        attenuation_db = 10.0 * np.log10(attn)
     else:
-        raise ValueError('Error in EGA: negative attenuation encountered')
+        raise ValueError('Error in EGA: negative attenuation magnitude encountered')
     
-    return atten, phase
+    return attenuation_db, phase
