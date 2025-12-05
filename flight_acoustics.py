@@ -1656,8 +1656,6 @@ def filter_track(track, xlims = None, ylims = None, zlims = None):
     """
     Filter track data based on specified limits for x, y, z coordinates.
 
-def filter_track(track, xlims = None, ylims = None, zlims = None):
-    """
     Args:
         track: dict containing track data with keys 'x', 'y', 'z'.
         xlims: tuple (xmin, xmax) for filtering x coordinates.

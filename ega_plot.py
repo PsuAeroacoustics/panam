@@ -91,7 +91,7 @@ Examples:
                         help='Grid resolution per axis (default: 100)')
     
     # Output
-    parser.add_argument('-o', '--output', type=str, default='ega_plot.pdf',
+    parser.add_argument('-o', '--output', type=str, default='demo_plots/ega_plot.pdf',
                         help='Output filename (default: ega_plot.pdf)')
     
     args = parser.parse_args()
