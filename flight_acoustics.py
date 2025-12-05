@@ -1783,9 +1783,6 @@ def ega(hs, hr, d2, f, a, flores, pt=True, cturb=0.0):
     qmag = np.abs(q)
     theta = np.angle(q)
     
-    # Adjust theta for negative real part
-    theta = np.where(np.real(q) < 0.0, theta + np.pi, theta)
-    
     # Compute excess ground attenuation
     if pt:
         # Pure tone expression (Chessell's Equation 19)
