@@ -20,6 +20,22 @@ def parse_range(range_str):
     return float(parts[0]), float(parts[1])
 
 
+def parse_range_or_single(value_str):
+    """Parse 'min:max' string or a single value.
+    
+    Returns:
+        tuple: (min, max) if range format, or (value, value) if single value
+    """
+    parts = value_str.split(':')
+    if len(parts) == 2:
+        return float(parts[0]), float(parts[1])
+    elif len(parts) == 1:
+        val = float(parts[0])
+        return val, val
+    else:
+        raise ValueError(f'Invalid format: "{value_str}"')
+
+
 def get_ground_resistance(ground_type):
     """
     Return specific flow resistance for common ground types (kPa·s/m²).
