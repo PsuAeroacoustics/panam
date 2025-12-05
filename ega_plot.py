@@ -77,10 +77,12 @@ Examples:
     )
     
     # Geometry and ground
-    parser.add_argument('-g', '--ground', type=str, default='grass',
+    parser.add_argument('-g', '--ground', type=str, default=None,
                         choices=['snow', 'grass', 'soil', 'sand', 'dirt', 'rock', 
                                 'concrete', 'asphalt', 'water'],
-                        help='Ground type (default: grass)')
+                        help='Ground type (default: grass, or use --resistivity for custom value)')
+    parser.add_argument('--resistivity', type=float, default=None,
+                        help='Specific flow resistivity in kPa·s/m² (overrides --ground if provided)')
     parser.add_argument('-s', '--source-height', type=float, default=10.0,
                         help='Source height in meters (default: 10)')
     parser.add_argument('-r', '--receiver-height', type=float, default=1.5,
@@ -94,7 +96,7 @@ Examples:
     parser.add_argument('-f', '--frequency', type=str, default='100:5000',
                         help='Frequency range in Hz as "min:max" or single value (default: 100:5000)')
     parser.add_argument('-d', '--distance', type=str, default='50:500',
-                        help='2D distance range in meters as "min:max" (default: 50:500)')
+                        help='2D distance in meters as "min:max" or single value (default: 50:500)')
     
     # Mode and resolution
     parser.add_argument('-b', '--broadband', action='store_true',
@@ -123,10 +125,13 @@ Examples:
     except ValueError as e:
         parser.error(f'Invalid frequency argument: {e}')
     
-    dist_min, dist_max = parse_range(args.distance)
+    dist_min, dist_max = parse_range_or_single(args.distance)
     distances = np.linspace(dist_min, dist_max, args.resolution)
+    # If single distance value, keep it as-is
+    is_single_distance = (dist_min == dist_max)
     
-    flores = get_ground_resistance(args.ground)
+    flores = get_ground_resistance(args.ground or 'grass') if args.resistivity is None else args.resistivity
+    ground_label = (args.ground or 'grass').capitalize() if args.resistivity is None else f'Resistivity {flores:.0f}'
     hs = args.source_height
     hr = args.receiver_height
     pt = not args.broadband
@@ -139,7 +144,7 @@ Examples:
         Z, _ = ega(hs, hr, Y, X, c, flores, pt=pt, cturb=cturb)
         xlabel = 'Frequency (Hz)'
         ylabel = '2D Distance (m)'
-        title_extra = f'{args.ground.capitalize()} (hs={hs}m, hr={hr}m)'
+        title_extra = f'{ground_label} (hs={hs}m, hr={hr}m)'
     elif args.plot_type == 'distance_height':
         heights_src = np.linspace(0.5, 50.0, args.resolution)
         X, Y = np.meshgrid(distances, heights_src)
@@ -151,16 +156,16 @@ Examples:
                 Z[i, j], _ = ega(X[i, j], hr, Y[i, j], f_single, c, flores, pt=pt, cturb=cturb)
         xlabel = '2D Distance (m)'
         ylabel = 'Source Height (m)'
-        title_extra = f'{args.ground.capitalize()} @ {f_single:.0f}Hz (hr={hr}m)'
+        title_extra = f'{ground_label} @ {f_single:.0f}Hz (hr={hr}m)'
     else:  # frequency plot
         X = frequencies
         Z = np.zeros_like(X)
-        d_single = distances[0] if len(distances) > 0 else distances
+        d_single = distances[0] if not is_single_distance else dist_min
         for i in range(X.shape[0]):
             Z[i], _ = ega(hs, hr, d_single, X[i], c, flores, pt=pt, cturb=cturb)
         xlabel = 'Frequency (Hz)'
         ylabel = 'Excess Attenuation (dB)'
-        title_extra = f'{args.ground.capitalize()} (hs={hs}m, hr={hr}m, d={d_single}m)'
+        title_extra = f'{ground_label} (hs={hs}m, hr={hr}m, d={d_single}m)'
 
     # Plot
     fig, ax = plt.subplots(figsize=(10, 6))
