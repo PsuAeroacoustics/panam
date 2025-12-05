@@ -10,6 +10,7 @@ import h5py
 from typing import cast
 import openpyxl
 import scipy.signal
+from scipy.special import erfc
 import simplekml
 # Colormap helper will import palettable lazily
 import matplotlib
@@ -1655,6 +1656,8 @@ def filter_track(track, xlims = None, ylims = None, zlims = None):
     """
     Filter track data based on specified limits for x, y, z coordinates.
 
+def filter_track(track, xlims = None, ylims = None, zlims = None):
+    """
     Args:
         track: dict containing track data with keys 'x', 'y', 'z'.
         xlims: tuple (xmin, xmax) for filtering x coordinates.
@@ -1683,3 +1686,157 @@ def filter_track(track, xlims = None, ylims = None, zlims = None):
         filtered_track[key] = track[key][mask]
 
     return filtered_track   
+
+
+def erfz(z):
+    """
+    Complex error function wrapper using erfc for complex arguments.
+    
+    For complex z, erf(z) = 1 - erfc(z), but scipy.special.erfc handles complex.
+    """
+    return 1.0 - erfc(z)
+
+
+def ega(hs, hr, d2, f, a, flores, pt=True, cturb=0.0):
+    """
+    Calculate excess ground attenuation for a non-directional point source.
+    
+    Based on procedures in:
+    - Chien and Soroka, "Sound Propagation Along an Impedance Plane",
+      J. Sound. Vib., 43(1), 9-20, 1975 (corrected 1980)
+    - Delany, Bazley, "Acoustical Properties of Fibrous Absorbent Materials",
+      Appl. Acoust., 3, 105-116, 1970.
+    - Chessell, "Propagation of noise along an impedance boundary",
+      JASA 62(4), 825-834, 1977
+    - Daigle, G.A., T.F.W. Embelton, and J.E. Piercy. 1979. "Some Comments on 
+      the Literature of Propagation Near Boundaries of Finite Acoustical 
+      Impedance," J. Acoust. Soc. Am. 66(3), 918-919.
+    - Stusnick, Plotkin, Sutherland, "Short-Range Acoustic Propagation Model",
+      Wyle Research Report WR 85-19, July 1985.
+    
+    Assumes level terrain, no wind, straight acoustic rays.
+    
+    Args:
+        hs: Source height (ft or m, must match other length units)
+        hr: Receiver height (ft or m)
+        d2: 2D distance between source and receiver (ft or m)
+        f: Frequency (Hz), scalar or array
+        a: Speed of sound (ft/s or m/s, matching length units)
+        flores: Specific flow resistance (kPa·s/m²)
+            Typical values (from AAM technical reference):
+                - Snow cover: 30
+                - Grassy field: 225
+                - Roadside soil: 650
+                - Packed sand: 1650
+                - Hard packed dirt: 3000
+                - Exposed rock: 6000
+                - Concrete: 10000
+                - Asphalt: 50000
+                - Water: 1e6 (effectively rigid)
+        pt: True for pure tone (no third octave smearing), False for broadband (default: True)
+        cturb: Turbulence parameter (rad·s·(m or ft)^-0.5)
+               Typical: 0 to 16e-4 (rad·s·√m) or 0 to 52.5e-4 (rad·s·√ft)
+    
+    Returns:
+        atten: Attenuation in dB
+        phase: Phase (radians) of resultant wave relative to direct path
+               (Pure tones only; NaN for broadband case)
+    
+    Notes:
+        - Output "attenuation" is an attenuation factor in dB
+        - Add to the SPL of the direct wave to compute SPL at receiver
+        - Phase offset is meaningful only for pure tones
+    """
+    # Ensure float arrays
+    hs = np.asarray(hs, dtype=float)
+    hr = np.asarray(hr, dtype=float)
+    d2 = np.asarray(d2, dtype=float)
+    f = np.asarray(f, dtype=float)
+    a = np.asarray(a, dtype=float)
+    flores = np.asarray(flores, dtype=float)
+    cturb = np.asarray(cturb, dtype=float)
+    
+    mu = 0.727477
+    eta = 6.325159
+    
+    # Calculate geometric values
+    r1 = np.sqrt(d2**2 + (hs - hr)**2)
+    r2 = np.sqrt(d2**2 + (hs + hr)**2)
+    phi = np.arccos((hs + hr) / r2)  # phi in radians
+    t1 = r1 / a
+    t2 = r2 / a
+    dt = t2 - t1
+    rprime = r2 / r1
+    
+    # Compute ground impedance ratio
+    fflo = f / flores
+    r = 1.0 + 9.08 / (fflo**0.75)
+    x = 11.9 / (fflo**0.73)
+    zrat = 1.0 / (r + 1j * x)
+    
+    # Compute plane wave reflection coefficient
+    rp = (np.cos(phi) - zrat) / (np.cos(phi) + zrat)
+    
+    # Compute numerical distance
+    k1 = 2.0 * np.pi * f / a
+    pe = np.sqrt(0.5j * k1 * r2 / (1.0 + zrat * np.cos(phi))) * (zrat + np.cos(phi))
+    w = pe ** 2
+    
+    # Compute boundary loss factor
+    bloss = np.zeros_like(w, dtype=complex)
+    mask = np.abs(w) <= 500
+    w_masked = w[mask]
+    bloss[mask] = 1 + 1j * np.sqrt(np.pi * w_masked) * np.exp(-w_masked) * (
+        1 - erfz(-1j * np.sqrt(w_masked))
+    )
+    
+    # Compute image source strength
+    q = rp + bloss * (1.0  - rp)
+    qmag = np.abs(q)
+    theta = np.angle(q)
+    
+    # Adjust theta for negative real part
+    theta = np.where(np.real(q) < 0.0, theta + np.pi, theta)
+    
+    # Compute excess ground attenuation
+    if pt:
+        # Pure tone expression (Chessell's Equation 19)
+        arg1 = 1j * 2.0 * np.pi * f * dt
+        ampl = 1.0 + q * np.exp(arg1) / rprime
+        amplr = np.real(ampl)
+        ampli = np.imag(ampl)
+        phase = np.arctan2(ampli, amplr)
+        attn = np.abs(ampl)**2
+    else:
+        # Broadband mode (Chessell's Equations 20, 21)
+        drmu = mu * f * dt
+        dreta = eta * f * dt
+        qor = qmag / rprime
+        
+        # Add turbulence factor (Chessell Equations 25, 27)
+        if np.any(cturb > 0.0):
+            tfact = 0.5 * cturb * f * np.sqrt(r1)
+            tfact = np.exp(-tfact**2)
+        else:
+            tfact = 1.0
+        
+        attn = 1.0 + qor**2 + 2.0 * qor * np.cos(dreta + theta) * tfact
+        
+        # For dt > 0, use modified formula
+        mask_dt = dt > 0.0
+        attn = np.where(
+            mask_dt,
+            1.0 + qor**2 + 2.0 * qor * np.sin(drmu) * np.cos(dreta + theta) / drmu * tfact,
+            attn
+        )
+        
+        # Phase has no meaning for broadband, so set to NaN
+        phase = np.full_like(attn, np.nan)
+    
+    # Check for physical attenuations, then turn magnitude into dB
+    if np.all(attn > 0.0):
+        atten = 10.0 * np.log10(attn)
+    else:
+        raise ValueError('Error in EGA: negative attenuation encountered')
+    
+    return atten, phase
