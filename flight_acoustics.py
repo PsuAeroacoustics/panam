@@ -10,7 +10,7 @@ import h5py
 from typing import cast
 import openpyxl
 import scipy.signal
-from scipy.special import erfc
+from scipy.special import erf
 import simplekml
 # Colormap helper will import palettable lazily
 import matplotlib
@@ -1685,16 +1685,6 @@ def filter_track(track, xlims = None, ylims = None, zlims = None):
 
     return filtered_track   
 
-
-def erfz(z):
-    """
-    Complex error function wrapper using erfc for complex arguments.
-    
-    For complex z, erf(z) = 1 - erfc(z), but scipy.special.erfc handles complex.
-    """
-    return 1.0 - erfc(z)
-
-
 def ega(hs, hr, d2, f, a, flores, pt=True, cturb=0.0):
     """
     Calculate excess ground attenuation for a non-directional point source.
@@ -1785,7 +1775,7 @@ def ega(hs, hr, d2, f, a, flores, pt=True, cturb=0.0):
     mask = np.abs(w) <= 500
     w_masked = w[mask]
     bloss[mask] = 1 + 1j * np.sqrt(np.pi * w_masked) * np.exp(-w_masked) * (
-        1 - erfz(-1j * np.sqrt(w_masked))
+        1 - erf(-1j * np.sqrt(w_masked))
     )
     
     # Compute image source strength
