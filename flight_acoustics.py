@@ -1089,27 +1089,27 @@ def plot_projection(filename, altitude=500, cutoff=30, infreqs=None, units='m'):
     cb.set_label('Sound Pressure Level, dBA')
     return fig, ax, cs
 
-
-def nc_lambert_ea(filename, input_frequencies=None, weight=None, SPL_range=None):
+def plot_lambert_ea(azi,elv,SPL,SPL_range=None,weight=None):
     """
-    Generate a Lambert equal-area azimuthal projection contour plot of sound pressure levels 
-    on a netCDF formatted acoustic sphere.
+    Generate a Lambert equal-area azimuthal projection contour plot of sound pressure levels.
 
     This function creates a polar plot of acoustic data using Lambert equal-area projection,
     displaying sound pressure levels (SPL) as contours with azimuth and elevation coordinates.
 
     Parameters
     ----------
-    filename : str
-        Path to the file containing acoustic data to be extracted and plotted.
-    input_frequencies : array-like, optional
-        Specific frequencies to extract from the data. If None, all frequencies are used.
-    weight : str, optional
-        Weighting scheme for SPL calculation. Use 'A' for A-weighted SPL, otherwise
-        overall SPL is used. Default is None.
+    azi : array-like
+        Array of azimuth angles in radians.
+    elv : array-like
+        Array of elevation angles in radians.
+    SPL : array-like
+        Array of sound pressure levels corresponding to the azimuth and elevation angles.
     SPL_range : tuple of float, optional
         Tuple specifying (min_SPL, max_SPL) for the contour levels. If None, the range
         is automatically determined from the data. Default is None.
+    weight : str, optional
+        Units used for SPL label. Use 'A' for A-weighted SPL, otherwise
+        overall SPL is used. Default is None.
 
     Returns
     -------
@@ -1121,11 +1121,6 @@ def nc_lambert_ea(filename, input_frequencies=None, weight=None, SPL_range=None)
         The contour set object from the contourf plot.
 
     """
-    azi, elv, phi, theta, radius, SPLO, SPLA, EAA, speed, flight_path_angle = extract_SPL(filename, input_frequencies)
-    if weight == 'A':
-        SPL = SPLA
-    else:
-        SPL = SPLO
     SPL[np.isinf(SPL)] = np.nan
     if SPL_range is None:
         minSPL = np.nanmin(SPL)
@@ -1189,6 +1184,44 @@ def nc_lambert_ea(filename, input_frequencies=None, weight=None, SPL_range=None)
         cb.set_label('Sound Pressure Level, dB')
     return fig, ax, cs
 
+def nc_lambert_ea(filename, input_frequencies=None, weight=None, SPL_range=None):
+    """
+    Generate a Lambert equal-area azimuthal projection contour plot of sound pressure levels 
+    on a netCDF formatted acoustic sphere.
+
+    This function creates a polar plot of acoustic data using Lambert equal-area projection,
+    displaying sound pressure levels (SPL) as contours with azimuth and elevation coordinates.
+
+    Parameters
+    ----------
+    filename : str
+        Path to the file containing acoustic data to be extracted and plotted.
+    input_frequencies : array-like, optional
+        Specific frequencies to extract from the data. If None, all frequencies are used.
+    weight : str, optional
+        Weighting scheme for SPL calculation. Use 'A' for A-weighted SPL, otherwise
+        overall SPL is used. Default is None.
+    SPL_range : tuple of float, optional
+        Tuple specifying (min_SPL, max_SPL) for the contour levels. If None, the range
+        is automatically determined from the data. Default is None.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        The generated figure object.
+    ax : matplotlib.axes.Axes
+        The axes object containing the plot.
+    cs : matplotlib.contour.QuadContourSet
+        The contour set object from the contourf plot.
+
+    """
+    azi, elv, phi, theta, radius, SPLO, SPLA, EAA, speed, flight_path_angle = extract_SPL(filename, input_frequencies)
+    if weight == 'A':
+        SPL = SPLA
+    else:
+        SPL = SPLO
+    fig, ax, cs = plot_lambert_ea(azi, elv, SPL, SPL_range)
+    return fig, ax, cs
 
 def lambert_ea_points(azimuth, elevation):
     """
@@ -1652,7 +1685,7 @@ def load_NASA_track(trackfile):
         'vz': vz,
     }
 
-def filter_track(track, xlims = None, ylims = None, zlims = None):
+def filter_track(track, xlims = None, ylims = None, zlims = None, decimate=1):
     """
     Filter track data based on specified limits for x, y, z coordinates.
 
@@ -1661,6 +1694,7 @@ def filter_track(track, xlims = None, ylims = None, zlims = None):
         xlims: tuple (xmin, xmax) for filtering x coordinates.
         ylims: tuple (ymin, ymax) for filtering y coordinates.
         zlims: tuple (zmin, zmax) for filtering z coordinates.
+        decimate: integer factor to decimate the track data (default: 1, no decimation).
     Returns:
         dict containing filtered track data with the same keys as input.
     """    
@@ -1682,7 +1716,10 @@ def filter_track(track, xlims = None, ylims = None, zlims = None):
     filtered_track = {}
     for key in track:
         filtered_track[key] = track[key][mask]
-
+    # Decimate track data
+    if decimate > 1:
+        for key in filtered_track:
+            filtered_track[key] = filtered_track[key][::decimate]
     return filtered_track   
 
 def ega(hs, hr, d2, f, a, flores, pt=True, cturb=0.0):
