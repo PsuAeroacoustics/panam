@@ -2,6 +2,7 @@ import os
 import argparse
 import flight_acoustics as fa
 import matplotlib.pyplot as plt
+from scipy.interpolate import interp1d
 import numpy as np
 import logging
 
@@ -119,6 +120,7 @@ def main():
     AAM_path = os.path.join(basepath, 'AAM')
     AAM_sphere = 'AS350B3108.nc'
     freqs = [30,10000]
+    r_ref = 100.0  # Reference distance for depropagation in feet
 
     if not os.path.isdir(basepath):
         logging.error(f'Base path {basepath} does not exist.')
@@ -152,7 +154,7 @@ def main():
 
     # Trajectory
     track = fa.load_NASA_track(os.path.join(basepath, 'Tracking','289108AC.csv'))
-    filter_track = fa.filter_track(track, xlims=(-4000,0), zlims=(50,1500))
+    filter_track = fa.filter_track(track, xlims=(-4000,0), zlims=(50,1500),decimate=10)
     traj_figs = plot_trajectory(track, filter_track)
     figs.extend(traj_figs)
     names.extend(['trajectory_xz', 'trajectory_xy'])
@@ -174,15 +176,15 @@ def main():
     for im in range(len(filtered_miclocs)):
         mtimes = tobs[:,im]
         ff, tt, psd_dB = spectrograms[im]
-        # Linear interpolation in time (debug needed)
-        t0 = np.searchsorted(tt, mtimes, side='left')
-        t1 = np.searchsorted(tt, mtimes, side='right')
-        dt = t1 - t0
-        w0 = (t1 - mtimes)/dt
-        w1 = (mtimes - t0)/dt
-        psd_dB_interp = w0 * psd_dB[:, t0] + w1 * psd_dB[:, t1]
+        psd_dB_interpolator = interp1d(tt,psd_dB, kind='linear', bounds_error=True)
+        psd_dB_interp = psd_dB_interpolator(mtimes)
         # Depropagate based on spherical spreading
-        psd_dB_deprop = psd_dB_interp + 20 * np.log10(ranges[:,im] / 100.0)  # Reference distance 100 ft
+        psd_dB_deprop = psd_dB_interp + 20 * np.log10(ranges[:,im] / r_ref) 
+        spectrograms[im] = (ff, mtimes, psd_dB_deprop)
+        logging.debug(f'Depropagated spectrogram for microphone {im+1}/{len(filtered_miclocs)}')
+    logging.info('Completed depropagation of spectrograms.')
+
+    
 
     # Reference hemisphere
     figs.append(plot_reference_hemisphere(AAM_path, AAM_sphere, freqs, SPL_range=[85,105]))
