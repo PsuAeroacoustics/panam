@@ -7,5 +7,6 @@ simplekml
 palettable
 matplotlib
 netCDF4
+pyuff
 pymap3d
 pytest

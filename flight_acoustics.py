@@ -17,6 +17,7 @@ import matplotlib
 from matplotlib import cm, tri
 from matplotlib.pyplot import plot, subplots, colorbar, style, contourf, show
 from netCDF4 import Dataset
+from pyuff import UFF
 from pymap3d import geodetic2enu, enu2geodetic
 
 import unit_conversion
@@ -519,6 +520,44 @@ def load_h5_signal(filename, datasetname='Table1', signalname=None):
             return cast(h5py.Dataset, ds)  # type: ignore[return-value]
         else:
             raise ValueError(f"Dataset {datasetname} is not a Group")
+
+def load_UFF_signal(filename, sets = None):
+    """
+    Load UFF acoustic signal file
+    Args:
+        filename: path to UFF file
+        sets: optional list of set numbers to load, default None (loads all sets)
+    Returns: tuple (pressures, fs, channel_names, time)
+    WHERE
+    pressures is a channels x timepoints matrix of acoustic pressures
+    fs is the sampling rate, Hz
+    channel_names is a list of channel names
+    time is an array of sampled times
+    """
+
+    file = UFF(filename)
+
+    if sets is None:
+        data = file.read_sets()
+    else:
+        data = file.read_sets(sets)
+    
+    channels = len(data)
+    datasize = len(data[0]['x'])
+    time = data[0]['x']
+    fs = 1./(time[1]-time[0])
+    pressures = np.zeros((channels, datasize))
+    channel_names = []
+    for i in range(channels):
+        if len(data[i]['x']) != datasize:
+            raise ValueError('Inconsistent recording lengths in UFF file.')
+        pressures[i, :] = data[i]['data']
+        channel_names.append(data[i]['id1'])
+    return pressures, fs, channel_names, time
+        
+    
+
+    
 
 
 def highpass(x, fpass, fs, zero_phase=True):
