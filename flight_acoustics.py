@@ -521,6 +521,7 @@ def load_h5_signal(filename, datasetname='Table1', signalname=None):
         else:
             raise ValueError(f"Dataset {datasetname} is not a Group")
 
+
 def load_UFF_signal(filename, sets = None):
     """
     Load UFF acoustic signal file
@@ -554,10 +555,6 @@ def load_UFF_signal(filename, sets = None):
         pressures[i, :] = data[i]['data']
         channel_names.append(data[i]['id1'])
     return pressures, fs, channel_names, time
-        
-    
-
-    
 
 
 def highpass(x, fpass, fs, zero_phase=True):
