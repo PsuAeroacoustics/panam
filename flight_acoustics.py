@@ -172,7 +172,7 @@ def spectrogram(signal, sampling_rate, window_time=0.5, window_type="hann", wind
 
 
 def plot_spectrogram(signal, sampling_rate, window_time=1.0, window_type="hann", window_overlap=7.0 / 8.0,
-                     detrend='constant', dbref=20e-6, save_name=None, time0=0, clim=None, flim=None):
+                     detrend='constant', dbref=20e-6, save_name=None, title=None, time0=0, clim=None, flim=None):
     """
     Plot a spectrogram of signal
     Args:
@@ -184,6 +184,7 @@ def plot_spectrogram(signal, sampling_rate, window_time=1.0, window_type="hann",
         detrend: optional detrending mode for signal, see scipy.signal.detrend
         dbref: optional reference value for calculating decibels, default 20e-6
         save_name: optional path to image file to save figure, default None
+        title: optional title for the plot, default None
         time0: optional start time for signal, default 0
         clim: optional level scale color limits, default None
         flim: optional frequency scale limits, default None
@@ -212,6 +213,8 @@ def plot_spectrogram(signal, sampling_rate, window_time=1.0, window_type="hann",
     ax.set_ylabel('Frequency, Hz')
     ax.set_xlabel('Time, s')
     cb.set_label('Power Spectral Density, dB')
+    if title is not None:
+        ax.set_title(title)
     if save_name is not None:
         fig.savefig(os.path.abspath(os.path.expanduser(save_name)))
     return fig, ax, cs
