@@ -345,7 +345,7 @@ def plot_results(separated, mic_plot=1):
 
 if __name__ == "__main__":
     # Path to the data file
-    mat_file = 'ssp_hexacopterExample/F100_20_P#1[FA1FZC-3.h5].mat'
+    mat_file = 'example_data/F100_20_P#1[FA1FZC-3.h5].mat'
     
     # Check if file exists
     if not os.path.exists(mat_file):
