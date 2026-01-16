@@ -11,7 +11,8 @@ vold_kalman_filter(x, freq, fs, bandwidth, p, r=None)
 """
 
 import numpy as np
-from scipy.sparse import spdiags, eye as speye, block_diag, csr_matrix
+from scipy.sparse import spdiags, eye as speye, block_diag, csr_matrix, lil_matrix
+from scipy.sparse.linalg import spsolve
 from scipy.special import comb
 
 
@@ -176,8 +177,7 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None):
         # Multi-order: extract diagonals and replicate
         diag_offsets = list(range(-p_p, p_p + 1))
         
-        # Extract diagonals from A_combined using numpy diagonal extraction
-        # This matches MATLAB's spdiags(A, offsets) behavior
+        # Extract diagonals from A_combined more efficiently
         diagonals_list = []
         for offset in diag_offsets:
             diag = np.diagonal(A_combined, offset=offset)
@@ -193,20 +193,23 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None):
         # Build square AA matrix using scipy spdiags with the extracted diagonals
         AA_sparse = spdiags(diagonal_rep.T, diag_offsets, n_tot, n_tot, format='csr')
 
-        # Enforce MATLAB-like boundary rows after diagonal construction
-        # First row: [1, -1, 0, ...] and Last row: [0, ..., -1, 1]
+        # Enforce boundary rows using lil_matrix (more efficient than dense conversion)
         if boundary_coeff.size > 0:
-            AA_dense = AA_sparse.toarray()
+            AA_sparse = AA_sparse.tolil()  # Convert to lil for efficient row modification
             for ord_idx in range(n_ord):
                 row_base = ord_idx * n_x
                 # Enforce first boundary row: [1, -1, 0, ...]
-                AA_dense[row_base, :] = 0.0
-                AA_dense[row_base, row_base:row_base + boundary_coeff.size] = boundary_coeff
+                AA_sparse[row_base, :] = 0.0
+                for k, val in enumerate(boundary_coeff):
+                    if row_base + k < n_tot:
+                        AA_sparse[row_base, row_base + k] = val
                 # Enforce last boundary row: [0, ..., -1, 1]
                 last_row = row_base + n_x - 1
-                AA_dense[last_row, :] = 0.0
-                AA_dense[last_row, last_row - boundary_coeff.size + 1:last_row + 1] = boundary_coeff[::-1]
-            AA_sparse = csr_matrix(AA_dense)
+                AA_sparse[last_row, :] = 0.0
+                for k, val in enumerate(boundary_coeff[::-1]):
+                    if last_row - (len(boundary_coeff) - 1 - k) >= 0:
+                        AA_sparse[last_row, last_row - (len(boundary_coeff) - 1 - k)] = val
+            AA_sparse = AA_sparse.tocsr()  # Convert back to csr for efficient arithmetic
     
     # DEBUG: Verify AA boundaries
     if False:  # Set to True for debugging
@@ -251,7 +254,8 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None):
     # Build off-diagonal coupling matrix B_U (MATLAB lines 249-261)
     # This captures cross-order interactions via phasor products
     if n_ord > 1:
-        # Initialize lists for sparse matrix construction
+        from scipy.sparse import coo_matrix
+        # Build B_U more efficiently using COO format
         row_indices = []
         col_indices = []
         values = []
@@ -266,14 +270,15 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None):
                 col_indices.extend(cols)
                 values.extend(vals)
         
-        from scipy.sparse import coo_matrix
         B_U = coo_matrix((values, (row_indices, col_indices)), shape=(n_tot, n_tot), dtype=complex)
+        B_U = B_U.tocsr()  # Convert to CSR for efficient matrix operations
         
         # Form full B matrix: B = B0 + B_U + B_U' (MATLAB line 264)
-        B_mat = B0.toarray().astype(complex) + B_U.toarray() + B_U.toarray().conj().T
+        # Keep in sparse format for more efficient solve
+        B_mat = B0.astype(complex) + B_U + B_U.conj().T
     else:
         # Single order: no cross-coupling needed
-        B_mat = B0.toarray().astype(complex)
+        B_mat = B0.astype(complex)
     x_rv = np.tile(x, n_ord)
 
     # Calculate Right-hand side of the linear differential equations
@@ -285,16 +290,17 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None):
         print(f"B_mat is symmetric: {np.allclose(B_mat, B_mat.conj().T)}")
         print(f"cH_x[0:5] = {cH_x[0:5]}")
 
-    # Solve the linear equations
-    # Try using sparse solver to match MATLAB's backslash operator
-    from scipy.sparse.linalg import spsolve
+    # Solve the linear equations using sparse solver
+    # spsolve handles both sparse and dense inputs efficiently
     try:
-        # Convert B_mat back to sparse for sparse solve
-        B_sparse_solve = csr_matrix(B_mat)
-        y_R = spsolve(B_sparse_solve, cH_x)
-    except:
-        # Fallback to dense solve
-        y_R = np.linalg.solve(B_mat, cH_x)
+        y_R = spsolve(B_mat, cH_x)
+    except Exception:
+        # Fallback to dense solve if sparse solver fails
+        if hasattr(B_mat, 'toarray'):
+            B_mat_dense = B_mat.toarray()
+        else:
+            B_mat_dense = B_mat
+        y_R = np.linalg.solve(B_mat_dense, cH_x)
     
     # DEBUG: Check residual
     if False:  # Enable for debugging
@@ -302,8 +308,13 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None):
         print(f"Residual norm: {np.linalg.norm(residual):.6e}")
         print(f"Relative residual: {np.linalg.norm(residual) / np.linalg.norm(cH_x):.6e}")
 
-    # Get cost matrix
-    cost_mat = cH_x - B_mat @ y_R
+    # Get cost matrix (residual) - keep sparse if B_mat is sparse
+    if hasattr(B_mat, 'dot'):
+        # B_mat is sparse, use sparse multiplication
+        cost_mat = cH_x - B_mat.dot(y_R)
+    else:
+        # B_mat is dense
+        cost_mat = cH_x - B_mat @ y_R
 
 
     # Reorder the complex envelope from a column vector to a
