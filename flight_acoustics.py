@@ -140,6 +140,38 @@ def nextpow2(x):
     """
     return np.ceil(np.log2(np.abs(x)))
 
+def third_octave_band_levels(signal, sampling_rate, cal=0.0, fmin=20.0, fmax=20000.0):
+    """
+    Compute third-octave band levels of a signal
+    Args:
+        signal: Array-like acoustic signal
+        sampling_rate: Sampling rate of signal, Hz
+        cal: Optional calibration factor to apply to signal (dB)
+        fmin: minimum frequency for third-octave bands, Hz
+        fmax: maximum frequency for third-octave bands, Hz
+
+    Returns: tuple (band_centers, band_levels)
+           WHERE
+           band_centers is an array of third-octave band center frequencies
+           band_levels is an array of third-octave band levels in dB
+    """
+    # Define third-octave band center frequencies
+    k = np.arange(-50, 50)
+    band_centers = 1000.0 * (2.0 ** (k / 3.0))
+    band_centers = band_centers[np.logical_and(band_centers >= fmin, band_centers <= fmax)]
+    # Compute PSD
+    frequency, psd_db, _ = psd(signal, sampling_rate, cal)
+    psd_linear = 10.0 ** (psd_db / 10.0)
+    df = frequency[1] - frequency[0]
+    band_levels = np.zeros_like(band_centers)
+    for i, fc in enumerate(band_centers):
+        f_lower = fc / (2.0 ** (1.0 / 6.0))
+        f_upper = fc * (2.0 ** (1.0 / 6.0))
+        band_indices = np.where(np.logical_and(frequency >= f_lower, frequency < f_upper))
+        band_power = np.sum(psd_linear[band_indices] * df)
+        pref = 2.0e-5
+        band_levels[i] = 10.0 * np.log10(band_power / (pref ** 2))
+    return band_centers, band_levels
 
 def spectrogram(signal, sampling_rate, window_time=0.5, window_type="hann", window_overlap=7.0 / 8.0,
                 detrend='constant', dbref=20e-6):
