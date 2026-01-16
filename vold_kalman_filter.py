@@ -157,11 +157,12 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None):
         A_diags[i, :] = diff_main[i]
 
     A_sparse = spdiags(A_diags, diag_offsets, n_x, n_x, format='csr')
-    A_dense = A_sparse.toarray()
 
     # Do NOT override first row here - let it stay as the natural second-difference row
 
     # Combine A0 (start), A (middle), and A0_end (end boundary)
+    # Convert A_sparse only when needed for vstack
+    A_dense = A_sparse.toarray()
     A_combined = np.vstack([A0_dense, A_dense, A0_end])
     
     # Build AA matrix for single or multi-order case
@@ -198,17 +199,13 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None):
             AA_sparse = AA_sparse.tolil()  # Convert to lil for efficient row modification
             for ord_idx in range(n_ord):
                 row_base = ord_idx * n_x
-                # Enforce first boundary row: [1, -1, 0, ...]
+                # Enforce first boundary row: [1, -1, 0, ...] using slice assignment
                 AA_sparse[row_base, :] = 0.0
-                for k, val in enumerate(boundary_coeff):
-                    if row_base + k < n_tot:
-                        AA_sparse[row_base, row_base + k] = val
-                # Enforce last boundary row: [0, ..., -1, 1]
+                AA_sparse[row_base, row_base:row_base + len(boundary_coeff)] = boundary_coeff
+                # Enforce last boundary row: [0, ..., -1, 1] using slice assignment
                 last_row = row_base + n_x - 1
                 AA_sparse[last_row, :] = 0.0
-                for k, val in enumerate(boundary_coeff[::-1]):
-                    if last_row - (len(boundary_coeff) - 1 - k) >= 0:
-                        AA_sparse[last_row, last_row - (len(boundary_coeff) - 1 - k)] = val
+                AA_sparse[last_row, last_row - len(boundary_coeff) + 1:last_row + 1] = boundary_coeff[::-1]
             AA_sparse = AA_sparse.tocsr()  # Convert back to csr for efficient arithmetic
     
     # DEBUG: Verify AA boundaries
@@ -255,20 +252,27 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None):
     # This captures cross-order interactions via phasor products
     if n_ord > 1:
         from scipy.sparse import coo_matrix
-        # Build B_U more efficiently using COO format
-        row_indices = []
-        col_indices = []
-        values = []
+        # Build B_U more efficiently using COO format with pre-allocated arrays
+        # Calculate total non-zeros: n_x * (n_ord choose 2)
+        n_pairs = n_ord * (n_ord - 1) // 2
+        total_nnz = n_x * n_pairs
         
+        row_indices = np.empty(total_nnz, dtype=int)
+        col_indices = np.empty(total_nnz, dtype=int)
+        values = np.empty(total_nnz, dtype=complex)
+        
+        idx = 0
         for i in range(n_ord):
             for j in range(i + 1, n_ord):
                 rows = np.arange(i * n_x, (i + 1) * n_x)
                 cols = np.arange(j * n_x, (j + 1) * n_x)
                 vals = np.conj(phasor[:, i]) * phasor[:, j]
                 
-                row_indices.extend(rows)
-                col_indices.extend(cols)
-                values.extend(vals)
+                # Direct array assignment (O(1) vs O(n) for extend)
+                row_indices[idx:idx + n_x] = rows
+                col_indices[idx:idx + n_x] = cols
+                values[idx:idx + n_x] = vals
+                idx += n_x
         
         B_U = coo_matrix((values, (row_indices, col_indices)), shape=(n_tot, n_tot), dtype=complex)
         B_U = B_U.tocsr()  # Convert to CSR for efficient matrix operations
@@ -381,10 +385,11 @@ def _compute_weighting_factor(bw_rad, p_p):
     # Solve Vandermonde system: coecos \ coe
     coeff = np.linalg.solve(coecos, coe) * sign
     
-    # Compute denominator as sum of coeff[i] * cos(bw_rad * i)
-    denominator = np.zeros_like(bw_rad)
-    for i in range(len(coeff)):
-        denominator += coeff[i] * np.cos(bw_rad * i)
+    # Compute denominator as sum of coeff[i] * cos(bw_rad * i) using vectorized operations
+    # Build cosine terms: cos(bw_rad * 0), cos(bw_rad * 1), ..., cos(bw_rad * (p_p))
+    cos_indices = np.arange(len(coeff))
+    cos_terms = np.cos(bw_rad[:, np.newaxis] * cos_indices[np.newaxis, :])
+    denominator = cos_terms @ coeff
     
     # Numerator is sqrt(2) - 1
     numerator = np.sqrt(2.0) - 1.0
