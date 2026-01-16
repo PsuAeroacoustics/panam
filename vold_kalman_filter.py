@@ -30,6 +30,8 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None):
     freq : ndarray
         Frequency vector with frequencies/orders of interest, Hz.
         Must have same length as x, shape (n_samples,) or (n_samples, n_orders)
+        For order tracking: freq = order × shaft_speed(t)
+        Can track multiple orders simultaneously with shape (n_samples, n_orders)
     fs : float
         Sampling frequency of the acoustic signal and frequency vector, Hz
     bandwidth : float or ndarray
@@ -39,8 +41,12 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None):
         - vector with same length as x: time-varying bandwidth
         - vector with length equal to number of orders: order-wise bandwidth
         - array same shape as freq: time and order-varying bandwidth
-    p : int or array-like
-        Filter order(s). If array, can contain multiple orders (e.g., [1, 2])
+    p : int
+        Structural filter order (order of difference operator for regularization).
+        NOT the harmonic order to track (those are specified by freq).
+        p=1: first-order differences (velocity constraint) - recommended for time-varying freq
+        p=2: second-order differences (acceleration constraint) - can cause envelope decay
+        p=3: third-order differences (jerk constraint) - typically too strong
     r : float or ndarray, optional
         Weighting factor for the filter. If not provided, computed from bandwidth.
         Default is None (compute from bandwidth).
@@ -64,12 +70,36 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None):
 
     If weighting factor is not specified, bandwidth is used to compute a desired
     weighting factor for the signal.
+    
+    **Bandwidth Selection for Different Scenarios:**
+    
+    1. **Constant frequency signals**: Use fixed bandwidth
+       - bandwidth = 20  # Hz (absolute value)
+       - p = 1           # Filter order
+       - Works well because relative bandwidth is constant
+       
+    2. **Time-varying frequency signals (frequency sweeps)**: Use FREQUENCY-ADAPTIVE bandwidth
+       - bandwidth = 0.10 * freq  # 10% of instantaneous frequency
+       - p = 1                     # Keep filter order at 1 (higher orders degrade envelope)
+       - This maintains constant relative bandwidth throughout the sweep
+    
+    The key insight: **relative bandwidth** (bandwidth / frequency) must remain constant.
+    For time-varying frequencies, use adaptive bandwidth to ensure this constancy.
+    Higher filter orders can degrade envelope preservation with adaptive bandwidth,
+    so keep p=1 for frequency-adaptive cases.
 
     Examples
     --------
+    >>> # Constant frequency - use fixed bandwidth
     >>> x = np.sin(2*np.pi*100*np.arange(1000)/1000)
     >>> freq = 100 * np.ones(1000)
-    >>> y, phasor = vold_kalman_filter(x, freq, 1000, 10, 1)
+    >>> y, phasor = vold_kalman_filter(x, freq, 1000, 20, 1)  # BW=20 Hz
+    
+    >>> # Time-varying frequency - use adaptive bandwidth  
+    >>> freq_chirp = 50 + 100*np.arange(1000)/1000  # 50-150 Hz sweep
+    >>> phase = 2 * np.pi * np.cumsum(freq_chirp) / 1000
+    >>> x_chirp = np.sin(phase)
+    >>> y, phasor = vold_kalman_filter(x_chirp, freq_chirp, 1000, 0.10*freq_chirp, 1)
     """
 
     # Input validation
@@ -412,102 +442,252 @@ def _compute_weighting_factor(bw_rad, p_p):
 
 
 if __name__ == "__main__":
-    # Example usage with improved test
-    import matplotlib.pyplot as plt
+    # Example usage demonstrating filter with constant vs. time-varying frequencies
+    import matplotlib.pyplot as plt    
+    import os
     
+    # Create demo_plots directory if it doesn't exist
+    os.makedirs('demo_plots', exist_ok=True)    
     fs = 5000  # Sampling frequency
-    duration = 1  # seconds
+    duration = 5  # seconds
     t = np.arange(0, duration, 1 / fs)
     
-    # Create test signal with two time varying frequency components
-    freq1 = 50.  + 100*t  # Hz
-    freq2 = 500. - 250*t  # Hz
-    x_clean = np.sin(2 * np.pi * freq1 * t) + 0.0 * np.sin(2 * np.pi * freq2 * t)
+    print("="*70)
+    print("Vold-Kalman Filter Examples")
+    print("="*70)
     
-    # Add noise
+    # Case 1: CONSTANT frequency (100 Hz)
+    freq1_const = 100. + 0*t  # Hz (constant)
+    x_clean_const = 0.8 * np.sin(2 * np.pi * freq1_const * t)
+    
+    # Add noise and interference
     np.random.seed(42)
-    x_noisy = x_clean + 0.3 * np.random.randn(len(t))
-    
-    # Add a signal with a different frequency to test filter selectivity
-    x_noisy += 0.6 * np.sin(2 * np.pi * 400 * t)
+    x_noisy_const = x_clean_const + 0.3 * np.random.randn(len(t))
+    x_noisy_const += 0.4 * np.sin(2 * np.pi * 400 * t)
 
-    # Set up filter parameters to extract the 100 Hz component
-    freq_vec = freq1
-    bandwidth = 20  # Hz
-    filter_order = 1
-
-    # Apply Vold-Kalman filter
-    y, phasor, cost = vold_kalman_filter(x_noisy, freq_vec, fs, bandwidth, filter_order)
-
-    # Reconstruct the filtered signal
-    x_filtered = np.real(y[:, 0] * phasor[:, 0])
+    # For CONSTANT frequency, fixed bandwidth works fine
+    bandwidth_const = 20  # Hz
+    p = 1  # Filter order
     
-    # Compare with original clean signal component
-    x_target = np.sin(2 * np.pi * freq1 * t)
+    y_const, phasor_const, _ = vold_kalman_filter(x_noisy_const, freq1_const, fs, bandwidth_const, p)
+    x_filtered_const = np.real(y_const[:, 0] * phasor_const[:, 0])
     
-    # Plot signals
-    plt.figure()
-    plt.plot(t, x_noisy, label='Noisy Signal', alpha=0.5)
-    plt.plot(t, x_filtered, label='Filtered Signal', linewidth=2)
-    plt.plot(t, x_target, label='Target Signal (100 Hz)', linestyle='--', linewidth=2)
-    plt.xlim(0, 1)
-    plt.xlabel('Time (s)')
-    plt.ylabel('Amplitude')
-    plt.title('Vold-Kalman Filter Performance')
-    plt.legend()
-    plt.grid()
+    error_const = np.mean((x_filtered_const - x_clean_const)**2)
+    print(f"\nCase 1 - Constant Frequency (100 Hz):")
+    print(f"  Extracted signal: RMS = {np.sqrt(np.mean(x_filtered_const**2)):.3f} (target: 0.8)")
+    print(f"  MSE = {error_const:.2e}")
+    
+    # ========================================================================
+    
+    # Case 2: TIME-VARYING frequency (50-150 Hz chirp)
+    freq1_chirp = 50. + 100*t  # Hz (sweeps from 50 to 150)
+    phase_chirp = 2 * np.pi * np.cumsum(freq1_chirp) / fs
+    x_clean_chirp = 0.8 * np.sin(phase_chirp)
+    
+    # Add noise and crossing interference chirp (sweeps opposite direction: 150 to 50 Hz)
+    np.random.seed(42)
+    x_noisy_chirp = x_clean_chirp + 0.05 * np.random.randn(len(t))
+    phase_interference = 2 * np.pi * np.cumsum(150. - 100*t) / fs
+    x_noisy_chirp += 0.3 * np.sin(phase_interference)
+
+    # Track both orders with fixed bandwidth (for comparison)
+    bandwidth_fixed = 20  # Hz
+    y_wrong, phasor_wrong, _ = vold_kalman_filter(x_noisy_chirp, freq1_chirp, fs, bandwidth_fixed, p)
+    x_filtered_wrong = np.real(y_wrong[:, 0] * phasor_wrong[:, 0])
+
+    # Track both the main chirp and the crossing interference with adaptive bandwidth
+    freq_chirp_multi = np.zeros((len(t), 2))
+    freq_chirp_multi[:, 0] = freq1_chirp  # Main chirp: 50-150 Hz
+    freq_chirp_multi[:, 1] = 150. - 100*t  # Crossing interference: 150-50 Hz
+    
+    bandwidth_adaptive = 0.10 * freq_chirp_multi  # 10% of instantaneous frequency
+    
+    y_correct, phasor_correct, _ = vold_kalman_filter(x_noisy_chirp, freq_chirp_multi, fs, bandwidth_adaptive, p)
+    x_filtered_correct = np.real(y_correct[:, 0] * phasor_correct[:, 0])
+    x_filtered_interference = np.real(y_correct[:, 1] * phasor_correct[:, 1])
+    
+    error_correct = np.mean((x_filtered_correct - x_clean_chirp)**2)
+    print(f"\nCase 2 - Time-Varying Frequencies (50-150 Hz chirp + crossing interference):")
+    print(f"  Main chirp extracted: RMS = {np.sqrt(np.mean(x_filtered_correct**2)):.3f} (target: 0.8), MSE = {error_correct:.2e}")
+    print(f"  Interference extracted: RMS = {np.sqrt(np.mean(x_filtered_interference**2)):.3f} (target: 0.3)")
+    
+    # ========================================================================
+    
+    # Case 3: Track multiple harmonic orders simultaneously
+    # Simulate a rotor at varying RPM with multiple harmonics (1x, 2x, 3x)
+    
+    rotor_rpm = 1200 + 200 * np.sin(2 * np.pi * 0.5 * t)  # RPM varying between 1000-1400
+    rotor_freq = rotor_rpm / 60  # Convert to Hz (base frequency)
+    
+    # Create freq array with shape (n_samples, n_orders) for multi-order tracking
+    # Now tracking 4 orders: 1x, 2x, 3x, and the interference order
+    freq_multi = np.zeros((len(t), 4))
+    freq_multi[:, 0] = rotor_freq         # 1x order
+    freq_multi[:, 1] = 2 * rotor_freq     # 2x order  
+    freq_multi[:, 2] = 3 * rotor_freq     # 3x order
+    freq_multi[:, 3] = 70 - 40 * (t / duration)  # Interference order (70-30 Hz)
+    
+    # Generate signal with three harmonic components
+    phase_1x = 2 * np.pi * np.cumsum(freq_multi[:, 0]) / fs
+    phase_2x = 2 * np.pi * np.cumsum(freq_multi[:, 1]) / fs
+    phase_3x = 2 * np.pi * np.cumsum(freq_multi[:, 2]) / fs
+    
+    amp_1x = 1.0
+    amp_2x = 0.5
+    amp_3x = 0.3
+    
+    x_1x = amp_1x * np.sin(phase_1x)
+    x_2x = amp_2x * np.sin(phase_2x)
+    x_3x = amp_3x * np.sin(phase_3x)
+    
+    x_clean_multi = x_1x + x_2x + x_3x
+    
+    # Add noise and interference
+    np.random.seed(42)
+    x_noisy_multi = x_clean_multi + 0.2 * np.random.randn(len(t))
+    # Add interference from a 4th order that crosses the tracked orders
+    # This interference order sweeps from 70 Hz down to 30 Hz (opposite to main rotor)
+    interference_freq = 70 - 40 * (t / duration)  # Hz, decreases over time
+    phase_interference = 2 * np.pi * np.cumsum(interference_freq) / fs
+    x_noisy_multi += 0.3 * np.sin(phase_interference)  # Interference order
+    
+    # Apply VKF with multi-order tracking
+    # Use adaptive bandwidth as a percentage of each order's frequency
+    bandwidth_multi = 0.15 * freq_multi  # 15% of each order's frequency
+    
+    y_multi, phasor_multi, _ = vold_kalman_filter(x_noisy_multi, freq_multi, fs, bandwidth_multi, p)
+    
+    # Extract each order
+    x_filtered_1x = np.real(y_multi[:, 0] * phasor_multi[:, 0])
+    x_filtered_2x = np.real(y_multi[:, 1] * phasor_multi[:, 1])
+    x_filtered_3x = np.real(y_multi[:, 2] * phasor_multi[:, 2])
+    x_filtered_interference_multi = np.real(y_multi[:, 3] * phasor_multi[:, 3])
+    
+    # Compute errors
+    error_1x = np.mean((x_filtered_1x - x_1x)**2)
+    error_2x = np.mean((x_filtered_2x - x_2x)**2)
+    error_3x = np.mean((x_filtered_3x - x_3x)**2)
+    
+    print(f"\nCase 3 - Multi-Order Tracking (rotor harmonics + crossing interference):")
+    print(f"  Rotor frequency: {rotor_freq.min():.1f} - {rotor_freq.max():.1f} Hz")
+    print(f"  1x order: RMS = {np.sqrt(np.mean(x_filtered_1x**2)):.3f} (target: {amp_1x:.1f}), MSE = {error_1x:.2e}")
+    print(f"  2x order: RMS = {np.sqrt(np.mean(x_filtered_2x**2)):.3f} (target: {amp_2x:.1f}), MSE = {error_2x:.2e}")
+    print(f"  3x order: RMS = {np.sqrt(np.mean(x_filtered_3x**2)):.3f} (target: {amp_3x:.1f}), MSE = {error_3x:.2e}")
+    print(f"  Interference (70-30 Hz): RMS = {np.sqrt(np.mean(x_filtered_interference_multi**2)):.3f} (target: 0.3)")
+    
+    
+    # ========================================================================
+    # Plot comparison
+    print("\n" + "="*70)
+    print("Generating plots...")
+    fig, axes = plt.subplots(3, 1, figsize=(12, 12))
+    
+    # Case 1: Constant frequency
+    ax = axes[0]
+    ax.plot(t, x_clean_const, 'g-', label='Clean Signal (100 Hz constant)', linewidth=2, alpha=0.7)
+    ax.plot(t, x_noisy_const, 'gray', label='Noisy Signal', linewidth=0.5, alpha=0.5)
+    ax.plot(t, x_filtered_const, 'r-', label='Filtered (BW=20Hz)', linewidth=2, alpha=0.8)
+    ax.set_ylabel('Amplitude')
+    ax.set_title('Case 1: Constant Frequency - Works Well with Fixed Bandwidth')
+    ax.legend(loc='upper right')
+    ax.grid(True, alpha=0.3)
+    ax.set_xlim(0, 5)
+    
+    # Case 2: Time-varying frequency
+    ax = axes[1]
+    ax.plot(t, x_clean_chirp, 'g-', label='Clean Signal (50-150 Hz chirp)', linewidth=2, alpha=0.7)
+    ax.plot(t, x_noisy_chirp, 'gray', label='Noisy Signal', linewidth=0.5, alpha=0.5)
+    ax.plot(t, x_filtered_wrong, 'r--', label='Problem: Fixed BW=20Hz (narrows to 13%)', linewidth=1.5, alpha=0.8)
+    ax.plot(t, x_filtered_correct, 'b-', label='Solution: Adaptive BW=10%*freq (constant 10%)', linewidth=2, alpha=0.8)
+    ax.set_ylabel('Amplitude')
+    ax.set_title('Case 2: Time-Varying Frequency - Use Frequency-Adaptive Bandwidth')
+    ax.legend(loc='upper right')
+    ax.grid(True, alpha=0.3)
+    ax.set_xlim(0, 5)
+    
+    # Case 3: Multi-order tracking
+    ax = axes[2]
+    # Show first 1 second for clarity
+    t_zoom = t[:int(1.0*fs)]
+    ax.plot(t_zoom, x_noisy_multi[:len(t_zoom)], 'gray', label='Noisy Signal (1x+2x+3x+interference+noise)', linewidth=0.5, alpha=0.5)
+    ax.plot(t_zoom, x_filtered_1x[:len(t_zoom)], 'r-', label=f'1x order (RMS={np.sqrt(np.mean(x_filtered_1x**2)):.2f})', linewidth=1.5, alpha=0.8)
+    ax.plot(t_zoom, x_filtered_2x[:len(t_zoom)], 'b-', label=f'2x order (RMS={np.sqrt(np.mean(x_filtered_2x**2)):.2f})', linewidth=1.5, alpha=0.8)
+    ax.plot(t_zoom, x_filtered_3x[:len(t_zoom)], 'g-', label=f'3x order (RMS={np.sqrt(np.mean(x_filtered_3x**2)):.2f})', linewidth=1.5, alpha=0.8)
+    ax.plot(t_zoom, x_filtered_interference_multi[:len(t_zoom)], 'm--', label=f'Interference (RMS={np.sqrt(np.mean(x_filtered_interference_multi**2)):.2f})', linewidth=1.5, alpha=0.8)
+    ax.set_xlabel('Time (s)')
+    ax.set_ylabel('Amplitude')
+    ax.set_title('Case 3: Multi-Order Tracking - Extract Multiple Harmonics Simultaneously')
+    ax.legend(loc='upper right')
+    ax.grid(True, alpha=0.3)
+    ax.set_xlim(0, 1.0)
+    
     plt.tight_layout()
-    plt.show()
+    plt.savefig('demo_plots/vkf_example.png', dpi=150)
+    print("  Comparison plot: demo_plots/vkf_example.png")
+    
+    # ========================================================================
+    # Spectrogram plots
+    # ========================================================================
+    
+    try:
+        from flight_acoustics import plot_spectrogram
+        
+        print("\nGenerating spectrograms...")
+        
+        # Spectrogram of clean signal
+        plot_spectrogram(x_clean_chirp, fs, window_time=0.2, title='Spectrogram: Clean Chirp Signal (50-150 Hz)', clim=[20, 80], flim=[0, 400])
+        plt.savefig('demo_plots/vkf_spectrogram_clean.png', dpi=150)
+        plt.close()
+        
+        # Spectrogram of noisy signal
+        plot_spectrogram(x_noisy_chirp, fs, window_time=0.2, title='Spectrogram: Noisy Signal', clim=[20, 80], flim=[0, 400])
+        plt.savefig('demo_plots/vkf_spectrogram_noisy.png', dpi=150)
+        plt.close()
+        
+        # Spectrogram of filtered signal (with correct adaptive bandwidth)
+        plot_spectrogram(x_filtered_correct, fs, window_time=0.2, title='Spectrogram: Filtered Signal (Adaptive BW=10%*freq)', clim=[20, 80], flim=[0, 400])
+        plt.savefig('demo_plots/vkf_spectrogram_filtered.png', dpi=150)
+        plt.close()
+        
+        # Clean multi-order signal (sum of all three orders)
+        plot_spectrogram(x_clean_multi, fs, window_time=0.2, title='Clean Multi-Order Signal (1x+2x+3x)', clim=[20, 80], flim=[0, 400])
+        plt.savefig('demo_plots/vkf_spectrogram_multiorder_clean.png', dpi=150)
+        plt.close()
+        
+        # Noisy input signal with all orders plus noise and interference
+        plot_spectrogram(x_noisy_multi, fs, window_time=0.2, title='Noisy Multi-Order Signal (1x+2x+3x+noise+interference)', clim=[20, 80], flim=[0, 400])
+        plt.savefig('demo_plots/vkf_spectrogram_multiorder_noisy.png', dpi=150)
+        plt.close()
+        
+        # Reconstructed signal (sum of all filtered orders)
+        x_reconstructed_multi = x_filtered_1x + x_filtered_2x + x_filtered_3x
+        plot_spectrogram(x_reconstructed_multi, fs, window_time=0.2, title='Reconstructed Multi-Order Signal (filtered 1x+2x+3x)', clim=[20, 80], flim=[0, 400])
+        plt.savefig('demo_plots/vkf_spectrogram_multiorder_filtered.png', dpi=150)
+        plt.close()
+        
+        # Individual extracted orders
+        plot_spectrogram(x_filtered_1x, fs, window_time=0.2, title='Extracted: 1x Order', clim=[20, 80], flim=[0, 400])
+        plt.savefig('demo_plots/vkf_spectrogram_multiorder_1x.png', dpi=150)
+        plt.close()
+        
+        plot_spectrogram(x_filtered_2x, fs, window_time=0.2, title='Extracted: 2x Order', clim=[20, 80], flim=[0, 400])
+        plt.savefig('demo_plots/vkf_spectrogram_multiorder_2x.png', dpi=150)
+        plt.close()
+        
+        plot_spectrogram(x_filtered_3x, fs, window_time=0.2, title='Extracted: 3x Order', clim=[20, 80], flim=[0, 400])
+        plt.savefig('demo_plots/vkf_spectrogram_multiorder_3x.png', dpi=150)
+        plt.close()
+        
+        # Extracted interference order
+        plot_spectrogram(x_filtered_interference_multi, fs, window_time=0.2, title='Extracted: Interference Order (70-30 Hz)', clim=[20, 80], flim=[0, 400])
+        plt.savefig('demo_plots/vkf_spectrogram_multiorder_interference.png', dpi=150)
+        plt.close()
+        
+        print("  Spectrograms: demo_plots/vkf_spectrogram_*.png")
+        
+    except Exception as e:
+        print(f"  Spectrogram generation skipped: {e}")
+    
+    print("\nAll plots saved to demo_plots/")
+    print("="*70)
 
-    # Plot PSDs using flight_acoustics module
-    from flight_acoustics import psd
-    
-    freq_clean, psd_clean, level_clean = psd(x_target, fs)
-    freq_noisy, psd_noisy, level_noisy = psd(x_noisy, fs)
-    freq_filtered, psd_filtered, level_filtered = psd(x_filtered, fs)
-    
-    plt.figure(figsize=(10, 6))
-    plt.plot(freq_clean, psd_clean, label=f'Clean Signal ({level_clean:.1f} dB)', linewidth=2)
-    plt.plot(freq_noisy, psd_noisy, label=f'Noisy Signal ({level_noisy:.1f} dB)', alpha=0.7)
-    plt.plot(freq_filtered, psd_filtered, label=f'Filtered Signal ({level_filtered:.1f} dB)', linewidth=2, linestyle='--')
-    plt.xlim(0, 500)
-    plt.xlabel('Frequency (Hz)')
-    plt.ylabel('PSD (dB re 20 µPa)')
-    plt.title('Power Spectral Density Comparison')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.show()
-
-    # Plot the spectrogram
-    from flight_acoustics import plot_spectrogram
-    
-    plot_spectrogram(x_noisy, fs, window_time=0.05,title='Spectrogram of Noisy Signal')
-    plot_spectrogram(x_filtered, fs, window_time=0.05,title='Spectrogram of Filtered Signal')
-    plot_spectrogram(x_target, fs, window_time=0.05,title='Spectrogram of Target Signal')
-    plt.show() 
-
-
-    # Calculate SNR improvement
-    noise_power_before = np.mean((x_noisy - x_target)**2)
-    noise_power_after = np.mean((x_filtered - x_target)**2)
-    snr_improvement_db = 10 * np.log10(noise_power_before / noise_power_after)
-    
-    print("Complex envelope shape:", y.shape)
-    print("Phasor shape:", phasor.shape)
-    print("Cost matrix shape:", cost.shape)
-    print(f"\nSNR improvement: {snr_improvement_db:.2f} dB")
-    print(f"RMS error before filtering: {np.sqrt(noise_power_before):.4f}")
-    print(f"RMS error after filtering: {np.sqrt(noise_power_after):.4f}")
-    
-    # Simple amplitude check - the envelope magnitude should be ~A/2 for signal A*sin(...)
-    expected_amplitude = 1.0
-    actual_amplitude = np.mean(np.abs(y[len(y)//4:3*len(y)//4, 0]))  # Average over middle half
-    print(f"\nExpected envelope amplitude: ~{expected_amplitude/2:.4f}")
-    print(f"Actual envelope amplitude: {actual_amplitude:.4f}")
-    print(f"Amplitude error: {abs(actual_amplitude - expected_amplitude/2):.4f}")
-    
-    if snr_improvement_db > 5:
-        print("\n✓ Filter is working correctly - significant noise reduction achieved")
-    else:
-        print("\n✗ Warning: Filter may not be working properly - low SNR improvement")
