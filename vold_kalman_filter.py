@@ -15,8 +15,57 @@ from scipy.sparse import spdiags, eye as speye, block_diag, csr_matrix, lil_matr
 from scipy.sparse.linalg import spsolve
 from scipy.special import comb
 
+# Cache for expensive, size-dependent matrices/indices
+_AA_CACHE = {}
+_BU_INDEX_CACHE = {}
 
-def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None):
+# Optional faster sparse solvers (if installed)
+try:
+    from pypardiso import spsolve as _pardiso_spsolve  # type: ignore
+    _HAVE_PARDISO = True
+except Exception:  # pragma: no cover - optional dependency
+    _HAVE_PARDISO = False
+
+try:
+    import scikits.umfpack  # type: ignore
+    _HAVE_UMFPACK = True
+except Exception:  # pragma: no cover - optional dependency
+    _HAVE_UMFPACK = False
+
+
+def _get_bu_index_cache(n_x, n_ord):
+    """Precompute and cache row/col indices and pair indices for B_U."""
+    key = (n_x, n_ord)
+    cached = _BU_INDEX_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    n_pairs = n_ord * (n_ord - 1) // 2
+    total_nnz = n_x * n_pairs
+
+    row_indices = np.empty(total_nnz, dtype=int)
+    col_indices = np.empty(total_nnz, dtype=int)
+    pair_i = np.empty(n_pairs, dtype=int)
+    pair_j = np.empty(n_pairs, dtype=int)
+
+    idx = 0
+    pair_idx = 0
+    for i in range(n_ord):
+        rows = np.arange(i * n_x, (i + 1) * n_x)
+        for j in range(i + 1, n_ord):
+            cols = np.arange(j * n_x, (j + 1) * n_x)
+            row_indices[idx:idx + n_x] = rows
+            col_indices[idx:idx + n_x] = cols
+            pair_i[pair_idx] = i
+            pair_j[pair_idx] = j
+            pair_idx += 1
+            idx += n_x
+
+    _BU_INDEX_CACHE[key] = (row_indices, col_indices, pair_i, pair_j)
+    return row_indices, col_indices, pair_i, pair_j
+
+
+def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None, solver="auto", use_coupling=True):
     r"""
     Multi-shaft Vold-Kalman filter for extracting acoustic signal components.
 
@@ -50,6 +99,12 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None):
     r : float or ndarray, optional
         Weighting factor for the filter. If not provided, computed from bandwidth.
         Default is None (compute from bandwidth).
+    solver : {"auto", "pardiso", "umfpack", "superlu"}, optional
+        Sparse solver backend. "auto" prefers Pardiso (if installed), then UMFPACK,
+        and falls back to SuperLU. Default is "auto".
+    use_coupling : bool, optional
+        Whether to include cross-order coupling (B_U) terms. Default True.
+        Setting False can speed up solves but changes results.
 
     Returns
     -------
@@ -167,76 +222,85 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None):
         boundary_order = 1
     boundary_coeff = _diff_coeff(boundary_order)
 
-    # A0: rows built from boundary coefficients (no sign flip beyond diff definition)
-    A0_dense = np.zeros((1 if boundary_coeff.size > 0 else 0, n_x))
-    if A0_dense.shape[0] > 0:
-        A0_dense[0, :boundary_coeff.size] = boundary_coeff
-    
-    # A0_end: boundary condition for the end (shifted to last columns with reversed sign)
-    # MATLAB shows last row as [0...0, -1, 1] which is [-1, 1] at the end
-    # This is the reverse of A0's [1, -1]
-    A0_end = np.zeros((1 if boundary_coeff.size > 0 else 0, n_x))
-    if A0_end.shape[0] > 0:
-        # Reverse the boundary coefficients for the end
-        A0_end[0, -boundary_coeff.size:] = boundary_coeff[::-1]
+    aa_cache_key = (n_x, n_ord, p_p, tuple(boundary_coeff))
+    AA_sparse = _AA_CACHE.get(aa_cache_key)
+    if AA_sparse is None:
+        # A0: rows built from boundary coefficients (no sign flip beyond diff definition)
+        A0_dense = np.zeros((1 if boundary_coeff.size > 0 else 0, n_x))
+        if A0_dense.shape[0] > 0:
+            A0_dense[0, :boundary_coeff.size] = boundary_coeff
 
-    # Build A as n_x x n_x with constant diagonals then fix first row to boundary coeffs
-    diag_offsets = np.arange(0, p_p + 1)
-    A_diags = np.zeros((p_p + 1, n_x))
-    for i in range(p_p + 1):
-        A_diags[i, :] = diff_main[i]
+        # A0_end: boundary condition for the end (shifted to last columns with reversed sign)
+        # MATLAB shows last row as [0...0, -1, 1] which is [-1, 1] at the end
+        # This is the reverse of A0's [1, -1]
+        A0_end = np.zeros((1 if boundary_coeff.size > 0 else 0, n_x))
+        if A0_end.shape[0] > 0:
+            # Reverse the boundary coefficients for the end
+            A0_end[0, -boundary_coeff.size:] = boundary_coeff[::-1]
 
-    A_sparse = spdiags(A_diags, diag_offsets, n_x, n_x, format='csr')
+        # Build A as n_x x n_x with constant diagonals then fix first row to boundary coeffs
+        diag_offsets = np.arange(0, p_p + 1)
+        A_diags = np.zeros((p_p + 1, n_x))
+        for i in range(p_p + 1):
+            A_diags[i, :] = diff_main[i]
 
-    # Do NOT override first row here - let it stay as the natural second-difference row
+        A_sparse = spdiags(A_diags, diag_offsets, n_x, n_x, format='csr')
 
-    # Combine A0 (start), A (middle), and A0_end (end boundary)
-    # Convert A_sparse only when needed for vstack
-    A_dense = A_sparse.toarray()
-    A_combined = np.vstack([A0_dense, A_dense, A0_end])
-    
-    # Build AA matrix for single or multi-order case
-    if n_ord == 1:
-        # Single order: simplify by selecting n_x rows from A_combined
-        # A_combined shape: (n_x+2, n_x) with rows [A0, A (n_x rows), A0_end]
-        # Use first boundary row, middle n_x-2 rows from A, last boundary row
-        # Skip rows 1 and n_x from A to get exactly n_x rows total
-        row_indices = [0] + list(range(2, n_x)) + [n_x+1]
-        AA_dense = A_combined[row_indices, :]
-        AA_sparse = csr_matrix(AA_dense)
-    else:
-        # Multi-order: extract diagonals and replicate
-        diag_offsets = list(range(-p_p, p_p + 1))
-        
-        # Extract diagonals from A_combined more efficiently
-        diagonals_list = []
-        for offset in diag_offsets:
-            diag = np.diagonal(A_combined, offset=offset)
-            # Pad to n_x
-            padded = np.zeros(n_x)
-            padded[:len(diag)] = diag
-            diagonals_list.append(padded)
-        
-        # Build sparse matrix from diagonals for one order
-        diagonal_matrix = np.array(diagonals_list).T  # (n_x, n_diags)
-        diagonal_rep = np.tile(diagonal_matrix, (n_ord, 1))  # (n_tot, n_diags)
-        
-        # Build square AA matrix using scipy spdiags with the extracted diagonals
-        AA_sparse = spdiags(diagonal_rep.T, diag_offsets, n_tot, n_tot, format='csr')
+        # Build AA matrix for single or multi-order case
+        if n_ord == 1:
+            # Single order: build A_combined as dense (small matrix)
+            A_dense = A_sparse.toarray()
+            A_combined = np.vstack([A0_dense, A_dense, A0_end])
 
-        # Enforce boundary rows using lil_matrix (more efficient than dense conversion)
-        if boundary_coeff.size > 0:
-            AA_sparse = AA_sparse.tolil()  # Convert to lil for efficient row modification
-            for ord_idx in range(n_ord):
-                row_base = ord_idx * n_x
-                # Enforce first boundary row: [1, -1, 0, ...] using slice assignment
-                AA_sparse[row_base, :] = 0.0
-                AA_sparse[row_base, row_base:row_base + len(boundary_coeff)] = boundary_coeff
-                # Enforce last boundary row: [0, ..., -1, 1] using slice assignment
-                last_row = row_base + n_x - 1
-                AA_sparse[last_row, :] = 0.0
-                AA_sparse[last_row, last_row - len(boundary_coeff) + 1:last_row + 1] = boundary_coeff[::-1]
-            AA_sparse = AA_sparse.tocsr()  # Convert back to csr for efficient arithmetic
+            # Single order: simplify by selecting n_x rows from A_combined
+            # A_combined shape: (n_x+2, n_x) with rows [A0, A (n_x rows), A0_end]
+            # Use first boundary row, middle n_x-2 rows from A, last boundary row
+            # Skip rows 1 and n_x from A to get exactly n_x rows total
+            row_indices = [0] + list(range(2, n_x)) + [n_x + 1]
+            AA_dense = A_combined[row_indices, :]
+            AA_sparse = csr_matrix(AA_dense)
+        else:
+            # Multi-order: extract diagonals directly from A_sparse (stay sparse!)
+            diag_offsets = list(range(-p_p, p_p + 1))
+
+            # Extract diagonals from A_sparse - need to convert to array for diagonal extraction
+            # But only convert the small A_sparse (n_x x n_x), not the full AA matrix
+            A_small_dense = A_sparse.toarray()
+
+            diagonals_list = []
+            for offset in diag_offsets:
+                # Extract diagonal from the small dense matrix
+                diag = np.diagonal(A_small_dense, offset=offset)
+                # Pad to n_x
+                padded = np.zeros(n_x)
+                if offset >= 0:
+                    padded[:len(diag)] = diag
+                else:
+                    padded[-len(diag):] = diag
+                diagonals_list.append(padded)
+
+            # Build sparse matrix from diagonals for one order
+            diagonal_matrix = np.array(diagonals_list).T  # (n_x, n_diags)
+            diagonal_rep = np.tile(diagonal_matrix, (n_ord, 1))  # (n_tot, n_diags)
+
+            # Build square AA matrix using scipy spdiags with the extracted diagonals
+            AA_sparse = spdiags(diagonal_rep.T, diag_offsets, n_tot, n_tot, format='csr')
+
+            # Enforce boundary rows using lil_matrix (more efficient than dense conversion)
+            if boundary_coeff.size > 0:
+                AA_sparse = AA_sparse.tolil()  # Convert to lil for efficient row modification
+                for ord_idx in range(n_ord):
+                    row_base = ord_idx * n_x
+                    # Enforce first boundary row: [1, -1, 0, ...] using slice assignment
+                    AA_sparse[row_base, :] = 0.0
+                    AA_sparse[row_base, row_base:row_base + len(boundary_coeff)] = boundary_coeff
+                    # Enforce last boundary row: [0, ..., -1, 1] using slice assignment
+                    last_row = row_base + n_x - 1
+                    AA_sparse[last_row, :] = 0.0
+                    AA_sparse[last_row, last_row - len(boundary_coeff) + 1:last_row + 1] = boundary_coeff[::-1]
+                AA_sparse = AA_sparse.tocsr()  # Convert back to csr for efficient arithmetic
+
+        _AA_CACHE[aa_cache_key] = AA_sparse
     
     # DEBUG: Verify AA boundaries
     if False:  # Set to True for debugging
@@ -276,35 +340,20 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None):
     RR_squared = spdiags([weig_r**2], [0], n_tot, n_tot, format='csr')
     B0 = AA_sparse.T @ RR_squared @ AA_sparse + speye(n_tot, format='csr')
     
-    # Reshape phasor for cross-coupling computation
-    phasor_rs = phasor.reshape(n_tot, 1, order="F").ravel()
-    conj_phasor = np.conj(phasor_rs)
+    # Precompute conjugate phasor in (n_x, n_ord) form
+    conj_phasor = np.conj(phasor)
     
     # Build off-diagonal coupling matrix B_U (MATLAB lines 249-261)
     # This captures cross-order interactions via phasor products
-    if n_ord > 1:
+    if n_ord > 1 and use_coupling:
         from scipy.sparse import coo_matrix
-        # Build B_U more efficiently using COO format with pre-allocated arrays
-        # Calculate total non-zeros: n_x * (n_ord choose 2)
-        n_pairs = n_ord * (n_ord - 1) // 2
-        total_nnz = n_x * n_pairs
-        
-        row_indices = np.empty(total_nnz, dtype=int)
-        col_indices = np.empty(total_nnz, dtype=int)
-        values = np.empty(total_nnz, dtype=complex)
-        
-        idx = 0
-        for i in range(n_ord):
-            for j in range(i + 1, n_ord):
-                rows = np.arange(i * n_x, (i + 1) * n_x)
-                cols = np.arange(j * n_x, (j + 1) * n_x)
-                vals = np.conj(phasor[:, i]) * phasor[:, j]
-                
-                # Direct array assignment (O(1) vs O(n) for extend)
-                row_indices[idx:idx + n_x] = rows
-                col_indices[idx:idx + n_x] = cols
-                values[idx:idx + n_x] = vals
-                idx += n_x
+        # Build B_U using cached structure (row/col indices) and update only values
+        row_indices, col_indices, pair_i, pair_j = _get_bu_index_cache(n_x, n_ord)
+
+        # Vectorized pairwise products: shape (n_x, n_pairs)
+        values_matrix = conj_phasor[:, pair_i] * phasor[:, pair_j]
+        # Flatten column-wise to match row/col block ordering
+        values = values_matrix.reshape(-1, order="F")
         
         B_U = coo_matrix((values, (row_indices, col_indices)), shape=(n_tot, n_tot), dtype=complex)
         B_U = B_U.tocsr()  # Convert to CSR for efficient matrix operations
@@ -315,10 +364,9 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None):
     else:
         # Single order: no cross-coupling needed
         B_mat = B0.astype(complex)
-    x_rv = np.tile(x, n_ord)
-
     # Calculate Right-hand side of the linear differential equations
-    cH_x = conj_phasor * x_rv
+    # Avoid creating large tiled vectors by using broadcasting
+    cH_x = (conj_phasor * x[:, None]).ravel(order="F")
 
     # DEBUG: Print solve inputs
     if False:  # Set to True for debugging
@@ -327,9 +375,36 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None):
         print(f"cH_x[0:5] = {cH_x[0:5]}")
 
     # Solve the linear equations using sparse solver
-    # spsolve handles both sparse and dense inputs efficiently
+    # Convert to CSC for faster factorization in spsolve
     try:
-        y_R = spsolve(B_mat, cH_x)
+        if hasattr(B_mat, "tocsc"):
+            B_mat = B_mat.tocsc()
+
+        solver_choice = (solver or "auto").lower()
+        if solver_choice == "auto":
+            if _HAVE_PARDISO:
+                y_R = _pardiso_spsolve(B_mat, cH_x)
+            else:
+                try:
+                    y_R = spsolve(B_mat, cH_x, use_umfpack=_HAVE_UMFPACK)
+                except TypeError:
+                    y_R = spsolve(B_mat, cH_x)
+        elif solver_choice == "pardiso":
+            if not _HAVE_PARDISO:
+                raise RuntimeError("pypardiso is not installed")
+            y_R = _pardiso_spsolve(B_mat, cH_x)
+        elif solver_choice == "umfpack":
+            try:
+                y_R = spsolve(B_mat, cH_x, use_umfpack=_HAVE_UMFPACK)
+            except TypeError:
+                y_R = spsolve(B_mat, cH_x)
+        elif solver_choice == "superlu":
+            try:
+                y_R = spsolve(B_mat, cH_x, use_umfpack=False)
+            except TypeError:
+                y_R = spsolve(B_mat, cH_x)
+        else:
+            raise ValueError(f"Unknown solver '{solver}'")
     except Exception:
         # Fallback to dense solve if sparse solver fails
         if hasattr(B_mat, 'toarray'):
