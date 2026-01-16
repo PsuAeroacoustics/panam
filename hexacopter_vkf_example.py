@@ -17,6 +17,7 @@ from scipy.interpolate import interp1d
 from scipy.signal import butter, filtfilt
 import os
 import time
+import concurrent.futures as cf
 from vold_kalman_filter import vold_kalman_filter
 
 
@@ -51,10 +52,63 @@ def highpass(data, cutoff_freq, fs, order=5):
         return np.apply_along_axis(lambda x: filtfilt(b, a, x), 0, data)
 
 
+def _process_segment(
+    seg_idx,
+    x_src,
+    t,
+    rpm,
+    orders,
+    no_blade,
+    fs,
+    bw_percent,
+    min_bw,
+    max_bw,
+    p,
+    solver,
+    use_coupling,
+    cutoff,
+):
+    """Process a single segment for parallel execution."""
+    x = x_src.copy()
+    seg_size = len(x) - 2 * cutoff
+    n_mics = x.shape[1]
+
+    tmp_P_ordLoop = np.zeros((seg_size, 6, n_mics))
+
+    for order in orders:
+        freq_all_rotors = rpm * order * no_blade / (2 * np.pi)
+        bandwidth_all = np.clip(freq_all_rotors * bw_percent, min_bw, max_bw)
+
+        for mic in range(n_mics):
+            y, ph, _ = vold_kalman_filter(
+                x[:, mic],
+                freq_all_rotors,
+                fs,
+                bandwidth_all,
+                p,
+                solver=solver,
+                use_coupling=use_coupling,
+            )
+
+            components_full = np.real(y * ph)
+            for rotor_idx in range(6):
+                tmp_P_ordLoop[:, rotor_idx, mic] += components_full[cutoff:-cutoff, rotor_idx]
+            x[:, mic] -= np.sum(components_full, axis=1)
+
+    return (
+        seg_idx,
+        tmp_P_ordLoop,
+        t[cutoff:-cutoff],
+        rpm[cutoff:-cutoff, :],
+        x_src[cutoff:-cutoff, :],
+    )
+
+
 def separate_hexacopter_acoustics(mat_file_path, mic_range=16, 
                                    orders=range(2, 31), p=1,
                                    min_bw=3, max_bw=9, bw_percent=0.05,
-                                   solver="auto", use_coupling=True):
+                                   solver="auto", use_coupling=True,
+                                   n_jobs=None):
     """
     Separate hexacopter acoustic signals using Vold-Kalman filtering.
     
@@ -78,6 +132,8 @@ def separate_hexacopter_acoustics(mat_file_path, mic_range=16,
         Sparse solver backend for VKF, default "auto"
     use_coupling : bool, optional
         Whether to include cross-order coupling (B_U) terms, default True
+    n_jobs : int or None, optional
+        Number of parallel workers for segment processing. Defaults to CPU count.
     
     Returns
     -------
@@ -170,92 +226,140 @@ def separate_hexacopter_acoustics(mat_file_path, mic_range=16,
     separated_rpm = np.zeros((total_samples, 6))
     separated_original = np.zeros((total_samples, xo.shape[1]))
     
-    # Track current position in output arrays
-    output_pos = 0
-    
-    # Process each segment
+    if n_jobs is None:
+        n_jobs = os.cpu_count() or 1
+
     total_start = time.time()
-    
-    for seg_idx in range(len(spacing) - 1):
-        seg_start = time.time()
-        print(f"\nSegment {seg_idx+1}/{len(spacing)-1}")
-        
-        # Extract segment with cutoff padding
-        start_idx = spacing[seg_idx] - cutoff
-        end_idx = spacing[seg_idx + 1] + cutoff
 
-        # IMPORTANT: NumPy slicing returns views. We subtract extracted components
-        # from `x` in-place during VKF, so `x` must be a copy to avoid mutating
-        # `xo` (the original signal) and corrupting later segments.
-        x_src = xo[start_idx:end_idx, :]
-        x = x_src.copy()
+    if n_jobs and n_jobs > 1:
+        print(f"\nParallel processing with {n_jobs} workers")
+        futures = []
+        with cf.ProcessPoolExecutor(max_workers=n_jobs) as executor:
+            for seg_idx in range(len(spacing) - 1):
+                start_idx = spacing[seg_idx] - cutoff
+                end_idx = spacing[seg_idx + 1] + cutoff
 
-        t = to[start_idx:end_idx]
-        rpm = rpmo[start_idx:end_idx, :]
-        
-        # Calculate segment size
-        seg_size = len(x) - 2*cutoff
-        
-        # Save original signal to pre-allocated array
-        separated_original[output_pos:output_pos+seg_size, :] = x_src[cutoff:-cutoff, :]
-        
-        # Number of microphones
-        n_mics = x.shape[1]
-        
-        # Initialize array for separated signals (6 rotors)
-        tmp_P_ordLoop = np.zeros((seg_size, 6, n_mics))
-        
-        print(f"  Processing {len(orders)} orders (all 6 rotors per call)...")
-        
-        # Process each order - process all 6 rotors at once per order
-        for order in orders:
-            # Calculate frequency for all 6 rotors: shape (n_samples, 6)
-            # rpm is in rad/s, so divide by 2*pi to convert to Hz
-            freq_all_rotors = rpm * order * no_blade / (2 * np.pi)
-            
-            # Set bandwidth as percentage of frequency
-            bandwidth_all = freq_all_rotors * bw_percent
-            
-            # Apply floor and ceiling to bandwidth matrix
-            bandwidth_all = np.clip(bandwidth_all, min_bw, max_bw)
-            
-            # Apply VK filter for each microphone
-            # Process all 6 rotors at once!
-            for mic in range(n_mics):
-                y, ph, _ = vold_kalman_filter(
-                    x[:, mic],
-                    freq_all_rotors,
-                    fs,
-                    bandwidth_all,
-                    p,
-                    solver=solver,
-                    use_coupling=True,
+                x_src = xo[start_idx:end_idx, :]
+                t = to[start_idx:end_idx]
+                rpm = rpmo[start_idx:end_idx, :]
+
+                futures.append(
+                    executor.submit(
+                        _process_segment,
+                        seg_idx,
+                        x_src,
+                        t,
+                        rpm,
+                        tuple(orders),
+                        no_blade,
+                        fs,
+                        bw_percent,
+                        min_bw,
+                        max_bw,
+                        p,
+                        solver,
+                        use_coupling,
+                        cutoff,
+                    )
                 )
-                
-                # y and ph have shape (n_samples, 6) - one column per rotor
-                # Reconstruct the signal for all rotors
-                components_full = np.real(y * ph)  # shape (n_samples, 6)
-                
-                # Extract the center portion (excluding cutoff) and add to accumulated signal
-                for rotor_idx in range(6):
-                    tmp_P_ordLoop[:, rotor_idx, mic] += components_full[cutoff:-cutoff, rotor_idx]
-                
-                # Remove all rotor components from the signal
-                x[:, mic] -= np.sum(components_full, axis=1)
-        
-        # Store results in pre-allocated arrays
-        separated_P[output_pos:output_pos+seg_size, :, :] = tmp_P_ordLoop
-        separated_T[output_pos:output_pos+seg_size] = t[cutoff:-cutoff]
-        separated_rpm[output_pos:output_pos+seg_size, :] = rpm[cutoff:-cutoff, :]
-        
-        # Update position
-        output_pos += seg_size
-        
-        seg_time = time.time() - seg_start
-        elapsed = time.time() - total_start
-        avg_time = elapsed / (seg_idx + 1)
-        remaining = avg_time * (len(spacing) - 2 - seg_idx)
-        print(f"  Segment time: {seg_time:.1f}s, Est. remaining: {remaining:.0f}s")
+
+            results = [None] * (len(spacing) - 1)
+            for fut in cf.as_completed(futures):
+                seg_idx, tmp_P, t_center, rpm_center, orig_center = fut.result()
+                results[seg_idx] = (tmp_P, t_center, rpm_center, orig_center)
+
+        # Assemble results in order
+        output_pos = 0
+        for seg_idx, (tmp_P, t_center, rpm_center, orig_center) in enumerate(results):
+            seg_size = tmp_P.shape[0]
+            separated_P[output_pos:output_pos+seg_size, :, :] = tmp_P
+            separated_T[output_pos:output_pos+seg_size] = t_center
+            separated_rpm[output_pos:output_pos+seg_size, :] = rpm_center
+            separated_original[output_pos:output_pos+seg_size, :] = orig_center
+            output_pos += seg_size
+    else:
+        # Serial processing
+        output_pos = 0
+        for seg_idx in range(len(spacing) - 1):
+            seg_start = time.time()
+            print(f"\nSegment {seg_idx+1}/{len(spacing)-1}")
+
+            # Extract segment with cutoff padding
+            start_idx = spacing[seg_idx] - cutoff
+            end_idx = spacing[seg_idx + 1] + cutoff
+
+            # IMPORTANT: NumPy slicing returns views. We subtract extracted components
+            # from `x` in-place during VKF, so `x` must be a copy to avoid mutating
+            # `xo` (the original signal) and corrupting later segments.
+            x_src = xo[start_idx:end_idx, :]
+            x = x_src.copy()
+
+            t = to[start_idx:end_idx]
+            rpm = rpmo[start_idx:end_idx, :]
+
+            # Calculate segment size
+            seg_size = len(x) - 2*cutoff
+
+            # Save original signal to pre-allocated array
+            separated_original[output_pos:output_pos+seg_size, :] = x_src[cutoff:-cutoff, :]
+
+            # Number of microphones
+            n_mics = x.shape[1]
+
+            # Initialize array for separated signals (6 rotors)
+            tmp_P_ordLoop = np.zeros((seg_size, 6, n_mics))
+
+            print(f"  Processing {len(orders)} orders (all 6 rotors per call)...")
+
+            # Process each order - process all 6 rotors at once per order
+            for order in orders:
+                # Calculate frequency for all 6 rotors: shape (n_samples, 6)
+                # rpm is in rad/s, so divide by 2*pi to convert to Hz
+                freq_all_rotors = rpm * order * no_blade / (2 * np.pi)
+
+                # Set bandwidth as percentage of frequency
+                bandwidth_all = freq_all_rotors * bw_percent
+
+                # Apply floor and ceiling to bandwidth matrix
+                bandwidth_all = np.clip(bandwidth_all, min_bw, max_bw)
+
+                # Apply VK filter for each microphone
+                # Process all 6 rotors at once!
+                for mic in range(n_mics):
+                    y, ph, _ = vold_kalman_filter(
+                        x[:, mic],
+                        freq_all_rotors,
+                        fs,
+                        bandwidth_all,
+                        p,
+                        solver=solver,
+                        use_coupling=use_coupling,
+                    )
+
+                    # y and ph have shape (n_samples, 6) - one column per rotor
+                    # Reconstruct the signal for all rotors
+                    components_full = np.real(y * ph)  # shape (n_samples, 6)
+
+                    # Extract the center portion (excluding cutoff) and add to accumulated signal
+                    for rotor_idx in range(6):
+                        tmp_P_ordLoop[:, rotor_idx, mic] += components_full[cutoff:-cutoff, rotor_idx]
+
+                    # Remove all rotor components from the signal
+                    x[:, mic] -= np.sum(components_full, axis=1)
+
+            # Store results in pre-allocated arrays
+            separated_P[output_pos:output_pos+seg_size, :, :] = tmp_P_ordLoop
+            separated_T[output_pos:output_pos+seg_size] = t[cutoff:-cutoff]
+            separated_rpm[output_pos:output_pos+seg_size, :] = rpm[cutoff:-cutoff, :]
+
+            # Update position
+            output_pos += seg_size
+
+            seg_time = time.time() - seg_start
+            elapsed = time.time() - total_start
+            avg_time = elapsed / (seg_idx + 1)
+            remaining = avg_time * (len(spacing) - 2 - seg_idx)
+            print(f"  Segment time: {seg_time:.1f}s, Est. remaining: {remaining:.0f}s")
     
     total_time = time.time() - total_start
     print(f"\nTotal processing time: {total_time:.1f}s ({total_time/60:.1f} min)")
@@ -368,6 +472,7 @@ if __name__ == "__main__":
     
     solver = "auto"  # prefers Pardiso/UMFPACK if available
     use_coupling = True  # set False for faster but less accurate results
+    n_jobs = None  # defaults to CPU count
 
     separated = separate_hexacopter_acoustics(
         mat_file,
@@ -378,7 +483,8 @@ if __name__ == "__main__":
         max_bw=9,
         bw_percent=0.05,
         solver=solver,
-        use_coupling=use_coupling
+        use_coupling=use_coupling,
+        n_jobs=n_jobs
     )
     
     print("\n" + "="*70)
