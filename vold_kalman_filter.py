@@ -240,9 +240,11 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None):
     # Create RR matrix (square, matching AA)
     RR = spdiags([weig_r], [0], n_tot, n_tot, format='csr')
     
-    # Compute B0 = AA' * (RR * RR) * AA + I
+    # Compute B0 = AA' * (RR²) * AA + I
     # This is the main regularized least squares matrix
-    B0 = AA_sparse.T @ (RR @ RR) @ AA_sparse + speye(n_tot, format='csr')
+    # Optimize: RR² is diagonal so compute directly instead of RR @ RR
+    RR_squared = spdiags([weig_r**2], [0], n_tot, n_tot, format='csr')
+    B0 = AA_sparse.T @ RR_squared @ AA_sparse + speye(n_tot, format='csr')
     
     # Reshape phasor for cross-coupling computation
     phasor_rs = phasor.reshape(n_tot, 1, order="F").ravel()
@@ -353,6 +355,9 @@ def _pascal_coefficients(n):
     return pascal
 
 
+# Module-level cache for Vandermonde coefficients (keyed by filter order)
+_vandermonde_cache = {}
+
 def _compute_weighting_factor(bw_rad, p_p):
     """
     Compute weighting factor from bandwidth using Vandermonde system.
@@ -369,21 +374,26 @@ def _compute_weighting_factor(bw_rad, p_p):
     ndarray
         Weighting factor array, shape (n_samples,)
     """
-    # MATLAB Vandermonde system approach
-    # Build coefficient matrix (weigF.coecos in MATLAB)
-    n = np.arange(p_p + 1)
-    sign = (-1.0) ** n
-    coecos = np.ones((p_p + 1, p_p + 1))
-    
-    for i in range(1, p_p + 1):
-        coecos[i, :] = (n ** (2 * (i - 1))) * sign
-    
-    # Right-hand side (weigF.coe in MATLAB)
-    coe = np.zeros(p_p + 1)
-    coe[0] = 2.0 ** (2 * p_p)
-    
-    # Solve Vandermonde system: coecos \ coe
-    coeff = np.linalg.solve(coecos, coe) * sign
+    # MATLAB Vandermonde system approach with caching
+    # Coefficients depend only on filter order p_p, so cache them
+    if p_p not in _vandermonde_cache:
+        # Build coefficient matrix (weigF.coecos in MATLAB)
+        n = np.arange(p_p + 1)
+        sign = (-1.0) ** n
+        coecos = np.ones((p_p + 1, p_p + 1))
+        
+        for i in range(1, p_p + 1):
+            coecos[i, :] = (n ** (2 * (i - 1))) * sign
+        
+        # Right-hand side (weigF.coe in MATLAB)
+        coe = np.zeros(p_p + 1)
+        coe[0] = 2.0 ** (2 * p_p)
+        
+        # Solve Vandermonde system: coecos \ coe
+        coeff = np.linalg.solve(coecos, coe) * sign
+        _vandermonde_cache[p_p] = coeff
+    else:
+        coeff = _vandermonde_cache[p_p]
     
     # Compute denominator as sum of coeff[i] * cos(bw_rad * i) using vectorized operations
     # Build cosine terms: cos(bw_rad * 0), cos(bw_rad * 1), ..., cos(bw_rad * (p_p))
