@@ -19,6 +19,32 @@ def test_psd_sine_level():
     assert psd_db.shape == f.shape
 
 
+def test_psd_calibration_offset():
+    rng = np.random.default_rng(123)
+    fs = 2000
+    n = 4096
+    signal = rng.normal(0.0, 1.0e-3, size=n)  # non-zero random signal in Pa
+    f0, psd_db0, level0 = psd(signal, fs, cal=0.0)
+    f1, psd_db1, level1 = psd(signal, fs, cal=10.0)  # +10 dB calibration
+    # Frequency bins should be identical
+    assert np.array_equal(f0, f1)
+    assert psd_db0.shape == psd_db1.shape
+    # Level should increase by approximately the calibration amount
+    assert np.isfinite(level0)
+    assert np.isfinite(level1)
+    assert abs((level1 - level0) - 10.0) < 0.05
+
+
+def test_psd_zero_signal():
+    fs = 1024
+    n = 2048
+    signal = np.zeros(n)
+    f, psd_db, level = psd(signal, fs)
+    # PSD should be -inf across all frequencies and level -inf
+    assert np.all(np.isneginf(psd_db))
+    assert np.isneginf(level)
+
+
 def test_psd_welch_sine_level():
     fs = 4096
     duration = 2.0
