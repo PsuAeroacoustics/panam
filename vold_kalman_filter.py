@@ -4,6 +4,8 @@ Multi-shaft Vold-Kalman filter implementation.
 This module implements the multi-shaft Vold-Kalman filter for extracting
 acoustic signal components at specific frequencies/orders.
 
+This module is adapted from a MATLAB implementation by Joel Sundar Rachaprolu at Penn State University.
+
 Functions
 ---------
 vold_kalman_filter(x, freq, fs, bandwidth, p, r=None)

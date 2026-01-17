@@ -5,51 +5,19 @@ Hexacopter Acoustic Signal Separation using Vold-Kalman Filter
 This script applies the Vold-Kalman filter to separate harmonic components
 of acoustic data from a reconfigurable hexacopter with 6 rotors.
 
-Based on MATLAB script: ssp_hexacopterExample/exampleHexacopter.m
-Author: Joel Rachaprolu (original MATLAB)
-Python port: GitHub Copilot
+Translated from a MATLAB script developed by Joel Sundar Rachaprolu at Penn State
+University. 
 """
 
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.io import loadmat
 from scipy.interpolate import interp1d
-from scipy.signal import butter, filtfilt
 import os
 import time
 import concurrent.futures as cf
 from vold_kalman_filter import vold_kalman_filter
-
-
-def highpass(data, cutoff_freq, fs, order=5):
-    """
-    Apply highpass Butterworth filter to data.
-    
-    Parameters
-    ----------
-    data : ndarray
-        Input signal(s), shape (n_samples,) or (n_samples, n_channels)
-    cutoff_freq : float
-        Cutoff frequency in Hz
-    fs : float
-        Sampling frequency in Hz
-    order : int, optional
-        Filter order, default 5
-    
-    Returns
-    -------
-    ndarray
-        Filtered signal with same shape as input
-    """
-    nyquist = 0.5 * fs
-    normal_cutoff = cutoff_freq / nyquist
-    b, a = butter(order, normal_cutoff, btype='high', analog=False)
-    
-    if data.ndim == 1:
-        return filtfilt(b, a, data)
-    else:
-        # Apply to each column
-        return np.apply_along_axis(lambda x: filtfilt(b, a, x), 0, data)
+from flight_acoustics import highpass
 
 
 def _process_segment(
@@ -176,7 +144,13 @@ def separate_hexacopter_acoustics(mat_file_path, mic_range=16,
     
     # Apply highpass filter at 100 Hz
     print("Applying 100 Hz highpass filter...")
-    acoustics_P = highpass(acoustics_P, 100, fs)
+    # flight_acoustics.highpass expects 1D arrays, so apply to each column
+    if acoustics_P.ndim == 1:
+        acoustics_P = highpass(acoustics_P, 100, fs)
+    else:
+        # Apply to each column independently
+        acoustics_P = np.column_stack([highpass(acoustics_P[:, i], 100, fs) 
+                                        for i in range(acoustics_P.shape[1])])
     
     # Convert mic_range from 1-based (MATLAB) to 0-based (Python)
     mic_idx = mic_range - 1
@@ -434,7 +408,7 @@ def plot_results(separated, mic_plot=1):
     # Figure 3: RPM Time History
     plt.figure(figsize=(12, 6))
     for rotor_idx in range(6):
-        plt.plot(T, rpm[:, rotor_idx], linewidth=1.2, 
+        plt.plot(T, 60.0*rpm[:, rotor_idx]/(2*np.pi), linewidth=1.2, 
                 label=rotor_labels[rotor_idx], alpha=0.7)
     
     plt.grid(True, which='both', alpha=0.3)
