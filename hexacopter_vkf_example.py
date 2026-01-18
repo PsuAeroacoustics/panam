@@ -20,6 +20,204 @@ from vold_kalman_filter import vold_kalman_filter
 from flight_acoustics import highpass
 
 
+def load_hexacopter_data(mat_file_path, downsample_factor=8):
+    """Load and downsample hexacopter acoustic and aircraft data.
+    
+    Args:
+        mat_file_path: Path to .mat file containing hexacopter data.
+        downsample_factor: Factor by which to downsample acoustic data (default: 8).
+        
+    Returns:
+        Dictionary with keys: acoustics_T, acoustics_P, aircraft_time, aircraft_rpm, fs.
+    """
+    print("Loading data from:", mat_file_path)
+    
+    mat_data = loadmat(mat_file_path, squeeze_me=True)
+    acoustics = mat_data['acoustics']
+    aircraft = mat_data['aircraft']
+    
+    acoustics_T = acoustics['T'].item()
+    acoustics_P = acoustics['P'].item()
+    aircraft_time = aircraft['time_onboard'].item()
+    aircraft_rpm = aircraft['rpm'].item()
+    
+    print(f"Original data shape: T={acoustics_T.shape}, P={acoustics_P.shape}")
+    print(f"Aircraft RPM shape: {aircraft_rpm.shape}")
+    
+    # Downsample the acoustic data
+    acoustics_T = acoustics_T[::downsample_factor]
+    acoustics_P = acoustics_P[::downsample_factor, :]
+    
+    print(f"Downsampled data shape: T={acoustics_T.shape}, P={acoustics_P.shape}")
+    
+    # Calculate sampling frequency
+    fs = int(np.round(1.0 / (acoustics_T[1] - acoustics_T[0])))
+    print(f"Sampling frequency: {fs} Hz")
+    
+    return {
+        'acoustics_T': acoustics_T,
+        'acoustics_P': acoustics_P,
+        'aircraft_time': aircraft_time,
+        'aircraft_rpm': aircraft_rpm,
+        'fs': fs
+    }
+
+
+def apply_highpass_filter(acoustics_P, cutoff_freq, fs):
+    """Apply highpass filter to acoustic pressure signals.
+    
+    Args:
+        acoustics_P: Acoustic pressure array, shape (n_samples, n_mics).
+        cutoff_freq: Highpass filter cutoff frequency in Hz.
+        fs: Sampling frequency in Hz.
+        
+    Returns:
+        Filtered acoustic pressure array with same shape as input.
+    """
+    print(f"Applying {cutoff_freq} Hz highpass filter...")
+    
+    if acoustics_P.ndim == 1:
+        return highpass(acoustics_P, cutoff_freq, fs)
+    else:
+        # Apply to each column independently
+        return np.column_stack([highpass(acoustics_P[:, i], cutoff_freq, fs) 
+                                for i in range(acoustics_P.shape[1])])
+
+
+def interpolate_rpm_to_acoustic_time(aircraft_time, aircraft_rpm, acoustics_T):
+    """Interpolate RPM data to acoustic sampling times.
+    
+    Args:
+        aircraft_time: Aircraft data time vector.
+        aircraft_rpm: RPM array, shape (n_time, n_rotors) or (n_time,).
+        acoustics_T: Acoustic time vector to interpolate to.
+        
+    Returns:
+        Interpolated RPM array, shape (len(acoustics_T), 6).
+    """
+    print(f"Interpolating RPM data...")
+    
+    # Handle single rotor case
+    if aircraft_rpm.ndim == 1:
+        aircraft_rpm = np.tile(aircraft_rpm[:, np.newaxis], (1, 6))
+    
+    rpmo = np.zeros((len(acoustics_T), 6))
+    for rotor_idx in range(6):
+        interp_func = interp1d(aircraft_time, aircraft_rpm[:, rotor_idx], 
+                               kind='cubic', fill_value='extrapolate')
+        rpmo[:, rotor_idx] = interp_func(acoustics_T)
+    
+    print(f"RPM range: {rpmo.min():.1f} - {rpmo.max():.1f} rad/s")
+    return rpmo
+
+
+def setup_segmentation(n_samples, segment_fraction=0.01, overlap_factor=4, stride_factor=10):
+    """Setup segment boundaries for processing long signals.
+    
+    Args:
+        n_samples: Total number of samples in signal.
+        segment_fraction: Fraction of signal for increment size (default: 0.01).
+        overlap_factor: Multiplier for cutoff region size (default: 4).
+        stride_factor: Multiplier for segment stride (default: 10).
+        
+    Returns:
+        Tuple of (spacing, cutoff, increment) where spacing is list of segment boundaries.
+    """
+    increment = int(np.floor(segment_fraction * n_samples))
+    cutoff = overlap_factor * increment
+    spacing = list(range(cutoff, n_samples - cutoff, stride_factor * increment))
+    spacing.append(n_samples - cutoff)  # Add final point
+    
+    total_samples = sum(spacing[i+1] - spacing[i] for i in range(len(spacing)-1))
+    
+    print(f"\nProcessing {len(spacing)-1} segments")
+    print(f"Increment: {increment}, Cutoff: {cutoff}")
+    print(f"Total output samples: {total_samples}")
+    
+    return spacing, cutoff, increment
+
+
+def process_segment_serial(seg_idx, spacing, cutoff, xo, to, rpmo, orders, no_blade,
+                          fs, bw_percent, min_bw, max_bw, p, solver, use_coupling,
+                          total_spacing, total_start):
+    """Process a single segment in serial mode.
+    
+    Args:
+        seg_idx: Current segment index.
+        spacing: List of segment boundary indices.
+        cutoff: Number of samples to exclude at boundaries.
+        xo: Original signal array, shape (n_samples, n_mics).
+        to: Time vector.
+        rpmo: RPM array, shape (n_samples, 6_rotors).
+        orders: Iterable of shaft orders to extract.
+        no_blade: Number of blades per rotor.
+        fs: Sampling frequency in Hz.
+        bw_percent: Bandwidth as percentage of frequency.
+        min_bw: Minimum bandwidth in Hz.
+        max_bw: Maximum bandwidth in Hz.
+        p: VK filter order.
+        solver: Sparse solver backend.
+        use_coupling: Whether to include cross-order coupling.
+        total_spacing: Total number of segments.
+        total_start: Start time for progress tracking.
+        
+    Returns:
+        Tuple of (separated_signals, time, rpm, original, seg_size).
+    """
+    seg_start = time.time()
+    print(f"\nSegment {seg_idx+1}/{total_spacing}")
+
+    # Extract segment with cutoff padding
+    start_idx = spacing[seg_idx] - cutoff
+    end_idx = spacing[seg_idx + 1] + cutoff
+
+    x_src = xo[start_idx:end_idx, :]
+    x = x_src.copy()
+    t = to[start_idx:end_idx]
+    rpm = rpmo[start_idx:end_idx, :]
+
+    seg_size = len(x) - 2*cutoff
+    n_mics = x.shape[1]
+
+    tmp_P_ordLoop = np.zeros((seg_size, 6, n_mics))
+
+    print(f"  Processing {len(list(orders))} orders (all 6 rotors per call)...")
+
+    for order in orders:
+        freq_all_rotors = rpm * order * no_blade / (2 * np.pi)
+        bandwidth_all = np.clip(freq_all_rotors * bw_percent, min_bw, max_bw)
+
+        for mic in range(n_mics):
+            y, ph, _ = vold_kalman_filter(
+                x[:, mic],
+                freq_all_rotors,
+                fs,
+                bandwidth_all,
+                p,
+                solver=solver,
+                use_coupling=use_coupling,
+            )
+
+            components_full = np.real(y * ph)
+            for rotor_idx in range(6):
+                tmp_P_ordLoop[:, rotor_idx, mic] += components_full[cutoff:-cutoff, rotor_idx]
+            x[:, mic] -= np.sum(components_full, axis=1)
+
+    seg_time = time.time() - seg_start
+    elapsed = time.time() - total_start
+    avg_time = elapsed / (seg_idx + 1)
+    remaining = avg_time * (total_spacing - 1 - seg_idx)
+    print(f"  Segment time: {seg_time:.1f}s, Est. remaining: {remaining:.0f}s")
+    
+    return (
+        tmp_P_ordLoop,
+        t[cutoff:-cutoff],
+        rpm[cutoff:-cutoff, :],
+        x_src[cutoff:-cutoff, :],
+        seg_size
+    )
+
+
 def _process_segment(
     seg_idx,
     x_src,
@@ -36,7 +234,27 @@ def _process_segment(
     use_coupling,
     cutoff,
 ):
-    """Process a single segment for parallel execution."""
+    """Process a single segment for parallel execution.
+    
+    Args:
+        seg_idx: Segment index for result ordering.
+        x_src: Source signal array, shape (n_samples, n_mics).
+        t: Time vector for segment.
+        rpm: RPM array, shape (n_samples, 6_rotors).
+        orders: Tuple of shaft orders to extract.
+        no_blade: Number of blades per rotor.
+        fs: Sampling frequency in Hz.
+        bw_percent: Bandwidth as percentage of frequency.
+        min_bw: Minimum bandwidth in Hz.
+        max_bw: Maximum bandwidth in Hz.
+        p: VK filter order.
+        solver: Sparse solver backend.
+        use_coupling: Whether to include cross-order coupling.
+        cutoff: Number of samples to exclude at boundaries.
+        
+    Returns:
+        Tuple of (seg_idx, separated_signals, time, rpm, original).
+    """
     x = x_src.copy()
     seg_size = len(x) - 2 * cutoff
     n_mics = x.shape[1]
@@ -113,49 +331,21 @@ def separate_hexacopter_acoustics(mat_file_path, mic_range=16,
         - 'original': original signal before separation
         - 'fs': sampling frequency
     """
+    # Load and preprocess data
+    data = load_hexacopter_data(mat_file_path)
+    acoustics_T = data['acoustics_T']
+    acoustics_P = data['acoustics_P']
+    aircraft_time = data['aircraft_time']
+    aircraft_rpm = data['aircraft_rpm']
+    fs = data['fs']
     
-    print("Loading data from:", mat_file_path)
-    
-    # Load the .mat file
-    mat_data = loadmat(mat_file_path, squeeze_me=True)
-    
-    # Extract acoustics and aircraft data
-    acoustics = mat_data['acoustics']
-    aircraft = mat_data['aircraft']
-    
-    # Get fields from structured arrays
-    acoustics_T = acoustics['T'].item()
-    acoustics_P = acoustics['P'].item()
-    aircraft_time = aircraft['time_onboard'].item()
-    aircraft_rpm = aircraft['rpm'].item()
-    
-    print(f"Original data shape: T={acoustics_T.shape}, P={acoustics_P.shape}")
-    print(f"Aircraft RPM shape: {aircraft_rpm.shape}")
-    
-    # Downsample the acoustic data (every 8th sample)
-    acoustics_T = acoustics_T[::8]
-    acoustics_P = acoustics_P[::8, :]
-    
-    print(f"Downsampled data shape: T={acoustics_T.shape}, P={acoustics_P.shape}")
-    
-    # Calculate sampling frequency
-    fs = int(np.round(1.0 / (acoustics_T[1] - acoustics_T[0])))
-    print(f"Sampling frequency: {fs} Hz")
-    
-    # Apply highpass filter at 100 Hz
-    print("Applying 100 Hz highpass filter...")
-    # flight_acoustics.highpass expects 1D arrays, so apply to each column
-    if acoustics_P.ndim == 1:
-        acoustics_P = highpass(acoustics_P, 100, fs)
-    else:
-        # Apply to each column independently
-        acoustics_P = np.column_stack([highpass(acoustics_P[:, i], 100, fs) 
-                                        for i in range(acoustics_P.shape[1])])
+    # Apply highpass filter
+    acoustics_P = apply_highpass_filter(acoustics_P, 100, fs)
     
     # Convert mic_range from 1-based (MATLAB) to 0-based (Python)
     mic_idx = mic_range - 1
     
-    # Extract time, pressure, and interpolate RPM
+    # Extract time and pressure for selected microphone
     to = acoustics_T
     xo = acoustics_P[:, mic_idx:mic_idx+1]  # Keep 2D for consistency
     
@@ -163,28 +353,11 @@ def separate_hexacopter_acoustics(mat_file_path, mic_range=16,
     print(f"Signal shape: {xo.shape}")
     
     # Interpolate RPM to acoustic time samples
-    # aircraft_rpm should be shape (n_time, 6_rotors)
-    if aircraft_rpm.ndim == 1:
-        # Single rotor case, replicate to 6 rotors
-        aircraft_rpm = np.tile(aircraft_rpm[:, np.newaxis], (1, 6))
-    
-    print(f"Interpolating RPM data...")
-    rpmo = np.zeros((len(to), 6))
-    for rotor_idx in range(6):
-        interp_func = interp1d(aircraft_time, aircraft_rpm[:, rotor_idx], 
-                               kind='cubic', fill_value='extrapolate')
-        rpmo[:, rotor_idx] = interp_func(to)
-    
-    print(f"RPM range: {rpmo.min():.1f} - {rpmo.max():.1f} rad/s")
+    rpmo = interpolate_rpm_to_acoustic_time(aircraft_time, aircraft_rpm, to)
     
     # Set up segmentation
-    increment = int(np.floor(0.01 * len(to)))
-    cutoff = 4 * increment
-    spacing = list(range(cutoff, len(to) - cutoff, 10 * increment))
-    spacing.append(len(to) - cutoff)  # Add final point
+    spacing, cutoff, increment = setup_segmentation(len(to))
     
-    print(f"\nProcessing {len(spacing)-1} segments")
-    print(f"Increment: {increment}, Cutoff: {cutoff}")
     print(f"Extracting orders: {list(orders)}")
     
     # Number of blades per rotor
@@ -192,7 +365,6 @@ def separate_hexacopter_acoustics(mat_file_path, mic_range=16,
     
     # Pre-calculate total output size for efficiency
     total_samples = sum(spacing[i+1] - spacing[i] for i in range(len(spacing)-1))
-    print(f"Total output samples: {total_samples}")
     
     # Pre-allocate result arrays (much faster than appending lists)
     separated_P = np.zeros((total_samples, 6, xo.shape[1]))
@@ -255,85 +427,18 @@ def separate_hexacopter_acoustics(mat_file_path, mic_range=16,
         # Serial processing
         output_pos = 0
         for seg_idx in range(len(spacing) - 1):
-            seg_start = time.time()
-            print(f"\nSegment {seg_idx+1}/{len(spacing)-1}")
-
-            # Extract segment with cutoff padding
-            start_idx = spacing[seg_idx] - cutoff
-            end_idx = spacing[seg_idx + 1] + cutoff
-
-            # IMPORTANT: NumPy slicing returns views. We subtract extracted components
-            # from `x` in-place during VKF, so `x` must be a copy to avoid mutating
-            # `xo` (the original signal) and corrupting later segments.
-            x_src = xo[start_idx:end_idx, :]
-            x = x_src.copy()
-
-            t = to[start_idx:end_idx]
-            rpm = rpmo[start_idx:end_idx, :]
-
-            # Calculate segment size
-            seg_size = len(x) - 2*cutoff
-
-            # Save original signal to pre-allocated array
-            separated_original[output_pos:output_pos+seg_size, :] = x_src[cutoff:-cutoff, :]
-
-            # Number of microphones
-            n_mics = x.shape[1]
-
-            # Initialize array for separated signals (6 rotors)
-            tmp_P_ordLoop = np.zeros((seg_size, 6, n_mics))
-
-            print(f"  Processing {len(orders)} orders (all 6 rotors per call)...")
-
-            # Process each order - process all 6 rotors at once per order
-            for order in orders:
-                # Calculate frequency for all 6 rotors: shape (n_samples, 6)
-                # rpm is in rad/s, so divide by 2*pi to convert to Hz
-                freq_all_rotors = rpm * order * no_blade / (2 * np.pi)
-
-                # Set bandwidth as percentage of frequency
-                bandwidth_all = freq_all_rotors * bw_percent
-
-                # Apply floor and ceiling to bandwidth matrix
-                bandwidth_all = np.clip(bandwidth_all, min_bw, max_bw)
-
-                # Apply VK filter for each microphone
-                # Process all 6 rotors at once!
-                for mic in range(n_mics):
-                    y, ph, _ = vold_kalman_filter(
-                        x[:, mic],
-                        freq_all_rotors,
-                        fs,
-                        bandwidth_all,
-                        p,
-                        solver=solver,
-                        use_coupling=use_coupling,
-                    )
-
-                    # y and ph have shape (n_samples, 6) - one column per rotor
-                    # Reconstruct the signal for all rotors
-                    components_full = np.real(y * ph)  # shape (n_samples, 6)
-
-                    # Extract the center portion (excluding cutoff) and add to accumulated signal
-                    for rotor_idx in range(6):
-                        tmp_P_ordLoop[:, rotor_idx, mic] += components_full[cutoff:-cutoff, rotor_idx]
-
-                    # Remove all rotor components from the signal
-                    x[:, mic] -= np.sum(components_full, axis=1)
-
+            tmp_P, t_center, rpm_center, orig_center, seg_size = process_segment_serial(
+                seg_idx, spacing, cutoff, xo, to, rpmo, orders, no_blade,
+                fs, bw_percent, min_bw, max_bw, p, solver, use_coupling,
+                len(spacing) - 1, total_start
+            )
+            
             # Store results in pre-allocated arrays
-            separated_P[output_pos:output_pos+seg_size, :, :] = tmp_P_ordLoop
-            separated_T[output_pos:output_pos+seg_size] = t[cutoff:-cutoff]
-            separated_rpm[output_pos:output_pos+seg_size, :] = rpm[cutoff:-cutoff, :]
-
-            # Update position
+            separated_P[output_pos:output_pos+seg_size, :, :] = tmp_P
+            separated_T[output_pos:output_pos+seg_size] = t_center
+            separated_rpm[output_pos:output_pos+seg_size, :] = rpm_center
+            separated_original[output_pos:output_pos+seg_size, :] = orig_center
             output_pos += seg_size
-
-            seg_time = time.time() - seg_start
-            elapsed = time.time() - total_start
-            avg_time = elapsed / (seg_idx + 1)
-            remaining = avg_time * (len(spacing) - 2 - seg_idx)
-            print(f"  Segment time: {seg_time:.1f}s, Est. remaining: {remaining:.0f}s")
     
     total_time = time.time() - total_start
     print(f"\nTotal processing time: {total_time:.1f}s ({total_time/60:.1f} min)")
