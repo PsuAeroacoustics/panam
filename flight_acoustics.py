@@ -499,19 +499,6 @@ def dBAw(f):
     Returns: weighting (in dB) at each frequency
     """
     f = np.asarray(f, dtype=float)
-<<<<<<< HEAD
-    # Avoid division by zero for f=0; A-weighting is undefined at DC
-    # Set very low frequency (f <= 0) to a small positive value to avoid inf
-    f_safe = np.where(f > 0, f, 1e-10)
-    
-    aweights = (10.0 * np.log10(1.562339 * f_safe ** 4.0 / ((f_safe ** 2.0 + 107.65265 ** 2.0) * (f_safe ** 2.0 + 737.86223 ** 2.0)))
-                + 10.0 * np.log10(2.242881E16 * f_safe ** 4.0 /
-                                  ((f_safe ** 2.0 + 20.598997 ** 2.0) ** 2.0 * (f_safe ** 2.0 + 12194.22 ** 2.0) ** 2.0)))
-    
-    # For f <= 0, set the A-weighting to a very large negative number (effectively -inf for attenuation)
-    aweights = np.where(f > 0, aweights, -200.0)
-    
-=======
     aweights = np.full_like(f, -300.0, dtype=float)
     pos = f > 0
     if np.any(pos):
@@ -529,7 +516,6 @@ def dBAw(f):
                 / ((fp ** 2.0 + 20.598997 ** 2.0) ** 2.0 * (fp ** 2.0 + 12194.22 ** 2.0) ** 2.0)
             )
         )
->>>>>>> origin/master
     return aweights
 
 
