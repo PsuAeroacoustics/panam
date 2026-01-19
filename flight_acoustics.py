@@ -4,8 +4,7 @@ from configparser import ConfigParser
 from glob import glob
 
 import numpy as np
-import acoustics
-from acoustics.atmosphere import Atmosphere
+from panam_acoustics.atmosphere import Atmosphere
 import h5py
 from typing import cast
 import openpyxl
@@ -21,6 +20,7 @@ from pyuff import UFF
 from pymap3d import geodetic2enu, enu2geodetic
 
 import unit_conversion
+from panam_acoustics import filters as pa_filters
 
 style.use('fivethirtyeight')
 matplotlib.rcParams.update({'mathtext.fontset': 'dejavuserif'})
@@ -499,12 +499,23 @@ def dBAw(f):
     Returns: weighting (in dB) at each frequency
     """
     f = np.asarray(f, dtype=float)
-    # Avoid division by zero for f=0; A-weighting is undefined at DC -- just set the correction to -inf
-    f_safe = np.where(f > 0, f, -np.inf)
-    
-    aweights = (10.0 * np.log10(1.562339 * f_safe ** 4.0 / ((f_safe ** 2.0 + 107.65265 ** 2.0) * (f_safe ** 2.0 + 737.86223 ** 2.0)))
-                + 10.0 * np.log10(2.242881E16 * f_safe ** 4.0 /
-                                  ((f_safe ** 2.0 + 20.598997 ** 2.0) ** 2.0 * (f_safe ** 2.0 + 12194.22 ** 2.0) ** 2.0)))
+    aweights = np.full_like(f, -300.0, dtype=float)
+    pos = f > 0
+    if np.any(pos):
+        fp = f[pos]
+        aweights[pos] = (
+            10.0 * np.log10(
+                1.562339
+                * fp ** 4.0
+                / ((fp ** 2.0 + 107.65265 ** 2.0) * (fp ** 2.0 + 737.86223 ** 2.0))
+            )
+            + 10.0
+            * np.log10(
+                2.242881e16
+                * fp ** 4.0
+                / ((fp ** 2.0 + 20.598997 ** 2.0) ** 2.0 * (fp ** 2.0 + 12194.22 ** 2.0) ** 2.0)
+            )
+        )
     return aweights
 
 
@@ -603,7 +614,7 @@ def highpass(x, fpass, fs, zero_phase=True):
 
     Returns: filtered signal
     """
-    return np.array(acoustics.Signal(x, fs).highpass(fpass, zero_phase=zero_phase))
+    return np.array(pa_filters.highpass(x, fpass, fs, zero_phase=zero_phase))
 
 
 def lowpass(x, fpass, fs, zero_phase=True):
@@ -617,7 +628,7 @@ def lowpass(x, fpass, fs, zero_phase=True):
 
     Returns: filtered signal
     """
-    return np.array(acoustics.Signal(x, fs).lowpass(fpass, zero_phase=zero_phase))
+    return np.array(pa_filters.lowpass(x, fpass, fs, zero_phase=zero_phase))
 
 
 def art2umapr(phi, theta):

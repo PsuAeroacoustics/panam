@@ -11,5 +11,9 @@
         "."
     ],
     "python.testing.unittestEnabled": false,
-    "python.testing.pytestEnabled": true
+    "python.testing.pytestEnabled": true,
+    "chat.tools.terminal.autoApprove": {
+        "/Users/egg/Documents/Code/Python/panam/.venv/bin/python": true,
+        "PY": true
+    }
 }
