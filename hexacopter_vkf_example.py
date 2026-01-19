@@ -20,6 +20,30 @@ from vold_kalman_filter import vold_kalman_filter
 from flight_acoustics import highpass
 
 
+# ----------------------------
+# Analysis flags (edit here)
+# ----------------------------
+# Data
+MAT_FILE = 'example_data/F100_20_P#1[FA1FZC-3.h5].mat'
+DOWNSAMPLE_FACTOR = 8
+HIGHPASS_CUTOFF_HZ = 100
+
+# VKF settings
+MIC_RANGE = 16
+VKF_ORDERS = list(range(2, 31))
+VKF_P = 1
+VKF_MIN_BW = 3
+VKF_MAX_BW = 9
+VKF_BW_PERCENT = 0.05
+VKF_SOLVER = "auto"
+VKF_USE_COUPLING = True
+VKF_N_JOBS = None  # defaults to CPU count
+
+# Plot settings
+PLOT_INTERACTIVE = False
+PLOT_MIC = 1
+ZOOM_TIME_WINDOW = (108, 108.2)
+
 def load_hexacopter_data(mat_file_path, downsample_factor=8):
     """Load and downsample hexacopter acoustic and aircraft data.
     
@@ -294,7 +318,8 @@ def separate_hexacopter_acoustics(mat_file_path, mic_range=16,
                                    orders=range(2, 31), p=1,
                                    min_bw=3, max_bw=9, bw_percent=0.05,
                                    solver="auto", use_coupling=True,
-                                   n_jobs=None):
+                                   n_jobs=None, downsample_factor=8,
+                                   highpass_cutoff=100):
     """
     Separate hexacopter acoustic signals using Vold-Kalman filtering.
     
@@ -332,7 +357,7 @@ def separate_hexacopter_acoustics(mat_file_path, mic_range=16,
         - 'fs': sampling frequency
     """
     # Load and preprocess data
-    data = load_hexacopter_data(mat_file_path)
+    data = load_hexacopter_data(mat_file_path, downsample_factor=downsample_factor)
     acoustics_T = data['acoustics_T']
     acoustics_P = data['acoustics_P']
     aircraft_time = data['aircraft_time']
@@ -340,7 +365,7 @@ def separate_hexacopter_acoustics(mat_file_path, mic_range=16,
     fs = data['fs']
     
     # Apply highpass filter
-    acoustics_P = apply_highpass_filter(acoustics_P, 100, fs)
+    acoustics_P = apply_highpass_filter(acoustics_P, highpass_cutoff, fs)
     
     # Convert mic_range from 1-based (MATLAB) to 0-based (Python)
     mic_idx = mic_range - 1
@@ -458,7 +483,14 @@ def separate_hexacopter_acoustics(mat_file_path, mic_range=16,
     return result
 
 
-def plot_results(separated, mic_plot=1):
+def plot_results(
+    separated,
+    mic_plot=1,
+    save_dir="demo_plots",
+    filename_prefix="hexa",
+    show_plots=True,
+    zoom_time_window=(108, 108.2),
+):
     """
     Plot the original, separated, and residual signals.
     
@@ -482,9 +514,9 @@ def plot_results(separated, mic_plot=1):
     # Sum all rotor components
     summed_separated = np.sum(P_separated, axis=1)
 
-    # Residual
+    # Show time signals
     residual = original - summed_separated
-    plt.figure(figsize=(12, 6))
+    fig1 = plt.figure(figsize=(12, 6))
     plt.plot(T, original, linewidth=1.2, label='Original', alpha=0.7)
     plt.plot(T, summed_separated, linewidth=1.2, label='Separated (sum)', alpha=0.7)
     plt.plot(T, residual, linewidth=1.2, label='Residual', alpha=0.7)
@@ -493,9 +525,22 @@ def plot_results(separated, mic_plot=1):
     plt.xlabel('Time, s')
     plt.ylabel('Acoustic Pressure, Pa')
     plt.tight_layout()
+
+    # Zoomed time signals
+    fig1_zoom = plt.figure(figsize=(12, 6))
+    plt.plot(T, original, linewidth=1.2, label='Original', alpha=0.7)
+    plt.plot(T, summed_separated, linewidth=1.2, label='Separated (sum)', alpha=0.7)
+    plt.plot(T, residual, linewidth=1.2, label='Residual', alpha=0.7)
+    plt.grid(True, which='both', alpha=0.3)
+    plt.legend()
+    plt.xlabel('Time, s')
+    plt.ylabel('Acoustic Pressure, Pa')
+    if zoom_time_window is not None:
+        plt.xlim(*zoom_time_window)
+    plt.tight_layout()
     
     # Figure 2: Individual rotor components (offset for visibility)
-    plt.figure(figsize=(12, 8))
+    fig2 = plt.figure(figsize=(12, 8))
     offsets = [0.5, 0.25, 0, -0.25, -0.5, -0.75]
     rotor_labels = ['R1', 'R2', 'R3', 'R4', 'R5', 'R6']
     
@@ -510,8 +555,8 @@ def plot_results(separated, mic_plot=1):
     plt.title(f'Separated Rotor Components - Microphone {mic_plot}')
     plt.tight_layout()
     
-    # Figure 3: RPM Time History
-    plt.figure(figsize=(12, 6))
+    # RPM Time History
+    fig3 = plt.figure(figsize=(12, 6))
     for rotor_idx in range(6):
         plt.plot(T, 60.0*rpm[:, rotor_idx]/(2*np.pi), linewidth=1.2, 
                 label=rotor_labels[rotor_idx], alpha=0.7)
@@ -522,13 +567,21 @@ def plot_results(separated, mic_plot=1):
     plt.ylabel('Rotor Speed, RPM')
     plt.title('Rotor RPM Time History')
     plt.tight_layout()
+
+    if save_dir:
+        os.makedirs(save_dir, exist_ok=True)
+        fig1.savefig(os.path.join(save_dir, f"{filename_prefix}_original_separated.png"), dpi=300)
+        fig1_zoom.savefig(os.path.join(save_dir, f"{filename_prefix}_original_separated_zoom.png"), dpi=300)
+        fig2.savefig(os.path.join(save_dir, f"{filename_prefix}_rotor_components.png"), dpi=300)
+        fig3.savefig(os.path.join(save_dir, f"{filename_prefix}_rpm_time_history.png"), dpi=300)
     
-    plt.show()
+    if show_plots:
+        plt.show()
 
 
 if __name__ == "__main__":
     # Path to the data file
-    mat_file = 'example_data/F100_20_P#1[FA1FZC-3.h5].mat'
+    mat_file = MAT_FILE
     
     # Check if file exists
     if not os.path.exists(mat_file):
@@ -541,29 +594,24 @@ if __name__ == "__main__":
     print("Using Vold-Kalman Filter")
     print("="*70)
     
-    # Process the hexacopter data
-    # Parameters match MATLAB script:
-    # - mic_range=16 (microphone 16)
-    # - orders 2-30
-    # - p=1 (filter order)
-    # - min_bw=3 Hz, max_bw=9 Hz
-    # - 5% bandwidth
-    
+    # Perform separation    
     solver = "auto"  # prefers Pardiso/UMFPACK if available
     use_coupling = True  # set False for faster but less accurate results
     n_jobs = None  # defaults to CPU count
 
     separated = separate_hexacopter_acoustics(
         mat_file,
-        mic_range=16,
-        orders=range(2, 31),
-        p=1,
-        min_bw=3,
-        max_bw=9,
-        bw_percent=0.05,
+        mic_range=MIC_RANGE,
+        orders=VKF_ORDERS,
+        p=VKF_P,
+        min_bw=VKF_MIN_BW,
+        max_bw=VKF_MAX_BW,
+        bw_percent=VKF_BW_PERCENT,
         solver=solver,
         use_coupling=use_coupling,
-        n_jobs=n_jobs
+        n_jobs=n_jobs,
+        downsample_factor=DOWNSAMPLE_FACTOR,
+        highpass_cutoff=HIGHPASS_CUTOFF_HZ,
     )
     
     print("\n" + "="*70)
@@ -571,4 +619,9 @@ if __name__ == "__main__":
     print("="*70)
     
     # Plot results
-    plot_results(separated, mic_plot=1)
+    plot_results(
+        separated,
+        mic_plot=PLOT_MIC,
+        show_plots=PLOT_INTERACTIVE,
+        zoom_time_window=ZOOM_TIME_WINDOW,
+    )
