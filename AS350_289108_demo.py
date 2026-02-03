@@ -196,6 +196,7 @@ def main():
             apply_absorption_deprop=apply_absorption_deprop,
             atmosphere=atm,
             flip_y_for_geometry=flip_y_for_geometry,
+            return_scattered=True,
             third_octave=True,
             third_octave_fmin=max(20.0, float(hemisphere_freq_range_hz[0])),
         )
@@ -203,6 +204,7 @@ def main():
         band_centers = hemi['third_octave']['band_centers_hz']
         hemi_bands_db = hemi['third_octave']['bands_db']
         hemi_oaspl_db = hemi['oaspl_db']
+        hemi_spl_a_db = hemi['spl_a_db']
         hemi_oaspl_full_db = hemi_oaspl_db
 
         azi_grid = hemi['azi_grid_deg']
@@ -325,6 +327,7 @@ def main():
                 elv_grid_deg=elv_grid,
                 hemisphere_bands_db=hemi_bands_db,
                 hemisphere_oaspl_lt2khz_db=hemi_oaspl_db,
+                hemisphere_splA_lt2khz_db=hemi_spl_a_db,
                 hemisphere_oaspl_fullband_db=hemi_oaspl_full_db,
                 r_ref_ft=r_ref,
                 rmax_deg=hemisphere_rmax,

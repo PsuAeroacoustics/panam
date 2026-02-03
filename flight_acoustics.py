@@ -6,7 +6,7 @@ from glob import glob
 import numpy as np
 from panam_acoustics.atmosphere import Atmosphere
 import h5py
-from typing import cast
+from typing import Any, Optional, cast
 import openpyxl
 import scipy.signal
 from scipy.special import erf
@@ -394,8 +394,11 @@ def depropagate_hemisphere(
         apply_absorption_deprop=False,
         atmosphere=Atmosphere(temperature=293.15, pressure=101.325, relative_humidity=20.0),
         flip_y_for_geometry=False,
+        return_scattered=False,
         third_octave=False,
         third_octave_fmin=20.0,
+        narrowband=False,
+        narrowband_stride=1,
 ):
     """Generate an acoustic hemisphere from microphone time series and vehicle tracking data.
 
@@ -441,10 +444,14 @@ def depropagate_hemisphere(
     Returns:
         dict with keys:
             'azi_grid_deg', 'elv_grid_deg',
-            'oaspl_db' (2D grid),
-            'scattered' (dict of scattered az/el/power samples),
-            and when third_octave=True:
-            'third_octave' (dict with band centers and band grids).
+            'oaspl_db' (2D grid, unweighted),
+            'spl_a_db' (2D grid, A-weighted overall level in dBA),
+            and optionally:
+                        - when return_scattered=True: 'scattered' (dict of scattered az/el/power samples)
+                            If third_octave/narrowband are enabled, the corresponding scattered data are
+                            also included under 'scattered'.
+            - when third_octave=True: 'third_octave' (band centers + band grids)
+            - when narrowband=True: 'narrowband' (frequency + PSD grids)
     """
 
     mic_locations = np.asarray(mic_locations, dtype=float)
@@ -528,10 +535,16 @@ def depropagate_hemisphere(
     fs0 = float(np.round(1.0 / (t0_vec[1] - t0_vec[0])))
     fmin, fmax = float(freq_range[0]), float(freq_range[1])
 
+    # Narrowband output frequency decimation
+    narrowband_stride = int(narrowband_stride)
+    if narrowband_stride < 1:
+        raise ValueError('narrowband_stride must be >= 1')
+
     # Accumulate scattered samples
     fazi_list = []
     felv_list = []
     oaspl_power_list = []
+    spl_a_power_list = []
     if third_octave:
         # Precompute band centers (same definition as in third_octave_band_levels)
         k = np.arange(-50, 50)
@@ -541,6 +554,10 @@ def depropagate_hemisphere(
     else:
         band_centers = np.array([], dtype=float)
         band_power_lists = []
+
+    psd_power_lists = []
+    f_sel_master = None
+    Aweight_db = None
 
     # Precompute absorption reference range (meters)
     r_ref_m = None
@@ -560,7 +577,18 @@ def depropagate_hemisphere(
         f_sel = f[fmask]
         if f_sel.size < 2:
             raise ValueError('Selected frequency range does not contain enough bins')
+
+        if f_sel_master is None:
+            f_sel_master = f_sel
+        else:
+            if f_sel_master.shape != f_sel.shape or not np.allclose(f_sel_master, f_sel, rtol=0.0, atol=0.0):
+                raise ValueError('All microphones must have identical frequency grids for hemisphere generation')
+
         df = float(f_sel[1] - f_sel[0])
+
+        if Aweight_db is None:
+            Aweight_db = np.array([dBAw(fi) for fi in f_sel], dtype=float)
+        Aweight_lin = 10.0 ** (Aweight_db / 10.0)
 
         alpha_db_per_m = None
         if apply_absorption_deprop:
@@ -605,10 +633,15 @@ def depropagate_hemisphere(
 
         # OASPL power over selected frequency range
         power_oaspl = np.sum(psd_v_lin * df, axis=0)
+        power_spl_a = np.sum((psd_v_lin * Aweight_lin[:, None]) * df, axis=0)
 
         fazi_list.append(az_v)
         felv_list.append(el_v)
         oaspl_power_list.append(power_oaspl)
+        spl_a_power_list.append(power_spl_a)
+
+        if narrowband:
+            psd_power_lists.append(psd_v_lin)
 
         if third_octave:
             # Integrate to third-octave bands in linear power
@@ -616,9 +649,12 @@ def depropagate_hemisphere(
                 f_lower = fc / (2.0 ** (1.0 / 6.0))
                 f_upper = fc * (2.0 ** (1.0 / 6.0))
                 band_mask = np.logical_and(f_sel >= f_lower, f_sel < f_upper)
-                if not np.any(band_mask):
-                    continue
-                band_power = np.sum(psd_v_lin[band_mask, :] * df, axis=0)
+                if np.any(band_mask):
+                    band_power = np.sum(psd_v_lin[band_mask, :] * df, axis=0)
+                else:
+                    # Keep shape/point counts consistent even if a band is empty at the
+                    # selected frequency resolution/range. This band will evaluate to -inf dB.
+                    band_power = np.zeros(tobs_v.size, dtype=float)
                 band_power_lists[ib].append(band_power)
 
     if len(oaspl_power_list) == 0:
@@ -627,6 +663,7 @@ def depropagate_hemisphere(
     fazi_pts = np.concatenate(fazi_list)
     felv_pts = np.concatenate(felv_list)
     P_oaspl_pts = np.concatenate(oaspl_power_list)
+    P_spl_a_pts = np.concatenate(spl_a_power_list)
 
     # Enforce azimuth periodicity: duplicate scattered points at ±360 and close seam column
     fazi_ext = np.concatenate((fazi_pts, fazi_pts + 360.0, fazi_pts - 360.0))
@@ -639,15 +676,17 @@ def depropagate_hemisphere(
     if oaspl_db.shape[1] > 1:
         oaspl_db[:, -1] = oaspl_db[:, 0]
 
+    P_spl_a_ext = np.concatenate((P_spl_a_pts, P_spl_a_pts, P_spl_a_pts))
+    P_spl_a_grid = shepIDW(ELV_GRID, AZI_GRID, felv_ext, fazi_ext, P_spl_a_ext, rmax=float(rmax))
+    spl_a_db = 10.0 * np.log10(np.maximum(P_spl_a_grid, eps))
+    if spl_a_db.shape[1] > 1:
+        spl_a_db[:, -1] = spl_a_db[:, 0]
+
     out = {
         'azi_grid_deg': azi_grid_deg,
         'elv_grid_deg': elv_grid_deg,
         'oaspl_db': oaspl_db,
-        'scattered': {
-            'azi_deg': fazi_pts,
-            'elv_deg': felv_pts,
-            'oaspl_power': P_oaspl_pts,
-        },
+        'spl_a_db': spl_a_db,
         'metadata': {
             'r_ref': float(r_ref),
             'length_units': str(length_units),
@@ -658,8 +697,21 @@ def depropagate_hemisphere(
             'rmax_deg': float(rmax),
             'apply_absorption_deprop': bool(apply_absorption_deprop),
             'flip_y_for_geometry': bool(flip_y_for_geometry),
+            'return_scattered': bool(return_scattered),
+            'narrowband': bool(narrowband),
+            'narrowband_stride': int(narrowband_stride),
         }
     }
+
+    scattered: Optional[dict[str, Any]] = None
+    if return_scattered:
+        scattered = cast(dict[str, Any], {
+            'azi_deg': fazi_pts,
+            'elv_deg': felv_pts,
+            'oaspl_power': P_oaspl_pts,
+            'spl_a_power': P_spl_a_pts,
+        })
+        out['scattered'] = scattered
 
     if third_octave:
         # Concatenate scattered band powers and interpolate per band
@@ -668,6 +720,8 @@ def depropagate_hemisphere(
             if len(band_power_lists[ib]) == 0:
                 continue
             P_band_pts = np.concatenate(band_power_lists[ib])
+            if P_band_pts.size != fazi_pts.size:
+                raise ValueError('Internal error: third-octave sample count does not match scattered angle count')
             P_band_ext = np.concatenate((P_band_pts, P_band_pts, P_band_pts))
             P_band_grid = shepIDW(ELV_GRID, AZI_GRID, felv_ext, fazi_ext, P_band_ext, rmax=float(rmax))
             band_grids_db[ib, :, :] = 10.0 * np.log10(np.maximum(P_band_grid, eps))
@@ -677,6 +731,53 @@ def depropagate_hemisphere(
             'band_centers_hz': band_centers,
             'bands_db': band_grids_db,
         }
+
+        if return_scattered:
+            assert scattered is not None
+            if band_centers.size > 0:
+                band_power_pts = np.vstack([np.concatenate(band_power_lists[ib]) for ib in range(band_centers.size)])
+                if band_power_pts.shape[1] != fazi_pts.size:
+                    raise ValueError('Internal error: third-octave sample count does not match scattered angle count')
+                scattered['third_octave'] = {
+                    'band_centers_hz': band_centers,
+                    'bands_db': 10.0 * np.log10(np.maximum(band_power_pts, eps)),
+                }
+            else:
+                scattered['third_octave'] = {
+                    'band_centers_hz': band_centers,
+                    'bands_db': np.empty((0, fazi_pts.size), dtype=float),
+                }
+
+    if narrowband:
+        assert f_sel_master is not None
+        # Concatenate scattered PSD power samples into (Nf, Np)
+        if len(psd_power_lists) == 0:
+            raise ValueError('No narrowband PSD samples were accumulated')
+
+        psd_power_pts = np.concatenate(psd_power_lists, axis=1)
+        if psd_power_pts.shape[1] != fazi_pts.size:
+            raise ValueError('Internal error: PSD sample count does not match scattered angle count')
+
+        f_nb = f_sel_master[::narrowband_stride]
+        psd_grid_db = np.full((f_nb.size, ELV_GRID.shape[0], ELV_GRID.shape[1]), -np.inf, dtype=float)
+        for i_f, fi in enumerate(range(0, f_sel_master.size, narrowband_stride)):
+            P_f_pts = psd_power_pts[fi, :]
+            P_f_ext = np.concatenate((P_f_pts, P_f_pts, P_f_pts))
+            P_f_grid = shepIDW(ELV_GRID, AZI_GRID, felv_ext, fazi_ext, P_f_ext, rmax=float(rmax))
+            psd_grid_db[i_f, :, :] = 10.0 * np.log10(np.maximum(P_f_grid, eps))
+            psd_grid_db[i_f, :, -1] = psd_grid_db[i_f, :, 0]
+
+        out['narrowband'] = {
+            'frequency_hz': f_nb,
+            'psd_db': psd_grid_db,
+        }
+
+        if return_scattered:
+            assert scattered is not None
+            scattered['narrowband'] = {
+                'frequency_hz': f_nb,
+                'psd_db': 10.0 * np.log10(np.maximum(psd_power_pts[::narrowband_stride, :], eps)),
+            }
 
     return out
 
