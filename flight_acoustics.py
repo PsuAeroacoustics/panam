@@ -373,6 +373,314 @@ def hemigen(time, source, velocity, observers, speed_of_sound):
     return azimuth, elevation, r, t_observer, mach_r
 
 
+def depropagate_hemisphere(
+        mic_locations,
+        pressure,
+        time,
+        track_time,
+        track_position,
+        track_velocity=None,
+        *,
+        speed_of_sound=1135.0,
+        length_units='ft',
+        r_ref=100.0,
+        freq_range=(0.0, 2000.0),
+        window_time=0.5,
+        window_overlap=0.5,
+        point_stride=1,
+        azi_step=10.0,
+        elv_step=10.0,
+        rmax=25.0,
+        apply_absorption_deprop=False,
+        atmosphere=Atmosphere(temperature=293.15, pressure=101.325, relative_humidity=20.0),
+        flip_y_for_geometry=False,
+        third_octave=False,
+        third_octave_fmin=20.0,
+):
+    """Generate an acoustic hemisphere from microphone time series and vehicle tracking data.
+
+    This is the "normal" processing flow used by the demo scripts: use the vehicle kinematics
+    to compute emission-time geometry (azimuth/elevation/range) via :func:`hemigen`, sample
+    the measured PSD at the corresponding observer times, depropagate to a reference radius,
+    then interpolate onto a regular azimuth/elevation grid using :func:`shepIDW`.
+
+    Notes on conventions
+    --------------------
+    - Inputs must be in a *consistent* local Cartesian frame.
+    - If the result looks mirrored left/right relative to a reference hemisphere, that is
+      usually a sign convention mismatch in the lateral axis. Set ``flip_y_for_geometry=True``
+      to apply Y -> -Y to geometry inputs *before* computing azimuth/elevation.
+
+    Args:
+        mic_locations: (Nmics, 3) microphone locations in local Cartesian coordinates.
+        pressure: microphone pressures, shape (Nmics, Nsamples) or list of 1D arrays.
+        time: microphone sample times. Either:
+            - 1D array (Nsamples,) applied to all microphones, or
+            - 2D array (Nmics, Nsamples), or
+            - list of 1D arrays.
+        track_time: (Nt,) vehicle time array (seconds).
+        track_position: (Nt, 3) vehicle position array in same frame as microphones.
+        track_velocity: optional (Nt, 3) vehicle velocity array in same frame as microphones.
+            If None, computed by finite differences.
+        speed_of_sound: speed of sound in the length units per second (e.g., ft/s if length_units='ft').
+        length_units: length units for mic/track geometry ('ft' or 'm' typically).
+        r_ref: reference radius for depropagation in ``length_units``.
+        freq_range: (fmin, fmax) in Hz used for OASPL integration.
+        window_time: spectrogram window time (s).
+        window_overlap: spectrogram window overlap fraction.
+        point_stride: decimation factor applied along emission time samples for speed.
+        azi_step: regular grid spacing in azimuth (deg). 360 deg is included to close the seam.
+        elv_step: regular grid spacing in elevation (deg).
+        rmax: Shepard/IDW neighborhood radius (deg).
+        apply_absorption_deprop: if True, undo atmospheric absorption between range r and r_ref.
+        atmosphere: Atmosphere instance used when apply_absorption_deprop is True.
+        flip_y_for_geometry: if True, apply Y -> -Y to track_position/track_velocity/mic_locations.
+        third_octave: if True, also compute third-octave band level hemispheres.
+        third_octave_fmin: minimum band center (Hz) when third_octave=True.
+
+    Returns:
+        dict with keys:
+            'azi_grid_deg', 'elv_grid_deg',
+            'oaspl_db' (2D grid),
+            'scattered' (dict of scattered az/el/power samples),
+            and when third_octave=True:
+            'third_octave' (dict with band centers and band grids).
+    """
+
+    mic_locations = np.asarray(mic_locations, dtype=float)
+    if mic_locations.ndim != 2 or mic_locations.shape[1] != 3:
+        raise ValueError('mic_locations must be shape (Nmics, 3)')
+    nmics = mic_locations.shape[0]
+
+    track_time = np.asarray(track_time, dtype=float)
+    track_position = np.asarray(track_position, dtype=float)
+    if track_position.shape != (track_time.size, 3):
+        raise ValueError('track_position must be shape (Nt, 3) matching track_time')
+
+    if track_velocity is None:
+        dt = np.gradient(track_time)
+        track_velocity = np.gradient(track_position, axis=0) / dt[:, None]
+    track_velocity = np.asarray(track_velocity, dtype=float)
+    if track_velocity.shape != (track_time.size, 3):
+        raise ValueError('track_velocity must be shape (Nt, 3) matching track_time')
+
+    def _as_mic_list_1d(x, *, name):
+        if isinstance(x, list):
+            if len(x) != nmics:
+                raise ValueError(f'{name} list must have length Nmics={nmics}')
+            return [np.asarray(xi, dtype=float).ravel() for xi in x]
+        arr = np.asarray(x, dtype=float)
+        if arr.ndim == 1:
+            return [arr.ravel() for _ in range(nmics)]
+        if arr.ndim == 2 and arr.shape[0] == nmics:
+            return [arr[i, :].ravel() for i in range(nmics)]
+        raise ValueError(f'{name} must be a list of 1D arrays, a 1D array, or a 2D array shaped (Nmics, Nsamples)')
+
+    pressure_list = _as_mic_list_1d(pressure, name='pressure')
+    time_list = _as_mic_list_1d(time, name='time')
+
+    def _time_vec_for_mic(im):
+        p = pressure_list[im]
+        t = time_list[im]
+        if p.size < 2:
+            raise ValueError('pressure must have at least 2 samples per microphone')
+        if t.size < 2:
+            raise ValueError('time must have at least 2 samples per microphone (or provide a common 1D time vector)')
+        if t.size == p.size:
+            return t
+        # Some files store a time vector that doesn't exactly match the signal length.
+        # If dt is well-defined, reconstruct an evenly-sampled time vector aligned at t[0].
+        dt = float(t[1] - t[0])
+        if dt <= 0.0:
+            raise ValueError('time must be strictly increasing')
+        return float(t[0]) + dt * np.arange(p.size, dtype=float)
+
+    # Optional geometry convention fix
+    if flip_y_for_geometry:
+        mic_geom = mic_locations.copy()
+        mic_geom[:, 1] *= -1.0
+        pos_geom = track_position.copy()
+        pos_geom[:, 1] *= -1.0
+        vel_geom = track_velocity.copy()
+        vel_geom[:, 1] *= -1.0
+    else:
+        mic_geom = mic_locations
+        pos_geom = track_position
+        vel_geom = track_velocity
+
+    # Emission-time geometry
+    az_deg, el_deg, r_geom, t_obs, _ = hemigen(track_time, pos_geom, vel_geom, mic_geom, speed_of_sound)
+
+    # Subsample emission-time points
+    point_stride = int(point_stride)
+    if point_stride < 1:
+        raise ValueError('point_stride must be >= 1')
+    tidx = np.arange(0, track_time.size, point_stride)
+
+    # Regular hemisphere grid (degrees) with seam closure at 360
+    azi_grid_deg = np.arange(0.0, 360.0 + 1e-9, float(azi_step))
+    elv_grid_deg = np.arange(0.0, 90.0 + 1e-9, float(elv_step))
+    AZI_GRID, ELV_GRID = np.meshgrid(azi_grid_deg, elv_grid_deg)
+
+    # Frequency selection based on the first mic's sampling
+    # (rounding matches the demo scripts' convention)
+    t0_vec = _time_vec_for_mic(0)
+    fs0 = float(np.round(1.0 / (t0_vec[1] - t0_vec[0])))
+    fmin, fmax = float(freq_range[0]), float(freq_range[1])
+
+    # Accumulate scattered samples
+    fazi_list = []
+    felv_list = []
+    oaspl_power_list = []
+    if third_octave:
+        # Precompute band centers (same definition as in third_octave_band_levels)
+        k = np.arange(-50, 50)
+        band_centers = 1000.0 * (2.0 ** (k / 3.0))
+        band_centers = band_centers[np.logical_and(band_centers >= float(third_octave_fmin), band_centers <= fmax)]
+        band_power_lists = [list() for _ in range(band_centers.size)]
+    else:
+        band_centers = np.array([], dtype=float)
+        band_power_lists = []
+
+    # Precompute absorption reference range (meters)
+    r_ref_m = None
+    if apply_absorption_deprop:
+        r_ref_m = float(unit_conversion.len_conv(r_ref, from_units=length_units, to_units='m'))
+
+    for im in range(nmics):
+        # PSD spectrogram on observer time axis
+        t_vec = _time_vec_for_mic(im)
+        fs = float(np.round(1.0 / (t_vec[1] - t_vec[0])))
+        if not np.isclose(fs, fs0, rtol=1e-3, atol=0.0):
+            raise ValueError('All microphones must have the same sample rate for hemisphere generation')
+        f, t_rel, psd_db = spectrogram(pressure_list[im], fs, window_time=window_time, window_overlap=window_overlap)
+        t_abs = t_rel + t_vec[0]
+
+        fmask = np.logical_and(f >= fmin, f <= fmax)
+        f_sel = f[fmask]
+        if f_sel.size < 2:
+            raise ValueError('Selected frequency range does not contain enough bins')
+        df = float(f_sel[1] - f_sel[0])
+
+        alpha_db_per_m = None
+        if apply_absorption_deprop:
+            alpha_db_per_m = np.asarray(atmosphere.attenuation_coefficient(f_sel), dtype=float)
+
+        # Observation times for selected emission points
+        tobs_sub = t_obs[tidx, im]
+        r_sub = r_geom[tidx, im]
+        az_sub = az_deg[tidx, im]
+        el_sub = el_deg[tidx, im]
+
+        # Keep only points that can be interpolated in time
+        valid = np.logical_and(tobs_sub >= t_abs[0], tobs_sub <= t_abs[-1])
+        if not np.any(valid):
+            continue
+
+        tobs_v = tobs_sub[valid]
+        r_v = r_sub[valid]
+        az_v = az_sub[valid]
+        el_v = el_sub[valid]
+
+        # Interpolate PSD at tobs_v for each selected frequency
+        psd_sel_db = psd_db[fmask, :]
+        psd_v_db = np.empty((f_sel.size, tobs_v.size), dtype=float)
+        for fi in range(f_sel.size):
+            psd_v_db[fi, :] = np.interp(tobs_v, t_abs, psd_sel_db[fi, :])
+
+        # Convert to linear PSD relative to pref^2/Hz
+        psd_v_lin = 10.0 ** (psd_v_db / 10.0)
+
+        # Spherical spreading depropagation to r_ref: multiply by (r/r_ref)^2
+        spread_scale = (r_v / float(r_ref)) ** 2
+        psd_v_lin = psd_v_lin * spread_scale[None, :]
+
+        # Optional absorption depropagation back to r_ref
+        if apply_absorption_deprop:
+            assert r_ref_m is not None
+            assert alpha_db_per_m is not None
+            r_m = unit_conversion.len_conv(r_v, from_units=length_units, to_units='m').astype(float)
+            deltaL = alpha_db_per_m[:, None] * (r_m[None, :] - r_ref_m)
+            psd_v_lin = psd_v_lin * (10.0 ** (deltaL / 10.0))
+
+        # OASPL power over selected frequency range
+        power_oaspl = np.sum(psd_v_lin * df, axis=0)
+
+        fazi_list.append(az_v)
+        felv_list.append(el_v)
+        oaspl_power_list.append(power_oaspl)
+
+        if third_octave:
+            # Integrate to third-octave bands in linear power
+            for ib, fc in enumerate(band_centers):
+                f_lower = fc / (2.0 ** (1.0 / 6.0))
+                f_upper = fc * (2.0 ** (1.0 / 6.0))
+                band_mask = np.logical_and(f_sel >= f_lower, f_sel < f_upper)
+                if not np.any(band_mask):
+                    continue
+                band_power = np.sum(psd_v_lin[band_mask, :] * df, axis=0)
+                band_power_lists[ib].append(band_power)
+
+    if len(oaspl_power_list) == 0:
+        raise ValueError('No valid hemisphere samples were generated (check time alignment and inputs)')
+
+    fazi_pts = np.concatenate(fazi_list)
+    felv_pts = np.concatenate(felv_list)
+    P_oaspl_pts = np.concatenate(oaspl_power_list)
+
+    # Enforce azimuth periodicity: duplicate scattered points at ±360 and close seam column
+    fazi_ext = np.concatenate((fazi_pts, fazi_pts + 360.0, fazi_pts - 360.0))
+    felv_ext = np.concatenate((felv_pts, felv_pts, felv_pts))
+    P_oaspl_ext = np.concatenate((P_oaspl_pts, P_oaspl_pts, P_oaspl_pts))
+
+    P_oaspl_grid = shepIDW(ELV_GRID, AZI_GRID, felv_ext, fazi_ext, P_oaspl_ext, rmax=float(rmax))
+    eps = np.finfo(float).tiny
+    oaspl_db = 10.0 * np.log10(np.maximum(P_oaspl_grid, eps))
+    if oaspl_db.shape[1] > 1:
+        oaspl_db[:, -1] = oaspl_db[:, 0]
+
+    out = {
+        'azi_grid_deg': azi_grid_deg,
+        'elv_grid_deg': elv_grid_deg,
+        'oaspl_db': oaspl_db,
+        'scattered': {
+            'azi_deg': fazi_pts,
+            'elv_deg': felv_pts,
+            'oaspl_power': P_oaspl_pts,
+        },
+        'metadata': {
+            'r_ref': float(r_ref),
+            'length_units': str(length_units),
+            'freq_range_hz': (fmin, fmax),
+            'window_time': float(window_time),
+            'window_overlap': float(window_overlap),
+            'point_stride': int(point_stride),
+            'rmax_deg': float(rmax),
+            'apply_absorption_deprop': bool(apply_absorption_deprop),
+            'flip_y_for_geometry': bool(flip_y_for_geometry),
+        }
+    }
+
+    if third_octave:
+        # Concatenate scattered band powers and interpolate per band
+        band_grids_db = np.full((band_centers.size, ELV_GRID.shape[0], ELV_GRID.shape[1]), -np.inf, dtype=float)
+        for ib in range(band_centers.size):
+            if len(band_power_lists[ib]) == 0:
+                continue
+            P_band_pts = np.concatenate(band_power_lists[ib])
+            P_band_ext = np.concatenate((P_band_pts, P_band_pts, P_band_pts))
+            P_band_grid = shepIDW(ELV_GRID, AZI_GRID, felv_ext, fazi_ext, P_band_ext, rmax=float(rmax))
+            band_grids_db[ib, :, :] = 10.0 * np.log10(np.maximum(P_band_grid, eps))
+            band_grids_db[ib, :, -1] = band_grids_db[ib, :, 0]
+
+        out['third_octave'] = {
+            'band_centers_hz': band_centers,
+            'bands_db': band_grids_db,
+        }
+
+    return out
+
+
 def array_coverage(ymics, altitude, xmin=-1000, xmax=1000, speed=100, rate=0.1, speed_of_sound=1135.):
     """
     Calculate the spherical coverage for an overflight of a linear microphone array
