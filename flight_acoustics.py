@@ -816,6 +816,84 @@ def array_coverage(ymics, altitude, xmin=-1000, xmax=1000, speed=100, rate=0.1, 
     return azimuth, elevation, r
 
 
+def hover_array_coverage(radial_positions, mic_azimuths, altitudes, headings, speed_of_sound=1135.0):
+    """
+    Calculate the spherical coverage for a hovering vehicle with microphones placed
+    on a circle (or rings) around the source location.
+
+    Args:
+        radial_positions: radial distances of observers from the hover point (same length units as altitude)
+        mic_azimuths: observer azimuths around the hover point, degrees (0 deg = +X, 90 deg = +Y)
+        altitudes: one or more hover altitudes (same length units as radial_positions)
+        headings: one or more vehicle headings, degrees (0 deg = +X, 90 deg = +Y)
+        speed_of_sound: optional, speed of sound, default 1135
+
+    Returns: tuple (azimuth, elevation, r)
+    WHERE
+    azimuth are the azimuth angles on the sphere for each hover condition (time) and mic
+    elevation are the elevation angles on the sphere for each hover condition (time) and mic
+    r are the propagation distances for each hover condition (time) and mic
+    """
+    radial_positions = np.atleast_1d(radial_positions).astype(float)
+    mic_azimuths = np.atleast_1d(mic_azimuths).astype(float)
+    altitudes = np.atleast_1d(altitudes).astype(float)
+    headings = np.atleast_1d(headings).astype(float)
+
+    if radial_positions.size == 0 or mic_azimuths.size == 0:
+        raise ValueError('radial_positions and mic_azimuths must be non-empty')
+    if altitudes.size == 0 or headings.size == 0:
+        raise ValueError('altitudes and headings must be non-empty')
+
+    if radial_positions.size != mic_azimuths.size:
+        raise ValueError('radial_positions and mic_azimuths must have the same length')
+
+    # Build mic locations in the ground plane centered on the hover point.
+    az_rad = np.radians(mic_azimuths)
+    obs_x = radial_positions * np.cos(az_rad)
+    obs_y = radial_positions * np.sin(az_rad)
+    observers = np.column_stack((obs_x, obs_y, np.zeros(obs_x.size)))
+
+    # Enumerate hover conditions; time is arbitrary and only used to align rows.
+    alt_grid, head_grid = np.meshgrid(altitudes, headings, indexing='ij')
+    n_combo = alt_grid.size
+    time = np.arange(n_combo, dtype=float)
+
+    source = np.zeros((n_combo, 3), dtype=float)
+    source[:, 2] = alt_grid.ravel()
+
+    heading_rad = np.radians(head_grid.ravel())
+    # Unit velocity vector defines vehicle heading for azimuth convention.
+    velocity = np.zeros_like(source)
+    velocity[:, 0] = np.cos(heading_rad)
+    velocity[:, 1] = np.sin(heading_rad)
+
+    azimuth, elevation, r, t_observer, mach_r = hemigen(time, source, velocity, observers, speed_of_sound)
+    return azimuth, elevation, r
+
+
+def hover_array_coverage_plot(radial_positions, mic_azimuths, altitudes, headings, speed_of_sound=1135.0):
+    """
+    Plot the spherical coverage for hovering conditions with scattered microphones.
+
+    Args:
+        radial_positions: radial distances of observers from the hover point (same length units as altitude)
+        mic_azimuths: observer azimuths around the hover point, degrees (0 deg = +X, 90 deg = +Y)
+        altitudes: one or more hover altitudes (same length units as radial_positions)
+        headings: one or more vehicle headings, degrees (0 deg = +X, 90 deg = +Y)
+        speed_of_sound: optional, speed of sound, default 1135
+
+    Returns: tuple (fig, ax, cs)
+    WHERE
+    fig is a matplotlib handle to the figure
+    ax is a matplotlib handle to the plot axis
+    cs is a matplotlib handle to the data points
+    """
+    azimuth, elevation, _ = hover_array_coverage(radial_positions, mic_azimuths, altitudes,
+                                                 headings, speed_of_sound)
+    fig, ax, cs = lambert_ea_points(np.radians(azimuth), np.radians(elevation))
+    return fig, ax, cs
+
+
 def array_coverage_plot(ymics, altitude, xmin=-1000, xmax=1000, speed=100, rate=0.1, speed_of_sound=1135.):
     """
     Plots the spherical coverage for an overflight of a linear microphone array
@@ -1714,7 +1792,7 @@ def nc_lambert_ea(filename, input_frequencies=None, weight=None, SPL_range=None)
     fig, ax, cs = plot_lambert_ea(azi, elv, SPL, SPL_range)
     return fig, ax, cs
 
-def lambert_ea_points(azimuth, elevation):
+def lambert_ea_points(azimuth, elevation, markers=None, colors=None, sizes=None, alpha=1.0):
     """
     Plot levels on an acoustic sphere using the Lambert equal-area azimuthal projection.
 
@@ -1727,6 +1805,14 @@ def lambert_ea_points(azimuth, elevation):
         Azimuth angles in radians. Convention: 0 at rear, increasing counterclockwise.
     elevation : array_like
         Elevation angles in radians. Convention: 0 at horizon, π/2 below the sphere.
+    markers : array_like, optional
+        Per-point marker styles. Must be the same size as azimuth/elevation when provided.
+    colors : array_like or color, optional
+        Per-point colors (same size as azimuth/elevation) or a single color spec.
+    sizes : array_like or float, optional
+        Per-point marker sizes (same size as azimuth/elevation) or a single size.
+    alpha : float, optional
+        Marker transparency, applied to all points. Default 1.0.
 
     Returns
     -------
@@ -1734,16 +1820,78 @@ def lambert_ea_points(azimuth, elevation):
         The figure object containing the plot.
     ax : matplotlib.axes.Axes
         The axes object with the Lambert projection plot.
-    cs : list of matplotlib.lines.Line2D
+    cs : list of matplotlib.artist.Artist
         Plot objects for the data points.
 
     """
+    azimuth = np.asarray(azimuth)
+    elevation = np.asarray(elevation)
+    if azimuth.shape != elevation.shape:
+        raise ValueError('azimuth and elevation must have the same shape')
+
     lat = elevation
     lon = azimuth - np.pi
     x, y = lambert_ea(lat, lon)
     fig, ax = subplots(facecolor='white')
     ax.patch.set_visible(False)
-    cs = ax.plot(x, y, 'ro', markersize=4)
+
+    if markers is None and colors is None and sizes is None:
+        cs = ax.plot(x, y, 'ro', markersize=4, alpha=alpha)
+    else:
+        x_flat = np.ravel(x)
+        y_flat = np.ravel(y)
+        npts = x_flat.size
+
+        if markers is None:
+            markers_arr = np.array(['o'] * npts, dtype=object)
+        else:
+            markers_arr = np.asarray(markers, dtype=object).ravel()
+            if markers_arr.size != npts:
+                raise ValueError('markers must match the number of points')
+
+        color_scalar = 'r'
+        colors_arr = None
+        if colors is not None:
+            c_arr = np.asarray(colors)
+            if c_arr.ndim == 0 or c_arr.shape in [(3,), (4,)]:
+                color_scalar = colors
+            elif c_arr.ndim == 2 and c_arr.shape[0] == npts and c_arr.shape[1] in (3, 4):
+                colors_arr = c_arr
+            else:
+                c_arr = c_arr.ravel()
+                if c_arr.size != npts:
+                    raise ValueError('colors must match the number of points')
+                colors_arr = c_arr
+
+        size_scalar = 16.0
+        sizes_arr = None
+        if sizes is not None:
+            s_arr = np.asarray(sizes, dtype=float)
+            if s_arr.ndim == 0:
+                size_scalar = float(s_arr)
+            else:
+                s_arr = s_arr.ravel()
+                if s_arr.size != npts:
+                    raise ValueError('sizes must match the number of points')
+                sizes_arr = s_arr
+
+        cs = []
+        for marker in dict.fromkeys(markers_arr.tolist()):
+            mask = markers_arr == marker
+            c_val = colors_arr[mask] if colors_arr is not None else color_scalar
+            s_val = sizes_arr[mask] if sizes_arr is not None else size_scalar
+            cs.append(
+                ax.scatter(
+                    x_flat[mask],
+                    y_flat[mask],
+                    c=c_val,
+                    s=s_val,
+                    marker=marker,
+                    edgecolors='k',
+                    linewidths=0.5,
+                    alpha=alpha,
+                )
+            )
     # make sure aspect ratio preserved
     ax.set_aspect('equal')
     # turn off rectangular frame.
