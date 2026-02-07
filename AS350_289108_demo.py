@@ -6,6 +6,51 @@ import flight_acoustics as fa
 import matplotlib.pyplot as plt
 import numpy as np
 import logging
+from netCDF4 import Dataset
+
+
+def compare_aam_netcdf_fields(reference_nc, candidate_nc):
+    """Log a basic comparison of variable presence, shapes, and 'unit' attrs."""
+
+    with Dataset(reference_nc, 'r') as ref, Dataset(candidate_nc, 'r') as cand:
+        ref_vars = set(ref.variables.keys())
+        cand_vars = set(cand.variables.keys())
+
+        missing = sorted(ref_vars - cand_vars)
+        extra = sorted(cand_vars - ref_vars)
+        if missing:
+            logging.warning(f'Candidate is missing variables present in reference: {missing}')
+        if extra:
+            logging.info(f'Candidate has extra variables not in reference: {extra}')
+
+        common = sorted(ref_vars & cand_vars)
+        unit_mismatch = []
+        shape_mismatch = []
+        dtype_mismatch = []
+        for name in common:
+            rv = ref.variables[name]
+            cv = cand.variables[name]
+            if rv.shape != cv.shape:
+                shape_mismatch.append((name, rv.shape, cv.shape))
+            if str(rv.dtype) != str(cv.dtype):
+                dtype_mismatch.append((name, str(rv.dtype), str(cv.dtype)))
+            ru = getattr(rv, 'unit', None)
+            cu = getattr(cv, 'unit', None)
+            if (ru is not None or cu is not None) and (str(ru).strip() != str(cu).strip()):
+                unit_mismatch.append((name, ru, cu))
+
+        if shape_mismatch:
+            logging.info('Shape differences for common variables:')
+            for name, rsh, csh in shape_mismatch:
+                logging.info(f'  {name}: ref{rsh} vs cand{csh}')
+        if dtype_mismatch:
+            logging.info('Dtype differences for common variables:')
+            for name, rd, cd in dtype_mismatch:
+                logging.info(f'  {name}: ref {rd} vs cand {cd}')
+        if unit_mismatch:
+            logging.info("Unit attribute differences ('unit') for common variables:")
+            for name, ru, cu in unit_mismatch:
+                logging.info(f'  {name}: ref unit={ru!r} vs cand unit={cu!r}')
 
 def plot_ambient_spectra(ambient_path):
     nc_files = []
@@ -119,6 +164,7 @@ def main():
     ambient_path = os.path.join(basepath, 'Ambient')
     AAM_path = os.path.join(basepath, 'AAM')
     AAM_sphere = 'AS350B3108.nc'
+    ref_file = os.path.join(AAM_path, AAM_sphere)
 
     # Hemisphere processing parameters
     build_hemisphere = True
@@ -129,9 +175,24 @@ def main():
     hemisphere_point_stride = 1  # decimate emission-time samples for speed
     # Consistent color scaling for hemisphere contour plots
     hemisphere_spl_range = (80.0, 110.0)
-    # Frequency range for hemisphere / reference comparisons
+    # Frequency range used for plotting/metrics (but not necessarily for export)
     hemisphere_freq_range_hz = (0.0, 2000.0)
     freqs = list(hemisphere_freq_range_hz)
+
+    # Export hemisphere over all frequency bands (match reference AAM sphere if available)
+    export_freq_range_hz = None
+    export_third_octave_fmin_hz = 20.0
+    export_band_centers_hz = None
+    try:
+        _, _, _, f_ref, _, _, _ = fa.load_nc_sphere(ref_file)
+        f_ref = np.asarray(f_ref, dtype=float)
+        if f_ref.size >= 2 and np.all(np.isfinite(f_ref)):
+            export_freq_range_hz = (float(np.min(f_ref)), float(np.max(f_ref)))
+            export_third_octave_fmin_hz = float(np.min(f_ref))
+            export_band_centers_hz = f_ref
+            logging.info(f'Exporting hemisphere over reference band range: {export_freq_range_hz[0]:.1f}..{export_freq_range_hz[1]:.1f} Hz')
+    except Exception as e:
+        logging.warning(f'Could not read reference FREQUENCY grid; exporting only over plot range. Reason: {e}')
     r_ref = 100.0  # Reference distance for depropagation in feet
 
     # Mirror Y-axis per track convention
@@ -188,7 +249,7 @@ def main():
             speed_of_sound=1135.0,
             length_units='ft',
             r_ref=r_ref,
-            freq_range=hemisphere_freq_range_hz,
+            freq_range=export_freq_range_hz if export_freq_range_hz is not None else hemisphere_freq_range_hz,
             window_time=0.5,
             window_overlap=0.5,
             point_stride=hemisphere_point_stride,
@@ -200,14 +261,34 @@ def main():
             flip_y_for_geometry=flip_y_for_geometry,
             return_scattered=True,
             third_octave=True,
-            third_octave_fmin=max(20.0, float(hemisphere_freq_range_hz[0])),
+            third_octave_fmin=float(export_third_octave_fmin_hz),
+            third_octave_band_centers_hz=export_band_centers_hz,
         )
 
         band_centers = hemi['third_octave']['band_centers_hz']
         hemi_bands_db = hemi['third_octave']['bands_db']
-        hemi_oaspl_db = hemi['oaspl_db']
-        hemi_spl_a_db = hemi['spl_a_db']
-        hemi_oaspl_full_db = hemi_oaspl_db
+
+        # Compute OASPL/SPLA grids by summing band powers.
+        # For plotting/metrics: use only the requested frequency range.
+        # For export/full-band: use all available bands.
+        eps = np.finfo(float).tiny
+        band_centers = np.asarray(band_centers, dtype=float)
+        band_mask_plot = np.logical_and(band_centers >= float(hemisphere_freq_range_hz[0]), band_centers <= float(hemisphere_freq_range_hz[1]))
+        if not np.any(band_mask_plot):
+            raise ValueError('No third-octave bands fall within hemisphere_freq_range_hz')
+
+        P_plot = np.power(10.0, hemi_bands_db[band_mask_plot, :, :] / 10.0)
+        P_plot[~np.isfinite(P_plot)] = 0.0
+        hemi_oaspl_db = 10.0 * np.log10(np.maximum(np.sum(P_plot, axis=0), eps))
+
+        Aweight_plot = np.array([fa.dBAw(f) for f in band_centers[band_mask_plot]], dtype=float)
+        P_plot_A = np.power(10.0, (hemi_bands_db[band_mask_plot, :, :] + Aweight_plot[:, None, None]) / 10.0)
+        P_plot_A[~np.isfinite(P_plot_A)] = 0.0
+        hemi_spl_a_db = 10.0 * np.log10(np.maximum(np.sum(P_plot_A, axis=0), eps))
+
+        P_full = np.power(10.0, hemi_bands_db / 10.0)
+        P_full[~np.isfinite(P_full)] = 0.0
+        hemi_oaspl_full_db = 10.0 * np.log10(np.maximum(np.sum(P_full, axis=0), eps))
 
         azi_grid = hemi['azi_grid_deg']
         elv_grid = hemi['elv_grid_deg']
@@ -217,7 +298,6 @@ def main():
         figs.append(plot_array_coverage(hemi['scattered']['azi_deg'], hemi['scattered']['elv_deg']))
         names.append('array_coverage_lambert')
 
-        eps = np.finfo(float).tiny
         oaspl_fmax = float(hemisphere_freq_range_hz[1])
         oaspl_ref_fmax = float(hemisphere_freq_range_hz[1])
 
@@ -242,7 +322,6 @@ def main():
         names.append('hemisphere_oaspl_fullband_lambert')
 
         # Debug: compare hemisphere vs AAM reference on the same regular grid
-        ref_file = os.path.join(AAM_path, AAM_sphere)
         try:
             amp_ref, phi_ref, theta_ref, f_ref, radius_ref_ft, _, _ = fa.load_nc_sphere(ref_file)
             amp_ref = amp_ref.astype(float)
@@ -253,7 +332,7 @@ def main():
             if radius_ref_ft <= 0.0:
                 raise ValueError('Reference sphere radius is non-positive')
 
-            # Match frequency band for comparison
+            # Match frequency band for comparison (plot/metrics range)
             fmask_ref = np.logical_and(f_ref >= freqs[0], f_ref <= freqs[1])
             amp_ref = amp_ref[:, :, fmask_ref]
 
@@ -294,7 +373,8 @@ def main():
             names.append('reference_hemisphere_on_grid')
 
             # Delta plot (custom, diverging colormap) and summary stats
-            delta_db = hemi_oaspl_full_db - ref_oaspl_full_db
+            # Compare in the plotting band range.
+            delta_db = hemi_oaspl_db - ref_oaspl_full_db
             finite = np.isfinite(delta_db)
             if np.any(finite):
                 med = float(np.median(delta_db[finite]))
@@ -339,6 +419,56 @@ def main():
                 oaspl_fullband_fmax_hz=oaspl_ref_fmax,
             )
             logging.info(f"Saved gridded hemisphere to {out_npz}")
+
+            # Export AAM-style netCDF hemisphere using the reference PHI/THETA grids
+            out_nc = os.path.join(args.outdir, 'hemisphere_third_octave_aam.nc')
+            try:
+                # Use reference ART grids when available
+                try:
+                    _, phi_ref, theta_ref, _, radius_ref_ft, speed_ref_knots, fpa_ref_deg = fa.load_nc_sphere(ref_file)
+                    phi_export = np.asarray(phi_ref, dtype=float)
+                    theta_export = np.asarray(theta_ref, dtype=float)
+                    radius_export_ft = float(np.asarray(radius_ref_ft, dtype=float).ravel()[0])
+                    speed_export_knots = float(np.asarray(speed_ref_knots, dtype=float).ravel()[0])
+                    fpa_export_deg = float(np.asarray(fpa_ref_deg, dtype=float).ravel()[0])
+                except Exception:
+                    phi_export = None
+                    theta_export = None
+                    radius_export_ft = r_ref
+                    # Estimate flight condition from track velocity
+                    v = velocity.astype(float)
+                    sp_ft_s = np.sqrt(np.sum(v ** 2, axis=1))
+                    speed_export_knots = float(np.nanmedian(sp_ft_s) / 1.6878098571011957)
+                    horiz = np.sqrt(v[:, 0] ** 2 + v[:, 1] ** 2)
+                    fpa_export_deg = float(np.degrees(np.nanmedian(np.arctan2(v[:, 2], horiz))))
+
+                fa.write_aam_hemisphere_netcdf(
+                    out_nc,
+                    hemi,
+                    mode='third_octave',
+                    phi_deg=phi_export,
+                    theta_deg=theta_export,
+                    radius_ft=radius_export_ft,
+                    speed_knots=speed_export_knots,
+                    flight_path_angle_deg=fpa_export_deg,
+                    title='AS350 depropagated hemisphere (third-octave)',
+                    overwrite=True,
+                )
+                logging.info(f"Saved AAM netCDF hemisphere to {out_nc}")
+
+                # Plot the exported hemisphere using the same method as the reference
+                try:
+                    fig_exported = plot_reference_hemisphere(args.outdir, os.path.basename(out_nc), freqs, SPL_range=hemisphere_spl_range)
+                    figs.append(fig_exported)
+                    names.append('exported_hemisphere')
+                except Exception as e:
+                    logging.warning(f'Could not plot exported AAM hemisphere: {e}')
+
+                # Compare fields/attrs against the reference AAM sphere
+                if os.path.exists(ref_file):
+                    compare_aam_netcdf_fields(ref_file, out_nc)
+            except Exception as e:
+                logging.warning(f'Could not export AAM netCDF hemisphere: {e}')
 
     # Reference hemisphere
     figs.append(plot_reference_hemisphere(AAM_path, AAM_sphere, freqs, SPL_range=hemisphere_spl_range))

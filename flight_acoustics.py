@@ -9,6 +9,7 @@ import h5py
 from typing import Any, Optional, cast
 import openpyxl
 import scipy.signal
+from scipy.interpolate import RegularGridInterpolator
 from scipy.special import erf
 import simplekml
 # Colormap helper will import palettable lazily
@@ -397,6 +398,7 @@ def depropagate_hemisphere(
         return_scattered=False,
         third_octave=False,
         third_octave_fmin=20.0,
+        third_octave_band_centers_hz=None,
         narrowband=False,
         narrowband_stride=1,
 ):
@@ -546,10 +548,18 @@ def depropagate_hemisphere(
     oaspl_power_list = []
     spl_a_power_list = []
     if third_octave:
-        # Precompute band centers (same definition as in third_octave_band_levels)
-        k = np.arange(-50, 50)
-        band_centers = 1000.0 * (2.0 ** (k / 3.0))
-        band_centers = band_centers[np.logical_and(band_centers >= float(third_octave_fmin), band_centers <= fmax)]
+        if third_octave_band_centers_hz is not None:
+            band_centers = np.asarray(third_octave_band_centers_hz, dtype=float).ravel()
+            band_centers = band_centers[np.isfinite(band_centers)]
+            if band_centers.size < 1:
+                raise ValueError('third_octave_band_centers_hz must contain at least one finite frequency')
+            band_centers = np.unique(band_centers)
+            band_centers = band_centers[np.logical_and(band_centers >= float(third_octave_fmin), band_centers <= fmax)]
+        else:
+            # Precompute band centers (same definition as in third_octave_band_levels)
+            k = np.arange(-50, 50)
+            band_centers = 1000.0 * (2.0 ** (k / 3.0))
+            band_centers = band_centers[np.logical_and(band_centers >= float(third_octave_fmin), band_centers <= fmax)]
         band_power_lists = [list() for _ in range(band_centers.size)]
     else:
         band_centers = np.array([], dtype=float)
@@ -948,6 +958,293 @@ def load_nc_sphere(filename):
     np.seterr(**np_error_settings)
     file_handle.close()
     return amplitude, phi, theta, frequency, radius, speed, flight_path_angle
+
+
+def write_aam_hemisphere_netcdf(
+        filename,
+        hemisphere,
+        *,
+        mode: str = 'auto',
+        phi_deg=None,
+        theta_deg=None,
+        speed_knots: float = 0.0,
+        flight_path_angle_deg: float = 0.0,
+        radius_ft: Optional[float] = None,
+    title: Optional[str] = None,
+    BB: float = 1.0,
+    NB: float = 0.0,
+    PT: float = 0.0,
+    doppler_shift_removed: float = 0.0,
+    empty_weight_lb: float = 0.0,
+    fuel_weight_lb: float = 0.0,
+    load_weight_lb: float = 0.0,
+    pylon_angle_deg: float = 90.0,
+    masttilt_deg: float = 0.0,
+    xyz_ft=(0.0, 0.0, 0.0),
+        overwrite: bool = True,
+):
+    """Write a depropagated acoustic hemisphere to an AAM/RNM-style netCDF sphere.
+
+    This exports a hemisphere in the same variable naming convention expected by
+    :func:`load_nc_sphere` (and thus AAM-style tooling):
+
+    - ``PHI`` (deg), ``THETA`` (deg), ``FREQUENCY`` (Hz)
+    - ``AMPLITUDE`` (dB), shape (Nphi, Ntheta, Nfreq)
+    - ``RADIUS`` (ft), ``SPEED`` (knots), ``FLIGHT_PATH_ANGLE`` (deg)
+
+    The input ``hemisphere`` must be the dict returned by :func:`depropagate_hemisphere`
+    with either ``third_octave=True`` or ``narrowband=True`` enabled.
+
+    Notes
+    -----
+    ``depropagate_hemisphere`` produces a regular grid in UMAPR (azimuth/elevation).
+    AAM spheres are stored on a regular grid in ART (phi/theta). This function
+    interpolates the UMAPR grid onto a separable ART grid (``phi_deg`` x ``theta_deg``)
+    in the *linear power* domain and converts back to dB.
+
+    Args:
+        filename: Path to the output netCDF file.
+        hemisphere: Output dict from :func:`depropagate_hemisphere`.
+        mode: 'auto', 'third_octave', or 'narrowband'. 'auto' prefers third-octave.
+        phi_deg: Optional 1D ART phi grid (degrees). Default: 0..360 at the UMAPR azimuth step.
+        theta_deg: Optional 1D ART theta grid (degrees). Default: 0..180 at the UMAPR elevation step.
+        speed_knots: Stored into ``SPEED`` (knots).
+        flight_path_angle_deg: Stored into ``FLIGHT_PATH_ANGLE`` (deg).
+        radius_ft: Optional override for ``RADIUS`` (ft). If None, derived from hemisphere metadata ``r_ref``.
+        overwrite: If False, raises when filename exists.
+
+    Returns:
+        None
+    """
+
+    if not overwrite and os.path.exists(filename):
+        raise FileExistsError(f'Output file already exists: {filename}')
+
+    if not isinstance(hemisphere, dict):
+        raise TypeError('hemisphere must be a dict returned by depropagate_hemisphere')
+
+    azi_grid_deg = np.asarray(hemisphere.get('azi_grid_deg', []), dtype=float)
+    elv_grid_deg = np.asarray(hemisphere.get('elv_grid_deg', []), dtype=float)
+    if azi_grid_deg.ndim != 1 or azi_grid_deg.size < 2:
+        raise ValueError('hemisphere[\'azi_grid_deg\'] must be a 1D array with at least 2 elements')
+    if elv_grid_deg.ndim != 1 or elv_grid_deg.size < 2:
+        raise ValueError('hemisphere[\'elv_grid_deg\'] must be a 1D array with at least 2 elements')
+
+    meta = hemisphere.get('metadata', {}) if isinstance(hemisphere.get('metadata', {}), dict) else {}
+
+    # Determine export spectrum (frequency + band levels) from hemisphere.
+    selected_mode = str(mode).lower()
+    if selected_mode == 'auto':
+        if 'third_octave' in hemisphere:
+            selected_mode = 'third_octave'
+        elif 'narrowband' in hemisphere:
+            selected_mode = 'narrowband'
+        else:
+            selected_mode = 'none'
+
+    if selected_mode == 'third_octave':
+        if 'third_octave' not in hemisphere:
+            raise ValueError('mode=third_octave but hemisphere does not include third_octave data')
+        band_centers_hz = np.asarray(hemisphere['third_octave']['band_centers_hz'], dtype=float)
+        band_levels_db_umapr = np.asarray(hemisphere['third_octave']['bands_db'], dtype=float)
+        if band_levels_db_umapr.ndim != 3:
+            raise ValueError('hemisphere[\'third_octave\'][\'bands_db\'] must be (Nf, Nelv, Nazi)')
+        frequency_hz = band_centers_hz
+        levels_db_umapr = band_levels_db_umapr
+    elif selected_mode == 'narrowband':
+        if 'narrowband' not in hemisphere:
+            raise ValueError('mode=narrowband but hemisphere does not include narrowband data')
+        frequency_hz = np.asarray(hemisphere['narrowband']['frequency_hz'], dtype=float)
+        psd_db_umapr = np.asarray(hemisphere['narrowband']['psd_db'], dtype=float)
+        if psd_db_umapr.ndim != 3:
+            raise ValueError('hemisphere[\'narrowband\'][\'psd_db\'] must be (Nf, Nelv, Nazi)')
+        if frequency_hz.size < 2:
+            raise ValueError('narrowband frequency_hz must have at least 2 elements')
+        # Convert PSD (dB re pref^2/Hz) to approximate per-bin band level (dB re pref^2)
+        # so that AAM-style OASPL integration (sum of 10^(SPL/10)) is meaningful.
+        df = float(np.median(np.diff(frequency_hz)))
+        psd_lin = np.power(10.0, psd_db_umapr / 10.0)
+        band_power = psd_lin * df
+        eps = np.finfo(float).tiny
+        levels_db_umapr = 10.0 * np.log10(np.maximum(band_power, eps))
+    else:
+        raise ValueError('hemisphere must include third_octave or narrowband data; run depropagate_hemisphere with third_octave=True and/or narrowband=True')
+
+    if levels_db_umapr.shape[1] != elv_grid_deg.size or levels_db_umapr.shape[2] != azi_grid_deg.size:
+        raise ValueError('Spectrum grid shape does not match elv_grid_deg/azi_grid_deg')
+
+    # Ensure azimuth periodicity is represented in the interpolation grid.
+    # We need the seam column at (azi0 + 360 deg) with values matching azi0,
+    # otherwise points near 360 deg can fall out-of-bounds and become missing.
+    azi_axis = np.asarray(azi_grid_deg, dtype=float).ravel()
+    if np.any(np.diff(azi_axis) <= 0.0) or np.any(np.diff(elv_grid_deg) <= 0.0):
+        raise ValueError('azi_grid_deg and elv_grid_deg must be strictly increasing')
+
+    azi0 = float(azi_axis[0])
+    azi_end = azi0 + 360.0
+    if np.isclose(azi_axis[-1], azi_end, rtol=0.0, atol=1e-6):
+        # Seam column present; ensure the last column matches the first.
+        levels_db_umapr = levels_db_umapr.copy()
+        levels_db_umapr[:, :, -1] = levels_db_umapr[:, :, 0]
+    else:
+        # No seam column; append one.
+        azi_axis = np.concatenate((azi_axis, np.array([azi_end], dtype=float)))
+        seam_col = levels_db_umapr[:, :, 0:1]
+        levels_db_umapr = np.concatenate((levels_db_umapr, seam_col), axis=2)
+
+    # Default ART grids.
+    # A common AAM/RNM convention (and the included example sphere) uses:
+    #   PHI:   -90..90   (lateral)
+    #   THETA: 0..180    (longitudinal)
+    # The step sizes can vary by dataset; pass phi_deg/theta_deg explicitly if you
+    # need an exact grid.
+    if phi_deg is None:
+        phi_deg = np.arange(-90.0, 90.0 + 1e-9, 10.0)
+    if theta_deg is None:
+        theta_deg = np.arange(0.0, 180.0 + 1e-9, 5.0)
+    phi_deg = np.asarray(phi_deg, dtype=float).ravel()
+    theta_deg = np.asarray(theta_deg, dtype=float).ravel()
+    if phi_deg.size < 2 or theta_deg.size < 2:
+        raise ValueError('phi_deg and theta_deg must each have at least 2 values')
+
+    # Determine reference radius in feet.
+    if radius_ft is None:
+        if 'r_ref' not in meta or 'length_units' not in meta:
+            raise ValueError('radius_ft not provided and hemisphere metadata does not include r_ref/length_units')
+        r_ref = float(meta['r_ref'])
+        length_units = str(meta['length_units'])
+        radius_ft = float(unit_conversion.len_conv(r_ref, from_units=length_units, to_units='ft'))
+
+    # ART grid points -> UMAPR for interpolation
+    TH, PH = np.meshgrid(theta_deg, phi_deg)
+    azi_rad, elv_rad = art2umapr(np.deg2rad(PH), np.deg2rad(TH))
+    azi_q = np.degrees(azi_rad).reshape(-1)
+    # Wrap query azimuths into the interpolation axis range [azi0, azi0+360)
+    azi_q = (azi_q - azi0) % 360.0 + azi0
+    elv_q = np.degrees(elv_rad).reshape(-1)
+
+    # Query points are (elv, azi) pairs in degrees
+    pts = np.column_stack((elv_q, azi_q))
+
+    # Build output amplitude array: (phi, theta, freq)
+    nphi = phi_deg.size
+    nth = theta_deg.size
+    nfreq = int(np.asarray(frequency_hz).size)
+    amplitude_db = np.full((nphi, nth, nfreq), -np.inf, dtype=float)
+
+    # Interpolate each band in linear power and convert to dB.
+    eps = np.finfo(float).tiny
+    for k in range(nfreq):
+        Lk = levels_db_umapr[k, :, :]
+        Pk = np.power(10.0, Lk / 10.0)
+        # Treat non-finite levels as zero power.
+        Pk[~np.isfinite(Pk)] = 0.0
+        interp = RegularGridInterpolator(
+            (elv_grid_deg, azi_axis),
+            Pk,
+            bounds_error=False,
+            fill_value=0.0,
+        )
+        Pq = interp(pts).reshape(nphi, nth)
+        Lq = np.full_like(Pq, -np.inf, dtype=float)
+        pos = Pq > 0.0
+        if np.any(pos):
+            Lq[pos] = 10.0 * np.log10(np.maximum(Pq[pos], eps))
+        amplitude_db[:, :, k] = Lq
+
+    # Replace non-finite levels with AAM-style missing sentinel (>1e34)
+    missing_sentinel = np.float32(1.0e35)
+    amplitude_to_write = amplitude_db.astype(np.float32)
+    amplitude_to_write[~np.isfinite(amplitude_to_write)] = missing_sentinel
+
+    # Write netCDF (match AAM naming conventions)
+    ds = Dataset(filename, mode='w')
+    try:
+        # Dimensions (the example file defines many scalar dims; they are not used
+        # by scalar variables but are harmless to include).
+        ds.createDimension('PHI', nphi)
+        ds.createDimension('THETA', nth)
+        ds.createDimension('FREQUENCY', nfreq)
+        ds.createDimension('XYZ', 3)
+        for d in [
+            'BB', 'NB', 'PT', 'DOPPLER_SHIFT_REMOVED',
+            'EMPTY_WEIGHT', 'FUEL_WEIGHT', 'LOAD_WEIGHT',
+            'RADIUS', 'FLIGHT_PATH_ANGLE', 'PYLON_ANGLE', 'SPEED', 'MASTTILT'
+        ]:
+            if d not in ds.dimensions:
+                ds.createDimension(d, 1)
+
+        # Core AAM hemisphere variables
+        vphi = ds.createVariable('PHI', 'f4', ('PHI',))
+        vth = ds.createVariable('THETA', 'f4', ('THETA',))
+        vf = ds.createVariable('FREQUENCY', 'f4', ('FREQUENCY',))
+        vamp = ds.createVariable('AMPLITUDE', 'f4', ('PHI', 'THETA', 'FREQUENCY'), fill_value=missing_sentinel)
+
+        # Scalar flight/condition variables (AAM example uses 0-D scalars)
+        vr = ds.createVariable('RADIUS', 'f4')
+        vs = ds.createVariable('SPEED', 'f4')
+        vfpa = ds.createVariable('FLIGHT_PATH_ANGLE', 'f4')
+
+        # Additional AAM metadata variables seen in example spheres
+        vBB = ds.createVariable('BB', 'f4')
+        vNB = ds.createVariable('NB', 'f4')
+        vPT = ds.createVariable('PT', 'f4')
+        vDSR = ds.createVariable('DOPPLER_SHIFT_REMOVED', 'f4')
+        vEW = ds.createVariable('EMPTY_WEIGHT', 'f4')
+        vFW = ds.createVariable('FUEL_WEIGHT', 'f4')
+        vLW = ds.createVariable('LOAD_WEIGHT', 'f4')
+        vPA = ds.createVariable('PYLON_ANGLE', 'f4')
+        vMT = ds.createVariable('MASTTILT', 'f4')
+        vXYZ = ds.createVariable('XYZ', 'f4', ('XYZ',))
+
+        vphi[:] = np.asarray(phi_deg, dtype=np.float32)
+        vth[:] = np.asarray(theta_deg, dtype=np.float32)
+        vf[:] = np.asarray(frequency_hz, dtype=np.float32)
+        vamp[:, :, :] = amplitude_to_write
+
+        vr.assignValue(np.float32(radius_ft))
+        vs.assignValue(np.float32(speed_knots))
+        vfpa.assignValue(np.float32(flight_path_angle_deg))
+
+        vBB.assignValue(np.float32(BB))
+        vNB.assignValue(np.float32(NB))
+        vPT.assignValue(np.float32(PT))
+        vDSR.assignValue(np.float32(doppler_shift_removed))
+        vEW.assignValue(np.float32(empty_weight_lb))
+        vFW.assignValue(np.float32(fuel_weight_lb))
+        vLW.assignValue(np.float32(load_weight_lb))
+        vPA.assignValue(np.float32(pylon_angle_deg))
+        vMT.assignValue(np.float32(masttilt_deg))
+
+        xyz = np.asarray(xyz_ft, dtype=np.float32).ravel()
+        if xyz.size != 3:
+            raise ValueError('xyz_ft must be a 3-element iterable (x, y, z) in feet')
+        vXYZ[:] = xyz
+
+        # Match the example file's attribute naming: 'unit' (singular)
+        vphi.unit = 'DEGREE'
+        vth.unit = 'DEGREE'
+        vf.unit = 'HERTZ'
+        vamp.unit = 'DECIBEL'
+        vr.unit = 'FEET'
+        vs.unit = 'KNOTS'
+        vfpa.unit = 'DEGREE'
+        vXYZ.unit = 'FEET'
+
+        # The example sets unit attrs (often blank) on the metadata scalars.
+        vBB.unit = ''
+        vNB.unit = ''
+        vPT.unit = ''
+        vDSR.unit = ''
+        vEW.unit = 'POUNDS'
+        vFW.unit = 'POUNDS'
+        vLW.unit = 'POUNDS'
+        vPA.unit = 'DEGREE'
+        vMT.unit = 'DEGREE'
+
+        ds.title = title if title is not None else 'AAM/RNM acoustic hemisphere'
+    finally:
+        ds.close()
 
 
 def OASPL(amplitudes):
