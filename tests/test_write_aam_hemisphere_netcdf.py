@@ -63,6 +63,7 @@ def test_write_aam_hemisphere_netcdf_roundtrip_third_octave(tmp_path):
 
     # Verify the AAM-style auxiliary fields exist and use 'unit' attrs
     with Dataset(str(out_nc), 'r') as ds:
+        assert ds.data_model == 'NETCDF3_CLASSIC'
         for vname in [
             'BB', 'NB', 'PT', 'DOPPLER_SHIFT_REMOVED',
             'EMPTY_WEIGHT', 'FUEL_WEIGHT', 'LOAD_WEIGHT',

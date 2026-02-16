@@ -1357,14 +1357,23 @@ def write_aam_hemisphere_netcdf(
     amplitude_to_write = amplitude_db.astype(np.float32)
     amplitude_to_write[~np.isfinite(amplitude_to_write)] = missing_sentinel
 
-    # Write netCDF (match AAM naming conventions)
-    ds = Dataset(filename, mode='w')
+    # Write netCDF (match AAM naming conventions).
+    # Use NETCDF3_CLASSIC for broad interoperability with legacy AAM/RNM tooling
+    # and to avoid HDF5 backend dependency issues on some CI platforms.
+    ds = Dataset(filename, mode='w', format='NETCDF3_CLASSIC')
     try:
-        # Dimensions
+        # Dimensions (legacy AAM/RNM spheres commonly include these singleton dims)
         ds.createDimension('PHI', nphi)
         ds.createDimension('THETA', nth)
         ds.createDimension('FREQUENCY', nfreq)
         ds.createDimension('XYZ', 3)
+        for d in [
+            'BB', 'NB', 'PT', 'DOPPLER_SHIFT_REMOVED',
+            'EMPTY_WEIGHT', 'FUEL_WEIGHT', 'LOAD_WEIGHT',
+            'RADIUS', 'FLIGHT_PATH_ANGLE', 'PYLON_ANGLE', 'SPEED', 'MASTTILT'
+        ]:
+            if d not in ds.dimensions:
+                ds.createDimension(d, 1)
 
         # Core AAM hemisphere variables
         vphi = ds.createVariable('PHI', 'f4', ('PHI',))

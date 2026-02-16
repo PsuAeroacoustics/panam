@@ -29,6 +29,22 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Print binary dependency versions
+        run: |
+          python - <<'PY'
+          import platform, sys
+          import numpy, scipy, h5py, netCDF4
+          print('python:', sys.version.replace('\n', ' '))
+          print('platform:', platform.platform())
+          print('numpy:', numpy.__version__)
+          print('scipy:', scipy.__version__)
+          print('h5py:', h5py.__version__)
+          print('hdf5 (h5py):', h5py.version.hdf5_version)
+          print('netCDF4:', netCDF4.__version__)
+          print('netcdf-c:', netCDF4.getlibversion())
+          print('hdf5 (netCDF4):', getattr(netCDF4, '__hdf5libversion__', 'n/a'))
+          PY
+
       - name: Run tests
         run: |
           python -m pytest -q
