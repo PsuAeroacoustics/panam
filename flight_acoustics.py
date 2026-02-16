@@ -162,7 +162,8 @@ def third_octave_band_levels(signal, sampling_rate, cal=0.0, fmin=20.0, fmax=200
     band_centers = band_centers[np.logical_and(band_centers >= fmin, band_centers <= fmax)]
     # Compute PSD
     frequency, psd_db, _ = psd(signal, sampling_rate, cal)
-    psd_linear = 10.0 ** (psd_db / 10.0)
+    pref = 2.0e-5
+    psd_linear = (pref ** 2) * 10.0 ** (psd_db / 10.0)
     df = frequency[1] - frequency[0]
     band_levels = np.zeros_like(band_centers)
     for i, fc in enumerate(band_centers):
@@ -170,9 +171,208 @@ def third_octave_band_levels(signal, sampling_rate, cal=0.0, fmin=20.0, fmax=200
         f_upper = fc * (2.0 ** (1.0 / 6.0))
         band_indices = np.where(np.logical_and(frequency >= f_lower, frequency < f_upper))
         band_power = np.sum(psd_linear[band_indices] * df)
-        pref = 2.0e-5
         band_levels[i] = 10.0 * np.log10(band_power / (pref ** 2))
     return band_centers, band_levels
+
+
+def load_mil_std_1474e_table_c1(filename):
+    """
+    Load MIL-STD-1474E Table C-1 data from CSV.
+
+    Args:
+        filename: CSV file path containing the converted Table C-1 data.
+
+    Returns:
+        dict with keys:
+            band_freq_hz: third-octave center frequencies in the table
+            distance_columns_m: nondetectability distance columns (m)
+            measurement_distance_m: measurement distance used for each column (m)
+            limits_db: table limits (rows=freq, cols=distance column), NaN for missing values
+    """
+    rows = np.genfromtxt(filename, delimiter=',', dtype=str)
+    if rows.ndim != 2 or rows.shape[0] < 3:
+        raise ValueError('MIL-STD table CSV appears malformed')
+
+    distance_columns_m = np.array([float(v) for v in rows[1, 1:] if v != ''], dtype=float)
+
+    measurement_row_idx = None
+    for i in range(rows.shape[0]):
+        if rows[i, 0].strip().lower() == 'measurement distance (meters)':
+            measurement_row_idx = i
+            break
+    if measurement_row_idx is None:
+        raise ValueError('Could not find "Measurement Distance (meters)" row in MIL-STD Table C-1 CSV')
+
+    measurement_distance_m = np.array([float(v) for v in rows[measurement_row_idx, 1:] if v != ''], dtype=float)
+
+    band_rows = rows[2:measurement_row_idx, :]
+    band_freq_hz = np.array([float(r[0]) for r in band_rows], dtype=float)
+
+    limits_db = np.zeros((band_rows.shape[0], distance_columns_m.size), dtype=float)
+    limits_db[:] = np.nan
+    for i, row in enumerate(band_rows):
+        for j in range(distance_columns_m.size):
+            value = row[j + 1].strip()
+            if value == '' or value.upper() == 'NA':
+                continue
+            limits_db[i, j] = float(value)
+
+    return {
+        'band_freq_hz': band_freq_hz,
+        'distance_columns_m': distance_columns_m,
+        'measurement_distance_m': measurement_distance_m,
+        'limits_db': limits_db,
+    }
+
+
+def _mil_std_interp_log_frequency(x_freq_hz, y_values, target_freq_hz):
+    return np.interp(np.log10(target_freq_hz), np.log10(x_freq_hz), y_values)
+
+
+def _mil_std_distance_within_group(measured_level_db, thresholds_db, distances_m):
+    valid = np.isfinite(thresholds_db)
+    if np.count_nonzero(valid) == 0:
+        return np.nan, 'warning_insufficient_group_data', False
+
+    thresholds = thresholds_db[valid]
+    distances = distances_m[valid]
+    order = np.argsort(distances)
+    thresholds = thresholds[order]
+    distances = distances[order]
+
+    if measured_level_db <= thresholds[0]:
+        return distances[0], 'warning_group_below_first', False
+
+    for i in range(distances.size - 1):
+        level_1 = thresholds[i]
+        level_2 = thresholds[i + 1]
+        distance_1 = distances[i]
+        distance_2 = distances[i + 1]
+
+        if (measured_level_db - level_1) * (measured_level_db - level_2) > 0.0:
+            continue
+
+        if level_2 == level_1:
+            return distance_1, 'warning_group_flat_segment', False
+
+        log_distance = np.interp(
+            measured_level_db,
+            [level_1, level_2],
+            [np.log10(distance_1), np.log10(distance_2)]
+        )
+        return 10.0 ** log_distance, 'group_interpolated', True
+
+    return np.nan, 'warning_group_above_last', False
+
+
+def _mil_std_distance_from_table(measured_level_db_10m, threshold_levels_db, distances_m, measurement_distance_m):
+    group_measurement_distances = np.unique(measurement_distance_m)
+    candidates = []
+
+    for group_distance_m in group_measurement_distances:
+        group_mask = measurement_distance_m == group_distance_m
+        if not np.any(group_mask):
+            continue
+
+        measured_level_group_db = measured_level_db_10m + 20.0 * np.log10(10.0 / group_distance_m)
+        distance_m, status, is_valid = _mil_std_distance_within_group(
+            measured_level_group_db,
+            threshold_levels_db[group_mask],
+            distances_m[group_mask],
+        )
+
+        if np.isfinite(distance_m):
+            candidates.append((distance_m, f'{status}@{group_distance_m:.0f}m', is_valid))
+
+    if len(candidates) == 0:
+        return np.nan, 'warning_above_all_groups', False
+
+    min_idx = int(np.argmin([c[0] for c in candidates]))
+    return candidates[min_idx]
+
+
+def mil_std_1474e_nondetectability_distance(
+        band_centers_hz,
+        band_levels_db,
+        mil_std_table,
+        spectrum_distance_m=10.0):
+    """
+    Compute MIL-STD-1474E Table C-1 nondetectability distance from a third-octave spectrum.
+
+    Args:
+        band_centers_hz: third-octave center frequencies for the spectrum.
+        band_levels_db: third-octave levels (dB) at spectrum_distance_m.
+        mil_std_table: dict from load_mil_std_1474e_table_c1(...) or CSV filename.
+        spectrum_distance_m: distance corresponding to band_levels_db (m).
+
+    Returns:
+        dict with:
+            overall_nondetectability_distance_m: overall distance using valid bands only
+            trigger_frequency_hz: band frequency that sets the overall distance
+            band_frequency_hz: MIL-STD band frequencies used in evaluation
+            band_nondetectability_distance_m: per-band nondetectability distance
+            band_status: per-band status strings
+            band_valid: per-band boolean validity (True only for interpolated values)
+            band_level_db_10m: input spectrum mapped to MIL-STD bands and normalized to 10 m
+    """
+    if isinstance(mil_std_table, (str, os.PathLike)):
+        table = load_mil_std_1474e_table_c1(mil_std_table)
+    else:
+        table = mil_std_table
+
+    band_centers_hz = np.asarray(band_centers_hz, dtype=float)
+    band_levels_db = np.asarray(band_levels_db, dtype=float)
+
+    table_band_freq_hz = np.asarray(table['band_freq_hz'], dtype=float)
+    distance_columns_m = np.asarray(table['distance_columns_m'], dtype=float)
+    measurement_distance_m = np.asarray(table['measurement_distance_m'], dtype=float)
+    limits_db = np.asarray(table['limits_db'], dtype=float)
+
+    if band_centers_hz.size == 0 or band_levels_db.size == 0:
+        raise ValueError('Input spectrum is empty')
+
+    band_levels_table = _mil_std_interp_log_frequency(
+        band_centers_hz,
+        band_levels_db,
+        table_band_freq_hz,
+    )
+    band_levels_10m = band_levels_table + 20.0 * np.log10(spectrum_distance_m / 10.0)
+
+    band_distances = np.zeros_like(table_band_freq_hz)
+    band_status = np.empty(table_band_freq_hz.size, dtype=object)
+    band_valid = np.zeros(table_band_freq_hz.size, dtype=bool)
+
+    for i in range(table_band_freq_hz.size):
+        distance_m, status, is_valid = _mil_std_distance_from_table(
+            band_levels_10m[i],
+            limits_db[i, :],
+            distance_columns_m,
+            measurement_distance_m,
+        )
+        band_distances[i] = distance_m
+        band_status[i] = status
+        band_valid[i] = is_valid
+
+    valid_for_overall = np.logical_and(np.isfinite(band_distances), band_valid)
+    if np.any(valid_for_overall):
+        valid_indices = np.where(valid_for_overall)[0]
+        best_local_idx = int(np.argmax(band_distances[valid_for_overall]))
+        trigger_idx = valid_indices[best_local_idx]
+        overall_distance = float(band_distances[trigger_idx])
+        trigger_frequency = float(table_band_freq_hz[trigger_idx])
+    else:
+        overall_distance = np.nan
+        trigger_frequency = np.nan
+
+    return {
+        'overall_nondetectability_distance_m': overall_distance,
+        'trigger_frequency_hz': trigger_frequency,
+        'band_frequency_hz': table_band_freq_hz,
+        'band_nondetectability_distance_m': band_distances,
+        'band_status': band_status,
+        'band_valid': band_valid,
+        'band_level_db_10m': band_levels_10m,
+    }
 
 def spectrogram(signal, sampling_rate, window_time=0.5, window_type="hann", window_overlap=7.0 / 8.0,
                 detrend='constant', dbref=20e-6):
