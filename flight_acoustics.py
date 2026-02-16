@@ -1360,19 +1360,11 @@ def write_aam_hemisphere_netcdf(
     # Write netCDF (match AAM naming conventions)
     ds = Dataset(filename, mode='w')
     try:
-        # Dimensions (the example file defines many scalar dims; they are not used
-        # by scalar variables but are harmless to include).
+        # Dimensions
         ds.createDimension('PHI', nphi)
         ds.createDimension('THETA', nth)
         ds.createDimension('FREQUENCY', nfreq)
         ds.createDimension('XYZ', 3)
-        for d in [
-            'BB', 'NB', 'PT', 'DOPPLER_SHIFT_REMOVED',
-            'EMPTY_WEIGHT', 'FUEL_WEIGHT', 'LOAD_WEIGHT',
-            'RADIUS', 'FLIGHT_PATH_ANGLE', 'PYLON_ANGLE', 'SPEED', 'MASTTILT'
-        ]:
-            if d not in ds.dimensions:
-                ds.createDimension(d, 1)
 
         # Core AAM hemisphere variables
         vphi = ds.createVariable('PHI', 'f4', ('PHI',))
