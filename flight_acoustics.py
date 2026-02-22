@@ -2859,7 +2859,7 @@ def filter_track(track, xlims = None, ylims = None, zlims = None, decimate=1):
             filtered_track[key] = filtered_track[key][::decimate]
     return filtered_track   
 
-def ega(hs, hr, d2, f, a, flores, pt=True, cturb=0.0):
+def ega(hs, hr, d2, f, a, flores, pt=True, cturb=0.0, boundary_loss_correction=True):
     """
     Calculate excess ground attenuation for a non-directional point source.
     
@@ -2898,6 +2898,10 @@ def ega(hs, hr, d2, f, a, flores, pt=True, cturb=0.0):
         pt: True for pure tone (no third octave smearing), False for broadband (default: True)
         cturb: Turbulence parameter (rad·s·(m or ft)^-0.5)
                Typical: 0 to 16e-4 (rad·s·√m) or 0 to 52.5e-4 (rad·s·√ft)
+         boundary_loss_correction: When True (default), includes the boundary-loss factor
+             correction to the plane-wave reflection coefficient (Chessell), which is
+             most relevant at grazing incidence. When False, uses only the plane-wave
+             reflection coefficient.
     
     Returns:
         atten: Attenuation in dB
@@ -2936,18 +2940,23 @@ def ega(hs, hr, d2, f, a, flores, pt=True, cturb=0.0):
     cos_grazing = np.cos(grazing_angle)  # Cosine of grazing angle
     plane_wave_coeff = (cos_grazing - impedance_ratio) / (cos_grazing + impedance_ratio)  # Plane wave reflection coefficient
     
-    # Compute numerical distance (simplified: 0.5*k1 = π*f/a)
-    ground_effect_param = np.sqrt(1j * np.pi * f * image_range / a / (1.0 + impedance_ratio * cos_grazing)) * (cos_grazing + impedance_ratio)
-    w = ground_effect_param ** 2  # Numerical distance parameter
-    
-    # Compute boundary loss factor (ground surface effect)
-    boundary_loss = np.zeros_like(w, dtype=complex)
-    mask = np.abs(w) <= 500
-    sqrt_boundary = np.sqrt(w[mask])
-    boundary_loss[mask] = 1 + 1j * np.sqrt(np.pi * w[mask]) * np.exp(-w[mask]) * (1 - erf(-1j * sqrt_boundary))
-    
-    # Compute image source strength
-    image_source_coeff = plane_wave_coeff + boundary_loss * (1.0 - plane_wave_coeff)  # Combined reflection + boundary loss
+    if boundary_loss_correction:
+        # Compute numerical distance (simplified: 0.5*k1 = π*f/a)
+        ground_effect_param = np.sqrt(
+            1j * np.pi * f * image_range / a / (1.0 + impedance_ratio * cos_grazing)
+        ) * (cos_grazing + impedance_ratio)
+        w = ground_effect_param ** 2  # Numerical distance parameter
+
+        # Compute boundary loss factor (ground surface effect)
+        boundary_loss = np.zeros_like(w, dtype=complex)
+        mask = np.abs(w) <= 500
+        sqrt_boundary = np.sqrt(w[mask])
+        boundary_loss[mask] = 1 + 1j * np.sqrt(np.pi * w[mask]) * np.exp(-w[mask]) * (1 - erf(-1j * sqrt_boundary))
+
+        # Combined reflection + boundary loss
+        image_source_coeff = plane_wave_coeff + boundary_loss * (1.0 - plane_wave_coeff)
+    else:
+        image_source_coeff = plane_wave_coeff
     image_source_magnitude = np.abs(image_source_coeff)  # Magnitude of image source term
     image_source_phase = np.angle(image_source_coeff)  # Phase of image source term
     

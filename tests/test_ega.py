@@ -106,3 +106,49 @@ def test_ega_geometry_effect():
     assert np.isfinite(phase_low) and np.isfinite(phase_high)
     # Different geometry should give different results
     assert (atten_low != atten_high) or (phase_low != phase_high)
+
+
+def test_ega_disable_boundary_loss_correction_matches_plane_wave():
+    hs = 10.0
+    hr = 5.0
+    d2 = 100.0
+    f = np.array([200.0, 500.0, 1000.0])
+    a = 1116.0
+    flores = 200.0
+
+    atten, phase = ega(
+        hs=hs,
+        hr=hr,
+        d2=d2,
+        f=f,
+        a=a,
+        flores=flores,
+        pt=True,
+        cturb=0.0,
+        boundary_loss_correction=False,
+    )
+
+    # Compute expected values using plane-wave reflection coefficient only
+    direct_range = np.sqrt(d2**2 + (hs - hr)**2)
+    image_range = np.sqrt(d2**2 + (hs + hr)**2)
+    grazing_angle = np.arccos((hs + hr) / image_range)
+    path_delay = (image_range - direct_range) / a
+    range_ratio = image_range / direct_range
+
+    freq_resistance_ratio = f / flores
+    inv_freq_ratio = freq_resistance_ratio ** (-0.73)
+    impedance_ratio = 1.0 / (
+        1.0
+        + 9.08 * inv_freq_ratio / (freq_resistance_ratio ** 0.02)
+        + 1j * 11.9 * inv_freq_ratio
+    )
+    cos_grazing = np.cos(grazing_angle)
+    plane_wave_coeff = (cos_grazing - impedance_ratio) / (cos_grazing + impedance_ratio)
+
+    phase_delay = 1j * 2.0 * np.pi * f * path_delay
+    resultant_amplitude = 1.0 + plane_wave_coeff * np.exp(phase_delay) / range_ratio
+    expected_atten = 10.0 * np.log10(np.abs(resultant_amplitude) ** 2)
+    expected_phase = np.angle(resultant_amplitude)
+
+    assert np.allclose(atten, expected_atten)
+    assert np.allclose(phase, expected_phase)

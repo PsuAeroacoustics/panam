@@ -141,6 +141,12 @@ Examples:
     # Mode and resolution
     parser.add_argument('-b', '--broadband', action='store_true',
                         help='Use broadband (third-octave) mode instead of pure tone')
+    parser.add_argument(
+        '--no-boundary-loss-correction',
+        dest='boundary_loss_correction',
+        action='store_false',
+        help='Disable the grazing-incidence boundary-loss correction; use plane-wave reflection coefficient only',
+    )
     parser.add_argument('--turbulence', type=float, default=0.0,
                         help='Turbulence parameter (rad·s·√m) (default: 0.0)')
     parser.add_argument('--levels', type=int, default=50,
@@ -179,6 +185,7 @@ Examples:
     pt = not args.broadband
     cturb = args.turbulence
     c = args.speed_of_sound
+    boundary_loss_correction = args.boundary_loss_correction
     
     # Parse colorbar limits if provided
     if args.clim:
@@ -192,7 +199,7 @@ Examples:
     # Create meshgrid and compute EGA
     if args.plot_type == 'frequency_distance':
         X, Y = np.meshgrid(frequencies, distances)
-        Z, _ = ega(hs, hr, Y, X, c, flores, pt=pt, cturb=cturb)
+        Z, _ = ega(hs, hr, Y, X, c, flores, pt=pt, cturb=cturb, boundary_loss_correction=boundary_loss_correction)
         xlabel = 'Frequency (Hz)'
         ylabel = '2D Distance (m)'
         title_extra = f'{ground_label} (hs={hs}m, hr={hr}m)'
@@ -204,7 +211,17 @@ Examples:
         f_single = frequencies[0] if len(frequencies) > 0 else 1000.0
         for i in range(X.shape[0]):
             for j in range(X.shape[1]):
-                Z[i, j], _ = ega(X[i, j], hr, Y[i, j], f_single, c, flores, pt=pt, cturb=cturb)
+                Z[i, j], _ = ega(
+                    X[i, j],
+                    hr,
+                    Y[i, j],
+                    f_single,
+                    c,
+                    flores,
+                    pt=pt,
+                    cturb=cturb,
+                    boundary_loss_correction=boundary_loss_correction,
+                )
         xlabel = '2D Distance (m)'
         ylabel = 'Source Height (m)'
         title_extra = f'{ground_label} @ {f_single:.0f}Hz (hr={hr}m)'
@@ -213,7 +230,17 @@ Examples:
         Z = np.zeros_like(X)
         d_single = distances[0] if not is_single_distance else dist_min
         for i in range(X.shape[0]):
-            Z[i], _ = ega(hs, hr, d_single, X[i], c, flores, pt=pt, cturb=cturb)
+            Z[i], _ = ega(
+                hs,
+                hr,
+                d_single,
+                X[i],
+                c,
+                flores,
+                pt=pt,
+                cturb=cturb,
+                boundary_loss_correction=boundary_loss_correction,
+            )
         xlabel = 'Frequency (Hz)'
         ylabel = 'Excess Attenuation (dB)'
         title_extra = f'{ground_label} (hs={hs}m, hr={hr}m, d={d_single}m)'
