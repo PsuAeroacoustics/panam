@@ -1,7 +1,8 @@
 import numpy as np
 import pytest
+import matplotlib.pyplot as plt
 
-from flight_acoustics import psd, psd_welch, atmosorb, art2umapr, geodetic2array, array2geodetic
+from flight_acoustics import psd, psd_welch, atmosorb, art2umapr, geodetic2array, array2geodetic, lambert_ea_points
 
 P_REF = 2.0e-5
 
@@ -83,6 +84,39 @@ def test_art2umapr_basic():
     assert elv.shape == phi.shape
     # Elevation should be near 0 for theta=0
     assert abs(elv[0]) < 1e-12
+
+
+def test_lambert_ea_points_default_umapr_grid():
+    fig, ax, _ = lambert_ea_points(
+        np.array([], dtype=float),
+        np.array([], dtype=float),
+        markers=np.array([], dtype=object),
+    )
+    try:
+        meridian_zero = next(line for line in ax.lines if line.get_gid() == 'lambert-grid-umapr-meridian-0')
+        xdata = np.asarray(meridian_zero.get_xdata(), dtype=float)
+        assert np.max(np.abs(xdata)) < 1.0e-12
+        assert all('lambert-grid-art-' not in (line.get_gid() or '') for line in ax.lines)
+    finally:
+        plt.close(fig)
+
+
+def test_lambert_ea_points_art_grid_overlay():
+    fig, ax, _ = lambert_ea_points(
+        np.array([], dtype=float),
+        np.array([], dtype=float),
+        markers=np.array([], dtype=object),
+        grid_convention='rnm',
+    )
+    try:
+        theta_ninety = next(line for line in ax.lines if line.get_gid() == 'lambert-grid-art-theta-90')
+        ydata = np.asarray(theta_ninety.get_ydata(), dtype=float)
+        assert np.max(np.abs(ydata)) < 1.0e-12
+        labels = {text.get_text() for text in ax.texts}
+        assert 'θ=90°' in labels
+        assert 'θ=0°' in labels
+    finally:
+        plt.close(fig)
 
 
 def test_geodetic_local_roundtrip():

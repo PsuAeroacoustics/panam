@@ -2156,7 +2156,191 @@ def plot_projection(filename, altitude=500, cutoff=30, infreqs=None, units='m'):
     cb.set_label('Sound Pressure Level, dBA')
     return fig, ax, cs
 
-def plot_lambert_ea(azi,elv,SPL,SPL_range=None,weight=None):
+def _normalize_lambert_grid_convention(grid_convention):
+    if grid_convention is None:
+        return 'umapr'
+
+    normalized = str(grid_convention).strip().lower()
+    aliases = {
+        'umapr': 'umapr',
+        'art': 'art',
+        'aam': 'art',
+        'rnm': 'art',
+    }
+    if normalized not in aliases:
+        raise ValueError("grid_convention must be one of 'umapr', 'art', 'aam', or 'rnm'")
+    return aliases[normalized]
+
+
+def _lambert_xy_to_umapr(x, y):
+    azimuth = np.mod(np.pi / 2.0 - np.arctan2(-y, x), 2.0 * np.pi)
+    q = np.sqrt(np.square(x) + np.square(y))
+    elevation = np.pi / 2.0 - 2.0 * np.arcsin(np.clip(q / 2.0, 0.0, 1.0))
+    return azimuth, elevation
+
+
+def _umapr2art(azimuth, elevation):
+    azimuth = np.asarray(azimuth, dtype=float)
+    elevation = np.asarray(elevation, dtype=float)
+    cos_elevation = np.cos(elevation)
+    x = cos_elevation * np.sin(azimuth)
+    y = -cos_elevation * np.cos(azimuth)
+    z = -np.sin(elevation)
+    theta = np.arccos(np.clip(y, -1.0, 1.0))
+    phi = np.arctan2(-x, -z)
+    return phi, theta
+
+
+def _configure_lambert_axes(ax):
+    radius = np.sqrt(2.0)
+    ax.set_aspect('equal', adjustable='box')
+    if hasattr(ax, 'set_box_aspect'):
+        ax.set_box_aspect(1.0)
+    ax.set_xlim(-radius, radius)
+    ax.set_ylim(-radius, radius)
+    ax.set_frame_on(False)
+    ax.set_xticks([])
+    ax.set_yticks([])
+
+
+def _draw_lambert_grid(ax, grid_convention='umapr'):
+    grid_convention = _normalize_lambert_grid_convention(grid_convention)
+
+    if grid_convention == 'umapr':
+        meridians = np.arange(0, 360, 45)
+        for meridian in meridians:
+            lats = np.linspace(0, 0.5 * np.pi, 1000)
+            lons = (np.deg2rad(meridian) - np.pi) * np.ones(len(lats))
+            xm, ym = lambert_ea(lats, lons)
+            (line,) = ax.plot(xm, ym, 'k--')
+            line.set_gid(f'lambert-grid-umapr-meridian-{int(meridian)}')
+            xl, yl = lambert_ea(np.deg2rad(-11.0), np.deg2rad(meridian) - np.pi)
+            text = ax.text(
+                xl,
+                yl,
+                "%d°" % np.fmod(360 - meridian, 360),
+                horizontalalignment='center',
+                verticalalignment='center',
+            )
+            text.set_gid(f'lambert-grid-umapr-meridian-label-{int(meridian)}')
+
+        parallels = np.arange(0, 90, 30)
+        for parallel in parallels:
+            lons = np.linspace(-np.pi, np.pi, 1000)
+            lats = np.deg2rad(parallel) * np.ones(len(lons))
+            xm, ym = lambert_ea(lats, lons)
+            (line,) = ax.plot(xm, ym, 'k--')
+            line.set_gid(f'lambert-grid-umapr-parallel-{int(parallel)}')
+            xl, yl = lambert_ea(np.deg2rad(parallel + 7.5), np.deg2rad(0.0))
+            text = ax.text(
+                xl + 0.025,
+                yl - 0.025,
+                "%d°" % parallel,
+                horizontalalignment='left',
+                verticalalignment='center',
+            )
+            text.set_gid(f'lambert-grid-umapr-parallel-label-{int(parallel)}')
+    else:
+        theta_curve = np.deg2rad(np.linspace(0.0, 180.0, 1000))
+        phi_curve = np.deg2rad(np.linspace(-90.0, 90.0, 1000))
+        label_bbox = dict(boxstyle='round,pad=0.15', facecolor='white', edgecolor='none', alpha=0.85)
+
+        for phi_deg in np.arange(-90, 91, 30):
+            phi_line = np.deg2rad(phi_deg) * np.ones_like(theta_curve)
+            azi_line, elv_line = art2umapr(phi_line, theta_curve)
+            xm, ym = lambert_ea(elv_line, azi_line - np.pi)
+            (line,) = ax.plot(xm, ym, 'k--')
+            line.set_gid(f'lambert-grid-art-phi-{int(phi_deg)}')
+
+            azi_label, elv_label = art2umapr(
+                np.array([np.deg2rad(phi_deg)]),
+                np.array([np.deg2rad(120.0)]),
+            )
+            xl, yl = lambert_ea(elv_label, azi_label - np.pi)
+            if phi_deg > 0:
+                label = f'+{int(phi_deg)}°'
+            elif phi_deg < 0:
+                label = f'{int(phi_deg)}°'
+            else:
+                label = '0°'
+
+            x_label = float(xl[0])
+            y_label = float(yl[0])
+            r_label = np.hypot(x_label, y_label)
+            if r_label > 0.0:
+                x_label += 0.06 * x_label / r_label
+                y_label += 0.06 * y_label / r_label
+
+            text = ax.text(
+                x_label,
+                y_label,
+                label,
+                horizontalalignment='left' if phi_deg >= 0 else 'right',
+                verticalalignment='center',
+                bbox=label_bbox,
+                clip_on=False,
+                zorder=10,
+            )
+            text.set_gid(f'lambert-grid-art-phi-label-{int(phi_deg)}')
+
+        for theta_deg in np.arange(30, 180, 30):
+            theta_line = np.deg2rad(theta_deg) * np.ones_like(phi_curve)
+            azi_line, elv_line = art2umapr(phi_curve, theta_line)
+            xm, ym = lambert_ea(elv_line, azi_line - np.pi)
+            (line,) = ax.plot(xm, ym, 'k--')
+            line.set_gid(f'lambert-grid-art-theta-{int(theta_deg)}')
+
+            azi_label, elv_label = art2umapr(
+                np.array([np.deg2rad(80.0)]),
+                np.array([np.deg2rad(theta_deg)]),
+            )
+            xl, yl = lambert_ea(elv_label, azi_label - np.pi)
+            text = ax.text(
+                float(xl[0]) + 0.08,
+                float(yl[0]),
+                f'{int(theta_deg)}°',
+                horizontalalignment='left',
+                verticalalignment='center',
+                bbox=label_bbox,
+                clip_on=False,
+                zorder=10,
+            )
+            text.set_gid(f'lambert-grid-art-theta-label-{int(theta_deg)}')
+
+        top_text = ax.text(
+            0.0,
+            np.sqrt(2.0) + 0.07,
+            '0°',
+            horizontalalignment='center',
+            verticalalignment='bottom',
+            bbox=label_bbox,
+            clip_on=False,
+            zorder=10,
+        )
+        top_text.set_gid('lambert-grid-art-theta-label-0')
+        bottom_text = ax.text(
+            0.0,
+            -np.sqrt(2.0) - 0.07,
+            '180°',
+            horizontalalignment='center',
+            verticalalignment='top',
+            bbox=label_bbox,
+            clip_on=False,
+            zorder=10,
+        )
+        bottom_text.set_gid('lambert-grid-art-theta-label-180')
+
+    def format_coord(x, y):
+        cazi, celv = _lambert_xy_to_umapr(x, y)
+        if grid_convention == 'art':
+            cphi, ctheta = _umapr2art(cazi, celv)
+            return 'φ = %0.1f, θ = %0.1f' % (np.degrees(cphi), np.degrees(ctheta))
+        return 'ψ = %0.1f, θ = %0.1f' % (np.degrees(cazi), np.degrees(celv))
+
+    ax.format_coord = format_coord
+
+
+def plot_lambert_ea(azi,elv,SPL,SPL_range=None,weight=None,grid_convention='umapr'):
     """
     Generate a Lambert equal-area azimuthal projection contour plot of sound pressure levels.
 
@@ -2177,6 +2361,9 @@ def plot_lambert_ea(azi,elv,SPL,SPL_range=None,weight=None):
     weight : str, optional
         Units used for SPL label. Use 'A' for A-weighted SPL, otherwise
         overall SPL is used. Default is None.
+    grid_convention : str, optional
+        Grid overlay convention. Use 'umapr' for the existing azimuth/elevation grid or
+        'art'/'aam'/'rnm' for RNM/AAM phi-theta grid lines. Default is 'umapr'.
 
     Returns
     -------
@@ -2206,44 +2393,8 @@ def plot_lambert_ea(azi,elv,SPL,SPL_range=None,weight=None):
     fig, ax = subplots(facecolor='white')
     ax.patch.set_visible(False)
     cs = ax.contourf(x, y, SPL, levels=levels, cmap=color_map)
-    # make sure aspect ratio preserved 
-    ax.set_aspect('equal')
-    # turn off rectangular frame. 
-    ax.set_frame_on(False)
-    # turn off axis ticks. 
-    ax.set_xticks([])
-    ax.set_yticks([])
-    # Draw meridians
-    meridians = np.arange(0, 360, 45)
-    for meridian in meridians:
-        lats = np.linspace(0, 0.5 * np.pi, 1000)
-        lons = (np.deg2rad(meridian) - np.pi) * np.ones(len(lats))
-        xm, ym = lambert_ea(lats, lons)
-        ax.plot(xm, ym, 'k--')
-        # Add label
-        xl, yl = lambert_ea(np.deg2rad(-11.0), np.deg2rad(meridian) - np.pi)
-        ax.text(xl, yl, "%d°" % np.fmod(360 - meridian, 360), horizontalalignment='center', verticalalignment='center')
-    # Draw parallels
-    parallels = np.arange(0, 90, 30)
-    for parallel in parallels:
-        lons = np.linspace(-np.pi, np.pi, 1000)
-        lats = np.deg2rad(parallel) * np.ones(len(lons))
-        xm, ym = lambert_ea(lats, lons)
-        ax.plot(xm, ym, 'k--')
-        # Add label
-        xl, yl = lambert_ea(np.deg2rad(parallel + 7.5), np.deg2rad(0.0))
-        xpad = 0.025
-        ypad = -0.025
-        ax.text(xl + xpad, yl + ypad, "%d°" % parallel, horizontalalignment='left', verticalalignment='center')
-
-    # Change cursor to display polar coordinates
-    def format_coord(x, y):
-        cazi = np.mod(90 - np.degrees(np.arctan2(-y, x)), 360)
-        cq = np.sqrt(np.square(x) + np.square(y))
-        celv = np.degrees(np.pi / 2 - 2 * np.arcsin(cq / 2))
-        return 'ψ = %0.1f, θ = %0.1f' % (cazi, celv)
-
-    ax.format_coord = format_coord
+    _configure_lambert_axes(ax)
+    _draw_lambert_grid(ax, grid_convention=grid_convention)
     cb = colorbar(cs, pad=0.1)
     if weight == 'A':
         cb.set_label('Sound Pressure Level, dBA')
@@ -2251,7 +2402,7 @@ def plot_lambert_ea(azi,elv,SPL,SPL_range=None,weight=None):
         cb.set_label('Sound Pressure Level, dB')
     return fig, ax, cs
 
-def nc_lambert_ea(filename, input_frequencies=None, weight=None, SPL_range=None):
+def nc_lambert_ea(filename, input_frequencies=None, weight=None, SPL_range=None, grid_convention='umapr'):
     """
     Generate a Lambert equal-area azimuthal projection contour plot of sound pressure levels 
     on a netCDF formatted acoustic sphere.
@@ -2271,6 +2422,9 @@ def nc_lambert_ea(filename, input_frequencies=None, weight=None, SPL_range=None)
     SPL_range : tuple of float, optional
         Tuple specifying (min_SPL, max_SPL) for the contour levels. If None, the range
         is automatically determined from the data. Default is None.
+    grid_convention : str, optional
+        Grid overlay convention. Use 'umapr' for azimuth/elevation grid lines or
+        'art'/'aam'/'rnm' for RNM/AAM phi-theta grid lines. Default is 'umapr'.
 
     Returns
     -------
@@ -2287,10 +2441,17 @@ def nc_lambert_ea(filename, input_frequencies=None, weight=None, SPL_range=None)
         SPL = SPLA
     else:
         SPL = SPLO
-    fig, ax, cs = plot_lambert_ea(azi, elv, SPL, SPL_range)
+    fig, ax, cs = plot_lambert_ea(
+        azi,
+        elv,
+        SPL,
+        SPL_range,
+        weight=weight,
+        grid_convention=grid_convention,
+    )
     return fig, ax, cs
 
-def lambert_ea_points(azimuth, elevation, markers=None, colors=None, sizes=None, alpha=1.0):
+def lambert_ea_points(azimuth, elevation, markers=None, colors=None, sizes=None, alpha=1.0, grid_convention='umapr'):
     """
     Plot levels on an acoustic sphere using the Lambert equal-area azimuthal projection.
 
@@ -2311,6 +2472,9 @@ def lambert_ea_points(azimuth, elevation, markers=None, colors=None, sizes=None,
         Per-point marker sizes (same size as azimuth/elevation) or a single size.
     alpha : float, optional
         Marker transparency, applied to all points. Default 1.0.
+    grid_convention : str, optional
+        Grid overlay convention. Use 'umapr' for azimuth/elevation grid lines or
+        'art'/'aam'/'rnm' for RNM/AAM phi-theta grid lines. Default is 'umapr'.
 
     Returns
     -------
@@ -2390,44 +2554,8 @@ def lambert_ea_points(azimuth, elevation, markers=None, colors=None, sizes=None,
                     alpha=alpha,
                 )
             )
-    # make sure aspect ratio preserved
-    ax.set_aspect('equal')
-    # turn off rectangular frame.
-    ax.set_frame_on(False)
-    # turn off axis ticks.
-    ax.set_xticks([])
-    ax.set_yticks([])
-    # Draw meridians
-    meridians = np.arange(0, 360, 45)
-    for meridian in meridians:
-        lats = np.linspace(0, 0.5 * np.pi, 1000)
-        lons = (np.deg2rad(meridian) - np.pi) * np.ones(len(lats))
-        xm, ym = lambert_ea(lats, lons)
-        ax.plot(xm, ym, 'k--')
-        # Add label
-        xl, yl = lambert_ea(np.deg2rad(-11.0), np.deg2rad(meridian) - np.pi)
-        ax.text(xl, yl, "%d°" % np.fmod(360 - meridian, 360), horizontalalignment='center', verticalalignment='center')
-    # Draw parallels
-    parallels = np.arange(0, 90, 30)
-    for parallel in parallels:
-        lons = np.linspace(-np.pi, np.pi, 1000)
-        lats = np.deg2rad(parallel) * np.ones(len(lons))
-        xm, ym = lambert_ea(lats, lons)
-        ax.plot(xm, ym, 'k--')
-        # Add label
-        xl, yl = lambert_ea(np.deg2rad(parallel + 7.5), np.deg2rad(0.0))
-        xpad = 0.025
-        ypad = -0.025
-        ax.text(xl + xpad, yl + ypad, "%d°" % parallel, horizontalalignment='left', verticalalignment='center')
-
-    # Change cursor to display polar coordinates
-    def format_coord(x, y):
-        cazi = np.mod(90 - np.degrees(np.arctan2(-y, x)), 360)
-        cq = np.sqrt(np.square(x) + np.square(y))
-        celv = np.degrees(np.pi / 2 - 2 * np.arcsin(cq / 2))
-        return 'ψ = %0.1f, θ = %0.1f' % (cazi, celv)
-
-    ax.format_coord = format_coord
+    _configure_lambert_axes(ax)
+    _draw_lambert_grid(ax, grid_convention=grid_convention)
     return fig, ax, cs
 
 
