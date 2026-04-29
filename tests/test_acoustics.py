@@ -113,8 +113,8 @@ def test_lambert_ea_points_art_grid_overlay():
         ydata = np.asarray(theta_ninety.get_ydata(), dtype=float)
         assert np.max(np.abs(ydata)) < 1.0e-12
         labels = {text.get_text() for text in ax.texts}
-        assert 'θ=90°' in labels
-        assert 'θ=0°' in labels
+        assert '90°' in labels
+        assert '0°' in labels
     finally:
         plt.close(fig)
 
