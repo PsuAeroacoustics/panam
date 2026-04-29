@@ -307,9 +307,20 @@ def main():
             np.deg2rad(ELV_GRID),
             hemi_oaspl_db.copy(),
             SPL_range=hemisphere_spl_range,
+            grid_convention='umapr',
         )
         figs.append(fig_oaspl)
         names.append('hemisphere_oaspl_lt2khz_lambert')
+
+        fig_oaspl_art, ax_oaspl_art, _ = fa.plot_lambert_ea(
+            np.deg2rad(AZI_GRID),
+            np.deg2rad(ELV_GRID),
+            hemi_oaspl_db.copy(),
+            SPL_range=hemisphere_spl_range,
+            grid_convention='art',
+        )
+        figs.append(fig_oaspl_art)
+        names.append('hemisphere_oaspl_lt2khz_lambert_art_grid')
 
         # Plot full-band OASPL (kept for compatibility; same band as above in this demo)
         fig_oaspl_full, ax_oaspl_full, _ = fa.plot_lambert_ea(

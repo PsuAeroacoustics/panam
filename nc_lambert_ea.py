@@ -11,6 +11,14 @@ parser.add_argument("-r", "--range", type=str, default=None, help="SPL contour r
 parser.add_argument("-o", "--output", type=str, default=None, help="Output image file name")
 parser.add_argument("-p", "--plot", action="store_true", help="Also plot image when outputting to file")
 parser.add_argument("-w", "--weight", type=str, default='none', choices=["A", "none"], help="Frequency weighting")
+parser.add_argument(
+    "-g",
+    "--grid-convention",
+    type=str,
+    default='umapr',
+    choices=["umapr", "art", "aam", "rnm"],
+    help="Lambert grid overlay convention",
+)
 parser.add_argument("infile", help="Input netCDF file")
 
 args = parser.parse_args()
@@ -22,7 +30,13 @@ SPL_ranges = None
 if args.range is not None:
     SPL_range_str = args.range.split(':')
     SPL_ranges = list(map(float, SPL_range_str))
-fig, ax, cs = flight_acoustics.nc_lambert_ea(args.infile, freqs, args.weight, SPL_ranges)
+fig, ax, cs = flight_acoustics.nc_lambert_ea(
+    args.infile,
+    freqs,
+    args.weight,
+    SPL_ranges,
+    grid_convention=args.grid_convention,
+)
 if args.output:
     fig.savefig(args.output, bbox_inches='tight', facecolor='none')
     if args.plot:
