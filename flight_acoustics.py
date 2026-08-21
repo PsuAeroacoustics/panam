@@ -881,9 +881,18 @@ def depropagate_hemisphere(
     Notes on conventions
     --------------------
     - Inputs must be in a *consistent* local Cartesian frame.
-    - If the result looks mirrored left/right relative to a reference hemisphere, that is
-      usually a sign convention mismatch in the lateral axis. Set ``flip_y_for_geometry=True``
-      to apply Y -> -Y to geometry inputs *before* computing azimuth/elevation.
+    - If the measured field is mirrored left/right against a reference hemisphere, the
+      lateral axis of the supplied geometry runs opposite to the convention here
+      (azimuth 180 ahead, 90 starboard). Set ``flip_y_for_geometry=True`` to apply
+      Y -> -Y to geometry inputs *before* computing azimuth/elevation.
+    - DECIDE THIS IN ANGLE SPACE, NOT BY EYE. Interpolate the reference onto the same
+      azimuth/elevation grid and compare residuals against the reference and against
+      the reference read backwards in azimuth; take whichever fits. Judging it from the
+      rendered plate cannot separate a geometry sign error from a plotting one -- that
+      is how the pre-2026-08-19 label/projection mismatch (see :func:`lambert_lon`)
+      stayed hidden. ``as350_flip_check.py`` is a worked example: the AS350 demo data
+      genuinely needs the flip (MAD 0.72 dB against its AAM reference with it, 1.35 dB
+      against the reference's mirror without it).
 
     Args:
         mic_locations: (Nmics, 3) microphone locations in local Cartesian coordinates.
