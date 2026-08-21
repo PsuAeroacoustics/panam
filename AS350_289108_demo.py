@@ -393,7 +393,7 @@ def main():
                 logging.info(f'Hemisphere - reference (full-band) median={med:+.2f} dB, MAD={mad:.2f} dB (on regular grid)')
 
             lat = np.deg2rad(ELV_GRID)
-            lon = np.deg2rad(AZI_GRID) - np.pi
+            lon = fa.lambert_lon(np.deg2rad(AZI_GRID))
             x, y = fa.lambert_ea(lat, lon)
             fig_delta = plt.figure()
             ax_delta = fig_delta.add_subplot(111)

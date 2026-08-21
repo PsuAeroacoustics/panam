@@ -139,7 +139,7 @@ def _plot_coverage_points(
 		_, az_deg, el_deg = coverage[0]
 		az = np.deg2rad(np.asarray(az_deg, dtype=float).ravel())
 		el = np.deg2rad(np.asarray(el_deg, dtype=float).ravel())
-		x, y = fa.lambert_ea(el, az - np.pi)
+		x, y = fa.lambert_ea(el, fa.lambert_lon(az))
 		ax.plot(x, y, 'k.', markersize=marker_size, alpha=marker_alpha)
 		return
 
@@ -148,7 +148,7 @@ def _plot_coverage_points(
 	for i, (x0, az_deg, el_deg) in enumerate(coverage):
 		az = np.deg2rad(np.asarray(az_deg, dtype=float).ravel())
 		el = np.deg2rad(np.asarray(el_deg, dtype=float).ravel())
-		x, y = fa.lambert_ea(el, az - np.pi)
+		x, y = fa.lambert_ea(el, fa.lambert_lon(az))
 		label = f'x={x0:g}' if label_offsets else None
 		ax.plot(x, y, '.', color=colors(i % 10), markersize=marker_size, alpha=marker_alpha, label=label)
 	if label_offsets:
