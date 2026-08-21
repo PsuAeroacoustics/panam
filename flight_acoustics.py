@@ -128,6 +128,7 @@ def level_history(signal, sampling_rate, period=1.0):
     level_z = np.zeros_like(time)
     for i in range(0, len(edges) - 1, 1):
         level_a[i], level_z[i] = overall_SPL(signal[int(edges[i]):int(edges[i + 1])], sampling_rate)
+    return time, level_a, level_z
 
 
 def nextpow2(x):
@@ -173,6 +174,252 @@ def third_octave_band_levels(signal, sampling_rate, cal=0.0, fmin=20.0, fmax=200
         band_power = np.sum(psd_linear[band_indices] * df)
         band_levels[i] = 10.0 * np.log10(band_power / (pref ** 2))
     return band_centers, band_levels
+
+
+# --------------------------------------------------------------------------
+# Perceived noise level metrics (PNL, PNLT, EPNL)
+#
+# Implements 14 CFR Part 36 Appendix A, section A36.4 (identical to ICAO
+# Annex 16 Vol. I Appendix 2): noy conversion via Table A36-3, PNL, the
+# ten-step spectral-irregularity (tone) correction with Table A36-2, the
+# A36.4.4.2 band-sharing adjustment to PNLTM, and the duration correction.
+# Cross-checked against the CFR text and the MATLAB reference implementation
+# (tools.git/metrics/EPNLcalc.m); deviations from that MATLAB code are
+# deliberate and follow the regulation:
+#   * 500 Hz belongs to the 500<=f<=5000 tone-correction range (Table A36-2),
+#   * the duration integral runs over the CONTIGUOUS t(1)..t(2) interval,
+#     including any dips below PNLTM-10 within it (A36.4.5.2/A36.4.5.5),
+#   * the A36.4.4.2 five-interval tone-suppression check is applied.
+#
+# Band convention: 24 one-third octave bands, 50 Hz to 10 kHz, ascending.
+
+PNL_BAND_FREQUENCIES = np.array([
+    50.0, 63.0, 80.0, 100.0, 125.0, 160.0, 200.0, 250.0, 315.0, 400.0,
+    500.0, 630.0, 800.0, 1000.0, 1250.0, 1600.0, 2000.0, 2500.0, 3150.0,
+    4000.0, 5000.0, 6300.0, 8000.0, 10000.0])
+
+_INF = np.inf
+# Table A36-3: constants for mathematically formulated noy values.
+_NOY_SPL_A = np.array([91.0, 85.9, 87.3, 79.9, 79.8, 76.0, 74.0, 74.9, 94.6,
+                       _INF, _INF, _INF, _INF, _INF, _INF, _INF, _INF, _INF,
+                       _INF, _INF, _INF, _INF, 44.3, 50.7])
+_NOY_SPL_B = np.array([64.0, 60, 56, 53, 51, 48, 46, 44, 42, 40, 40, 40, 40,
+                       40, 38, 34, 32, 30, 29, 29, 30, 31, 37, 41])
+_NOY_SPL_C = np.array([52.0, 51, 49, 47, 46, 45, 43, 42, 41, 40, 40, 40, 40,
+                       40, 38, 34, 32, 30, 29, 29, 30, 31, 34, 37])
+_NOY_SPL_D = np.array([49.0, 44, 39, 34, 30, 27, 24, 21, 18, 16, 16, 16, 16,
+                       16, 15, 12, 9, 5, 4, 5, 6, 10, 17, 21])
+_NOY_SPL_E = np.array([55.0, 51, 46, 42, 39, 36, 33, 30, 27, 25, 25, 25, 25,
+                       25, 23, 21, 18, 15, 14, 14, 15, 17, 23, 29])
+_NOY_M_B = np.array([0.043478, 0.040570, 0.036831, 0.036831, 0.035336,
+                     0.033333, 0.033333, 0.032051, 0.030675, 0.030103,
+                     0.030103, 0.030103, 0.030103, 0.030103, 0.030103,
+                     0.029960, 0.029960, 0.029960, 0.029960, 0.029960,
+                     0.029960, 0.029960, 0.042285, 0.042285])
+_NOY_M_C = np.array([0.030103, 0.030103, 0.030103, 0.030103, 0.030103,
+                     0.030103, 0.030103, 0.030103, 0.030103, 0.0, 0.0, 0.0,
+                     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                     0.029960, 0.029960])           # 0.0 = "not applicable"
+_NOY_M_D = np.array([0.079520, 0.068160, 0.068160, 0.059640, 0.053013,
+                     0.053013, 0.053013, 0.053013, 0.053013, 0.053013,
+                     0.053013, 0.053013, 0.053013, 0.053013, 0.059640,
+                     0.053013, 0.053013, 0.047712, 0.047712, 0.053013,
+                     0.053013, 0.068160, 0.079520, 0.059640])
+_NOY_M_E = np.array([0.058098, 0.058098, 0.052288, 0.047534, 0.043573,
+                     0.043573, 0.040221, 0.037349, 0.034859, 0.034859,
+                     0.034859, 0.034859, 0.034859, 0.034859, 0.034859,
+                     0.040221, 0.037349, 0.034859, 0.034859, 0.034859,
+                     0.034859, 0.037349, 0.037349, 0.043573])
+
+
+def noys(band_levels):
+    """
+    Convert one-third octave band SPLs to perceived noisiness in noys.
+
+    Implements 14 CFR 36 Appendix A, A36.4.7.3 with Table A36-3.
+    Args:
+        band_levels: (..., 24) SPL in dB for the bands 50 Hz..10 kHz
+    Returns: array of noys, same shape (0 below SPL(d))
+    """
+    spl = np.asarray(band_levels, dtype=float)
+    if spl.shape[-1] != 24:
+        raise ValueError("expected 24 one-third octave bands (50 Hz..10 kHz)")
+    n = np.zeros_like(spl)
+    region_a = spl >= _NOY_SPL_A
+    region_b = (spl >= _NOY_SPL_B) & ~region_a
+    region_e = (spl >= _NOY_SPL_E) & (spl < _NOY_SPL_B)
+    region_d = (spl >= _NOY_SPL_D) & (spl < _NOY_SPL_E)
+    n = np.where(region_a, 10.0 ** (_NOY_M_C * (spl - _NOY_SPL_C)), n)
+    n = np.where(region_b, 10.0 ** (_NOY_M_B * (spl - _NOY_SPL_B)), n)
+    n = np.where(region_e, 0.3 * 10.0 ** (_NOY_M_E * (spl - _NOY_SPL_E)), n)
+    n = np.where(region_d, 0.1 * 10.0 ** (_NOY_M_D * (spl - _NOY_SPL_D)), n)
+    return n
+
+
+def perceived_noise_level(band_levels):
+    """
+    Perceived noise level PNL(k), 14 CFR 36 Appendix A, A36.4.2.
+
+    Args:
+        band_levels: (..., 24) SPL in dB for the bands 50 Hz..10 kHz
+    Returns: PNL in PNdB (shape band_levels.shape[:-1]); -inf where the
+        spectrum produces zero total noisiness
+    """
+    n = noys(band_levels)
+    total = 0.85 * n.max(axis=-1) + 0.15 * n.sum(axis=-1)
+    with np.errstate(divide="ignore"):
+        return 40.0 + (10.0 / np.log10(2.0)) * np.log10(total)
+
+
+def tone_correction(band_levels):
+    """
+    Tone correction factor C(k), 14 CFR 36 Appendix A, A36.4.3.1 steps 1-10.
+
+    Args:
+        band_levels: (n_times, 24) or (24,) SPL in dB, bands 50 Hz..10 kHz
+    Returns: tuple (c_max, tone_band_index)
+        c_max: (n_times,) largest tone correction factor, dB
+        tone_band_index: (n_times,) band index (0-23) it occurred in
+    """
+    spl = np.atleast_2d(np.asarray(band_levels, dtype=float))
+    nt = spl.shape[0]
+
+    # Step 1: slopes; band 3 (index 2) has no value -- comparisons that need
+    # it (step 2 at band 4) are therefore not evaluated, per the regulation.
+    s = np.full((nt, 24), np.nan)
+    s[:, 3:] = spl[:, 3:] - spl[:, 2:-1]
+
+    # Step 2: |delta s| > 5, evaluable from band 5 (index 4) on
+    encircle_slope = np.zeros((nt, 24), dtype=bool)
+    encircle_slope[:, 4:] = np.abs(s[:, 4:] - s[:, 3:-1]) > 5.0
+
+    # Step 3: encircle band SPLs
+    enc = np.zeros((nt, 24), dtype=bool)
+    for i in range(4, 24):
+        e = encircle_slope[:, i]
+        pos = e & (s[:, i] > 0) & (s[:, i] > s[:, i - 1])
+        neg = e & (s[:, i] <= 0) & (s[:, i - 1] > 0)
+        enc[:, i] |= pos
+        enc[:, i - 1] |= neg
+
+    # Step 4: adjusted levels SPL'
+    spl1 = spl.copy()
+    for i in range(3, 23):
+        spl1[:, i] = np.where(enc[:, i],
+                              0.5 * (spl[:, i - 1] + spl[:, i + 1]),
+                              spl[:, i])
+    spl1[:, 23] = np.where(enc[:, 23], spl[:, 22] + s[:, 22], spl[:, 23])
+
+    # Step 5: new slopes s', with s'(3)=s'(4) and an imaginary 25th band
+    s1 = np.empty((nt, 25))
+    s1[:, 3:24] = spl1[:, 3:] - spl1[:, 2:-1]
+    s1[:, 2] = s1[:, 3]
+    s1[:, 24] = s1[:, 23]
+
+    # Step 6: three-slope average, bands 3..23 (indices 2..22)
+    sbar = np.empty((nt, 23))
+    sbar[:, 2:] = (s1[:, 2:23] + s1[:, 3:24] + s1[:, 4:25]) / 3.0
+
+    # Step 7: final background levels SPL''
+    spl2 = np.empty_like(spl)
+    spl2[:, 2] = spl[:, 2]
+    for i in range(3, 24):
+        spl2[:, i] = spl2[:, i - 1] + sbar[:, i - 1]
+
+    # Step 8: differences F, bands 3..24; only F >= 1.5 matters
+    f_diff = np.zeros_like(spl)
+    f_diff[:, 2:] = spl[:, 2:] - spl2[:, 2:]
+
+    # Step 9: Table A36-2. Note 500 Hz belongs to the middle range.
+    freq = PNL_BAND_FREQUENCIES
+    low = (freq < 500.0) | (freq > 5000.0)      # F/3-1/2, F/6, 10/3
+    mid = ~low                                   # 2F/3-1, F/3, 20/3
+    c = np.zeros_like(spl)
+    F = f_diff
+    c_low = np.where(F >= 20.0, 10.0 / 3.0,
+                     np.where(F >= 3.0, F / 6.0,
+                              np.where(F >= 1.5, F / 3.0 - 0.5, 0.0)))
+    c_mid = np.where(F >= 20.0, 20.0 / 3.0,
+                     np.where(F >= 3.0, F / 3.0,
+                              np.where(F >= 1.5, 2.0 * F / 3.0 - 1.0, 0.0)))
+    c[:, :] = np.where(low, c_low, c_mid)
+    c[:, :2] = 0.0                               # bands 1-2 not eligible
+
+    # Step 10
+    c_max = c.max(axis=1)
+    tone_band = np.argmax(c, axis=1)
+    if np.ndim(band_levels) == 1:
+        return float(c_max[0]), int(tone_band[0])
+    return c_max, tone_band
+
+
+def tone_corrected_perceived_noise_level(band_levels):
+    """
+    PNLT(k) = PNL(k) + C(k), 14 CFR 36 Appendix A, A36.4.3.
+
+    Args:
+        band_levels: (n_times, 24) or (24,) SPL in dB, bands 50 Hz..10 kHz
+    Returns: tuple (pnlt, pnl, c_max, tone_band_index)
+    """
+    pnl = perceived_noise_level(band_levels)
+    c_max, tone_band = tone_correction(band_levels)
+    return pnl + c_max, pnl, c_max, tone_band
+
+
+def effective_perceived_noise_level(band_level_history, dt=0.5,
+                                    bandshare_adjustment=True):
+    """
+    EPNL of a noise event, 14 CFR 36 Appendix A, A36.4.
+
+    Args:
+        band_level_history: (n_times, 24) third-octave SPL history in dB
+            (bands 50 Hz..10 kHz) at equal `dt` increments
+        dt: time increment, s (the regulation prescribes 0.5 s)
+        bandshare_adjustment: apply the A36.4.4.2 five-interval check for
+            tone suppression by band sharing at PNLTM
+
+    Returns: dict with
+        epnl: EPNL in EPNdB
+        pnltm: maximum tone-corrected perceived noise level, TPNdB
+        duration_correction_db: D
+        k1, k2: duration-interval sample limits (contiguous, PNLTM-10 down)
+        pnlt, pnl, c_max, tone_band: per-sample histories
+        clipped: True when the 10 dB-down interval hits the record edge
+
+    The duration correction uses the exact 10*log10(dt/T) normalisation with
+    T = 10 s; the regulation's specialised "-13" constant for dt = 0.5 s is a
+    rounding of this (difference 0.01 dB).
+    """
+    spl = np.asarray(band_level_history, dtype=float)
+    pnlt, pnl, c_max, tone_band = tone_corrected_perceived_noise_level(spl)
+    if not np.isfinite(pnlt).any():
+        raise ValueError("no finite PNLT values in the history")
+
+    k_m = int(np.nanargmax(pnlt))
+    pnltm = float(pnlt[k_m])
+    if bandshare_adjustment:
+        # A36.4.4.2: if C at PNLTM is below the average of the five
+        # consecutive intervals centred there, tone suppression by band
+        # sharing is suspected; recompute PNLTM with the average C.
+        lo, hi = max(0, k_m - 2), min(len(pnlt), k_m + 3)
+        c_avg = float(np.mean(c_max[lo:hi]))
+        if c_max[k_m] < c_avg:
+            pnltm = float(pnl[k_m] + c_avg)
+
+    # Duration interval: contiguous from the first to the last sample at or
+    # above PNLTM-10 (dips within the interval are included), A36.4.5.
+    above = np.where(pnlt >= pnltm - 10.0)[0]
+    k1, k2 = int(above[0]), int(above[-1])
+    duration = 10.0 * np.log10(
+        np.sum(10.0 ** (pnlt[k1:k2 + 1] / 10.0)) * dt / 10.0) - pnltm
+    return {
+        "epnl": pnltm + duration,
+        "pnltm": pnltm,
+        "duration_correction_db": duration,
+        "k1": k1, "k2": k2,
+        "pnlt": pnlt, "pnl": pnl, "c_max": c_max, "tone_band": tone_band,
+        "clipped": bool(k1 == 0 or k2 == len(pnlt) - 1),
+    }
 
 
 def load_mil_std_1474e_table_c1(filename):
@@ -374,6 +621,484 @@ def mil_std_1474e_nondetectability_distance(
         'band_level_db_10m': band_levels_10m,
     }
 
+# --------------------------------------------------------------------------
+# d' (d-prime) aural detection model
+#
+# Implements the detectability index method of Sickenberger, Gopalan, and
+# Schmitz, "Helicopter Near-Horizon Harmonic Noise Radiation due to Cyclic
+# Pitch Transient Control," AHS 67th Annual Forum, Virginia Beach, VA, 2011,
+# Eqs. (2)-(5) (references/sickenberger_schmitz_detection.pdf).
+#
+# The detectability index of the critical band centered at the i-th
+# one-third octave band center frequency is (Eq. 2)
+#
+#     d'(i) = eta(i) * ERB(i) * S(i) / (N(i) + EASN(i))
+#
+# where S(i) and N(i) are the signal and masking-noise mean-square pressures
+# passed by a symmetric one-parameter rounded-exponential (ro-ex) auditory
+# filter (Eq. 4, after Patterson) with equivalent rectangular bandwidth
+# ERB(i) from Glasberg & Moore, and EASN(i) is the equivalent auditory
+# system noise (Eq. 3), calibrated so a pure tone at the ISO 389-7
+# free-field threshold of hearing in quiet yields d' = 1.5 ("audiometric
+# zero").  The composite detectability is d'_c = sqrt(sum_i d'(i)^2)
+# (Eq. 5) over one-third octave bands from 50 Hz to 2 kHz.  Detection is
+# assumed when d'_c reaches a critical value: 1.00 corresponds to a 50% hit
+# rate at a 15% false alarm rate, 2.33 to 50% at 1%.
+#
+# The paper does not tabulate the band detector efficiency eta(i).  By
+# default (detector_efficiency=None) this implementation uses
+# eta(i) = 1/ERB(i), which reduces Eq. (2) to the "frequency weighted
+# signal to noise ratio over a critical band" described in the paper's text
+# and leaves the threshold-in-quiet calibration independent of eta.  Pass
+# detector_efficiency (scalar or per-band array) to apply explicit eta(i)
+# values per Eq. (2).
+
+# ISO 389-7:2005 reference threshold of hearing under free-field listening
+# conditions (frontal incidence, binaural), dB SPL re 20 uPa.  Identical to
+# the threshold-of-hearing curve T_f tabulated in ISO 226:2003.
+_ISO_389_7_FREQUENCY_HZ = np.array([
+    20.0, 25.0, 31.5, 40.0, 50.0, 63.0, 80.0, 100.0, 125.0, 160.0, 200.0,
+    250.0, 315.0, 400.0, 500.0, 630.0, 800.0, 1000.0, 1250.0, 1600.0,
+    2000.0, 2500.0, 3150.0, 4000.0, 5000.0, 6300.0, 8000.0])
+_ISO_389_7_THRESHOLD_DB = np.array([
+    78.5, 68.7, 59.5, 51.1, 44.0, 37.5, 31.5, 26.5, 22.1, 17.9, 14.4,
+    11.4, 8.6, 6.2, 4.4, 3.0, 2.2, 2.4, 3.5, 1.7,
+    -1.3, -4.2, -6.0, -5.4, -1.5, 6.0, 12.6])
+
+# Default analysis band selection: nominal 50 Hz - 2 kHz per the paper,
+# widened slightly so the exact base-2 preferred centers used by
+# third_octave_band_levels (49.6 Hz, ..., 2000 Hz) are included.
+_DPRIME_FMIN_HZ = 45.0
+_DPRIME_FMAX_HZ = 2240.0
+
+
+def erb_bandwidth(frequency):
+    """
+    Equivalent rectangular bandwidth of the auditory filter (Glasberg & Moore).
+
+    ERB(f) = 24.7 * (4.37 f / 1000 + 1), f in Hz.
+
+    Args:
+        frequency: scalar or array-like frequency, Hz
+
+    Returns:
+        Equivalent rectangular bandwidth, Hz (same shape as frequency)
+    """
+    frequency = np.asarray(frequency, dtype=float)
+    return 24.7 * (4.37 * frequency / 1000.0 + 1.0)
+
+
+def hearing_threshold_spl(frequency):
+    """
+    ISO 389-7 free-field pure-tone threshold of hearing.
+
+    Interpolated linearly in dB over log frequency; values outside the
+    tabulated 20 Hz - 8 kHz range are held at the end values.
+
+    Args:
+        frequency: scalar or array-like frequency, Hz
+
+    Returns:
+        Threshold of hearing in dB SPL re 20 uPa (same shape as frequency)
+    """
+    frequency = np.asarray(frequency, dtype=float)
+    return np.interp(np.log10(frequency), np.log10(_ISO_389_7_FREQUENCY_HZ),
+                     _ISO_389_7_THRESHOLD_DB)
+
+
+def roex_filter_weight(frequency, center_frequency):
+    """
+    Symmetric one-parameter rounded-exponential (ro-ex) auditory filter weight.
+
+    W(g) = (1 + p g) exp(-p g) with p = 4 fc / ERB(fc) and
+    g = |f - fc| / fc (Eq. 4 of Sickenberger et al. 2011).
+
+    Args:
+        frequency: scalar or array-like frequency, Hz
+        center_frequency: filter center frequency fc, Hz
+
+    Returns:
+        Filter power weight (unity at fc), same shape as frequency
+    """
+    frequency = np.asarray(frequency, dtype=float)
+    fc = float(center_frequency)
+    p = 4.0 * fc / erb_bandwidth(fc)
+    g = np.abs(frequency - fc) / fc
+    return (1.0 + p * g) * np.exp(-p * g)
+
+
+def _roex_band_weight_matrix(analysis_centers, band_centers):
+    """
+    Fraction of each one-third octave band's power passed by each ro-ex filter.
+
+    Each input band is treated as uniform power spectral density across its
+    third-octave bandwidth and the ro-ex response is integrated analytically
+    across the band, using antiderivative
+    int (1 + p u) exp(-p u) du = -(2/p + u) exp(-p u), u = |f - fc| / fc.
+
+    Args:
+        analysis_centers: (ni,) ro-ex filter center frequencies, Hz
+        band_centers: (nj,) one-third octave band center frequencies, Hz
+
+    Returns:
+        (ni, nj) weight matrix W, such that the mean-square pressure passed
+        by filter i is sum_j W[i, j] * msp[j]
+    """
+    fc = np.asarray(analysis_centers, dtype=float)[:, np.newaxis]
+    band_centers = np.asarray(band_centers, dtype=float)[np.newaxis, :]
+    f_lower = band_centers / (2.0 ** (1.0 / 6.0))
+    f_upper = band_centers * (2.0 ** (1.0 / 6.0))
+    p = 4.0 * fc / erb_bandwidth(fc)
+
+    def antiderivative(u):
+        return (2.0 / p + u) * np.exp(-p * u)
+
+    u_lower = np.abs(f_lower - fc) / fc     # offset of the band's lower edge
+    u_upper = np.abs(f_upper - fc) / fc     # offset of the band's upper edge
+    band_below = f_upper <= fc
+    band_above = f_lower >= fc
+    integral = np.where(
+        band_below, antiderivative(u_upper) - antiderivative(u_lower),
+        np.where(band_above, antiderivative(u_lower) - antiderivative(u_upper),
+                 2.0 * antiderivative(0.0) - antiderivative(u_lower) - antiderivative(u_upper)))
+    return fc * integral / (f_upper - f_lower)
+
+
+def critical_band_levels(band_centers, band_levels, analysis_centers=None):
+    """
+    Critical band levels from one-third octave band levels via ro-ex filters.
+
+    Filters a one-third octave band spectrum through the symmetric ro-ex
+    auditory filters centered at each analysis frequency, yielding the
+    critical band level associated with each center (Sickenberger et al.
+    2011, Eq. 4 and surrounding text).  For accurate levels at the edge
+    analysis bands, supply an input spectrum extending beyond the analysis
+    range (adjacent bands contribute wherever ERB exceeds the third-octave
+    bandwidth).
+
+    Args:
+        band_centers: (nj,) one-third octave band center frequencies, Hz
+        band_levels: (..., nj) one-third octave band levels, dB
+        analysis_centers: optional (ni,) filter center frequencies, Hz;
+            defaults to band_centers
+
+    Returns: tuple (analysis_centers, critical_levels)
+        WHERE
+        analysis_centers is the (ni,) array of filter center frequencies, Hz
+        critical_levels is the (..., ni) array of critical band levels, dB
+    """
+    band_centers = np.asarray(band_centers, dtype=float)
+    band_levels = np.asarray(band_levels, dtype=float)
+    if analysis_centers is None:
+        analysis_centers = band_centers
+    analysis_centers = np.asarray(analysis_centers, dtype=float)
+    weights = _roex_band_weight_matrix(analysis_centers, band_centers)
+    msp = 10.0 ** (band_levels / 10.0)
+    critical_msp = msp @ weights.T
+    with np.errstate(divide='ignore'):
+        critical_levels = 10.0 * np.log10(critical_msp)
+    return analysis_centers, critical_levels
+
+
+def dprime(band_centers, signal_band_levels, ambient_band_levels,
+           detector_efficiency=None, audiometric_zero_dprime=1.5,
+           fmin=_DPRIME_FMIN_HZ, fmax=_DPRIME_FMAX_HZ):
+    """
+    Detectability index d' of a signal in ambient noise (Eqs. 2, 3, 5).
+
+    Both spectra are filtered into critical bands with ro-ex auditory
+    filters centered at each one-third octave band center within
+    [fmin, fmax]; the per-band detectability is
+    d'(i) = eta(i) ERB(i) S(i) / (N(i) + EASN(i)) with equivalent auditory
+    system noise EASN(i) = eta(i) ERB(i) T(i) / d'_T set by the ISO 389-7
+    threshold of hearing T(i), and the composite detectability is the
+    root-sum-square over bands.
+
+    Args:
+        band_centers: (nj,) one-third octave band center frequencies, Hz.
+            Supply the full available spectrum (e.g. 25 Hz - 4 kHz), not
+            just the analysis range, so edge critical bands are complete.
+        signal_band_levels: (..., nj) signal one-third octave levels at the
+            receiver, dB
+        ambient_band_levels: (nj,) or broadcastable (..., nj) ambient
+            (masking) noise one-third octave levels at the receiver, dB
+        detector_efficiency: band detector efficiency eta(i) of Eq. (2);
+            scalar or (ni,) array over the analysis bands.  Default None
+            uses eta(i) = 1/ERB(i) (critical band signal-to-noise ratio
+            interpretation; see section comment).
+        audiometric_zero_dprime: d' assigned to a tone at the threshold of
+            hearing in quiet (d'_T of Eq. 3), default 1.5
+        fmin: minimum analysis band center frequency, Hz
+        fmax: maximum analysis band center frequency, Hz
+
+    Returns:
+        dict with:
+            band_frequency_hz: (ni,) analysis band center frequencies
+            dprime_band: (..., ni) per-critical-band d'
+            dprime_composite: (...) composite d' (root-sum-square, Eq. 5)
+            signal_critical_band_db: (..., ni) signal critical band levels
+            noise_critical_band_db: (..., ni) ambient critical band levels
+            easn_db: (ni,) equivalent auditory system noise, dB
+            erb_hz: (ni,) equivalent rectangular bandwidths
+            threshold_db: (ni,) ISO 389-7 hearing threshold at band centers
+    """
+    band_centers = np.asarray(band_centers, dtype=float)
+    signal_band_levels = np.asarray(signal_band_levels, dtype=float)
+    ambient_band_levels = np.asarray(ambient_band_levels, dtype=float)
+
+    in_range = np.logical_and(band_centers >= fmin, band_centers <= fmax)
+    if not np.any(in_range):
+        raise ValueError('No one-third octave band centers within the analysis range')
+    analysis_centers = band_centers[in_range]
+
+    pref = 2.0e-5
+    weights = _roex_band_weight_matrix(analysis_centers, band_centers)
+    signal_msp = (pref ** 2) * 10.0 ** (signal_band_levels / 10.0) @ weights.T
+    noise_msp = (pref ** 2) * 10.0 ** (ambient_band_levels / 10.0) @ weights.T
+
+    erb = erb_bandwidth(analysis_centers)
+    threshold_db = hearing_threshold_spl(analysis_centers)
+    threshold_msp = (pref ** 2) * 10.0 ** (threshold_db / 10.0)
+
+    if detector_efficiency is None:
+        efficiency_bandwidth = np.ones_like(erb)
+    else:
+        detector_efficiency = np.asarray(detector_efficiency, dtype=float)
+        if (detector_efficiency.ndim == 1
+                and detector_efficiency.size == band_centers.size
+                and detector_efficiency.size != analysis_centers.size):
+            # supplied per input band; keep the analysis-band subset
+            detector_efficiency = detector_efficiency[in_range]
+        efficiency_bandwidth = detector_efficiency * erb
+    easn_msp = efficiency_bandwidth * threshold_msp / audiometric_zero_dprime
+
+    dprime_band = efficiency_bandwidth * signal_msp / (noise_msp + easn_msp)
+    dprime_composite = np.sqrt(np.sum(dprime_band ** 2, axis=-1))
+
+    with np.errstate(divide='ignore'):
+        return {
+            'band_frequency_hz': analysis_centers,
+            'dprime_band': dprime_band,
+            'dprime_composite': dprime_composite,
+            'signal_critical_band_db': 10.0 * np.log10(signal_msp / (pref ** 2)),
+            'noise_critical_band_db': 10.0 * np.log10(noise_msp / (pref ** 2)),
+            'easn_db': 10.0 * np.log10(easn_msp / (pref ** 2)),
+            'erb_hz': erb,
+            'threshold_db': threshold_db,
+        }
+
+
+# FICAN (2005) Table B-1 / FAA INM-NMSim audibility band detector
+# efficiencies, 10*log10(eta), ANSI bands 17-40 (50 Hz - 10 kHz).  Used with
+# the band detectability d'(i) = eta(i) * sqrt(BW(i)) * S(i)/N(i) and the
+# detection criterion 10*log10(d') >= 7 dB ("audibility ... the ability for
+# an attentive listener to hear aircraft noise").
+_INM_EFFICIENCY_FREQ_HZ = np.array([
+    50.0, 63.0, 80.0, 100.0, 125.0, 160.0, 200.0, 250.0, 315.0, 400.0,
+    500.0, 630.0, 800.0, 1000.0, 1250.0, 1600.0, 2000.0, 2500.0, 3150.0,
+    4000.0, 5000.0, 6300.0, 8000.0, 10000.0])
+_INM_EFFICIENCY_10LOG = np.array([
+    -6.96, -6.26, -5.56, -5.06, -4.66, -4.36, -4.16, -3.96, -3.76, -3.56,
+    -3.56, -3.56, -3.56, -3.56, -3.76, -3.96, -4.16, -4.36, -4.56, -4.96,
+    -5.36, -5.76, -6.26, -6.86])
+
+
+def inm_detector_efficiency(band_centers):
+    """
+    FAA INM/NMSim band detector efficiencies mapped to the dprime() convention.
+
+    The FICAN (2005) / INM audibility algorithm computes the band
+    detectability as d'(i) = eta_INM(i) * sqrt(BW(i)) * S(i)/N(i), with
+    tabulated efficiencies eta_INM and one-third octave bandwidth BW, and
+    flags a signal audible to an attentive listener when the total
+    detectability level 10*log10(d'_total) >= 7 dB (d' ~= 5.0).
+
+    dprime() writes the band weight as eta(i)*ERB(i) (Sickenberger et al.
+    Eq. 2), so passing detector_efficiency = eta_INM(i)*sqrt(BW(i))/ERB(i)
+    reproduces the INM band detectability (with dprime()'s ro-ex critical
+    band S/N in place of INM's plain one-third octave S/N) and makes
+    criteria stated on the INM scale -- e.g. critical_dprime = 10**0.7 for
+    the FAA 7 dB audibility criterion -- directly applicable.
+
+    Args:
+        band_centers: array-like one-third octave band center frequencies, Hz
+
+    Returns:
+        Array of detector_efficiency values for dprime() /
+        dprime_detection_distance()
+    """
+    band_centers = np.asarray(band_centers, dtype=float)
+    ten_log_eta = np.interp(np.log10(band_centers),
+                            np.log10(_INM_EFFICIENCY_FREQ_HZ),
+                            _INM_EFFICIENCY_10LOG)
+    eta_inm = 10.0 ** (ten_log_eta / 10.0)
+    bandwidth = band_centers * (2.0 ** (1.0 / 6.0) - 2.0 ** (-1.0 / 6.0))
+    return eta_inm * np.sqrt(bandwidth) / erb_bandwidth(band_centers)
+
+
+def dprime_artificial_ambient(band_centers, ambient='low'):
+    """
+    Artificial ambient one-third octave spectra of Sickenberger et al. Fig. 9.
+
+    Approximate digitization of the "low" and "moderate" artificial ambient
+    background levels used for the detection distance calculations in the
+    paper.  Low: 33 dB at 25 Hz falling linearly in log-frequency to 20 dB
+    at 1600 Hz.  Moderate: 60 dB up to 100 Hz, falling linearly in
+    log-frequency to 40 dB at 400 Hz, constant above.  Levels are held at
+    the end values outside these ranges.
+
+    Args:
+        band_centers: array-like one-third octave band center frequencies, Hz
+        ambient: 'low' or 'moderate'
+
+    Returns:
+        Array of ambient one-third octave band levels, dB
+    """
+    band_centers = np.asarray(band_centers, dtype=float)
+    logf = np.log10(band_centers)
+    if ambient == 'low':
+        return np.interp(logf, np.log10([25.0, 1600.0]), [33.0, 20.0])
+    elif ambient == 'moderate':
+        return np.interp(logf, np.log10([100.0, 400.0]), [60.0, 40.0])
+    raise ValueError("ambient must be 'low' or 'moderate'")
+
+
+def dprime_detection_distance(
+        band_centers,
+        band_levels,
+        ambient_band_levels,
+        spectrum_distance_m,
+        temperature_c=20.0,
+        relative_humidity_pct=70.0,
+        pressure_mbar=1013.25,
+        critical_dprime=1.0,
+        detector_efficiency=None,
+        audiometric_zero_dprime=1.5,
+        distances_m=None,
+        source_height_m=None,
+        receiver_height_m=1.2,
+        flow_resistance=225.0,
+        turbulence=0.0,
+        speed_of_sound=340.3,
+        fmin=_DPRIME_FMIN_HZ,
+        fmax=_DPRIME_FMAX_HZ):
+    """
+    Aural detection distance from a one-third octave spectrum using d'.
+
+    Following Sickenberger et al. 2011, the source spectrum is propagated
+    over a range of distances using spherical spreading, standard
+    atmospheric absorption, and (optionally) the excess ground attenuation
+    model of ega(); the composite d' against the receiver ambient is
+    evaluated at each distance and the detection distance is the largest
+    distance at which composite d' reaches the critical value.
+
+    Args:
+        band_centers: (nj,) one-third octave band center frequencies, Hz
+        band_levels: (nj,) free-field signal one-third octave levels, dB,
+            measured (or predicted) at spectrum_distance_m.  If EGA is
+            enabled, these levels are assumed free of ground effect.
+        ambient_band_levels: (nj,) ambient noise levels at the receiver, dB
+        spectrum_distance_m: distance corresponding to band_levels, m
+        temperature_c: air temperature, deg C
+        relative_humidity_pct: relative humidity, percent
+        pressure_mbar: static pressure, mbar
+        critical_dprime: composite d' at which detection is assumed
+            (1.00 -> 50% hit at 15% false alarm; 2.33 -> 50% at 1%)
+        detector_efficiency: eta(i) passed through to dprime()
+        audiometric_zero_dprime: d'_T passed through to dprime()
+        distances_m: optional array of candidate slant distances, m;
+            defaults to 600 log-spaced points from min(10, spectrum
+            distance) to 100 km
+        source_height_m: source height above ground, m.  When given,
+            excess ground attenuation is added via ega() in broadband
+            (one-third octave) mode; when None (default), only spreading
+            and atmospheric absorption are applied.
+        receiver_height_m: receiver height above ground, m (EGA only)
+        flow_resistance: ground specific flow resistance, kPa s/m^2
+            (EGA only; 225 is a grassy field)
+        turbulence: turbulence parameter cturb, rad s/sqrt(m) (EGA only)
+        speed_of_sound: speed of sound, m/s (EGA only)
+        fmin: minimum analysis band center frequency, Hz
+        fmax: maximum analysis band center frequency, Hz
+
+    Returns:
+        dict with:
+            detection_distance_m: largest distance where composite d'
+                reaches critical_dprime (NaN if below critical everywhere)
+            trigger_frequency_hz: band with the largest d' at the
+                detection distance
+            status: 'interpolated', 'below_critical_everywhere', or
+                'audible_at_max_distance'
+            distances_m: (nd,) candidate distances evaluated
+            dprime_composite: (nd,) composite d' at each distance
+            dprime_band: (nd, ni) per-band d' at each distance
+            band_frequency_hz: (ni,) analysis band center frequencies
+            propagated_band_levels_db: (nd, nj) signal spectra at each
+                candidate distance
+    """
+    band_centers = np.asarray(band_centers, dtype=float)
+    band_levels = np.asarray(band_levels, dtype=float)
+    spectrum_distance_m = float(spectrum_distance_m)
+
+    if distances_m is None:
+        distances_m = np.logspace(np.log10(min(10.0, spectrum_distance_m)),
+                                  np.log10(1.0e5), 600)
+    distances_m = np.asarray(distances_m, dtype=float)
+
+    alpha = atmosorb(band_centers, temperature_c, relative_humidity_pct,
+                     pressure_mbar)  # dB/m
+    propagated = (band_levels[np.newaxis, :]
+                  - 20.0 * np.log10(distances_m / spectrum_distance_m)[:, np.newaxis]
+                  - alpha[np.newaxis, :] * (distances_m - spectrum_distance_m)[:, np.newaxis])
+    if source_height_m is not None:
+        height_difference = source_height_m - receiver_height_m
+        ground_distance = np.sqrt(np.maximum(
+            distances_m ** 2 - height_difference ** 2, 1.0e-6))
+        ega_db, _ = ega(source_height_m, receiver_height_m,
+                        ground_distance[:, np.newaxis],
+                        band_centers[np.newaxis, :], speed_of_sound,
+                        flow_resistance, pt=False, cturb=turbulence)
+        propagated = propagated + ega_db
+
+    result = dprime(band_centers, propagated, ambient_band_levels,
+                    detector_efficiency=detector_efficiency,
+                    audiometric_zero_dprime=audiometric_zero_dprime,
+                    fmin=fmin, fmax=fmax)
+    composite = result['dprime_composite']
+
+    audible = composite >= critical_dprime
+    if not np.any(audible):
+        detection_distance = np.nan
+        trigger_frequency = np.nan
+        status = 'below_critical_everywhere'
+    else:
+        last = int(np.max(np.nonzero(audible)[0]))
+        trigger_frequency = float(
+            result['band_frequency_hz'][int(np.argmax(result['dprime_band'][last, :]))])
+        if last == distances_m.size - 1:
+            detection_distance = float(distances_m[-1])
+            status = 'audible_at_max_distance'
+        else:
+            # Interpolate the d' = critical crossing in log-log coordinates
+            log_distance = np.interp(
+                np.log10(critical_dprime),
+                np.log10([composite[last + 1], composite[last]]),
+                np.log10([distances_m[last + 1], distances_m[last]]))
+            detection_distance = float(10.0 ** log_distance)
+            status = 'interpolated'
+
+    return {
+        'detection_distance_m': detection_distance,
+        'trigger_frequency_hz': trigger_frequency,
+        'status': status,
+        'distances_m': distances_m,
+        'dprime_composite': composite,
+        'dprime_band': result['dprime_band'],
+        'band_frequency_hz': result['band_frequency_hz'],
+        'propagated_band_levels_db': propagated,
+    }
+
+
 def spectrogram(signal, sampling_rate, window_time=0.5, window_type="hann", window_overlap=7.0 / 8.0,
                 detrend='constant', dbref=20e-6):
     """
@@ -399,8 +1124,9 @@ def spectrogram(signal, sampling_rate, window_time=0.5, window_type="hann", wind
     # Calculate the spectrogram as a PSD
     f, t, Sxx = scipy.signal.spectrogram(signal, sampling_rate, window, noverlap=round(window_overlap * binwidth),
                                          detrend=detrend, mode='psd')
-    # Convert to SPL
-    SPL = 10.0 * np.log10(Sxx / (dbref ** 2))
+    # Convert to SPL (exact zeros in Sxx are legitimate; -inf, not a warning)
+    with np.errstate(divide='ignore'):
+        SPL = 10.0 * np.log10(Sxx / (dbref ** 2))
     return f, t, SPL
 
 
@@ -601,8 +1327,28 @@ def depropagate_hemisphere(
         third_octave_band_centers_hz=None,
         narrowband=False,
         narrowband_stride=1,
+        min_elevation_deg=0.0,
+        ambient_time_range=None,
+        band_snr_gate_db=3.0,
 ):
     """Generate an acoustic hemisphere from microphone time series and vehicle tracking data.
+
+    Emission points whose elevation angle falls below ``min_elevation_deg``
+    are excluded before gridding. Low-elevation points correspond to long
+    ranges where the microphone signal is usually ambient-dominated;
+    depropagating them multiplies the ambient floor by (r/r_ref)^2 and
+    contaminates the hemisphere rim, so gate them out (and restrict
+    track_time to the high-SNR portion of the pass) unless the data are
+    known to be signal-dominated all the way down.
+
+    When ``ambient_time_range=(t0, t1)`` is given, each microphone's ambient
+    PSD is estimated as the median spectrogram over that (signal-free) time
+    range and applied per frequency bin before depropagation: bins whose
+    measured PSD is within ``band_snr_gate_db`` of that mic's ambient are
+    zeroed (they carry no usable signal), and the ambient power is
+    subtracted from the bins that pass. This keeps ambient-limited bands
+    from being spread/absorption-amplified into the hemisphere, which a
+    broadband SNR gate alone cannot guarantee.
 
     This is the "normal" processing flow used by the demo scripts: use the vehicle kinematics
     to compute emission-time geometry (azimuth/elevation/range) via :func:`hemigen`, sample
@@ -810,8 +1556,11 @@ def depropagate_hemisphere(
         az_sub = az_deg[tidx, im]
         el_sub = el_deg[tidx, im]
 
-        # Keep only points that can be interpolated in time
+        # Keep only points that can be interpolated in time and, when
+        # requested, that lie above the elevation cutoff
         valid = np.logical_and(tobs_sub >= t_abs[0], tobs_sub <= t_abs[-1])
+        if min_elevation_deg > 0.0:
+            valid = np.logical_and(valid, el_sub >= float(min_elevation_deg))
         if not np.any(valid):
             continue
 
@@ -828,6 +1577,18 @@ def depropagate_hemisphere(
 
         # Convert to linear PSD relative to pref^2/Hz
         psd_v_lin = 10.0 ** (psd_v_db / 10.0)
+
+        # Per-bin ambient gating and background subtraction
+        if ambient_time_range is not None:
+            amb_mask = np.logical_and(t_abs >= float(ambient_time_range[0]),
+                                      t_abs <= float(ambient_time_range[1]))
+            if not np.any(amb_mask):
+                raise ValueError('ambient_time_range contains no spectrogram frames')
+            amb_lin = 10.0 ** (np.median(psd_sel_db[:, amb_mask], axis=1) / 10.0)
+            gate = psd_v_lin >= amb_lin[:, None] * 10.0 ** (band_snr_gate_db / 10.0)
+            psd_v_lin = np.where(gate,
+                                 np.maximum(psd_v_lin - amb_lin[:, None], 0.0),
+                                 0.0)
 
         # Spherical spreading depropagation to r_ref: multiply by (r/r_ref)^2
         spread_scale = (r_v / float(r_ref)) ** 2
@@ -992,7 +1753,7 @@ def depropagate_hemisphere(
     return out
 
 
-def array_coverage(ymics, altitude, xmin=-1000, xmax=1000, speed=100, rate=0.1, speed_of_sound=1135.):
+def array_coverage(ymics, altitude, xmin=-1000.0, xmax=1000.0, speed=100.0, rate=0.1, speed_of_sound=1135.):
     """
     Calculate the spherical coverage for an overflight of a linear microphone array
     Args:
@@ -1081,6 +1842,74 @@ def hover_array_coverage(radial_positions, mic_azimuths, altitudes, headings, sp
     return azimuth, elevation, r
 
 
+def takeoff_array_coverage(
+        radial_positions,
+        mic_azimuths,
+        ground_distances,
+        *,
+        initial_altitude=0.0,
+        flight_path_angle=8.0,
+        heading=0.0,
+    source_origin_xy=(0.0, 0.0),
+        speed_of_sound=1135.0,
+):
+    """
+    Calculate spherical coverage for a takeoff/climb trajectory over a circular/ring array.
+
+    Args:
+        radial_positions: radial distances of observers from the reference point.
+        mic_azimuths: observer azimuths around the reference point, deg (0 deg = +X, 90 deg = +Y).
+        ground_distances: source ground-track distances from reference point.
+        initial_altitude: source altitude at zero ground distance.
+        flight_path_angle: climb angle in deg above local horizon.
+        heading: source heading in deg (0 deg = +X, 90 deg = +Y).
+        source_origin_xy: (x0, y0) source location at zero ground distance in
+            the same local coordinates as observers. Default is (0, 0).
+        speed_of_sound: speed of sound.
+
+    Returns: tuple (azimuth, elevation, r)
+    WHERE
+    azimuth are the observer azimuth angles on the source hemisphere
+    elevation are the observer elevation angles on the source hemisphere
+    r are source-observer propagation distances
+    """
+    radial_positions = np.atleast_1d(radial_positions).astype(float)
+    mic_azimuths = np.atleast_1d(mic_azimuths).astype(float)
+    ground_distances = np.atleast_1d(ground_distances).astype(float)
+
+    if radial_positions.size == 0 or mic_azimuths.size == 0:
+        raise ValueError('radial_positions and mic_azimuths must be non-empty')
+    if ground_distances.size == 0:
+        raise ValueError('ground_distances must be non-empty')
+    if radial_positions.size != mic_azimuths.size:
+        raise ValueError('radial_positions and mic_azimuths must have the same length')
+
+    az_rad = np.radians(mic_azimuths)
+    obs_x = radial_positions * np.cos(az_rad)
+    obs_y = radial_positions * np.sin(az_rad)
+    observers = np.column_stack((obs_x, obs_y, np.zeros(obs_x.size)))
+
+    heading_rad = np.radians(float(heading))
+    fpa_rad = np.radians(float(flight_path_angle))
+    origin_xy = np.asarray(source_origin_xy, dtype=float).ravel()
+    if origin_xy.size != 2:
+        raise ValueError('source_origin_xy must have exactly 2 values: (x0, y0)')
+
+    source = np.zeros((ground_distances.size, 3), dtype=float)
+    source[:, 0] = origin_xy[0] + ground_distances * np.cos(heading_rad)
+    source[:, 1] = origin_xy[1] + ground_distances * np.sin(heading_rad)
+    source[:, 2] = float(initial_altitude) + ground_distances * np.tan(fpa_rad)
+
+    velocity = np.zeros_like(source)
+    velocity[:, 0] = np.cos(heading_rad)
+    velocity[:, 1] = np.sin(heading_rad)
+    velocity[:, 2] = np.tan(fpa_rad)
+
+    time = np.arange(ground_distances.size, dtype=float)
+    azimuth, elevation, r, t_observer, mach_r = hemigen(time, source, velocity, observers, speed_of_sound)
+    return azimuth, elevation, r
+
+
 def hover_array_coverage_plot(radial_positions, mic_azimuths, altitudes, headings, speed_of_sound=1135.0):
     """
     Plot the spherical coverage for hovering conditions with scattered microphones.
@@ -1104,7 +1933,7 @@ def hover_array_coverage_plot(radial_positions, mic_azimuths, altitudes, heading
     return fig, ax, cs
 
 
-def array_coverage_plot(ymics, altitude, xmin=-1000, xmax=1000, speed=100, rate=0.1, speed_of_sound=1135.):
+def array_coverage_plot(ymics, altitude, xmin=-1000.0, xmax=1000.0, speed=100.0, rate=0.1, speed_of_sound=1135.):
     """
     Plots the spherical coverage for an overflight of a linear microphone array
     Args:
@@ -1447,7 +2276,6 @@ def write_aam_hemisphere_netcdf(
     finally:
         ds.close()
 
-
 def OASPL(amplitudes):
     """
     Integrate an array of SPL amplitudes to compute the OASPL
@@ -1649,6 +2477,27 @@ def lambert_ea(lat, lon):
     x = q * np.sin(lon)
     y = q * np.cos(lon)
     return x, y
+
+
+def lambert_lon(azimuth):
+    """Page longitude for a UMAPR azimuth (radians in, radians out).
+
+    The hemisphere is drawn as a VIEW FROM ABOVE, so it reads like the
+    ground footprints and any other plan view:
+
+        azimuth 180 (ahead)     -> top of the page
+        azimuth  90 (starboard) -> RIGHT
+        azimuth 270 (port)      -> left
+        azimuth   0 (behind)    -> bottom
+
+    i.e. azimuth increases counter-clockwise on the page, as
+    :func:`lambert_ea_points` documents. Route every azimuth through here
+    rather than open-coding the shift: before 2026-08-19 the data used
+    ``lon = azimuth - pi`` (which mirrors the lateral axis, putting
+    starboard on the LEFT) while the meridian labels printed
+    ``360 - meridian``, so the rim numbers disagreed with the field.
+    """
+    return np.pi - np.asarray(azimuth, dtype=float)
 
 
 def build_empirical_database(directory_name, database_filename, load_factors=np.linspace(0.7, 2.3, 5), infreqs=None,
@@ -2210,15 +3059,15 @@ def _draw_lambert_grid(ax, grid_convention='umapr'):
         meridians = np.arange(0, 360, 45)
         for meridian in meridians:
             lats = np.linspace(0, 0.5 * np.pi, 1000)
-            lons = (np.deg2rad(meridian) - np.pi) * np.ones(len(lats))
+            lons = lambert_lon(np.deg2rad(meridian)) * np.ones(len(lats))
             xm, ym = lambert_ea(lats, lons)
             (line,) = ax.plot(xm, ym, 'k--')
             line.set_gid(f'lambert-grid-umapr-meridian-{int(meridian)}')
-            xl, yl = lambert_ea(np.deg2rad(-11.0), np.deg2rad(meridian) - np.pi)
+            xl, yl = lambert_ea(np.deg2rad(-11.0), lambert_lon(np.deg2rad(meridian)))
             text = ax.text(
                 xl,
                 yl,
-                "%d°" % np.fmod(360 - meridian, 360),
+                "%d°" % int(meridian),
                 horizontalalignment='center',
                 verticalalignment='center',
             )
@@ -2248,7 +3097,7 @@ def _draw_lambert_grid(ax, grid_convention='umapr'):
         for phi_deg in np.arange(-90, 91, 30):
             phi_line = np.deg2rad(phi_deg) * np.ones_like(theta_curve)
             azi_line, elv_line = art2umapr(phi_line, theta_curve)
-            xm, ym = lambert_ea(elv_line, azi_line - np.pi)
+            xm, ym = lambert_ea(elv_line, lambert_lon(azi_line))
             (line,) = ax.plot(xm, ym, 'k--')
             line.set_gid(f'lambert-grid-art-phi-{int(phi_deg)}')
 
@@ -2256,7 +3105,7 @@ def _draw_lambert_grid(ax, grid_convention='umapr'):
                 np.array([np.deg2rad(phi_deg)]),
                 np.array([np.deg2rad(120.0)]),
             )
-            xl, yl = lambert_ea(elv_label, azi_label - np.pi)
+            xl, yl = lambert_ea(elv_label, lambert_lon(azi_label))
             if phi_deg > 0:
                 label = f'+{int(phi_deg)}°'
             elif phi_deg < 0:
@@ -2286,7 +3135,7 @@ def _draw_lambert_grid(ax, grid_convention='umapr'):
         for theta_deg in np.arange(30, 180, 30):
             theta_line = np.deg2rad(theta_deg) * np.ones_like(phi_curve)
             azi_line, elv_line = art2umapr(phi_curve, theta_line)
-            xm, ym = lambert_ea(elv_line, azi_line - np.pi)
+            xm, ym = lambert_ea(elv_line, lambert_lon(azi_line))
             (line,) = ax.plot(xm, ym, 'k--')
             line.set_gid(f'lambert-grid-art-theta-{int(theta_deg)}')
 
@@ -2294,7 +3143,7 @@ def _draw_lambert_grid(ax, grid_convention='umapr'):
                 np.array([np.deg2rad(80.0)]),
                 np.array([np.deg2rad(theta_deg)]),
             )
-            xl, yl = lambert_ea(elv_label, azi_label - np.pi)
+            xl, yl = lambert_ea(elv_label, lambert_lon(azi_label))
             text = ax.text(
                 float(xl[0]) + 0.08,
                 float(yl[0]),
@@ -2340,7 +3189,38 @@ def _draw_lambert_grid(ax, grid_convention='umapr'):
     ax.format_coord = format_coord
 
 
-def plot_lambert_ea(azi,elv,SPL,SPL_range=None,weight=None,grid_convention='umapr'):
+def nice_levels(vmin, vmax, target=9, step=None,
+                steps=(0.5, 1.0, 2.0, 2.5, 5.0, 10.0, 20.0, 25.0, 50.0)):
+    """Contour levels on round values (0.5/1/2/2.5/5/10... dB) covering the data.
+
+    Picks the smallest allowed step giving <= `target` intervals, then snaps
+    the ends outward to multiples of it, so both the contour bands and the
+    colourbar ticks land on values a reader can name. Pass `step` to force
+    one (e.g. step=5 for even 5 dB bands).
+    """
+    vmin, vmax = float(vmin), float(vmax)
+    if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
+        vmax = vmin + 1.0
+    if step is None:
+        raw = (vmax - vmin) / max(target - 1, 1)
+        mag = 10.0 ** np.floor(np.log10(raw)) if raw > 0 else 1.0
+        step = next((s * mag for s in steps if s * mag >= raw * 0.999),
+                    steps[-1] * mag)
+    lo = np.floor(vmin / step) * step
+    hi = np.ceil(vmax / step) * step
+    return np.arange(lo, hi + 0.5 * step, step)
+
+
+def colorbar_ticks(levels, max_ticks=11):
+    """Thin a level list down to at most `max_ticks` evenly spaced ticks."""
+    levels = np.asarray(levels, dtype=float)
+    if levels.size <= max_ticks:
+        return levels
+    return levels[:: int(np.ceil(levels.size / max_ticks))]
+
+
+def plot_lambert_ea(azi,elv,SPL,SPL_range=None,weight=None,grid_convention='umapr',
+                    levels=None,level_step=None):
     """
     Generate a Lambert equal-area azimuthal projection contour plot of sound pressure levels.
 
@@ -2383,19 +3263,22 @@ def plot_lambert_ea(azi,elv,SPL,SPL_range=None,weight=None,grid_convention='umap
         minSPL = SPL_range[0]
         maxSPL = SPL_range[1]
     SPL[np.isnan(SPL)] = 0.0
-    num_levels = 9
-    levels = np.round(np.linspace(minSPL, maxSPL, num_levels))
-    color_map = get_ylorrd_cmap(num_levels)
+    # Contour bands on round dB values so the colourbar ticks are readable
+    # (see `nice_levels`); pass `levels` or `level_step` to override.
+    if levels is None:
+        levels = nice_levels(minSPL, maxSPL, step=level_step)
+    levels = np.asarray(levels, dtype=float)
+    color_map = get_ylorrd_cmap(max(len(levels), 2))
     # Project to Cartesian
     lat = elv
-    lon = azi - np.pi
+    lon = lambert_lon(azi)
     x, y = lambert_ea(lat, lon)
     fig, ax = subplots(facecolor='white')
     ax.patch.set_visible(False)
     cs = ax.contourf(x, y, SPL, levels=levels, cmap=color_map)
     _configure_lambert_axes(ax)
     _draw_lambert_grid(ax, grid_convention=grid_convention)
-    cb = colorbar(cs, pad=0.1)
+    cb = colorbar(cs, pad=0.1, ticks=colorbar_ticks(levels))
     if weight == 'A':
         cb.set_label('Sound Pressure Level, dBA')
     else:
@@ -2492,7 +3375,7 @@ def lambert_ea_points(azimuth, elevation, markers=None, colors=None, sizes=None,
         raise ValueError('azimuth and elevation must have the same shape')
 
     lat = elevation
-    lon = azimuth - np.pi
+    lon = lambert_lon(azimuth)
     x, y = lambert_ea(lat, lon)
     fig, ax = subplots(facecolor='white')
     ax.patch.set_visible(False)
