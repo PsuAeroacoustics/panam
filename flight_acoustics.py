@@ -2032,6 +2032,29 @@ def lambert_lon(azimuth):
     return np.pi - np.asarray(azimuth, dtype=float)
 
 
+def mirror_phi_to_upper_surface(phi):
+    """Reflect lower-hemisphere azimuths onto the upper surface of the sphere.
+
+    The measured/predicted spheres cover only the lower half of the roll
+    circle, phi in [-90, 90] degrees (phi = 0 is straight down).  The upper
+    half is synthesised by reflecting through the horizontal plane, which is
+    phi -> 180 - phi wrapped back into [-180, 180):
+
+        0 (down) -> 180 (up),  +/-90 -> +/-90 (the horizontal plane, shared
+        by both halves, which is why +/-90 appear twice in every sphere).
+
+    NOTE: this used to be written -phi.  That is a left/right flip *within*
+    the lower half, and because the source range is symmetric about 0 it maps
+    [-90, 90] onto itself -- so it produced a second copy of the lower
+    hemisphere under the same labels instead of the upper one, leaving the
+    upper surface with no data at all.  The hover spheres in existing
+    databases (e.g. S-76D_M3.nod) were built that way: every (phi, theta) there
+    carries two conflicting levels, 630 of 703 pairs disagreeing by up to
+    5.77 dB.  Databases must be regenerated to pick this up.
+    """
+    return (180.0 - np.asarray(phi, dtype=float) + 180.0) % 360.0 - 180.0
+
+
 def build_empirical_database(directory_name, database_filename, load_factors=np.linspace(0.7, 2.3, 5), infreqs=None,
                              distance=1000,
                              atmosphere=Atmosphere(temperature=293.15, pressure=101.325,
@@ -2066,7 +2089,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
         theta, phi = np.meshgrid(theta_list, phi_list)
         # Flatten and concatenate mirror points
         theta = np.concatenate((theta, theta))
-        phi = np.concatenate((phi, -phi))
+        phi = np.concatenate((phi, mirror_phi_to_upper_surface(phi)))
         SPLA = np.concatenate((SPLA, SPLA))
         EAA = np.concatenate((EAA, EAA))
         # Augment load factor data
@@ -2091,7 +2114,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     theta, phi = np.meshgrid(theta_list, phi_list)
     # Flatten and concatenate mirror points
     theta = np.concatenate((theta, theta))
-    phi = np.concatenate((phi, -phi))
+    phi = np.concatenate((phi, mirror_phi_to_upper_surface(phi)))
     SPLA = np.concatenate((SPLA, SPLA))
     EAA = np.concatenate((EAA, EAA))
     # Set hover conditions
