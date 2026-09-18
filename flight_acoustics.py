@@ -2161,7 +2161,8 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                              atmosphere=Atmosphere(temperature=293.15, pressure=101.325,
                                                    relative_humidity=20.0),
                              extended_flight_path_angles=None,
-                             level_flight_tolerance=LEVEL_FLIGHT_TOLERANCE):
+                             level_flight_tolerance=LEVEL_FLIGHT_TOLERANCE,
+                             store_spectrum=True):
     """Build a NICE-OPS sphere database from a directory of sphere files.
 
     load_factors scales thrust: each source condition is written once per load
@@ -2179,6 +2180,12 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     these angles at its own airspeed, on the assumption that directivity at a
     given airspeed carries over to a steeper flight path.  The shipped
     databases use (-24.0, 35.0).
+
+    store_spectrum keeps the source spectrum (frequency + amplitude) in each
+    sphere group, so a database can be re-reduced -- different weighting, a
+    different propagation distance -- without the original sphere files.  It
+    accounts for roughly seven eighths of the file size and no consumer reads it
+    today, so turn it off for databases that only need levels.
     """
     # TODO pack in redimensionalization data
     # TODO add reinterpolation flag
@@ -2229,7 +2236,9 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
             sphere_index = sphere_index + 1
             add_sphere_group(ncdatabase, groupname, phi_full, theta_full, radius, SPLA_full, EAA_full,
                              speed, flight_path_angle, load_factor, main_rotor_radius,
-                             main_rotor_tip_speed, weight_coefficient, frequency, amplitude_full)
+                             main_rotor_tip_speed, weight_coefficient,
+                             frequency if store_spectrum else None,
+                             amplitude_full if store_spectrum else None)
 
     # Now, adapt the lowest speed sphere to a hover sphere by averaging from fore to aft
     (_, _, phi_list, theta_list, radius, _, _, _, _, _,
@@ -2257,7 +2266,9 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
             sphere_index = sphere_index + 1
             add_sphere_group(ncdatabase, groupname, phi_full, theta_full, radius, SPLA_full, EAA_full,
                              speed, flight_path_angle, load_factor, main_rotor_radius,
-                             main_rotor_tip_speed, weight_coefficient, frequency, amplitude_full)
+                             main_rotor_tip_speed, weight_coefficient,
+                             frequency if store_spectrum else None,
+                             amplitude_full if store_spectrum else None)
 
     # Widen the flight-path-angle envelope: re-emit each near-level condition at
     # the extended angles, keeping its own airspeed and directivity.  Hover is
@@ -2274,7 +2285,8 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                     add_sphere_group(ncdatabase, groupname, phi_full, theta_full, radius, SPLA_full,
                                      EAA_full, level_speed, extended_angle, load_factor,
                                      main_rotor_radius, main_rotor_tip_speed, weight_coefficient,
-                                     frequency, amplitude_full)
+                                     frequency if store_spectrum else None,
+                                     amplitude_full if store_spectrum else None)
 
 
 def add_sphere_group(ncdatabase, groupname, phi, theta, radius, SPLA, EAA, speed, flight_path_angle, load_factor,
