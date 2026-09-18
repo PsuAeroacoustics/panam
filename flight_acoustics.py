@@ -2032,27 +2032,123 @@ def lambert_lon(azimuth):
     return np.pi - np.asarray(azimuth, dtype=float)
 
 
-def mirror_phi_to_upper_surface(phi):
-    """Reflect lower-hemisphere azimuths onto the upper surface of the sphere.
+# On-disk format version written into every database as "database_version".
+# 0 / absent  -- built before this was introduced.  Hover spheres in those files
+#                may have broken directivity (see mirror_phi_to_upper_surface).
+# 1           -- directivity mirror correct; hover spheres fore-aft averaged on an
+#                energy basis with EAA recomputed from the averaged spectrum.
+DATABASE_FORMAT_VERSION = 1
 
-    The measured/predicted spheres cover only the lower half of the roll
-    circle, phi in [-90, 90] degrees (phi = 0 is straight down).  The upper
-    half is synthesised by reflecting through the horizontal plane, which is
-    phi -> 180 - phi wrapped back into [-180, 180):
 
-        0 (down) -> 180 (up),  +/-90 -> +/-90 (the horizontal plane, shared
-        by both halves, which is why +/-90 appear twice in every sphere).
+def average_fore_and_aft(spectrum):
+    """Average a sphere fore-to-aft on an energy (p^2) basis.
 
-    NOTE: this used to be written -phi.  That is a left/right flip *within*
-    the lower half, and because the source range is symmetric about 0 it maps
-    [-90, 90] onto itself -- so it produced a second copy of the lower
-    hemisphere under the same labels instead of the upper one, leaving the
-    upper surface with no data at all.  The hover spheres in existing
-    databases (e.g. S-76D_M3.nod) were built that way: every (phi, theta) there
-    carries two conflicting levels, 630 of 703 pairs disagreeing by up to
-    5.77 dB.  Databases must be regenerated to pick this up.
+    ``spectrum`` is dB per band with shape (phi, theta, frequency); theta runs
+    nose (0) to tail (180), so band j = n-1-i is the fore/aft partner of band i.
+    Each pair is replaced by their mean-square average::
+
+        10 * log10( 0.5 * (10**(Li/10) + 10**(Lj/10)) )
+
+    A plain arithmetic mean of decibels is not an energy average and biases the
+    result low -- about 0.4 dB for a pair 5.8 dB apart, which is the spread seen
+    between fore/aft partners in real spheres.  The middle band of an odd-length
+    theta axis is its own partner and is left unchanged.
     """
-    return (180.0 - np.asarray(phi, dtype=float) + 180.0) % 360.0 - 180.0
+    spectrum = np.array(spectrum, dtype=float, copy=True)
+    n_theta = spectrum.shape[1]
+    # -inf entries mean "no energy" and are expected; 10**(-inf/10) == 0.
+    old = np.seterr(divide='ignore', invalid='ignore')
+    try:
+        for i in range(n_theta // 2):
+            j = n_theta - 1 - i
+            mean_square = 0.5 * (10.0 ** (spectrum[:, i, :] / 10.0)
+                                 + 10.0 ** (spectrum[:, j, :] / 10.0))
+            averaged = 10.0 * np.log10(mean_square)
+            spectrum[:, i, :] = averaged
+            spectrum[:, j, :] = averaged
+    finally:
+        np.seterr(**old)
+    return spectrum
+
+
+def spla_and_eaa_from_spectrum(spectrum, frequency, distance, atmosphere):
+    """Derive A-weighted OASPL and excess atmospheric attenuation from a spectrum.
+
+    Mirrors the reduction in :func:`extract_SPL`, so a caller that modifies the
+    spectrum (e.g. fore/aft averaging for hover) can recompute both quantities
+    consistently instead of carrying stale values forward.
+    """
+    a_weight = np.array([dBAw(f) for f in frequency])
+    alpha = atmosphere.attenuation_coefficient(frequency)
+    spla = np.apply_along_axis(OASPL, 2, spectrum + a_weight)
+    spla_attenuated = np.apply_along_axis(OASPL, 2, spectrum + a_weight - distance * alpha)
+    old = np.seterr(invalid='ignore')
+    try:
+        eaa = spla - spla_attenuated
+    finally:
+        np.seterr(**old)
+    return spla, eaa
+
+
+def _complete_sphere(phi_list, theta_list, spla, eaa, amplitude):
+    """Extend a lower-hemisphere sphere onto its upper surface.
+
+    Returns ``(phi, theta, spla, eaa, amplitude)`` with the reflected rows
+    appended.  ``phi`` and ``theta`` come back as meshgrid arrays matching the
+    data, so every array stays row-aligned with its azimuth -- the failure mode
+    of the three-part slicing this replaces.
+    """
+    mirror_phi, source_index = mirror_phi_to_upper_surface(phi_list)
+    phi_full_list = np.concatenate((np.asarray(phi_list, dtype=float), mirror_phi))
+    theta, phi = np.meshgrid(theta_list, phi_full_list)
+    return (phi, theta,
+            np.concatenate((spla, spla[source_index])),
+            np.concatenate((eaa, eaa[source_index])),
+            np.concatenate((amplitude, amplitude[source_index])))
+
+
+def mirror_phi_to_upper_surface(phi_list):
+    """Complete a lower-hemisphere sphere onto its upper surface.
+
+    Sphere data covers only the lower half of the roll circle, phi in
+    [-90, 90] degrees with phi = 0 straight down.  The upper half is the
+    reflection through the horizontal plane, phi -> 180 - phi wrapped into
+    [-180, 180):  0 (down) -> 180 (up), and +/-90 map to themselves because the
+    horizontal plane belongs to both halves.
+
+    Returns (mirror_phi, source_index): the azimuths of the reflected rows
+    and the indices of the source rows they came from, so that every data array
+    can be extended consistently::
+
+        mirror_phi, idx = mirror_phi_to_upper_surface(phi_list)
+        phi_full  = np.concatenate((phi_list, mirror_phi))
+        SPLA_full = np.concatenate((SPLA, SPLA[idx]))
+
+    Rows whose reflection already exists in phi_list are dropped, so the
+    shared +/-90 edges appear once rather than twice and the completed sphere
+    has no duplicate (phi, theta) points.
+
+    NOTE on two earlier forms, both of which produced bad databases:
+
+    * np.concatenate((phi, -phi)) is a left/right flip *within* the lower
+      half.  Because the source range is symmetric about zero it maps [-90, 90]
+      onto itself, emitting a second copy of the lower hemisphere under the same
+      labels and leaving the upper surface empty.  The hover spheres in
+      S-76D_M3.nod were built this way: every (phi, theta) there carries two
+      conflicting levels, 630 of 703 pairs disagreeing by up to 5.77 dB.
+    * A three-part concatenation that sliced phi as [h+1:n], [:], [1:h]
+      but the data arrays as [1:h], [:], [h+1:n].  Those slices have equal
+      length only when len(phi_list) is even; the real sphere grids have 19
+      azimuths, so the labels ran one row out of step with the acoustic data
+      across most of the sphere -- corrupting forward-flight spheres too.
+    """
+    phi_list = np.asarray(phi_list, dtype=float)
+    reflected = (180.0 - phi_list + 180.0) % 360.0 - 180.0
+    # Drop reflections that coincide with a source azimuth (the +/-90 edges),
+    # comparing on a rounded grid so exact float equality is not required.
+    already_present = np.isin(np.round(reflected, 9), np.round(phi_list, 9))
+    source_index = np.flatnonzero(~already_present)
+    return reflected[source_index], source_index
 
 
 def build_empirical_database(directory_name, database_filename, load_factors=np.linspace(0.7, 2.3, 5), infreqs=None,
@@ -2070,6 +2166,15 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     # Set up database
     ncdatabase = Dataset(os.path.abspath(os.path.expanduser(database_filename)), 'w')
 
+    # NICE-OPS requires this flag; it reads it unconditionally at load time.
+    ncdatabase.createVariable("same_grid", 'b')
+    ncdatabase['same_grid'][:] = True
+    # Format version, so consumers can tell a database built by this code from
+    # the older ones whose hover spheres have broken directivity.  Bump this
+    # whenever the on-disk meaning of the sphere data changes.
+    ncdatabase.createVariable("database_version", 'i4')
+    ncdatabase['database_version'][:] = DATABASE_FORMAT_VERSION
+
     # Get list of full paths to netCDF files in directory
     local_glob = os.path.expanduser(directory_name) + '/*.nc'
     absolute_glob = os.path.abspath(local_glob)
@@ -2079,44 +2184,35 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     sphere_index = 0
     for filename in file_list:
         # Load the sphere data
-        _, _, phi_list, theta_list, radius, _, SPLA, EAA, speed, flight_path_angle = extract_SPL(filename, infreqs,
-                                                                                                 distance, atmosphere)
+        (_, _, phi_list, theta_list, radius, _, SPLA, EAA, speed, flight_path_angle,
+         frequency, amplitude) = extract_SPL(filename, infreqs, distance, atmosphere)
         # Find the lowest speed file near level flight
         if speed < min_speed and np.abs(flight_path_angle) < 2.0:
             min_speed = speed
             min_speed_file = filename
-        # Mirror image sphere to get upper surface
-        theta, phi = np.meshgrid(theta_list, phi_list)
-        # Flatten and concatenate mirror points
-        theta = np.concatenate((theta, theta))
-        phi = np.concatenate((phi, mirror_phi_to_upper_surface(phi)))
-        SPLA = np.concatenate((SPLA, SPLA))
-        EAA = np.concatenate((EAA, EAA))
+        # Complete the sphere onto its upper surface
+        phi_full, theta_full, SPLA_full, EAA_full, amplitude_full = _complete_sphere(
+            phi_list, theta_list, SPLA, EAA, amplitude)
         # Augment load factor data
         for load_factor in load_factors:
             groupname = "sphere" + str(sphere_index)
             sphere_index = sphere_index + 1
-            add_sphere_group(ncdatabase, groupname, phi, theta, radius, SPLA, EAA, speed, flight_path_angle,
-                             load_factor, main_rotor_radius, main_rotor_tip_speed, weight_coefficient)
+            add_sphere_group(ncdatabase, groupname, phi_full, theta_full, radius, SPLA_full, EAA_full,
+                             speed, flight_path_angle, load_factor, main_rotor_radius,
+                             main_rotor_tip_speed, weight_coefficient, frequency, amplitude_full)
 
     # Now, adapt the lowest speed sphere to a hover sphere by averaging from fore to aft
-    _, _, phi_list, theta_list, radius, _, SPLA, EAA, _, _ = extract_SPL(min_speed_file, infreqs, distance, atmosphere)
-    if theta_list.size % 2 == 1:
-        averages = int((theta_list.size - 1) / 2)
-    else:
-        averages = int(theta_list.size / 2)
-    for i in range(averages):
-        j = theta_list.size - 1 - i
-        average_values = 0.5 * (SPLA[:, i] + SPLA[:, j])
-        SPLA[:, i] = average_values
-        SPLA[:, j] = average_values
-    # Mirror image sphere to get upper surface
-    theta, phi = np.meshgrid(theta_list, phi_list)
-    # Flatten and concatenate mirror points
-    theta = np.concatenate((theta, theta))
-    phi = np.concatenate((phi, mirror_phi_to_upper_surface(phi)))
-    SPLA = np.concatenate((SPLA, SPLA))
-    EAA = np.concatenate((EAA, EAA))
+    (_, _, phi_list, theta_list, radius, _, _, _, _, _,
+     frequency, amplitude) = extract_SPL(min_speed_file, infreqs, distance, atmosphere)
+    # Average the SPECTRUM fore-to-aft on an energy basis, then derive SPLA and
+    # EAA from the averaged spectrum.  Averaging the broadband dB levels instead
+    # (a) is not an energy average, and (b) leaves EAA untouched, so level and
+    # excess attenuation end up describing different spheres.
+    amplitude = average_fore_and_aft(amplitude)
+    SPLA, EAA = spla_and_eaa_from_spectrum(amplitude, frequency, distance, atmosphere)
+    # Complete the sphere onto its upper surface
+    phi_full, theta_full, SPLA_full, EAA_full, amplitude_full = _complete_sphere(
+        phi_list, theta_list, SPLA, EAA, amplitude)
     # Set hover conditions
     speed = 0
     flight_path_angles = [-12, 0, 12]
@@ -2125,12 +2221,13 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
         for flight_path_angle in flight_path_angles:
             groupname = "sphere" + str(sphere_index)
             sphere_index = sphere_index + 1
-            add_sphere_group(ncdatabase, groupname, phi, theta, radius, SPLA, EAA, speed, flight_path_angle,
-                             load_factor, main_rotor_radius, main_rotor_tip_speed, weight_coefficient)
+            add_sphere_group(ncdatabase, groupname, phi_full, theta_full, radius, SPLA_full, EAA_full,
+                             speed, flight_path_angle, load_factor, main_rotor_radius,
+                             main_rotor_tip_speed, weight_coefficient, frequency, amplitude_full)
 
 
 def add_sphere_group(ncdatabase, groupname, phi, theta, radius, SPLA, EAA, speed, flight_path_angle, load_factor,
-                     main_rotor_radius, main_rotor_tip_speed, weight_coefficient):
+                     main_rotor_radius, main_rotor_tip_speed, weight_coefficient, frequency=None, amplitude=None):
     # Create a new group for this sphere
     this_group = ncdatabase.createGroup(groupname)
     # Define sphere nondimensional radius
@@ -2159,13 +2256,24 @@ def add_sphere_group(ncdatabase, groupname, phi, theta, radius, SPLA, EAA, speed
     this_group.variables['dBA'][:] = SPLA.flatten() + 20 * np.log10(load_factor)
     this_group.createVariable("EAA", 'f8', ("channels",))
     this_group.variables['EAA'][:] = EAA.flatten()
+    # Store the source spectrum alongside the reduced levels, so a database can
+    # be re-reduced (different weighting, different propagation distance)
+    # without going back to the original sphere files.
+    if frequency is not None and amplitude is not None:
+        this_group.createDimension("frequency", np.size(frequency))
+        this_group.createDimension("PHI", np.shape(amplitude)[0])
+        this_group.createDimension("THETA", np.shape(amplitude)[1])
+        this_group.createVariable("frequency", 'f8', ("frequency",))
+        this_group.variables['frequency'][:] = np.asarray(frequency).flatten()
+        this_group.createVariable("amplitude", 'f8', ("PHI", "THETA", "frequency"))
+        this_group.variables['amplitude'][:] = amplitude
 
 
 def project_sphere(filename, altitude, elv_cutoff, infreqs=None,
                    atmosphere=Atmosphere(temperature=293.15, pressure=101.325,
                                          relative_humidity=20.0)):
     distance = 1000  # reference distance for EAA
-    azi, elv, phi, theta, radius, SPLO, SPLA, EAA, speed, flight_path_angle = extract_SPL(filename, infreqs, distance,
+    azi, elv, phi, theta, radius, SPLO, SPLA, EAA, speed, flight_path_angle, _, _ = extract_SPL(filename, infreqs, distance,
                                                                                           atmosphere)
     # Discard values outside of elevation cutoff
     included_angles = elv >= np.radians(elv_cutoff)
@@ -2471,7 +2579,9 @@ def extract_SPL(filename, infreqs=None, distance=1000,
     np.seterr(invalid='ignore')
     EAA = SPLA - SPLAa
     np.seterr(**np_error_settings)
-    return azi, elv, phi, theta, radius, SPLO, SPLA, EAA, speed, flight_path_angle
+    # frequency/amplitude are returned so callers can recompute band-based
+    # quantities (e.g. EAA) after modifying the spectrum.
+    return azi, elv, phi, theta, radius, SPLO, SPLA, EAA, speed, flight_path_angle, frequency, amplitude
 
 
 def nc_unwrapped(filename, infreqs=None, weight=None):
@@ -2497,7 +2607,7 @@ def nc_unwrapped(filename, infreqs=None, weight=None):
     None
 
     """
-    azi, elv, phi, theta, radius, SPLO, SPLA, EAA, speed, flight_path_angle = extract_SPL(filename, infreqs)
+    azi, elv, phi, theta, radius, SPLO, SPLA, EAA, speed, flight_path_angle, _, _ = extract_SPL(filename, infreqs)
     if weight == 'A':
         SPL = SPLA
     else:
@@ -2874,7 +2984,7 @@ def nc_lambert_ea(filename, input_frequencies=None, weight=None, SPL_range=None,
         The contour set object from the contourf plot.
 
     """
-    azi, elv, phi, theta, radius, SPLO, SPLA, EAA, speed, flight_path_angle = extract_SPL(filename, input_frequencies)
+    azi, elv, phi, theta, radius, SPLO, SPLA, EAA, speed, flight_path_angle, _, _ = extract_SPL(filename, input_frequencies)
     if weight == 'A':
         SPL = SPLA
     else:
