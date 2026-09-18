@@ -2039,6 +2039,11 @@ def lambert_lon(azimuth):
 #                energy basis with EAA recomputed from the averaged spectrum.
 DATABASE_FORMAT_VERSION = 1
 
+# A condition is "near level flight" within this many degrees of zero flight
+# path angle.  Used both to pick the source sphere for hover and to choose which
+# conditions get re-emitted at extended flight path angles.
+LEVEL_FLIGHT_TOLERANCE = 2.0
+
 
 def average_fore_and_aft(spectrum):
     """Average a sphere fore-to-aft on an energy (p^2) basis.
@@ -2154,8 +2159,27 @@ def mirror_phi_to_upper_surface(phi_list):
 def build_empirical_database(directory_name, database_filename, load_factors=np.linspace(0.7, 2.3, 5), infreqs=None,
                              distance=1000,
                              atmosphere=Atmosphere(temperature=293.15, pressure=101.325,
-                                                   relative_humidity=20.0)):
-    # TODO extend FPA range
+                                                   relative_humidity=20.0),
+                             extended_flight_path_angles=None,
+                             level_flight_tolerance=LEVEL_FLIGHT_TOLERANCE):
+    """Build a NICE-OPS sphere database from a directory of sphere files.
+
+    load_factors scales thrust: each source condition is written once per load
+    factor, with the sphere level offset by 20*log10(load_factor) and the
+    thrust coefficient scaled to match.  Maneuver modelling needs this to span
+    well beyond 1 g -- the shipped databases use
+    [0, 1.0, 1.1, 1.2, 1.5, 2.0, 3.0, 5.0], finely spaced near 1 g and reaching
+    a 5 g pull-up, rather than the uniform default here.
+
+    extended_flight_path_angles, when given, widens the flight-path-angle
+    envelope past what was measured.  Measured spheres cluster near level
+    flight, so a trajectory that climbs or descends steeply would otherwise
+    interpolate against a clamped edge.  Every near-level condition (within
+    level_flight_tolerance of zero, hover included) is re-emitted at each of
+    these angles at its own airspeed, on the assumption that directivity at a
+    given airspeed carries over to a steeper flight path.  The shipped
+    databases use (-24.0, 35.0).
+    """
     # TODO pack in redimensionalization data
     # TODO add reinterpolation flag
 
@@ -2182,17 +2206,23 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
 
     min_speed = np.inf
     sphere_index = 0
+    level_conditions = []
     for filename in file_list:
         # Load the sphere data
         (_, _, phi_list, theta_list, radius, _, SPLA, EAA, speed, flight_path_angle,
          frequency, amplitude) = extract_SPL(filename, infreqs, distance, atmosphere)
         # Find the lowest speed file near level flight
-        if speed < min_speed and np.abs(flight_path_angle) < 2.0:
+        if speed < min_speed and np.abs(flight_path_angle) < level_flight_tolerance:
             min_speed = speed
             min_speed_file = filename
         # Complete the sphere onto its upper surface
         phi_full, theta_full, SPLA_full, EAA_full, amplitude_full = _complete_sphere(
             phi_list, theta_list, SPLA, EAA, amplitude)
+        # Remember near-level conditions; they are the ones re-emitted at the
+        # extended flight path angles below.
+        if extended_flight_path_angles is not None and np.abs(flight_path_angle) < level_flight_tolerance:
+            level_conditions.append((phi_full, theta_full, radius, SPLA_full, EAA_full,
+                                     speed, frequency, amplitude_full))
         # Augment load factor data
         for load_factor in load_factors:
             groupname = "sphere" + str(sphere_index)
@@ -2213,9 +2243,13 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     # Complete the sphere onto its upper surface
     phi_full, theta_full, SPLA_full, EAA_full, amplitude_full = _complete_sphere(
         phi_list, theta_list, SPLA, EAA, amplitude)
-    # Set hover conditions
+    # Set hover conditions.  Hover is a near-level condition, so it is written
+    # at the extended angles as well as level flight.
     speed = 0
-    flight_path_angles = [-12, 0, 12]
+    if extended_flight_path_angles is not None:
+        flight_path_angles = sorted({0.0, *extended_flight_path_angles})
+    else:
+        flight_path_angles = [-12, 0, 12]
     # Augment load factor data
     for load_factor in load_factors:
         for flight_path_angle in flight_path_angles:
@@ -2224,6 +2258,23 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
             add_sphere_group(ncdatabase, groupname, phi_full, theta_full, radius, SPLA_full, EAA_full,
                              speed, flight_path_angle, load_factor, main_rotor_radius,
                              main_rotor_tip_speed, weight_coefficient, frequency, amplitude_full)
+
+    # Widen the flight-path-angle envelope: re-emit each near-level condition at
+    # the extended angles, keeping its own airspeed and directivity.  Hover is
+    # already covered above, so skip any condition at zero airspeed.
+    if extended_flight_path_angles is not None:
+        for (phi_full, theta_full, radius, SPLA_full, EAA_full,
+             level_speed, frequency, amplitude_full) in level_conditions:
+            if level_speed == 0:
+                continue
+            for extended_angle in extended_flight_path_angles:
+                for load_factor in load_factors:
+                    groupname = "sphere" + str(sphere_index)
+                    sphere_index = sphere_index + 1
+                    add_sphere_group(ncdatabase, groupname, phi_full, theta_full, radius, SPLA_full,
+                                     EAA_full, level_speed, extended_angle, load_factor,
+                                     main_rotor_radius, main_rotor_tip_speed, weight_coefficient,
+                                     frequency, amplitude_full)
 
 
 def add_sphere_group(ncdatabase, groupname, phi, theta, radius, SPLA, EAA, speed, flight_path_angle, load_factor,
@@ -2253,7 +2304,15 @@ def add_sphere_group(ncdatabase, groupname, phi, theta, radius, SPLA, EAA, speed
     this_group.createVariable("theta", 'f8', ("channels",))
     this_group.variables['theta'][:] = theta.flatten()
     this_group.createVariable("dBA", 'f8', ("channels",))
-    this_group.variables['dBA'][:] = SPLA.flatten() + 20 * np.log10(load_factor)
+    # Thrust scaling: a load factor of n raises the level by 20*log10(n).
+    # A load factor of 0 is a special case -- it is not a physical condition but
+    # a floor entry that extends the thrust-coefficient range down to CT = 0, so
+    # trajectories below 1 g interpolate instead of clamping.  It carries the
+    # 1 g levels unscaled; evaluating 20*log10(0) would write -inf into dBA, and
+    # a zero barycentric weight against -inf yields NaN, poisoning every
+    # interpolation that touches it.
+    level_offset = 20 * np.log10(load_factor) if load_factor > 0 else 0.0
+    this_group.variables['dBA'][:] = SPLA.flatten() + level_offset
     this_group.createVariable("EAA", 'f8', ("channels",))
     this_group.variables['EAA'][:] = EAA.flatten()
     # Store the source spectrum alongside the reduced levels, so a database can
