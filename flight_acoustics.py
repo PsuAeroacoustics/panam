@@ -852,8 +852,13 @@ def depropagate_hemisphere(
         narrowband=False,
         narrowband_stride=1,
         min_elevation_deg=0.0,
+        max_range=None,
         ambient_time_range=None,
+        ambient_pressure=None,
+        ambient_time=None,
+        ambient_percentile=None,
         band_snr_gate_db=3.0,
+        max_absorption_correction_db=None,
 ):
     """Generate an acoustic hemisphere from microphone time series and vehicle tracking data.
 
@@ -863,16 +868,67 @@ def depropagate_hemisphere(
     depropagating them multiplies the ambient floor by (r/r_ref)^2 and
     contaminates the hemisphere rim, so gate them out (and restrict
     track_time to the high-SNR portion of the pass) unless the data are
-    known to be signal-dominated all the way down.
+    known to be signal-dominated all the way down. Near-grazing incidence is
+    also where ground impedance dominates what the microphone hears, which
+    the depropagation does not model, so around 10 degrees is a sensible
+    floor for a ground-board array rather than 0.
 
-    When ``ambient_time_range=(t0, t1)`` is given, each microphone's ambient
-    PSD is estimated as the median spectrogram over that (signal-free) time
-    range and applied per frequency bin before depropagation: bins whose
-    measured PSD is within ``band_snr_gate_db`` of that mic's ambient are
-    zeroed (they carry no usable signal), and the ambient power is
-    subtracted from the bins that pass. This keeps ambient-limited bands
-    from being spread/absorption-amplified into the hemisphere, which a
-    broadband SNR gate alone cannot guarantee.
+    ``max_range`` drops emission point / microphone pairs whose separation
+    exceeds it, in ``length_units``. Depropagation assumes a straight ray
+    through a homogeneous atmosphere; over long paths refraction by the wind
+    and temperature profile makes that a poor model, quite apart from the
+    absorption correction growing beyond what the measurement supports.
+
+    Ambient gating (strongly recommended) removes the dominant failure mode
+    of depropagation: a band that is ambient-limited at the microphone
+    carries no source information, but spreading and especially absorption
+    depropagation multiply it by (r/r_ref)^2 and 10^(alpha(f)(r-r_ref)/10).
+    At the top third-octave bands alpha is tens of dB/km, so an ambient-
+    limited 10 kHz band at a kilometre of range is amplified into a
+    physically impossible source level -- the Be407 spheres reach 216 dB at
+    10 kHz on the aft pole this way. A broadband SNR gate cannot catch it,
+    because the broadband level is dominated by the low-frequency bands
+    where the signal is strong.
+
+    Supply the ambient reference in one of two ways:
+
+    * ``ambient_pressure`` -- a separate signal-free recording per
+      microphone (same channel order as ``mic_locations``), e.g. a dedicated
+      ambient run from the same array and test day. Optionally pass
+      ``ambient_time`` alongside; only the sample rate is used, so a bare
+      pressure array is enough. This is the preferred form: the ambient is
+      measured rather than carved out of the run.
+    * ``ambient_time_range=(t0, t1)`` -- a signal-free window of the run
+      recording itself, in the same absolute time base as ``time``.
+    * ``ambient_percentile`` -- a low percentile of the run's own spectrogram,
+      per microphone and per frequency bin. Use it when no ambient recording
+      exists for that array layout. It assumes the quietest few percent of
+      frames are signal-free: checked against B407's measured ambient runs,
+      the 5th percentile agrees to -0.3 dB in the median, but with roughly
+      +-8 dB of scatter per channel, so it is a fallback rather than an
+      equivalent. Note that a *higher* percentile is not safer -- 25 already
+      overestimates that ambient by 8 dB. The bias runs the other way on a
+      record that is mostly quiet, where a low percentile samples the low tail
+      of the noise fluctuation and gates too little.
+
+    Either way each microphone's ambient PSD is the median spectrogram over
+    the ambient frames, computed with the same window settings as the run so
+    the frequency grids match. It is then applied per frequency bin *before*
+    depropagation: bins whose measured PSD is within ``band_snr_gate_db`` of
+    that mic's ambient are zeroed (they carry no usable signal), and the
+    ambient power is subtracted from the bins that pass.
+
+    An SNR gate alone is not sufficient, because it bounds the *relative*
+    error of a bin but says nothing about how far the absorption correction
+    extrapolates. At 10 kHz on a warm day alpha is around 90 dB/km, so an
+    emission point 2.7 km away carries a correction near 250 dB: an ambient
+    fluctuation that clears any plausible SNR gate still lands at a source
+    level hundreds of dB too high, and because the hemisphere averages in
+    linear power, one such point dominates its whole neighbourhood. Set
+    ``max_absorption_correction_db`` to discard bins whose absorption
+    correction exceeds what the measurement can support -- the band is simply
+    not observable at that range, and a gap there is the honest result. It has
+    no effect unless ``apply_absorption_deprop=True``.
 
     This is the "normal" processing flow used by the demo scripts: use the vehicle kinematics
     to compute emission-time geometry (azimuth/elevation/range) via :func:`hemigen`, sample
@@ -967,6 +1023,22 @@ def depropagate_hemisphere(
     pressure_list = _as_mic_list_1d(pressure, name='pressure')
     time_list = _as_mic_list_1d(time, name='time')
 
+    ambient_sources = [name for name, value in
+                       (('ambient_pressure', ambient_pressure),
+                        ('ambient_time_range', ambient_time_range),
+                        ('ambient_percentile', ambient_percentile))
+                       if value is not None]
+    if len(ambient_sources) > 1:
+        raise ValueError('Give only one ambient source, not both of: ' + ', '.join(ambient_sources))
+    if ambient_percentile is not None and not 0.0 < float(ambient_percentile) < 100.0:
+        raise ValueError('ambient_percentile must lie strictly between 0 and 100')
+    ambient_pressure_list = None
+    ambient_time_list = None
+    if ambient_pressure is not None:
+        ambient_pressure_list = _as_mic_list_1d(ambient_pressure, name='ambient_pressure')
+        if ambient_time is not None:
+            ambient_time_list = _as_mic_list_1d(ambient_time, name='ambient_time')
+
     def _time_vec_for_mic(im):
         p = pressure_list[im]
         t = time_list[im]
@@ -1057,8 +1129,6 @@ def depropagate_hemisphere(
         # PSD spectrogram on observer time axis
         t_vec = _time_vec_for_mic(im)
         fs = float(np.round(1.0 / (t_vec[1] - t_vec[0])))
-        if not np.isclose(fs, fs0, rtol=1e-3, atol=0.0):
-            raise ValueError('All microphones must have the same sample rate for hemisphere generation')
         f, t_rel, psd_db = spectrogram(pressure_list[im], fs, window_time=window_time, window_overlap=window_overlap)
         t_abs = t_rel + t_vec[0]
 
@@ -1067,16 +1137,25 @@ def depropagate_hemisphere(
         if f_sel.size < 2:
             raise ValueError('Selected frequency range does not contain enough bins')
 
-        if f_sel_master is None:
+        # OASPL, A-weighting and third-octave integration all happen per
+        # microphone on that microphone's own frequency grid, so arrays may
+        # differ from mic to mic.  Only the narrowband export, which stacks
+        # every mic onto one frequency axis, needs a common grid -- arrays
+        # recorded at different sample rates (the 2017 Noise Abatement test
+        # mixes 25000 and 25600 Hz) are otherwise perfectly usable.
+        if narrowband:
+            if not np.isclose(fs, fs0, rtol=1e-3, atol=0.0):
+                raise ValueError('narrowband=True requires all microphones at the same sample rate')
+            if f_sel_master is None:
+                f_sel_master = f_sel
+            elif f_sel_master.shape != f_sel.shape or not np.allclose(f_sel_master, f_sel, rtol=0.0, atol=0.0):
+                raise ValueError('narrowband=True requires identical frequency grids for all microphones')
+        elif f_sel_master is None:
             f_sel_master = f_sel
-        else:
-            if f_sel_master.shape != f_sel.shape or not np.allclose(f_sel_master, f_sel, rtol=0.0, atol=0.0):
-                raise ValueError('All microphones must have identical frequency grids for hemisphere generation')
 
         df = float(f_sel[1] - f_sel[0])
 
-        if Aweight_db is None:
-            Aweight_db = np.array([dBAw(fi) for fi in f_sel], dtype=float)
+        Aweight_db = np.array([dBAw(fi) for fi in f_sel], dtype=float)
         Aweight_lin = 10.0 ** (Aweight_db / 10.0)
 
         alpha_db_per_m = None
@@ -1094,6 +1173,8 @@ def depropagate_hemisphere(
         valid = np.logical_and(tobs_sub >= t_abs[0], tobs_sub <= t_abs[-1])
         if min_elevation_deg > 0.0:
             valid = np.logical_and(valid, el_sub >= float(min_elevation_deg))
+        if max_range is not None:
+            valid = np.logical_and(valid, r_sub <= float(max_range))
         if not np.any(valid):
             continue
 
@@ -1111,13 +1192,39 @@ def depropagate_hemisphere(
         # Convert to linear PSD relative to pref^2/Hz
         psd_v_lin = 10.0 ** (psd_v_db / 10.0)
 
-        # Per-bin ambient gating and background subtraction
-        if ambient_time_range is not None:
+        # Per-bin ambient gating and background subtraction.  This has to
+        # happen here, before spreading and absorption depropagation below,
+        # or an ambient-limited band gets amplified by both.
+        amb_lin = None
+        if ambient_pressure_list is not None:
+            amb_p = ambient_pressure_list[im]
+            amb_fs = fs
+            if ambient_time_list is not None:
+                amb_t = ambient_time_list[im]
+                if amb_t.size >= 2:
+                    amb_fs = float(np.round(1.0 / (amb_t[1] - amb_t[0])))
+            if not np.isclose(amb_fs, fs, rtol=1e-6, atol=0.0):
+                raise ValueError('ambient_pressure for mic {:d} is sampled at {:g} Hz but the run is at {:g} Hz; '
+                                 'the ambient recording must come from the same channel and sample rate'
+                                 .format(im, amb_fs, fs))
+            # Same window settings as the run, so the ambient lands on the
+            # identical frequency grid and can be applied bin by bin.
+            f_amb, _, psd_amb_db = spectrogram(amb_p, amb_fs, window_time=window_time,
+                                               window_overlap=window_overlap)
+            if f_amb.shape != f.shape or psd_amb_db.shape[1] < 1:
+                raise ValueError('ambient_pressure for mic {:d} did not yield a usable spectrogram on the run '
+                                 'frequency grid (is the recording at least one window long?)'.format(im))
+            amb_lin = 10.0 ** (np.median(psd_amb_db[fmask, :], axis=1) / 10.0)
+        elif ambient_time_range is not None:
             amb_mask = np.logical_and(t_abs >= float(ambient_time_range[0]),
                                       t_abs <= float(ambient_time_range[1]))
             if not np.any(amb_mask):
                 raise ValueError('ambient_time_range contains no spectrogram frames')
             amb_lin = 10.0 ** (np.median(psd_sel_db[:, amb_mask], axis=1) / 10.0)
+        elif ambient_percentile is not None:
+            amb_lin = 10.0 ** (np.percentile(psd_sel_db, float(ambient_percentile), axis=1) / 10.0)
+
+        if amb_lin is not None:
             gate = psd_v_lin >= amb_lin[:, None] * 10.0 ** (band_snr_gate_db / 10.0)
             psd_v_lin = np.where(gate,
                                  np.maximum(psd_v_lin - amb_lin[:, None], 0.0),
@@ -1133,6 +1240,12 @@ def depropagate_hemisphere(
             assert alpha_db_per_m is not None
             r_m = unit_conversion.len_conv(r_v, from_units=length_units, to_units='m').astype(float)
             deltaL = alpha_db_per_m[:, None] * (r_m[None, :] - r_ref_m)
+            if max_absorption_correction_db is not None:
+                # Drop bins the measurement cannot support before applying the
+                # correction, not after: once multiplied they are indisting-
+                # uishable from real high-frequency content.
+                psd_v_lin = np.where(deltaL <= float(max_absorption_correction_db),
+                                     psd_v_lin, 0.0)
             psd_v_lin = psd_v_lin * (10.0 ** (deltaL / 10.0))
 
         # OASPL power over selected frequency range
@@ -1522,6 +1635,44 @@ def load_nc_sphere(filename):
     return amplitude, phi, theta, frequency, radius, speed, flight_path_angle
 
 
+#: Legacy AAM spheres blank-pad the ``unit`` attribute of every scalar variable
+#: to this width (a Fortran CHARACTER(20) field written verbatim).
+AAM_SCALAR_UNIT_WIDTH = 20
+
+#: Level written into AMPLITUDE where a band carries no usable data.  The AAM
+#: code masks known-bad values with -999, so that is what a sphere meant for it
+#: should carry.  Note the shipped 2017 spheres do not use it -- they mask with
+#: NaN -- and older panam output used a large positive sentinel, so
+#: :func:`mask_missing_levels` accepts all three on read.
+AAM_MISSING_LEVEL = -999.0
+
+#: Anything at or below this reads as masked.  Loose enough to survive the
+#: float32 round trip AMPLITUDE goes through, and far below any real source
+#: level, so it cannot swallow a measurement.
+AAM_MISSING_THRESHOLD = -998.0
+
+#: Older panam spheres (and some AAM-style tooling) mask with a large positive
+#: value instead.  Still accepted on read so existing files keep working.
+AAM_LEGACY_MISSING_THRESHOLD = 1.0e34
+
+
+def mask_missing_levels(amplitude):
+    """Return ``amplitude`` with every masked band as -inf, i.e. no energy.
+
+    Three conventions appear in the wild and all three are accepted: NaN (what
+    the shipped 2017 Noise Abatement spheres use), -999 (what the AAM code
+    masks with, and what this module now writes), and a large positive value
+    (older panam output).  The array comes back as a plain float array, never a
+    masked one, so downstream arithmetic behaves the same whichever it was.
+    """
+    amplitude = np.asarray(amplitude, dtype=float).copy()
+    missing = (np.isnan(amplitude)
+               | (amplitude <= AAM_MISSING_THRESHOLD)
+               | (amplitude > AAM_LEGACY_MISSING_THRESHOLD))
+    amplitude[missing] = -np.inf
+    return amplitude
+
+
 def write_aam_hemisphere_netcdf(
         filename,
         hemisphere,
@@ -1543,6 +1694,7 @@ def write_aam_hemisphere_netcdf(
     pylon_angle_deg: float = 90.0,
     masttilt_deg: float = 0.0,
     xyz_ft=(0.0, 0.0, 0.0),
+        minimum_level_db: float = -100.0,
         overwrite: bool = True,
 ):
     """Write a depropagated acoustic hemisphere to an AAM/RNM-style netCDF sphere.
@@ -1573,6 +1725,15 @@ def write_aam_hemisphere_netcdf(
         speed_knots: Stored into ``SPEED`` (knots).
         flight_path_angle_deg: Stored into ``FLIGHT_PATH_ANGLE`` (deg).
         radius_ft: Optional override for ``RADIUS`` (ft). If None, derived from hemisphere metadata ``r_ref``.
+        minimum_level_db: bands below this level are written as the AAM missing
+            sentinel rather than as a number. Interpolating a hemisphere whose
+            bands were gated to zero power yields denormal-tiny positives rather
+            than exact zeros, which come out as levels near -3000 dB. Those are
+            zero energy and consumers handle them, but "not measured" is what
+            they mean and what AAM has a convention for. The default sits far
+            below any real measurement at a 100 ft sphere radius, so it catches
+            the gated bands and nothing else. Pass -inf to keep every finite
+            level.
         overwrite: If False, raises when filename exists.
 
     Returns:
@@ -1712,10 +1873,12 @@ def write_aam_hemisphere_netcdf(
         pos = Pq > 0.0
         if np.any(pos):
             Lq[pos] = 10.0 * np.log10(np.maximum(Pq[pos], eps))
+        if np.isfinite(minimum_level_db):
+            Lq[Lq < float(minimum_level_db)] = -np.inf
         amplitude_db[:, :, k] = Lq
 
-    # Replace non-finite levels with AAM-style missing sentinel (>1e34)
-    missing_sentinel = np.float32(1.0e35)
+    # Replace non-finite levels with the AAM missing mask
+    missing_sentinel = np.float32(AAM_MISSING_LEVEL)
     amplitude_to_write = amplitude_db.astype(np.float32)
     amplitude_to_write[~np.isfinite(amplitude_to_write)] = missing_sentinel
 
@@ -1741,7 +1904,11 @@ def write_aam_hemisphere_netcdf(
         vphi = ds.createVariable('PHI', 'f4', ('PHI',))
         vth = ds.createVariable('THETA', 'f4', ('THETA',))
         vf = ds.createVariable('FREQUENCY', 'f4', ('FREQUENCY',))
-        vamp = ds.createVariable('AMPLITUDE', 'f4', ('PHI', 'THETA', 'FREQUENCY'), fill_value=missing_sentinel)
+        # No fill_value here: the legacy AAM spheres carry no _FillValue on
+        # AMPLITUDE, and setting one both adds an attribute they do not have and
+        # makes netCDF4 return a masked array where they return a plain one.
+        # The missing sentinel is written into the data instead, as they do.
+        vamp = ds.createVariable('AMPLITUDE', 'f4', ('PHI', 'THETA', 'FREQUENCY'))
 
         # Scalar flight/condition variables (AAM example uses 0-D scalars)
         vr = ds.createVariable('RADIUS', 'f4')
@@ -1784,26 +1951,33 @@ def write_aam_hemisphere_netcdf(
             raise ValueError('xyz_ft must be a 3-element iterable (x, y, z) in feet')
         vXYZ[:] = xyz
 
-        # Match the example file's attribute naming: 'unit' (singular)
+        # Match the example file's attribute naming: 'unit' (singular).
+        # The legacy AAM spheres blank-pad the unit on every scalar variable to
+        # AAM_SCALAR_UNIT_WIDTH characters and leave the array variables' units
+        # unpadded -- the shape a Fortran CHARACTER(20) write produces.  Keep
+        # both conventions so a reader that takes the attribute length at face
+        # value sees what it saw in the shipped files.
         vphi.unit = 'DEGREE'
         vth.unit = 'DEGREE'
         vf.unit = 'HERTZ'
         vamp.unit = 'DECIBEL'
-        vr.unit = 'FEET'
-        vs.unit = 'KNOTS'
-        vfpa.unit = 'DEGREE'
         vXYZ.unit = 'FEET'
 
-        # The example sets unit attrs (often blank) on the metadata scalars.
-        vBB.unit = ''
-        vNB.unit = ''
-        vPT.unit = ''
-        vDSR.unit = ''
-        vEW.unit = 'POUNDS'
-        vFW.unit = 'POUNDS'
-        vLW.unit = 'POUNDS'
-        vPA.unit = 'DEGREE'
-        vMT.unit = 'DEGREE'
+        def _scalar_unit(text):
+            return str(text).ljust(AAM_SCALAR_UNIT_WIDTH)
+
+        vr.unit = _scalar_unit('FEET')
+        vs.unit = _scalar_unit('KNOTS')
+        vfpa.unit = _scalar_unit('DEGREE')
+        vBB.unit = _scalar_unit('')
+        vNB.unit = _scalar_unit('')
+        vPT.unit = _scalar_unit('')
+        vDSR.unit = _scalar_unit('')
+        vEW.unit = _scalar_unit('POUNDS')
+        vFW.unit = _scalar_unit('POUNDS')
+        vLW.unit = _scalar_unit('POUNDS')
+        vPA.unit = _scalar_unit('DEGREE')
+        vMT.unit = _scalar_unit('DEGREE')
 
         ds.title = title if title is not None else 'AAM/RNM acoustic hemisphere'
     finally:
@@ -2163,7 +2337,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                                                    relative_humidity=20.0),
                              extended_flight_path_angles=None,
                              level_flight_tolerance=LEVEL_FLIGHT_TOLERANCE,
-                             store_spectrum=True):
+                             store_spectrum=True, clamp_empty_directions=True):
     """Build a NICE-OPS sphere database from a directory of sphere files.
 
     load_factors scales thrust: each source condition is written once per load
@@ -2181,6 +2355,11 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     these angles at its own airspeed, on the assumption that directivity at a
     given airspeed carries over to a steeper flight path.  The shipped
     databases use (-24.0, 35.0).
+
+    clamp_empty_directions replaces the NaN that EAA becomes where ambient
+    gating emptied a direction (``-inf - -inf``) with zero.  A NaN there is not
+    local: it put 886 NaN cells into a NICE-OPS footprint.  The dBA level is
+    left as it falls out, -inf included; see :func:`_finite_sphere_levels`.
 
     store_spectrum keeps the source spectrum (frequency + amplitude) in each
     sphere group, so a database can be re-reduced -- different weighting, a
@@ -2207,6 +2386,23 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     ncdatabase.createVariable("database_version", 'i4')
     ncdatabase['database_version'][:] = DATABASE_FORMAT_VERSION
 
+    # Root vehicle data, as carried by every shipped database (S-76D_M3.nod,
+    # AW139_M1.nod, Be407_spectral.nod).  NICE-OPS reads them to redimensionalise
+    # the sphere conditions and, for --export_aam, in preference to anything it
+    # would otherwise infer, so leaving them out quietly changes what it does.
+    # main_rotor_radius_meters restates each group's rotor_scale; tip speed and
+    # weight appear nowhere else in the file.
+    if main_rotor_radius is not None:
+        ncdatabase.createVariable("main_rotor_radius_meters", 'f8')
+        ncdatabase['main_rotor_radius_meters'][:] = float(main_rotor_radius)
+    if main_rotor_tip_speed is not None:
+        ncdatabase.createVariable("main_rotor_tip_speed_meters_per_sec", 'f8')
+        ncdatabase['main_rotor_tip_speed_meters_per_sec'][:] = float(main_rotor_tip_speed)
+    vehicle_weight_newtons = read_vehicle_weight_newtons(directory_name)
+    if vehicle_weight_newtons is not None:
+        ncdatabase.createVariable("vehicle_weight_newtons", 'f8')
+        ncdatabase['vehicle_weight_newtons'][:] = float(vehicle_weight_newtons)
+
     # Get list of full paths to netCDF files in directory
     local_glob = os.path.expanduser(directory_name) + '/*.nc'
     absolute_glob = os.path.abspath(local_glob)
@@ -2222,6 +2418,8 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
         # Load the sphere data
         (_, _, phi_list, theta_list, radius, _, SPLA, EAA, speed, flight_path_angle,
          frequency, amplitude) = extract_SPL(filename, infreqs, distance, atmosphere)
+        if clamp_empty_directions:
+            SPLA, EAA = _finite_sphere_levels(SPLA, EAA)
         # Find the lowest speed file near level flight
         if speed < min_speed and np.abs(flight_path_angle) < level_flight_tolerance:
             min_speed = speed
@@ -2269,6 +2467,8 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     # excess attenuation end up describing different spheres.
     amplitude = average_fore_and_aft(amplitude)
     SPLA, EAA = spla_and_eaa_from_spectrum(amplitude, frequency, distance, atmosphere)
+    if clamp_empty_directions:
+        SPLA, EAA = _finite_sphere_levels(SPLA, EAA)
     # Complete the sphere onto its upper surface
     phi_full, theta_full, SPLA_full, EAA_full, amplitude_full = _complete_sphere(
         phi_list, theta_list, SPLA, EAA, amplitude)
@@ -2307,6 +2507,34 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                                      main_rotor_radius, main_rotor_tip_speed, weight_coefficient,
                                      frequency if store_spectrum else None,
                                      amplitude_full if store_spectrum else None)
+
+
+def _finite_sphere_levels(spla, eaa):
+    """Sanitise EAA where ambient gating emptied a direction.
+
+    Ambient gating legitimately empties a direction -- a low-power descent can
+    sit at the noise floor over most of the aft hemisphere -- and then
+    ``SPLA = -inf``, so ``EAA = SPLA - SPLAa`` is ``-inf - -inf``, a NaN.
+
+    The level itself is left alone, including when it is -inf. That was checked
+    against NICE-OPS rather than assumed (its build/niceops, B205 track, Be407
+    database, patching the directions a flyover actually uses so the test is
+    demonstrably sensitive -- 26.9 dB of footprint change):
+
+    * ``dBA = -inf`` and ``dBA = -3064`` give byte-identical footprints with no
+      NaN cells. Its ``eval`` subtracts spreading and attenuation from the
+      level and the exposure integral then sums energy, so a -inf direction
+      contributes nothing -- which is exactly what an empty direction means.
+    * ``EAA = NaN`` does not stay local: it put 886 NaN cells into a 120x120
+      footprint and moved the mean level by 1.3 dB.
+
+    So only EAA needs a value here, and zero is the right one: with no energy
+    in the direction there is no excess attenuation to apply to it.
+    """
+    spla = np.asarray(spla, dtype=float)
+    eaa = np.asarray(eaa, dtype=float).copy()
+    eaa[~np.isfinite(eaa)] = 0.0
+    return spla, eaa
 
 
 def add_sphere_group(ncdatabase, groupname, phi, theta, radius, SPLA, EAA, speed, flight_path_angle, load_factor,
@@ -2381,6 +2609,22 @@ def project_sphere(filename, altitude, elv_cutoff, infreqs=None,
     spreading = 20 * np.log10(radius / slant_range)
     LA = SPLA - absorption + spreading
     return x, y, LA, speed, flight_path_angle
+
+
+def read_vehicle_weight_newtons(directory_name):
+    """Vehicle weight in newtons from a sphere directory's ``vehicle.cfg``.
+
+    Separate from :func:`read_vehicle_data` so the database builder can write
+    the root ``vehicle_weight_newtons`` without changing that function's
+    fourteen-element return tuple.  Returns None when the config does not carry
+    a weight.
+    """
+    config = ConfigParser()
+    config.read(os.path.abspath(os.path.expanduser(directory_name) + '/vehicle.cfg'))
+    if not config.has_section('Vehicle') or 'weight' not in config['Vehicle']:
+        return None
+    # Matches read_vehicle_data's constant, so the two agree to the digit.
+    return 9.82 * float(config['Vehicle']['weight'])
 
 
 def read_vehicle_data(directory_name, runs=None, speeds=None, flight_path_angles=None):
@@ -2648,9 +2892,8 @@ def extract_SPL(filename, infreqs=None, distance=1000,
     amplitude, phi, theta, frequency, radius, speed, flight_path_angle = load_nc_sphere(filename)
     # Convert radius to meters
     radius = radius * 0.3048
-    # Replace bad values with no-energy SPL
-    amplitude[np.isnan(amplitude)] = -np.inf
-    amplitude[amplitude > 1.0e34] = -np.inf
+    # Replace masked values with no-energy SPL
+    amplitude = mask_missing_levels(amplitude)
     # Check frequency range
     if infreqs is not None:
         frequency_index = (frequency >= infreqs[0]) & (frequency <= infreqs[1])

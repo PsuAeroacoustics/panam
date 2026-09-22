@@ -336,8 +336,7 @@ def main():
         try:
             amp_ref, phi_ref, theta_ref, f_ref, radius_ref_ft, _, _ = fa.load_nc_sphere(ref_file)
             amp_ref = amp_ref.astype(float)
-            amp_ref[np.isnan(amp_ref)] = -np.inf
-            amp_ref[amp_ref > 1.0e34] = -np.inf
+            amp_ref = fa.mask_missing_levels(amp_ref)
 
             radius_ref_ft = float(np.asarray(radius_ref_ft, dtype=float).ravel()[0])
             if radius_ref_ft <= 0.0:

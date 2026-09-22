@@ -43,8 +43,7 @@ def _reference_on_grid(azi_grid, elv_grid):
     """Reference AAM sphere OASPL interpolated onto our grid (dB at r_ref)."""
     amp, phi, theta, f, radius_ft, _, _ = fa.load_nc_sphere(REF)
     amp = amp.astype(float)
-    amp[np.isnan(amp)] = -np.inf
-    amp[amp > 1.0e34] = -np.inf
+    amp = fa.mask_missing_levels(amp)
     radius_ft = float(np.asarray(radius_ft, dtype=float).ravel()[0])
     amp = amp[:, :, np.logical_and(f >= FREQS[0], f <= FREQS[1])]
     oaspl = np.apply_along_axis(fa.OASPL, 2, amp)

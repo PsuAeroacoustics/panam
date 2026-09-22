@@ -160,3 +160,6 @@ Cases/wav/
 
 # Working plots directory
 demo_plots/
+
+# Generated audio output
+demo_audio/
