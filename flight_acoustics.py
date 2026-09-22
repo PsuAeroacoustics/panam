@@ -1,5 +1,6 @@
 # coding=UTF-8
 import os
+import warnings
 from configparser import ConfigParser
 from glob import glob
 
@@ -2212,6 +2213,9 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     file_list = glob(absolute_glob)
 
     min_speed = np.inf
+    min_speed_file = None
+    slowest_speed = np.inf
+    slowest_file = None
     sphere_index = 0
     level_conditions = []
     for filename in file_list:
@@ -2222,6 +2226,10 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
         if speed < min_speed and np.abs(flight_path_angle) < level_flight_tolerance:
             min_speed = speed
             min_speed_file = filename
+        # ...and the slowest overall, as a fallback when nothing is near level
+        if speed < slowest_speed:
+            slowest_speed = speed
+            slowest_file = filename
         # Complete the sphere onto its upper surface
         phi_full, theta_full, SPLA_full, EAA_full, amplitude_full = _complete_sphere(
             phi_list, theta_list, SPLA, EAA, amplitude)
@@ -2239,6 +2247,18 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                              main_rotor_tip_speed, weight_coefficient,
                              frequency if store_spectrum else None,
                              amplitude_full if store_spectrum else None)
+
+    if min_speed_file is None:
+        # No sphere within level_flight_tolerance of level flight.  The hover
+        # sphere is synthesised by averaging the slowest one fore-to-aft, so
+        # fall back to the slowest available rather than failing with an
+        # unbound name -- the further it is from level flight, the rougher the
+        # hover approximation.
+        if slowest_file is None:
+            raise ValueError('No sphere files found in ' + str(directory_name))
+        warnings.warn('No sphere within {:g} degrees of level flight; synthesising hover from the '
+                      'slowest available at {:.1f} knots.'.format(level_flight_tolerance, slowest_speed))
+        min_speed_file = slowest_file
 
     # Now, adapt the lowest speed sphere to a hover sphere by averaging from fore to aft
     (_, _, phi_list, theta_list, radius, _, _, _, _, _,
