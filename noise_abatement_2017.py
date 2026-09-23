@@ -324,6 +324,22 @@ def _close_short_gaps(ok, time, max_gap_s):
     window into two 20 s halves.  Closing brief gaps keeps the window whole
     while still rejecting a real turn, which lasts seconds rather than
     hundredths.
+
+    2.0 s (not the 0.5 s this was first tuned to) is what generalises: tuned
+    against Be407 alone, 0.5 s recovered every Be407 run but left every other
+    aircraft with a 17-50% "steady segment too short" failure rate, because a
+    lighter, twitchier airframe's gust response is a wider, longer-lived
+    excursion, not sensor noise -- R44's median roll and turn rate sit
+    comfortably inside the default tolerances (1.3 deg, 1.17 deg/s on one
+    representative run) while a single gust spikes to 16 deg / 8 deg/s for a
+    couple of seconds. Surveyed across every run that failed on duration in
+    the six-aircraft rebuild (100 runs): 0% recovered at 0.5 s (all had
+    already failed there), 48% at 1.0 s, 57% at 1.5 s, 62% at 2.0 s, 65% at
+    3.0 s -- past 2 s the extra recovery is small, and a longer bridge starts
+    rejoining what could be a genuine multi-second deviation rather than a
+    gust. The steadiness bounds themselves (roll, turn rate, speed, FPA) are
+    untouched by this -- only how long a brief excursion can be before it
+    counts as a real break.
     """
     ok = np.asarray(ok, dtype=bool).copy()
     if max_gap_s <= 0.0:
@@ -337,7 +353,7 @@ def _close_short_gaps(ok, time, max_gap_s):
 
 def steady_window(track, speed_tolerance_knots=4.0, fpa_tolerance_deg=2.0,
                   roll_tolerance_deg=5.0, turn_rate_tolerance_deg_s=1.5,
-                  max_array_range=None, min_duration_s=8.0, max_gap_s=0.5):
+                  max_array_range=None, min_duration_s=8.0, max_gap_s=2.0):
     """Longest contiguous stretch of steady flight in ``track``.
 
     Returns ``(index_start, index_stop)`` as a half-open slice.  Steadiness is
