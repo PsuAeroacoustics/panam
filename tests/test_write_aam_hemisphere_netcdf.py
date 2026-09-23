@@ -187,6 +187,62 @@ def test_database_carries_the_root_vehicle_fields_niceops_reads(tmp_path):
         assert float(db['vehicle_weight_newtons'][0]) == 9.82 * 2250
 
 
+def _sphere_dir_with_two_conditions(tmp_path):
+    sphere_dir = tmp_path / 'spheres'
+    sphere_dir.mkdir()
+    (sphere_dir / 'vehicle.cfg').write_text(
+        '[Main Rotor]\nradius = 5.334\ntip speed = 230.7\nblades = 4\n'
+        '[Tail Rotor]\nradius = 0.8255\ntip speed = 216.1\nblades = 2\n'
+        '[Atmosphere]\ndensity = 1.070\ntemperature = 280.37\n'
+        '[Vehicle]\nweight = 2250\ndrag = 0.8175\n')
+    for name, speed, fpa in [('A100.nc', 70.0, 0.0), ('A101.nc', 90.0, -6.0)]:
+        fa.write_aam_hemisphere_netcdf(
+            str(sphere_dir / name), _minimal_hemisphere(), mode='third_octave',
+            phi_deg=np.arange(-90.0, 90.0 + 1e-9, 10.0),
+            theta_deg=np.arange(0.0, 180.0 + 1e-9, 10.0),
+            radius_ft=100.0, speed_knots=speed, flight_path_angle_deg=fpa, title='t')
+    return sphere_dir
+
+
+def test_load_factors_none_writes_one_group_per_condition_at_the_lf1_reference(tmp_path):
+    """See the docstring: every load factor add_sphere_group would otherwise
+    materialise is the *same* spectrum at a uniform dB offset, so with
+    load_factors=None NICE-OPS is expected to reproduce them analytically
+    instead of finding them stored."""
+    sphere_dir = _sphere_dir_with_two_conditions(tmp_path)
+
+    fixed_path = tmp_path / 'fixed.nod'
+    fa.build_empirical_database(str(sphere_dir), str(fixed_path), load_factors=None,
+                                store_spectrum=False)
+    explicit_lf1_path = tmp_path / 'explicit_lf1.nod'
+    fa.build_empirical_database(str(sphere_dir), str(explicit_lf1_path),
+                                load_factors=np.array([1.0]), store_spectrum=False)
+    two_factor_path = tmp_path / 'two_factor.nod'
+    fa.build_empirical_database(str(sphere_dir), str(two_factor_path),
+                                load_factors=np.array([1.0, 2.0]), store_spectrum=False)
+
+    with Dataset(str(fixed_path)) as fixed, Dataset(str(explicit_lf1_path)) as explicit_lf1, \
+            Dataset(str(two_factor_path)) as two_factor:
+        assert bool(fixed['fixed_load_factor'][()])
+        assert not bool(explicit_lf1['fixed_load_factor'][()])
+        assert not bool(two_factor['fixed_load_factor'][()])
+
+        # 2 base conditions + 3 default hover flight-path angles = 5, doubled
+        # when the same conditions are written at 2 explicit load factors.
+        assert len(fixed.groups) == 5
+        assert len(explicit_lf1.groups) == 5
+        assert len(two_factor.groups) == 10
+
+        # load_factors=None must be bit-for-bit the LF=1 slice of the old
+        # per-load-factor form, not merely "close": every dBA/EAA/thrust_coefficient
+        # it writes already is that reference, so there is nothing to average or round.
+        for name in fixed.groups:
+            fixed_group = fixed.groups[name]
+            explicit_group = explicit_lf1.groups[name]
+            for var in ('dBA', 'EAA', 'thrust_coefficient', 'advance_ratio', 'flight_path_angle'):
+                np.testing.assert_array_equal(fixed_group[var][:], explicit_group[var][:])
+
+
 def test_denormal_band_power_is_written_as_missing_not_as_minus_3000_db(tmp_path):
     """Gated hemispheres interpolate to tiny positive power, not exact zero.
 

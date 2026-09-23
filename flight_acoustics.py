@@ -2347,6 +2347,22 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     [0, 1.0, 1.1, 1.2, 1.5, 2.0, 3.0, 5.0], finely spaced near 1 g and reaching
     a 5 g pull-up, rather than the uniform default here.
 
+    Pass ``load_factors=None`` to write each condition once, at the LF=1
+    reference only, and let NICE-OPS scale levels (and, for a spectral
+    database, every band) to the queried load factor analytically instead of
+    from stored samples.  This is exact, not an approximation: every load
+    factor this function would otherwise materialise is the *same* spectrum
+    offset by a uniform ``20*log10(load_factor)`` -- add_sphere_group does not
+    scale ``amplitude``, only ``dBA`` and ``thrust_coefficient`` -- so writing
+    eight copies of it (the shipped databases' load factor count) stores no
+    information the reader could not derive from one. It shrinks a database
+    roughly in proportion to the load factor count (measured on Be407: 547.9
+    MB -> well under 100 MB). The database is written with a root
+    ``fixed_load_factor`` flag so NICE-OPS knows the scaling is safe to apply
+    -- it must NOT be inferred for a database built some other way, e.g. from
+    genuinely separate measurements at different thrust conditions whose
+    spectral *shape*, not just level, could differ with load factor.
+
     extended_flight_path_angles, when given, widens the flight-path-angle
     envelope past what was measured.  Measured spheres cluster near level
     flight, so a trajectory that climbs or descends steeply would otherwise
@@ -2370,6 +2386,14 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     # TODO pack in redimensionalization data
     # TODO add reinterpolation flag
 
+    # None means "write the LF=1 reference only, let the reader scale it" --
+    # see the docstring.  Every load-factor loop below iterates this instead
+    # of the load_factors parameter directly, so add_sphere_group need not
+    # change: at load_factor=1.0 it already writes the unscaled level and
+    # thrust_coefficient == weight_coefficient, which is exactly the reference.
+    fixed_load_factor = load_factors is None
+    load_factors_to_write = (1.0,) if fixed_load_factor else load_factors
+
     # Get vehicle attributes
     (main_rotor_radius, main_rotor_area, main_rotor_tip_speed,
      _, _, _, _, _, _, weight_coefficient, _, _, _, _) = read_vehicle_data(directory_name)
@@ -2380,6 +2404,13 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     # NICE-OPS requires this flag; it reads it unconditionally at load time.
     ncdatabase.createVariable("same_grid", 'b')
     ncdatabase['same_grid'][:] = True
+    # Optional: absent (old files) or false means every stored condition is a
+    # real, independent sample and NICE-OPS must not scale between them.  True
+    # means every condition was synthesised from one LF=1 reference by a
+    # uniform dB offset, so the reader may reproduce load factors this file
+    # never stored by applying that same offset analytically.
+    ncdatabase.createVariable("fixed_load_factor", 'b')
+    ncdatabase['fixed_load_factor'][:] = fixed_load_factor
     # Format version, so consumers can tell a database built by this code from
     # the older ones whose hover spheres have broken directivity.  Bump this
     # whenever the on-disk meaning of the sphere data changes.
@@ -2437,7 +2468,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
             level_conditions.append((phi_full, theta_full, radius, SPLA_full, EAA_full,
                                      speed, frequency, amplitude_full))
         # Augment load factor data
-        for load_factor in load_factors:
+        for load_factor in load_factors_to_write:
             groupname = "sphere" + str(sphere_index)
             sphere_index = sphere_index + 1
             add_sphere_group(ncdatabase, groupname, phi_full, theta_full, radius, SPLA_full, EAA_full,
@@ -2480,7 +2511,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     else:
         flight_path_angles = [-12, 0, 12]
     # Augment load factor data
-    for load_factor in load_factors:
+    for load_factor in load_factors_to_write:
         for flight_path_angle in flight_path_angles:
             groupname = "sphere" + str(sphere_index)
             sphere_index = sphere_index + 1
@@ -2499,7 +2530,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
             if level_speed == 0:
                 continue
             for extended_angle in extended_flight_path_angles:
-                for load_factor in load_factors:
+                for load_factor in load_factors_to_write:
                     groupname = "sphere" + str(sphere_index)
                     sphere_index = sphere_index + 1
                     add_sphere_group(ncdatabase, groupname, phi_full, theta_full, radius, SPLA_full,
