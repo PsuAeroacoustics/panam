@@ -31,12 +31,14 @@ Thin argparse wrappers around `flight_acoustics.py` functions:
 
 ### Data Formats
 - **netCDF spheres**: Standard input format with variables `PHI`, `THETA`, `FREQUENCY`, `AMPLITUDE`, `RADIUS`, `SPEED`, `FLIGHT_PATH_ANGLE` (units: degrees, Hz, dB, feet, knots)
+- **NORAH2 hemispheres**: ASCII `.hem` files (HELENA GAD layout) at 60 m with ICAO-reference absorption included, 10° grid, 31 one-third octave bands 10 Hz–10 kHz; write with `write_norah2_hemisphere`, read with `load_norah2_hemisphere`, and index a set with `write_norah2_triangulation`
 - **HDF5 signals**: BKConnect format acoustic time series (use `load_h5_signal` with `datasetname='Table1'`)
 - **Config files**: `vehicle.cfg` (INI format) in sphere directories defines vehicle geometry and operating conditions
 
 ### Coordinate Systems
 - **ART (AAM/RNM/ANOPP)**: Aircraft noise standard with phi (lateral: 0 below, positive to starboard) and theta (longitudinal: 0 at the nose, 180 at the tail), per the AAM v3 Technical Reference sec. 2.4.1
 - **UMAPR**: Azimuth/elevation convention used internally (azimuth 180 ahead, 90 starboard, 270 port, 0 behind; elevation positive below the horizon); convert via `art2umapr(phi, theta)`
+- **NORAH2**: same (phi, theta) definition as ART; convert via `norah2umapr(phi, theta)`
 - **Geodetic ↔ Local Array**: Use `geodetic2array`/`array2geodetic` with reference point and heading for microphone positioning
 
 ### Unit Philosophy

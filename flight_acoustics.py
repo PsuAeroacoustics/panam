@@ -1317,6 +1317,15 @@ def depropagate_hemisphere(
             'point_stride': int(point_stride),
             'rmax_deg': float(rmax),
             'apply_absorption_deprop': bool(apply_absorption_deprop),
+            # Depropagation removes absorption over r - r_ref only, so the
+            # sphere still carries absorption over r_ref in this atmosphere.
+            # Exporters for formats with a different convention (NORAH2) need
+            # it to take that back out.
+            'atmosphere': {
+                'temperature_k': float(atmosphere.temperature),
+                'pressure_kpa': float(atmosphere.pressure),
+                'relative_humidity': float(atmosphere.relative_humidity),
+            },
             'flip_y_for_geometry': bool(flip_y_for_geometry),
             'return_scattered': bool(return_scattered),
             'narrowband': bool(narrowband),
@@ -1677,6 +1686,127 @@ def mask_missing_levels(amplitude):
     return amplitude
 
 
+def _sample_hemisphere_levels(hemisphere, mode, azi_q_deg, elv_q_deg, minimum_level_db):
+    """Band levels of a :func:`depropagate_hemisphere` result at arbitrary directions.
+
+    The shared core of the sphere exporters: pick the spectrum ``mode`` selects,
+    then interpolate each band over the UMAPR azimuth/elevation grid in linear
+    power.  Directions off the grid, and levels below ``minimum_level_db``, come
+    back as -inf; each writer turns that into its own missing-value convention.
+
+    Args:
+        hemisphere: Output dict from :func:`depropagate_hemisphere`.
+        mode: 'auto', 'third_octave', or 'narrowband'. 'auto' prefers third-octave.
+        azi_q_deg, elv_q_deg: UMAPR query directions (degrees), any matching shape.
+        minimum_level_db: see :func:`write_aam_hemisphere_netcdf`.
+
+    Returns:
+        (frequency_hz, levels_db) with levels_db shaped ``azi_q_deg.shape + (Nf,)``.
+    """
+    if not isinstance(hemisphere, dict):
+        raise TypeError('hemisphere must be a dict returned by depropagate_hemisphere')
+
+    azi_grid_deg = np.asarray(hemisphere.get('azi_grid_deg', []), dtype=float)
+    elv_grid_deg = np.asarray(hemisphere.get('elv_grid_deg', []), dtype=float)
+    if azi_grid_deg.ndim != 1 or azi_grid_deg.size < 2:
+        raise ValueError('hemisphere[\'azi_grid_deg\'] must be a 1D array with at least 2 elements')
+    if elv_grid_deg.ndim != 1 or elv_grid_deg.size < 2:
+        raise ValueError('hemisphere[\'elv_grid_deg\'] must be a 1D array with at least 2 elements')
+
+    # Determine export spectrum (frequency + band levels) from hemisphere.
+    selected_mode = str(mode).lower()
+    if selected_mode == 'auto':
+        if 'third_octave' in hemisphere:
+            selected_mode = 'third_octave'
+        elif 'narrowband' in hemisphere:
+            selected_mode = 'narrowband'
+        else:
+            selected_mode = 'none'
+
+    if selected_mode == 'third_octave':
+        if 'third_octave' not in hemisphere:
+            raise ValueError('mode=third_octave but hemisphere does not include third_octave data')
+        band_centers_hz = np.asarray(hemisphere['third_octave']['band_centers_hz'], dtype=float)
+        band_levels_db_umapr = np.asarray(hemisphere['third_octave']['bands_db'], dtype=float)
+        if band_levels_db_umapr.ndim != 3:
+            raise ValueError('hemisphere[\'third_octave\'][\'bands_db\'] must be (Nf, Nelv, Nazi)')
+        frequency_hz = band_centers_hz
+        levels_db_umapr = band_levels_db_umapr
+    elif selected_mode == 'narrowband':
+        if 'narrowband' not in hemisphere:
+            raise ValueError('mode=narrowband but hemisphere does not include narrowband data')
+        frequency_hz = np.asarray(hemisphere['narrowband']['frequency_hz'], dtype=float)
+        psd_db_umapr = np.asarray(hemisphere['narrowband']['psd_db'], dtype=float)
+        if psd_db_umapr.ndim != 3:
+            raise ValueError('hemisphere[\'narrowband\'][\'psd_db\'] must be (Nf, Nelv, Nazi)')
+        if frequency_hz.size < 2:
+            raise ValueError('narrowband frequency_hz must have at least 2 elements')
+        # Convert PSD (dB re pref^2/Hz) to approximate per-bin band level (dB re pref^2)
+        # so that AAM-style OASPL integration (sum of 10^(SPL/10)) is meaningful.
+        df = float(np.median(np.diff(frequency_hz)))
+        psd_lin = np.power(10.0, psd_db_umapr / 10.0)
+        band_power = psd_lin * df
+        eps = np.finfo(float).tiny
+        levels_db_umapr = 10.0 * np.log10(np.maximum(band_power, eps))
+    else:
+        raise ValueError('hemisphere must include third_octave or narrowband data; run depropagate_hemisphere with third_octave=True and/or narrowband=True')
+
+    if levels_db_umapr.shape[1] != elv_grid_deg.size or levels_db_umapr.shape[2] != azi_grid_deg.size:
+        raise ValueError('Spectrum grid shape does not match elv_grid_deg/azi_grid_deg')
+
+    # Ensure azimuth periodicity is represented in the interpolation grid.
+    # We need the seam column at (azi0 + 360 deg) with values matching azi0,
+    # otherwise points near 360 deg can fall out-of-bounds and become missing.
+    azi_axis = np.asarray(azi_grid_deg, dtype=float).ravel()
+    if np.any(np.diff(azi_axis) <= 0.0) or np.any(np.diff(elv_grid_deg) <= 0.0):
+        raise ValueError('azi_grid_deg and elv_grid_deg must be strictly increasing')
+
+    azi0 = float(azi_axis[0])
+    azi_end = azi0 + 360.0
+    if np.isclose(azi_axis[-1], azi_end, rtol=0.0, atol=1e-6):
+        # Seam column present; ensure the last column matches the first.
+        levels_db_umapr = levels_db_umapr.copy()
+        levels_db_umapr[:, :, -1] = levels_db_umapr[:, :, 0]
+    else:
+        # No seam column; append one.
+        azi_axis = np.concatenate((azi_axis, np.array([azi_end], dtype=float)))
+        seam_col = levels_db_umapr[:, :, 0:1]
+        levels_db_umapr = np.concatenate((levels_db_umapr, seam_col), axis=2)
+
+    query_shape = np.shape(azi_q_deg)
+    # Wrap query azimuths into the interpolation axis range [azi0, azi0+360)
+    azi_q = (np.asarray(azi_q_deg, dtype=float).reshape(-1) - azi0) % 360.0 + azi0
+    elv_q = np.asarray(elv_q_deg, dtype=float).reshape(-1)
+    # Query points are (elv, azi) pairs in degrees
+    pts = np.column_stack((elv_q, azi_q))
+
+    nfreq = int(np.asarray(frequency_hz).size)
+    levels_db = np.full((pts.shape[0], nfreq), -np.inf, dtype=float)
+
+    # Interpolate each band in linear power and convert to dB.
+    eps = np.finfo(float).tiny
+    for k in range(nfreq):
+        Pk = np.power(10.0, levels_db_umapr[k, :, :] / 10.0)
+        # Treat non-finite levels as zero power.
+        Pk[~np.isfinite(Pk)] = 0.0
+        interp = RegularGridInterpolator(
+            (elv_grid_deg, azi_axis),
+            Pk,
+            bounds_error=False,
+            fill_value=0.0,
+        )
+        Pq = interp(pts)
+        Lq = np.full_like(Pq, -np.inf, dtype=float)
+        pos = Pq > 0.0
+        if np.any(pos):
+            Lq[pos] = 10.0 * np.log10(np.maximum(Pq[pos], eps))
+        if np.isfinite(minimum_level_db):
+            Lq[Lq < float(minimum_level_db)] = -np.inf
+        levels_db[:, k] = Lq
+
+    return frequency_hz, levels_db.reshape(query_shape + (nfreq,))
+
+
 def write_aam_hemisphere_netcdf(
         filename,
         hemisphere,
@@ -1750,74 +1880,7 @@ def write_aam_hemisphere_netcdf(
     if not isinstance(hemisphere, dict):
         raise TypeError('hemisphere must be a dict returned by depropagate_hemisphere')
 
-    azi_grid_deg = np.asarray(hemisphere.get('azi_grid_deg', []), dtype=float)
-    elv_grid_deg = np.asarray(hemisphere.get('elv_grid_deg', []), dtype=float)
-    if azi_grid_deg.ndim != 1 or azi_grid_deg.size < 2:
-        raise ValueError('hemisphere[\'azi_grid_deg\'] must be a 1D array with at least 2 elements')
-    if elv_grid_deg.ndim != 1 or elv_grid_deg.size < 2:
-        raise ValueError('hemisphere[\'elv_grid_deg\'] must be a 1D array with at least 2 elements')
-
     meta = hemisphere.get('metadata', {}) if isinstance(hemisphere.get('metadata', {}), dict) else {}
-
-    # Determine export spectrum (frequency + band levels) from hemisphere.
-    selected_mode = str(mode).lower()
-    if selected_mode == 'auto':
-        if 'third_octave' in hemisphere:
-            selected_mode = 'third_octave'
-        elif 'narrowband' in hemisphere:
-            selected_mode = 'narrowband'
-        else:
-            selected_mode = 'none'
-
-    if selected_mode == 'third_octave':
-        if 'third_octave' not in hemisphere:
-            raise ValueError('mode=third_octave but hemisphere does not include third_octave data')
-        band_centers_hz = np.asarray(hemisphere['third_octave']['band_centers_hz'], dtype=float)
-        band_levels_db_umapr = np.asarray(hemisphere['third_octave']['bands_db'], dtype=float)
-        if band_levels_db_umapr.ndim != 3:
-            raise ValueError('hemisphere[\'third_octave\'][\'bands_db\'] must be (Nf, Nelv, Nazi)')
-        frequency_hz = band_centers_hz
-        levels_db_umapr = band_levels_db_umapr
-    elif selected_mode == 'narrowband':
-        if 'narrowband' not in hemisphere:
-            raise ValueError('mode=narrowband but hemisphere does not include narrowband data')
-        frequency_hz = np.asarray(hemisphere['narrowband']['frequency_hz'], dtype=float)
-        psd_db_umapr = np.asarray(hemisphere['narrowband']['psd_db'], dtype=float)
-        if psd_db_umapr.ndim != 3:
-            raise ValueError('hemisphere[\'narrowband\'][\'psd_db\'] must be (Nf, Nelv, Nazi)')
-        if frequency_hz.size < 2:
-            raise ValueError('narrowband frequency_hz must have at least 2 elements')
-        # Convert PSD (dB re pref^2/Hz) to approximate per-bin band level (dB re pref^2)
-        # so that AAM-style OASPL integration (sum of 10^(SPL/10)) is meaningful.
-        df = float(np.median(np.diff(frequency_hz)))
-        psd_lin = np.power(10.0, psd_db_umapr / 10.0)
-        band_power = psd_lin * df
-        eps = np.finfo(float).tiny
-        levels_db_umapr = 10.0 * np.log10(np.maximum(band_power, eps))
-    else:
-        raise ValueError('hemisphere must include third_octave or narrowband data; run depropagate_hemisphere with third_octave=True and/or narrowband=True')
-
-    if levels_db_umapr.shape[1] != elv_grid_deg.size or levels_db_umapr.shape[2] != azi_grid_deg.size:
-        raise ValueError('Spectrum grid shape does not match elv_grid_deg/azi_grid_deg')
-
-    # Ensure azimuth periodicity is represented in the interpolation grid.
-    # We need the seam column at (azi0 + 360 deg) with values matching azi0,
-    # otherwise points near 360 deg can fall out-of-bounds and become missing.
-    azi_axis = np.asarray(azi_grid_deg, dtype=float).ravel()
-    if np.any(np.diff(azi_axis) <= 0.0) or np.any(np.diff(elv_grid_deg) <= 0.0):
-        raise ValueError('azi_grid_deg and elv_grid_deg must be strictly increasing')
-
-    azi0 = float(azi_axis[0])
-    azi_end = azi0 + 360.0
-    if np.isclose(azi_axis[-1], azi_end, rtol=0.0, atol=1e-6):
-        # Seam column present; ensure the last column matches the first.
-        levels_db_umapr = levels_db_umapr.copy()
-        levels_db_umapr[:, :, -1] = levels_db_umapr[:, :, 0]
-    else:
-        # No seam column; append one.
-        azi_axis = np.concatenate((azi_axis, np.array([azi_end], dtype=float)))
-        seam_col = levels_db_umapr[:, :, 0:1]
-        levels_db_umapr = np.concatenate((levels_db_umapr, seam_col), axis=2)
 
     # Default ART grids.
     # A common AAM/RNM convention (and the included example sphere) uses:
@@ -1845,41 +1908,12 @@ def write_aam_hemisphere_netcdf(
     # ART grid points -> UMAPR for interpolation
     TH, PH = np.meshgrid(theta_deg, phi_deg)
     azi_rad, elv_rad = art2umapr(np.deg2rad(PH), np.deg2rad(TH))
-    azi_q = np.degrees(azi_rad).reshape(-1)
-    # Wrap query azimuths into the interpolation axis range [azi0, azi0+360)
-    azi_q = (azi_q - azi0) % 360.0 + azi0
-    elv_q = np.degrees(elv_rad).reshape(-1)
-
-    # Query points are (elv, azi) pairs in degrees
-    pts = np.column_stack((elv_q, azi_q))
-
-    # Build output amplitude array: (phi, theta, freq)
+    # Output amplitude array: (phi, theta, freq)
+    frequency_hz, amplitude_db = _sample_hemisphere_levels(
+        hemisphere, mode, np.degrees(azi_rad), np.degrees(elv_rad), minimum_level_db)
     nphi = phi_deg.size
     nth = theta_deg.size
     nfreq = int(np.asarray(frequency_hz).size)
-    amplitude_db = np.full((nphi, nth, nfreq), -np.inf, dtype=float)
-
-    # Interpolate each band in linear power and convert to dB.
-    eps = np.finfo(float).tiny
-    for k in range(nfreq):
-        Lk = levels_db_umapr[k, :, :]
-        Pk = np.power(10.0, Lk / 10.0)
-        # Treat non-finite levels as zero power.
-        Pk[~np.isfinite(Pk)] = 0.0
-        interp = RegularGridInterpolator(
-            (elv_grid_deg, azi_axis),
-            Pk,
-            bounds_error=False,
-            fill_value=0.0,
-        )
-        Pq = interp(pts).reshape(nphi, nth)
-        Lq = np.full_like(Pq, -np.inf, dtype=float)
-        pos = Pq > 0.0
-        if np.any(pos):
-            Lq[pos] = 10.0 * np.log10(np.maximum(Pq[pos], eps))
-        if np.isfinite(minimum_level_db):
-            Lq[Lq < float(minimum_level_db)] = -np.inf
-        amplitude_db[:, :, k] = Lq
 
     # Replace non-finite levels with the AAM missing mask
     missing_sentinel = np.float32(AAM_MISSING_LEVEL)
@@ -1986,6 +2020,385 @@ def write_aam_hemisphere_netcdf(
         ds.title = title if title is not None else 'AAM/RNM acoustic hemisphere'
     finally:
         ds.close()
+
+
+# NORAH2 hemispheres (EASA's rotorcraft noise model) are ASCII "generic acoustic
+# data" (.hem) files inherited from HELENA.  The layout is given in EASA NORAH2
+# D1.5d Appendix A and D2.3 section 5.5; the data block, which neither shows,
+# follows the files shipped with NORAH2 V2.0.74: one block per PHIOBSAC, one
+# row per THETAOBSAC, the row starting with its theta and then one level per
+# band.
+
+#: Nominal one-third octave band centres of every NORAH2 hemisphere, 10 Hz to 10 kHz.
+NORAH2_BAND_CENTERS_HZ = np.array([
+    10.0, 12.5, 16.0, 20.0, 25.0, 31.5, 40.0, 50.0, 63.0, 80.0,
+    100.0, 125.0, 160.0, 200.0, 250.0, 315.0, 400.0, 500.0, 630.0, 800.0,
+    1000.0, 1250.0, 1600.0, 2000.0, 2500.0, 3150.0, 4000.0, 5000.0, 6300.0, 8000.0,
+    10000.0])
+
+#: Polar angle: 0 at the nose, 90 straight down (at phi = 0), 180 at the tail.
+NORAH2_THETA_DEG = np.arange(0.0, 180.0 + 1e-9, 10.0)
+#: Azimuth: negative to port, positive to starboard, 0 in the vertical plane.
+NORAH2_PHI_DEG = np.arange(-90.0, 90.0 + 1e-9, 10.0)
+
+#: Every NORAH2 hemisphere is defined at 60 m, with absorption over those 60 m
+#: included for the ICAO reference atmosphere (FREEFIELD = 2).  NORAH2 takes
+#: that absorption back out using TAMB/RELHUM/PAMB before propagating, so the
+#: header and the levels must agree.
+NORAH2_REFERENCE_DISTANCE_M = 60.0
+NORAH2_REFERENCE_TEMPERATURE_K = 298.15
+NORAH2_REFERENCE_RELATIVE_HUMIDITY = 70.0
+NORAH2_REFERENCE_PRESSURE_PA = 101325.0
+NORAH2_MISSING_LEVEL = -999.0
+
+#: Third table of every shipped triangulation file: level corrections NORAH2
+#: applies for operations it has no hemisphere of their own for.
+NORAH2_DEFAULT_CORRECTIONS = ((8.0, 'Outoffgroundhover'),
+                              (-10.0, 'Reducedrpmidle'),
+                              (-2.0, 'Fullrpmidle'))
+
+
+def norah2umapr(phi, theta):
+    """Convert NORAH2 (azimuth phi, polar theta) directions to UMAPR (azimuth, elevation).
+
+    NORAH2 defines emission angles in the body axes (x forward, y starboard,
+    z down) as x = cos(theta), y = sin(theta) sin(phi), z = sin(theta) cos(phi).
+    This is the same convention as ART (see :func:`art2umapr`), so the two
+    agree direction for direction.
+
+    Args:
+        phi: NORAH2 azimuth angles (radians), positive to starboard.
+        theta: NORAH2 polar angles (radians), 0 at the nose.
+
+    Returns: tuple (azimuth, elevation) angles (radians)
+    """
+    phi = np.asarray(phi, dtype=float)
+    theta = np.asarray(theta, dtype=float)
+    forward = np.cos(theta)
+    starboard = np.sin(theta) * np.sin(phi)
+    down = np.sin(theta) * np.cos(phi)
+    elv = np.arctan2(down, np.hypot(forward, starboard))
+    azi = np.mod(np.arctan2(starboard, -forward), 2.0 * np.pi)
+    return azi, elv
+
+
+def _norah2_band_index(frequency_hz):
+    """Index into ``frequency_hz`` of each NORAH2 band, -1 where it has none.
+
+    Matches within a twelfth of an octave, so exact (base-10) and nominal band
+    centres both find their band.
+    """
+    frequency_hz = np.asarray(frequency_hz, dtype=float)
+    index = np.full(NORAH2_BAND_CENTERS_HZ.size, -1, dtype=int)
+    if frequency_hz.size == 0:
+        return index
+    for i, nominal in enumerate(NORAH2_BAND_CENTERS_HZ):
+        distance = np.abs(np.log2(frequency_hz / nominal))
+        j = int(np.argmin(distance))
+        if distance[j] < 1.0 / 12.0:
+            index[i] = j
+    return index
+
+
+def write_norah2_hemisphere(
+        filename,
+        hemisphere,
+        *,
+        speed_knots: float,
+        flight_path_angle_deg: float,
+        title: Optional[str] = None,
+        test_point: str = '',
+        measurement_atmosphere: Optional[Atmosphere] = None,
+        rotor_rpm_percent: float = 100.0,
+        total_wind_knots: float = 0.0,
+        cross_wind_knots: float = 0.0,
+        pitch_deg: Optional[float] = None,
+        roll_deg: Optional[float] = None,
+        head_wind_knots: Optional[float] = None,
+        minimum_level_db: float = -100.0,
+        overwrite: bool = True,
+):
+    """Write a depropagated acoustic hemisphere as a NORAH2 ``.hem`` file.
+
+    The levels are converted to NORAH2's convention on the way out:
+
+    - moved by spherical spreading from the hemisphere's ``r_ref`` to 60 m;
+    - the absorption depropagation leaves in over ``r_ref`` (in the
+      measurement atmosphere) taken out, and absorption over 60 m in the ICAO
+      reference atmosphere put in, as ``FREEFIELD = 2`` declares;
+    - resampled in linear power onto the NORAH2 10 degree grid and its 31
+      nominal one-third octave bands (10 Hz to 10 kHz).  A band the
+      hemisphere does not have, a direction it did not cover, and a level
+      below ``minimum_level_db`` are all written as -999, NORAH2's no-value.
+
+    NORAH2 finds a hemisphere through its aircraft's triangulation file, not
+    the file name; see :func:`write_norah2_triangulation`.  The shipped files
+    are named ``[type]_[procedure]_[IAS]kts_[gamma]deg.hem``.
+
+    Args:
+        filename: Path to the output ``.hem`` file.
+        hemisphere: Output dict from :func:`depropagate_hemisphere` with
+            ``third_octave=True``.
+        speed_knots: ``ACSPEED``, indicated airspeed (knots).
+        flight_path_angle_deg: ``GAMM`` (deg), negative in descent.
+        title: First line of the file. Default: the file name without extension.
+        test_point: Written after the title, as the shipped files carry their
+            test point numbers (e.g. 'TP01+02').
+        measurement_atmosphere: The atmosphere the hemisphere was depropagated
+            in. Default: the one recorded in its metadata. Written as Tm/RHm/Pm.
+        rotor_rpm_percent: ``RmOmega``, main rotor speed (% of nominal).
+        total_wind_knots, cross_wind_knots: ``TW``, ``CW``.
+        pitch_deg, roll_deg, head_wind_knots: ``PITCH``, ``ROLL``, ``HW``. Some
+            shipped files carry these and some do not; they are written only
+            when given.
+        minimum_level_db: Levels (at 60 m) below this are written as -999; see
+            :func:`write_aam_hemisphere_netcdf`. Pass -inf to keep every finite level.
+        overwrite: If False, raises when filename exists.
+
+    Returns:
+        levels_db: (phi, theta, band) levels as written, -inf where -999.
+    """
+    if not overwrite and os.path.exists(filename):
+        raise FileExistsError(f'Output file already exists: {filename}')
+    if not isinstance(hemisphere, dict):
+        raise TypeError('hemisphere must be a dict returned by depropagate_hemisphere')
+    if 'third_octave' not in hemisphere:
+        raise ValueError('NORAH2 hemispheres are one-third octave band levels; run '
+                         'depropagate_hemisphere with third_octave=True')
+
+    meta = hemisphere.get('metadata', {}) if isinstance(hemisphere.get('metadata', {}), dict) else {}
+    if 'r_ref' not in meta or 'length_units' not in meta:
+        raise ValueError('hemisphere metadata does not include r_ref/length_units')
+    r_ref_m = float(unit_conversion.len_conv(float(meta['r_ref']),
+                                             from_units=str(meta['length_units']), to_units='m'))
+
+    if measurement_atmosphere is None:
+        recorded = meta.get('atmosphere')
+        if recorded is None:
+            raise ValueError('measurement_atmosphere not given and the hemisphere metadata '
+                             'does not record one')
+        measurement_atmosphere = Atmosphere(temperature=recorded['temperature_k'],
+                                            pressure=recorded['pressure_kpa'],
+                                            relative_humidity=recorded['relative_humidity'])
+    reference_atmosphere = Atmosphere(temperature=NORAH2_REFERENCE_TEMPERATURE_K,
+                                      pressure=NORAH2_REFERENCE_PRESSURE_PA / 1000.0,
+                                      relative_humidity=NORAH2_REFERENCE_RELATIVE_HUMIDITY)
+
+    PH, TH = np.meshgrid(NORAH2_PHI_DEG, NORAH2_THETA_DEG, indexing='ij')
+    azi_rad, elv_rad = norah2umapr(np.deg2rad(PH), np.deg2rad(TH))
+    # Resample before the unit conversion; minimum_level_db applies at 60 m.
+    frequency_hz, sampled_db = _sample_hemisphere_levels(
+        hemisphere, 'third_octave', np.degrees(azi_rad), np.degrees(elv_rad), -np.inf)
+
+    band_index = _norah2_band_index(frequency_hz)
+    levels_db = np.full(PH.shape + (NORAH2_BAND_CENTERS_HZ.size,), -np.inf, dtype=float)
+    present = band_index >= 0
+    levels_db[:, :, present] = sampled_db[:, :, band_index[present]]
+
+    offset_db = 20.0 * np.log10(r_ref_m / NORAH2_REFERENCE_DISTANCE_M)
+    if meta.get('apply_absorption_deprop', True):
+        # Use the bands' own centres for the measured absorption, the nominal
+        # ones for NORAH2's: those are what NORAH2 will remove it at.
+        measured_centres = np.where(present, np.asarray(frequency_hz, dtype=float)[band_index],
+                                    NORAH2_BAND_CENTERS_HZ)
+        offset_db = (offset_db
+                     + measurement_atmosphere.attenuation_coefficient(measured_centres) * r_ref_m
+                     - reference_atmosphere.attenuation_coefficient(NORAH2_BAND_CENTERS_HZ)
+                     * NORAH2_REFERENCE_DISTANCE_M)
+    else:
+        warnings.warn('hemisphere was built without absorption depropagation, so it carries '
+                      'the absorption of each measured path; written with spreading only, '
+                      'which NORAH2 will read as over-absorbed at high frequency')
+    levels_db = levels_db + offset_db
+    if np.isfinite(minimum_level_db):
+        levels_db[levels_db < float(minimum_level_db)] = -np.inf
+
+    constants = [
+        ('POLDIST', f'{NORAH2_REFERENCE_DISTANCE_M:g}', 'Distance at which hemisphere is defined'),
+        ('FREEFIELD', '2', 'Atmospheric absorption included in hemisphere'),
+        ('NOVALUE', f'{NORAH2_MISSING_LEVEL:g}', 'no value indicator'),
+        ('TAMB', f'{NORAH2_REFERENCE_TEMPERATURE_K:g}', 'Ambient temperature, deg Kelvin'),
+        ('RELHUM', f'{NORAH2_REFERENCE_RELATIVE_HUMIDITY:g}', 'Relative humidity, %'),
+        ('PAMB', f'{NORAH2_REFERENCE_PRESSURE_PA:g}', 'Ambient pressure, Pa'),
+        ('Tm', f'{measurement_atmosphere.temperature - 273.15:g}',
+         'Measurement ambient temperature at 10m, deg Celsius'),
+        ('RHm', f'{measurement_atmosphere.relative_humidity:g}',
+         'Measurement relative humidity at 10m, %'),
+        ('Pm', f'{measurement_atmosphere.pressure * 1000.0:g}', 'Measurement ambient pressure at 10m, Pa'),
+        ('RmOmega', f'{rotor_rpm_percent:g}', 'RotorRPM, rpm'),
+        ('ACSPEED', f'{speed_knots:g}', 'Indicated airspeed, kts'),
+        ('GAMM', f'{flight_path_angle_deg:g}', 'Path angle, deg'),
+    ]
+    if pitch_deg is not None:
+        constants.append(('PITCH', f'{pitch_deg:g}', 'Pitch, deg'))
+    if roll_deg is not None:
+        constants.append(('ROLL', f'{roll_deg:g}', 'Roll, deg'))
+    constants.append(('TW', f'{total_wind_knots:g}', 'Total wind, kts'))
+    constants.append(('CW', f'{cross_wind_knots:g}', 'Cross wind, kts'))
+    if head_wind_knots is not None:
+        constants.append(('HW', f'{head_wind_knots:g}', 'Head wind, kts'))
+
+    if title is None:
+        title = os.path.splitext(os.path.basename(filename))[0]
+
+    def _row(values):
+        return '\t' + '\t'.join(values) + '\t'
+
+    lines = [f'{title}\t{test_point}\t', f'{len(constants)}\t! # Table constants ']
+    lines += [f'{name}\t{value}\t! {comment}' for name, value, comment in constants]
+    lines += ['2\t ',
+              f'THETAOBSAC\t{NORAH2_THETA_DEG.size}\t0\t3\t0',
+              _row(f'{v:g}' for v in NORAH2_THETA_DEG),
+              f'PHIOBSAC\t{NORAH2_PHI_DEG.size}\t0\t3\t0',
+              _row(f'{v:g}' for v in NORAH2_PHI_DEG),
+              '0\t! NPARAD: Additional point dependent parameters',
+              f'NFREQ\t{NORAH2_BAND_CENTERS_HZ.size} ',
+              '\t' + '\t'.join(f'{f:6.1f}' for f in NORAH2_BAND_CENTERS_HZ)]
+    to_write = np.where(np.isfinite(levels_db), levels_db, NORAH2_MISSING_LEVEL)
+    for i, phi in enumerate(NORAH2_PHI_DEG):
+        lines.append(f'PHIOBSAC= {phi:.6f}')
+        for j, theta in enumerate(NORAH2_THETA_DEG):
+            lines.append(f'{theta:g}\t' + '\t'.join(f'{v:.1f}' for v in to_write[i, j, :]))
+
+    # CRLF, as every shipped file has: NORAH2 is a Windows program.
+    with open(filename, 'w', encoding='ascii', newline='\r\n') as handle:
+        handle.write('\n'.join(lines) + '\n')
+    return levels_db
+
+
+def _norah2_numbers(tokens, count, name):
+    values = []
+    for token in tokens:
+        values.append(float(token))
+        if len(values) == count:
+            return np.array(values)
+    raise ValueError(f'NORAH2 hemisphere: {name} ended after {len(values)} of {count} values')
+
+
+def load_norah2_hemisphere(filename):
+    """Read a NORAH2 ``.hem`` hemisphere.
+
+    Reads the two-axis (THETAOBSAC x PHIOBSAC) files every flight condition in
+    the NORAH2 database uses.  Whitespace is free-form, as it is across the
+    shipped files, and the table constants are taken by name, since their
+    number varies (14 or 17).
+
+    Returns: dict with
+        title: first line of the file
+        constants: {name: value} of the table constants
+        theta_deg, phi_deg, frequency_hz: the axes
+        levels_db: (phi, theta, frequency) levels, dB at POLDIST; NOVALUE as -inf
+    """
+    with open(filename, 'r', encoding='latin-1') as handle:
+        lines = [line.rstrip('\r\n') for line in handle]
+
+    def content(line):
+        return line.split('!', 1)[0].split()
+
+    title = lines[0].strip()
+    n_constants = int(content(lines[1])[0])
+    constants = {}
+    for line in lines[2:2 + n_constants]:
+        name, value = content(line)[:2]
+        constants[name] = float(value)
+    position = 2 + n_constants
+
+    n_axes = int(content(lines[position])[0])
+    position += 1
+    if n_axes != 2:
+        raise ValueError(f'{filename}: {n_axes}-axis hemispheres (special operations) are not supported')
+
+    def read_axis(position):
+        name, count = content(lines[position])[:2]
+        count = int(count)
+        tokens = []
+        position += 1
+        while len(tokens) < count:
+            tokens += content(lines[position])
+            position += 1
+        return name, _norah2_numbers(tokens, count, name), position
+
+    inner_name, inner, position = read_axis(position)
+    outer_name, outer, position = read_axis(position)
+    if int(content(lines[position])[0]) != 0:
+        raise ValueError(f'{filename}: point dependent parameters (NPARAD > 0) are not supported')
+    _, frequency_hz, position = read_axis(position + 1)
+
+    axes = {inner_name: inner, outer_name: outer}
+    if set(axes) != {'THETAOBSAC', 'PHIOBSAC'}:
+        raise ValueError(f'{filename}: unexpected axes {inner_name}, {outer_name}')
+
+    body = lines[position:]
+    block_starts = [i for i, line in enumerate(body) if line.strip().startswith(outer_name)]
+    if len(block_starts) != outer.size:
+        raise ValueError(f'{filename}: {len(block_starts)} {outer_name} blocks, expected {outer.size}')
+    levels = np.empty((outer.size, inner.size, frequency_hz.size), dtype=float)
+    for k, start in enumerate(block_starts):
+        stop = block_starts[k + 1] if k + 1 < len(block_starts) else len(body)
+        tokens = [t for line in body[start + 1:stop] for t in content(line)]
+        table = _norah2_numbers(tokens, inner.size * (1 + frequency_hz.size), outer_name)
+        table = table.reshape(inner.size, 1 + frequency_hz.size)
+        levels[k] = table[:, 1:]
+
+    missing = constants.get('NOVALUE', NORAH2_MISSING_LEVEL)
+    levels[np.isclose(levels, missing)] = -np.inf
+    if outer_name == 'THETAOBSAC':
+        levels = levels.transpose(1, 0, 2)
+    return dict(title=title, constants=constants,
+                theta_deg=axes['THETAOBSAC'], phi_deg=axes['PHIOBSAC'],
+                frequency_hz=frequency_hz, levels_db=levels)
+
+
+def write_norah2_triangulation(filename, hemispheres, *, corrections=NORAH2_DEFAULT_CORRECTIONS,
+                               overwrite=True):
+    """Write the ``[type]_Triangulation.int`` that lets NORAH2 use a set of hemispheres.
+
+    NORAH2 interpolates between an aircraft's hemispheres over (airspeed, flight
+    path angle) by triangles listed in this file.  They are the Delaunay
+    triangulation of the raw (knots, degrees) conditions: that reproduces every
+    triangulation file NORAH2 V2.0.74 ships, where the min-max normalised
+    conditions the method report (D1.5d A.3) describes do not.
+
+    Args:
+        filename: Path to the output ``.int`` file; NORAH2 looks for it next to
+            the hemispheres.
+        hemispheres: iterable of (hem file name, speed_knots, flight_path_angle_deg).
+            File names are written as given, relative to the hemisphere folder.
+        corrections: (dB, operation) rows of the third table. The default is
+            the table every shipped file carries.
+        overwrite: If False, raises when filename exists.
+
+    Returns:
+        (Ntri, 3) array of zero-based hemisphere indices, one row per triangle.
+    """
+    from scipy.spatial import Delaunay
+
+    if not overwrite and os.path.exists(filename):
+        raise FileExistsError(f'Output file already exists: {filename}')
+    hemispheres = [(str(name), float(speed), float(angle)) for name, speed, angle in hemispheres]
+    if len(hemispheres) < 3:
+        raise ValueError('a NORAH2 triangulation needs at least 3 hemispheres')
+    points = np.array([(speed, angle) for _, speed, angle in hemispheres])
+    if np.unique(np.round(points, 6), axis=0).shape[0] != points.shape[0]:
+        raise ValueError('two hemispheres share a flight condition; NORAH2 merges repeat runs '
+                         'into one hemisphere per condition, so average them first')
+    triangles = Delaunay(points).simplices
+
+    lines = ['&HEMISPHERES', f'\tNGAD = {len(hemispheres)}', '&END', '',
+             'iHem\tHEMSpeed\tHEMAngle\t[Path\\]FileHem']
+    lines += [f'{i}\t{speed:g}\t{angle:g}\t{name}'
+              for i, (name, speed, angle) in enumerate(hemispheres, start=1)]
+    lines += ['', '&TRIANGLES', f'\tNTRI = {len(triangles)}', '&END', '',
+              'iTri\tiHem1\tiHem2\tiHem3']
+    lines += [f'{i}\t' + '\t'.join(str(int(v) + 1) for v in triangle)
+              for i, triangle in enumerate(triangles, start=1)]
+    lines += ['', '&CORRECTIONS', f'NCOR\t= {len(corrections)}', '&END', '',
+              'Corr_dB\tOperation']
+    lines += [f'{dB:g}\t"{operation}"' for dB, operation in corrections]
+    with open(filename, 'w', encoding='ascii', newline='\r\n') as handle:
+        handle.write('\n'.join(lines) + '\n')
+    return triangles
+
 
 def OASPL(amplitudes):
     """

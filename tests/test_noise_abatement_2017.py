@@ -85,6 +85,13 @@ def test_sphere_title_matches_the_legacy_format():
     assert na.sphere_title('AS350', '269', '291').startswith('AS350  Run 269 10/18/2017')
 
 
+def test_norah2_file_name_follows_the_shipped_convention():
+    """[type]_[procedure]_[IAS]kts_[gamma]deg, with the run to keep repeats apart."""
+    assert na.norah2_file_name('Be407', 66.15, -8.34, '220') == 'Be407_Approach_66kts_8.3deg_220.hem'
+    assert na.norah2_file_name('RO-44', 109.8, 0.4, '12') == 'RO-44_Flyover_110kts_0.4deg_12.hem'
+    assert na.norah2_file_name('AS350', 69.3, 9.0, '7') == 'AS350_Takeoff_69kts_9deg_7.hem'
+
+
 def test_flight_condition_averages_over_the_window_only():
     track = _track(speed=80.0)
     track['ground_speed_knots'][:100] = 200.0

@@ -609,6 +609,22 @@ def legacy_sphere_grid(path):
                     radius_ft=float(np.ravel(handle['RADIUS'][:])[0]))
 
 
+def norah2_file_name(sphere_prefix, speed_knots, fpa_deg, run_number):
+    """``[type]_[procedure]_[IAS]kts_[gamma]deg_[run].hem``, as NORAH2 names its files.
+
+    The run number is added because a NORAH2 file is one merged condition and
+    these are single runs, several of which share a nominal condition.
+    """
+    if fpa_deg < -fa.LEVEL_FLIGHT_TOLERANCE:
+        procedure = 'Approach'
+    elif fpa_deg > fa.LEVEL_FLIGHT_TOLERANCE:
+        procedure = 'Takeoff'
+    else:
+        procedure = 'Flyover'
+    return '{}_{}_{:.0f}kts_{:g}deg_{}.hem'.format(
+        sphere_prefix, procedure, speed_knots, round(abs(fpa_deg), 1), run_number)
+
+
 def build_sphere(test, run, output_path, *, reference_sphere=None,
                  band_snr_gate_db=10.0, gate_ambient=True,
                  max_absorption_correction_db=30.0,
@@ -619,8 +635,14 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
                  max_propagation_range_ft=2000.0, min_steady_duration_s=8.0,
                  flip_y_for_geometry=False,
                  atmosphere=None, speed_of_sound_ft_s=None,
-                 apply_absorption_deprop=True, overwrite=True):
+                 apply_absorption_deprop=True, overwrite=True, norah2_directory=None):
     """Depropagate one run into an AAM-style source sphere.
+
+    ``norah2_directory``, if given, also writes the same hemisphere there as a
+    NORAH2 ``.hem`` file named by :func:`norah2_file_name` (see
+    :func:`flight_acoustics.write_norah2_hemisphere`).  Its ACSPEED is the
+    ground speed the AAM sphere is labelled with; the tracking data carries no
+    airspeed.
 
     Returns a dict describing what was processed, so a batch caller can log and
     audit it without re-opening the output.
@@ -744,8 +766,24 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
                            row.get('run_num', run), run[:3]),
         overwrite=overwrite,
     )
+    norah2_output_path = None
+    if norah2_directory is not None:
+        norah2_directory = os.path.abspath(os.path.expanduser(norah2_directory))
+        os.makedirs(norah2_directory, exist_ok=True)
+        norah2_output_path = os.path.join(norah2_directory, norah2_file_name(
+            AIRCRAFT_SPHERE_PREFIX.get(test.aircraft, test.aircraft),
+            speed_knots, fpa_deg, row.get('run_num', run)))
+        fa.write_norah2_hemisphere(
+            norah2_output_path,
+            hemisphere,
+            speed_knots=speed_knots,
+            flight_path_angle_deg=fpa_deg,
+            test_point='Run {}'.format(row.get('run_num', run)),
+            measurement_atmosphere=atmosphere,
+            overwrite=overwrite,
+        )
 
-    return dict(run=run, output=output_path, condition=row.get('test_cond'),
+    return dict(run=run, output=output_path, norah2_output=norah2_output_path, condition=row.get('test_cond'),
                 layout=row.get('layout'), ambient_run=ambient_run,
                 ambient_source=ambient_source,
                 mics=len(mics), speed_knots=speed_knots, flight_path_angle_deg=fpa_deg,
@@ -797,8 +835,12 @@ def _prefetch(paths, workers=PREFETCH_WORKERS):
 
 def build_all(aircraft, output_directory, *, root=DEFAULT_ROOT, runs=None,
               steady_only=True, reference_directory=None, sphere_prefix=None,
-              manifest_path=None, prefetch=True, **kwargs):
+              manifest_path=None, prefetch=True, norah2_directory=None, **kwargs):
     """Rebuild every usable run for one aircraft.
+
+    ``norah2_directory``, if given, also receives each sphere as a NORAH2
+    ``.hem`` file and, once the batch is done, the ``[prefix]_Triangulation.int``
+    NORAH2 needs to interpolate between them.
 
     A run that fails is logged and skipped rather than aborting the batch --
     across 1400 runs there are always a few with a truncated tracking file or a
@@ -837,7 +879,8 @@ def build_all(aircraft, output_directory, *, root=DEFAULT_ROOT, runs=None,
             reference = candidate if os.path.exists(candidate) else None
         try:
             record = build_sphere(test, run, os.path.join(output_directory, name),
-                                  reference_sphere=reference, **kwargs)
+                                  reference_sphere=reference, norah2_directory=norah2_directory,
+                                  **kwargs)
         except Exception as error:                      # noqa: BLE001
             logging.warning('[%d/%d] %s failed: %s', number, len(runs), run, error)
             failures.append(dict(run=run, error=str(error),
@@ -852,6 +895,17 @@ def build_all(aircraft, output_directory, *, root=DEFAULT_ROOT, runs=None,
 
     if pool is not None:
         pool.shutdown()
+    if norah2_directory is not None and len(records) >= 3:
+        triangulation = os.path.join(os.path.abspath(os.path.expanduser(norah2_directory)),
+                                     '{}_Triangulation.int'.format(prefix))
+        try:
+            fa.write_norah2_triangulation(
+                triangulation,
+                [(os.path.basename(r['norah2_output']), r['speed_knots'], r['flight_path_angle_deg'])
+                 for r in records])
+            logging.info('Wrote NORAH2 triangulation %s', triangulation)
+        except ValueError as error:
+            logging.warning('No NORAH2 triangulation written: %s', error)
     if manifest_path:
         write_manifest(manifest_path, records, failures)
     return records, failures
@@ -861,7 +915,8 @@ def write_manifest(path, records, failures):
     """Record what went into the spheres, so a database can be audited later."""
     path = os.path.abspath(os.path.expanduser(path))
     os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
-    fields = ['run', 'output', 'condition', 'layout', 'ambient_run', 'ambient_source', 'mics',
+    fields = ['run', 'output', 'norah2_output', 'condition', 'layout', 'ambient_run',
+              'ambient_source', 'mics',
               'speed_knots', 'flight_path_angle_deg', 'window_s', 'window_points',
               'min_elevation_deg', 'max_array_range_ft', 'temperature_k',
               'relative_humidity', 'pressure_kpa', 'speed_of_sound_ft_s', 'error']
@@ -891,6 +946,9 @@ def main(argv=None):
     parser.add_argument('--reference-directory', default=None,
                         help='legacy spheres, used only for their PHI/THETA/FREQUENCY grids')
     parser.add_argument('--manifest', default=None)
+    parser.add_argument('--norah2-directory', default=None,
+                        help='also write each sphere as a NORAH2 .hem file here, with the '
+                             'triangulation file NORAH2 needs to interpolate between them')
     parser.add_argument('--band-snr-gate-db', type=float, default=10.0)
     parser.add_argument('--max-absorption-correction-db', type=float, default=30.0,
                         help='discard bins needing more absorption correction than this; '
@@ -925,6 +983,7 @@ def main(argv=None):
         args.aircraft, args.output_directory, root=args.root, runs=args.runs,
         steady_only=not args.include_maneuvers,
         reference_directory=args.reference_directory, manifest_path=args.manifest,
+        norah2_directory=args.norah2_directory,
         band_snr_gate_db=args.band_snr_gate_db,
         max_absorption_correction_db=args.max_absorption_correction_db,
         point_stride=args.point_stride, gate_ambient=not args.no_ambient_gate,
