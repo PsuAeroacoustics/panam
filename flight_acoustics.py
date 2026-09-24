@@ -2445,6 +2445,11 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     slowest_file = None
     sphere_index = 0
     level_conditions = []
+    # Every condition to write, collected rather than written immediately, so
+    # that whether phi/theta/frequency can be deduplicated (see
+    # _grid_and_frequency_are_shared) is known before the first group is
+    # written -- not discovered partway through and left to redo.
+    pending_groups = []
     for filename in file_list:
         # Load the sphere data
         (_, _, phi_list, theta_list, radius, _, SPLA, EAA, speed, flight_path_angle,
@@ -2471,11 +2476,10 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
         for load_factor in load_factors_to_write:
             groupname = "sphere" + str(sphere_index)
             sphere_index = sphere_index + 1
-            add_sphere_group(ncdatabase, groupname, phi_full, theta_full, radius, SPLA_full, EAA_full,
-                             speed, flight_path_angle, load_factor, main_rotor_radius,
-                             main_rotor_tip_speed, weight_coefficient,
-                             frequency if store_spectrum else None,
-                             amplitude_full if store_spectrum else None)
+            pending_groups.append((groupname, phi_full, theta_full, radius, SPLA_full, EAA_full,
+                                   speed, flight_path_angle, load_factor,
+                                   frequency if store_spectrum else None,
+                                   amplitude_full if store_spectrum else None))
 
     if min_speed_file is None:
         # No sphere within level_flight_tolerance of level flight.  The hover
@@ -2515,11 +2519,10 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
         for flight_path_angle in flight_path_angles:
             groupname = "sphere" + str(sphere_index)
             sphere_index = sphere_index + 1
-            add_sphere_group(ncdatabase, groupname, phi_full, theta_full, radius, SPLA_full, EAA_full,
-                             speed, flight_path_angle, load_factor, main_rotor_radius,
-                             main_rotor_tip_speed, weight_coefficient,
-                             frequency if store_spectrum else None,
-                             amplitude_full if store_spectrum else None)
+            pending_groups.append((groupname, phi_full, theta_full, radius, SPLA_full, EAA_full,
+                                   speed, flight_path_angle, load_factor,
+                                   frequency if store_spectrum else None,
+                                   amplitude_full if store_spectrum else None))
 
     # Widen the flight-path-angle envelope: re-emit each near-level condition at
     # the extended angles, keeping its own airspeed and directivity.  Hover is
@@ -2533,11 +2536,60 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                 for load_factor in load_factors_to_write:
                     groupname = "sphere" + str(sphere_index)
                     sphere_index = sphere_index + 1
-                    add_sphere_group(ncdatabase, groupname, phi_full, theta_full, radius, SPLA_full,
-                                     EAA_full, level_speed, extended_angle, load_factor,
-                                     main_rotor_radius, main_rotor_tip_speed, weight_coefficient,
-                                     frequency if store_spectrum else None,
-                                     amplitude_full if store_spectrum else None)
+                    pending_groups.append((groupname, phi_full, theta_full, radius, SPLA_full,
+                                           EAA_full, level_speed, extended_angle, load_factor,
+                                           frequency if store_spectrum else None,
+                                           amplitude_full if store_spectrum else None))
+
+    # phi/theta (and frequency, for a spectral database) are usually the same
+    # on every condition -- panam completes every sphere onto a common grid
+    # and reduces every condition to the same frequency bands -- but that is
+    # checked here, not assumed: a mixed microphone layout or a per-file
+    # frequency resolution would make it false, and writing the shared form
+    # anyway would silently lose whatever a later condition's grid disagreed
+    # on. See the root shared_grid_and_frequency flag this sets.
+    shared_grid_and_frequency = _grid_and_frequency_are_shared(pending_groups)
+    ncdatabase.createVariable("shared_grid_and_frequency", 'b')
+    ncdatabase['shared_grid_and_frequency'][:] = shared_grid_and_frequency
+    if shared_grid_and_frequency:
+        (_, phi0, theta0, _, _, _, _, _, _, frequency0, _) = pending_groups[0]
+        ncdatabase.createDimension("channels", phi0.size)
+        ncdatabase.createVariable("phi", 'f8', ("channels",))
+        ncdatabase['phi'][:] = phi0.flatten()
+        ncdatabase.createVariable("theta", 'f8', ("channels",))
+        ncdatabase['theta'][:] = theta0.flatten()
+        if frequency0 is not None:
+            ncdatabase.createDimension("frequency", np.size(frequency0))
+            ncdatabase.createVariable("frequency", 'f8', ("frequency",))
+            ncdatabase['frequency'][:] = np.asarray(frequency0).flatten()
+
+    for (groupname, phi_full, theta_full, radius, SPLA_full, EAA_full, speed_or_level_speed,
+         flight_path_angle, load_factor, frequency, amplitude_full) in pending_groups:
+        add_sphere_group(ncdatabase, groupname, phi_full, theta_full, radius, SPLA_full, EAA_full,
+                         speed_or_level_speed, flight_path_angle, load_factor, main_rotor_radius,
+                         main_rotor_tip_speed, weight_coefficient, frequency, amplitude_full,
+                         write_grid_and_frequency=not shared_grid_and_frequency)
+
+
+def _grid_and_frequency_are_shared(pending_groups):
+    """Whether every condition in pending_groups has the same phi, theta and
+    frequency arrays, so build_empirical_database can write them once at the
+    root instead of once per condition.  See its shared_grid_and_frequency
+    flag.
+    """
+    if not pending_groups:
+        return False
+    _, phi0, theta0, *_, frequency0, _ = pending_groups[0]
+    for _, phi, theta, *_, frequency, _ in pending_groups[1:]:
+        if phi.shape != phi0.shape or not np.array_equal(phi, phi0):
+            return False
+        if theta.shape != theta0.shape or not np.array_equal(theta, theta0):
+            return False
+        if (frequency is None) != (frequency0 is None):
+            return False
+        if frequency is not None and not np.array_equal(frequency, frequency0):
+            return False
+    return True
 
 
 def _finite_sphere_levels(spla, eaa):
@@ -2569,7 +2621,8 @@ def _finite_sphere_levels(spla, eaa):
 
 
 def add_sphere_group(ncdatabase, groupname, phi, theta, radius, SPLA, EAA, speed, flight_path_angle, load_factor,
-                     main_rotor_radius, main_rotor_tip_speed, weight_coefficient, frequency=None, amplitude=None):
+                     main_rotor_radius, main_rotor_tip_speed, weight_coefficient, frequency=None, amplitude=None,
+                     write_grid_and_frequency=True):
     # Create a new group for this sphere
     this_group = ncdatabase.createGroup(groupname)
     # Define sphere nondimensional radius
@@ -2588,12 +2641,20 @@ def add_sphere_group(ncdatabase, groupname, phi, theta, radius, SPLA, EAA, speed
     this_group.variables['flight_path_angle'][:] = flight_path_angle
     this_group.createVariable("thrust_coefficient", 'f8', ("condition",))
     this_group.variables['thrust_coefficient'][:] = load_factor * weight_coefficient
-    # Define acoustic data
+    # Define acoustic data.  "channels" is defined locally in every group
+    # regardless of write_grid_and_frequency -- netCDF4/HDF5 charges real
+    # space to *share* a dimension across many groups (each group's variable
+    # needs its own dimension-scale attachment back to the shared one), enough
+    # that on a 1432-group database it cost more than the phi/theta arrays it
+    # was meant to save. A same-named local dimension in each group costs
+    # nothing extra over what every database already paid before this existed;
+    # only the phi/theta *values* -- the redundant part -- are skipped.
     this_group.createDimension("channels", phi.size)
-    this_group.createVariable("phi", 'f8', ("channels",))
-    this_group.variables['phi'][:] = phi.flatten()
-    this_group.createVariable("theta", 'f8', ("channels",))
-    this_group.variables['theta'][:] = theta.flatten()
+    if write_grid_and_frequency:
+        this_group.createVariable("phi", 'f8', ("channels",))
+        this_group.variables['phi'][:] = phi.flatten()
+        this_group.createVariable("theta", 'f8', ("channels",))
+        this_group.variables['theta'][:] = theta.flatten()
     this_group.createVariable("dBA", 'f8', ("channels",))
     # Thrust scaling: a load factor of n raises the level by 20*log10(n).
     # A load factor of 0 is a special case -- it is not a physical condition but
@@ -2610,11 +2671,14 @@ def add_sphere_group(ncdatabase, groupname, phi, theta, radius, SPLA, EAA, speed
     # be re-reduced (different weighting, different propagation distance)
     # without going back to the original sphere files.
     if frequency is not None and amplitude is not None:
+        # Same reasoning as "channels" above: local dimensions in every group,
+        # only the frequency values themselves are conditionally skipped.
         this_group.createDimension("frequency", np.size(frequency))
         this_group.createDimension("PHI", np.shape(amplitude)[0])
         this_group.createDimension("THETA", np.shape(amplitude)[1])
-        this_group.createVariable("frequency", 'f8', ("frequency",))
-        this_group.variables['frequency'][:] = np.asarray(frequency).flatten()
+        if write_grid_and_frequency:
+            this_group.createVariable("frequency", 'f8', ("frequency",))
+            this_group.variables['frequency'][:] = np.asarray(frequency).flatten()
         this_group.createVariable("amplitude", 'f8', ("PHI", "THETA", "frequency"))
         this_group.variables['amplitude'][:] = amplitude
 

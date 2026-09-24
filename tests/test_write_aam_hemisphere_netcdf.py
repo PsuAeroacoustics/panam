@@ -328,3 +328,87 @@ def test_every_masking_convention_in_the_wild_reads_as_no_energy():
     assert masked[0, 0, 5] == -20.0
     # The input is left alone and the result is never a masked array.
     assert not isinstance(masked, np.ma.MaskedArray)
+
+
+def _sphere_dir_with_mismatched_grids(tmp_path):
+    """Like _sphere_dir_with_two_conditions, but the second condition's sphere
+    is completed onto a different theta grid -- the "not always" case
+    shared_grid_and_frequency has to detect rather than assume.
+    """
+    sphere_dir = tmp_path / 'spheres_mismatched'
+    sphere_dir.mkdir()
+    (sphere_dir / 'vehicle.cfg').write_text(
+        '[Main Rotor]\nradius = 5.334\ntip speed = 230.7\nblades = 4\n'
+        '[Tail Rotor]\nradius = 0.8255\ntip speed = 216.1\nblades = 2\n'
+        '[Atmosphere]\ndensity = 1.070\ntemperature = 280.37\n'
+        '[Vehicle]\nweight = 2250\ndrag = 0.8175\n')
+    conditions = [
+        ('A100.nc', 70.0, 0.0, np.arange(0.0, 180.0 + 1e-9, 10.0)),
+        ('A101.nc', 90.0, -6.0, np.arange(0.0, 180.0 + 1e-9, 15.0)),
+    ]
+    for name, speed, fpa, theta_deg in conditions:
+        fa.write_aam_hemisphere_netcdf(
+            str(sphere_dir / name), _minimal_hemisphere(), mode='third_octave',
+            phi_deg=np.arange(-90.0, 90.0 + 1e-9, 10.0), theta_deg=theta_deg,
+            radius_ft=100.0, speed_knots=speed, flight_path_angle_deg=fpa, title='t')
+    return sphere_dir
+
+
+def test_shared_grid_and_frequency_is_detected_and_deduplicated(tmp_path):
+    """When every condition shares one phi/theta grid and one frequency axis
+    (the normal case -- see build_empirical_database's docstring), they are
+    written once at the root instead of once per condition, and NICE-OPS is
+    expected to read them from there instead of expecting them per group.
+    """
+    sphere_dir = _sphere_dir_with_two_conditions(tmp_path)
+
+    shared_path = tmp_path / 'shared.nod'
+    fa.build_empirical_database(str(sphere_dir), str(shared_path), load_factors=None,
+                                store_spectrum=True)
+
+    with Dataset(str(shared_path)) as ds:
+        assert bool(ds['shared_grid_and_frequency'][()])
+        assert 'phi' in ds.variables
+        assert 'theta' in ds.variables
+        assert 'frequency' in ds.variables
+        root_phi = ds['phi'][:]
+        root_theta = ds['theta'][:]
+        root_frequency = ds['frequency'][:]
+        assert len(ds.groups) == 5  # 2 conditions + 3 default hover angles
+        for group in ds.groups.values():
+            # Deduplicated away: every condition's own copy would otherwise
+            # duplicate the root arrays exactly.
+            assert 'phi' not in group.variables
+            assert 'theta' not in group.variables
+            assert 'frequency' not in group.variables
+            assert 'dBA' in group.variables
+            assert 'amplitude' in group.variables
+            # A group's amplitude still resolves the shared root PHI/THETA/
+            # frequency dimensions (netCDF4 groups inherit their ancestors'
+            # dimensions) rather than defining its own: phi/theta are the
+            # flattened per-channel arrays (PHI * THETA long), while
+            # amplitude keeps the unflattened (PHI, THETA) grid shape.
+            assert group['amplitude'].shape[0] * group['amplitude'].shape[1] == root_phi.size
+            assert group['amplitude'].shape[2] == root_frequency.size
+
+
+def test_mismatched_grids_fall_back_to_per_condition_storage(tmp_path):
+    """The "not always" case: conditions whose sphere grids genuinely differ
+    must not be deduplicated, or every condition but the first would silently
+    lose whatever its grid disagreed on.
+    """
+    sphere_dir = _sphere_dir_with_mismatched_grids(tmp_path)
+
+    path = tmp_path / 'mismatched.nod'
+    fa.build_empirical_database(str(sphere_dir), str(path), load_factors=None,
+                                store_spectrum=True)
+
+    with Dataset(str(path)) as ds:
+        assert not bool(ds['shared_grid_and_frequency'][()])
+        assert 'phi' not in ds.variables
+        assert 'theta' not in ds.variables
+        assert 'frequency' not in ds.variables
+        for group in ds.groups.values():
+            assert 'phi' in group.variables
+            assert 'theta' in group.variables
+            assert 'frequency' in group.variables
