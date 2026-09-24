@@ -635,7 +635,8 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
                  max_propagation_range_ft=2000.0, min_steady_duration_s=8.0,
                  flip_y_for_geometry=False,
                  atmosphere=None, speed_of_sound_ft_s=None,
-                 apply_absorption_deprop=True, overwrite=True, norah2_directory=None):
+                 apply_absorption_deprop=True, overwrite=True, norah2_directory=None,
+                 third_octave_method='fft'):
     """Depropagate one run into an AAM-style source sphere.
 
     ``norah2_directory``, if given, also writes the same hemisphere there as a
@@ -744,6 +745,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
         third_octave=True,
         third_octave_fmin=float(band_centers.min()),
         third_octave_band_centers_hz=band_centers,
+        third_octave_method=third_octave_method,
         min_elevation_deg=min_elevation_deg,
         max_range=max_propagation_range_ft,
         ambient_pressure=ambient_pressure,
@@ -949,6 +951,10 @@ def main(argv=None):
     parser.add_argument('--norah2-directory', default=None,
                         help='also write each sphere as a NORAH2 .hem file here, with the '
                              'triangulation file NORAH2 needs to interpolate between them')
+    parser.add_argument('--third-octave-method', choices=('fft', 'filter_bank'), default='fft',
+                        help="'filter_bank' forms bands with a true one-third octave filter "
+                             "bank, as an analyser does; it differs from the default FFT band "
+                             "sum only below ~100 Hz, between strong rotor tones")
     parser.add_argument('--band-snr-gate-db', type=float, default=10.0)
     parser.add_argument('--max-absorption-correction-db', type=float, default=30.0,
                         help='discard bins needing more absorption correction than this; '
@@ -984,6 +990,7 @@ def main(argv=None):
         steady_only=not args.include_maneuvers,
         reference_directory=args.reference_directory, manifest_path=args.manifest,
         norah2_directory=args.norah2_directory,
+        third_octave_method=args.third_octave_method,
         band_snr_gate_db=args.band_snr_gate_db,
         max_absorption_correction_db=args.max_absorption_correction_db,
         point_stride=args.point_stride, gate_ambient=not args.no_ambient_gate,

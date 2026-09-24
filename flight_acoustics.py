@@ -849,6 +849,7 @@ def depropagate_hemisphere(
         third_octave=False,
         third_octave_fmin=20.0,
         third_octave_band_centers_hz=None,
+        third_octave_method='fft',
         narrowband=False,
         narrowband_stride=1,
         min_elevation_deg=0.0,
@@ -979,6 +980,19 @@ def depropagate_hemisphere(
         flip_y_for_geometry: if True, apply Y -> -Y to track_position/track_velocity/mic_locations.
         third_octave: if True, also compute third-octave band level hemispheres.
         third_octave_fmin: minimum band center (Hz) when third_octave=True.
+        third_octave_method: how band levels are formed when third_octave=True.
+            'fft' (default) sums the PSD bins between each band's edges, a
+            brick-wall band.  'filter_bank' uses a true one-third octave
+            filter bank (:func:`panam_acoustics.filters.third_octave_filter_bank`,
+            order-3 Butterworth, as an analyser implements), averaged over the
+            same frames.  The two agree within about 0.5 dB above 100 Hz; below
+            it the filter skirts carry a strong rotor tone into the
+            neighbouring bands, several dB for the bands between main-rotor
+            harmonics, which is what analyser-based data such as NORAH2
+            contain.  In 'filter_bank' mode the ambient gate, subtraction and
+            absorption cap act per band rather than per bin, and absorption is
+            taken at the band centre.  OASPL, A-weighted and narrowband output
+            are FFT-based either way.
 
     Returns:
         dict with keys:
@@ -1034,6 +1048,9 @@ def depropagate_hemisphere(
         raise ValueError('Give only one ambient source, not both of: ' + ', '.join(ambient_sources))
     if ambient_percentile is not None and not 0.0 < float(ambient_percentile) < 100.0:
         raise ValueError('ambient_percentile must lie strictly between 0 and 100')
+    if third_octave_method not in ('fft', 'filter_bank'):
+        raise ValueError("third_octave_method must be 'fft' or 'filter_bank'")
+    use_filter_bank = bool(third_octave) and third_octave_method == 'filter_bank'
     ambient_pressure_list = None
     ambient_time_list = None
     if ambient_pressure is not None:
@@ -1127,6 +1144,39 @@ def depropagate_hemisphere(
     if apply_absorption_deprop:
         r_ref_m = float(unit_conversion.len_conv(r_ref, from_units=length_units, to_units='m'))
 
+    pref_sq = (20e-6) ** 2
+
+    def _depropagate(lin, amb, r_v, alpha):
+        """Gate against ambient, subtract it, then undo spreading and absorption.
+
+        ``lin`` is (Nf, Npts) linear power (per bin or per band) at the
+        microphone; ``amb`` the matching (Nf,) ambient or None; ``alpha`` the
+        (Nf,) absorption coefficients in dB/m, used when absorption
+        depropagation is on.
+        """
+        # Ambient gating and background subtraction have to happen before
+        # spreading and absorption depropagation, or an ambient-limited band
+        # gets amplified by both.
+        if amb is not None:
+            gate = lin >= amb[:, None] * 10.0 ** (band_snr_gate_db / 10.0)
+            lin = np.where(gate, np.maximum(lin - amb[:, None], 0.0), 0.0)
+
+        # Spherical spreading depropagation to r_ref: multiply by (r/r_ref)^2
+        lin = lin * ((r_v / float(r_ref)) ** 2)[None, :]
+
+        # Optional absorption depropagation back to r_ref
+        if apply_absorption_deprop:
+            assert r_ref_m is not None
+            r_m = unit_conversion.len_conv(r_v, from_units=length_units, to_units='m').astype(float)
+            deltaL = np.asarray(alpha, dtype=float)[:, None] * (r_m[None, :] - r_ref_m)
+            if max_absorption_correction_db is not None:
+                # Drop bins the measurement cannot support before applying the
+                # correction, not after: once multiplied they are indisting-
+                # uishable from real high-frequency content.
+                lin = np.where(deltaL <= float(max_absorption_correction_db), lin, 0.0)
+            lin = lin * (10.0 ** (deltaL / 10.0))
+        return lin
+
     for im in range(nmics):
         # PSD spectrogram on observer time axis
         t_vec = _time_vec_for_mic(im)
@@ -1196,10 +1246,18 @@ def depropagate_hemisphere(
         for fi in range(f_sel.size):
             psd_v_lin[fi, :] = np.interp(tobs_v, t_abs, psd_sel_lin[fi, :])
 
-        # Per-bin ambient gating and background subtraction.  This has to
-        # happen here, before spreading and absorption depropagation below,
-        # or an ambient-limited band gets amplified by both.
+        # Filter-bank band levels on the spectrogram's own frames, so they
+        # share its time base (and its ambient treatment below).
+        frame_length = int(2.0 ** nextpow2(window_time * fs))
+        band_frames = None
+        if use_filter_bank:
+            band_frames = pa_filters.third_octave_filter_bank(
+                pressure_list[im], fs, band_centers, t_rel, frame_length) / pref_sq
+            band_frames = np.where(np.isfinite(band_frames), band_frames, 0.0)
+
+        # Per-bin (and per-band) ambient reference.
         amb_lin = None
+        amb_band = None
         if ambient_pressure_list is not None:
             amb_p = ambient_pressure_list[im]
             amb_fs = fs
@@ -1219,38 +1277,26 @@ def depropagate_hemisphere(
                 raise ValueError('ambient_pressure for mic {:d} did not yield a usable spectrogram on the run '
                                  'frequency grid (is the recording at least one window long?)'.format(im))
             amb_lin = 10.0 ** (np.median(psd_amb_db[fmask, :], axis=1) / 10.0)
+            if use_filter_bank:
+                _, t_amb, _ = scipy.signal.spectrogram(
+                    amb_p, amb_fs, scipy.signal.get_window('hann', frame_length),
+                    noverlap=round(window_overlap * frame_length), mode='psd')
+                amb_band = np.nanmedian(pa_filters.third_octave_filter_bank(
+                    amb_p, amb_fs, band_centers, t_amb, frame_length), axis=1) / pref_sq
         elif ambient_time_range is not None:
             amb_mask = np.logical_and(t_abs >= float(ambient_time_range[0]),
                                       t_abs <= float(ambient_time_range[1]))
             if not np.any(amb_mask):
                 raise ValueError('ambient_time_range contains no spectrogram frames')
             amb_lin = 10.0 ** (np.median(psd_sel_db[:, amb_mask], axis=1) / 10.0)
+            if use_filter_bank:
+                amb_band = np.median(band_frames[:, amb_mask], axis=1)
         elif ambient_percentile is not None:
             amb_lin = 10.0 ** (np.percentile(psd_sel_db, float(ambient_percentile), axis=1) / 10.0)
+            if use_filter_bank:
+                amb_band = np.percentile(band_frames, float(ambient_percentile), axis=1)
 
-        if amb_lin is not None:
-            gate = psd_v_lin >= amb_lin[:, None] * 10.0 ** (band_snr_gate_db / 10.0)
-            psd_v_lin = np.where(gate,
-                                 np.maximum(psd_v_lin - amb_lin[:, None], 0.0),
-                                 0.0)
-
-        # Spherical spreading depropagation to r_ref: multiply by (r/r_ref)^2
-        spread_scale = (r_v / float(r_ref)) ** 2
-        psd_v_lin = psd_v_lin * spread_scale[None, :]
-
-        # Optional absorption depropagation back to r_ref
-        if apply_absorption_deprop:
-            assert r_ref_m is not None
-            assert alpha_db_per_m is not None
-            r_m = unit_conversion.len_conv(r_v, from_units=length_units, to_units='m').astype(float)
-            deltaL = alpha_db_per_m[:, None] * (r_m[None, :] - r_ref_m)
-            if max_absorption_correction_db is not None:
-                # Drop bins the measurement cannot support before applying the
-                # correction, not after: once multiplied they are indisting-
-                # uishable from real high-frequency content.
-                psd_v_lin = np.where(deltaL <= float(max_absorption_correction_db),
-                                     psd_v_lin, 0.0)
-            psd_v_lin = psd_v_lin * (10.0 ** (deltaL / 10.0))
+        psd_v_lin = _depropagate(psd_v_lin, amb_lin, r_v, alpha_db_per_m)
 
         # OASPL power over selected frequency range
         power_oaspl = np.sum(psd_v_lin * df, axis=0)
@@ -1264,7 +1310,18 @@ def depropagate_hemisphere(
         if narrowband:
             psd_power_lists.append(psd_v_lin)
 
-        if third_octave:
+        if use_filter_bank:
+            # Band power at the emission points' observer times, interpolated
+            # in linear power as the PSD is, then depropagated band by band.
+            band_v = np.empty((band_centers.size, tobs_v.size), dtype=float)
+            for ib in range(band_centers.size):
+                band_v[ib, :] = np.interp(tobs_v, t_abs, band_frames[ib, :])
+            alpha_band = (np.asarray(atmosphere.attenuation_coefficient(band_centers), dtype=float)
+                          if apply_absorption_deprop else None)
+            band_v = _depropagate(band_v, amb_band, r_v, alpha_band)
+            for ib in range(band_centers.size):
+                band_power_lists[ib].append(band_v[ib, :])
+        elif third_octave:
             # Integrate to third-octave bands in linear power
             for ib, fc in enumerate(band_centers):
                 f_lower = fc / (2.0 ** (1.0 / 6.0))
@@ -1317,6 +1374,7 @@ def depropagate_hemisphere(
             'point_stride': int(point_stride),
             'rmax_deg': float(rmax),
             'apply_absorption_deprop': bool(apply_absorption_deprop),
+            'third_octave_method': str(third_octave_method),
             # Depropagation removes absorption over r - r_ref only, so the
             # sphere still carries absorption over r_ref in this atmosphere.
             # Exporters for formats with a different convention (NORAH2) need
