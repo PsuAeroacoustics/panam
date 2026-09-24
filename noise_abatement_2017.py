@@ -529,6 +529,12 @@ def run_atmosphere(test, run, fallback=None):
     when the test day was humid would inflate them: at 20 C absorption at
     3.15 kHz is about 49 dB/km at 20 % relative humidity but roughly a third of
     that at 70 %, and that difference is applied over kilometres of slant range.
+
+    The stations report ``airtemp`` in degrees Fahrenheit, pressure in kPa and
+    humidity in percent.  The file does not say so; the balloon sondes, which
+    use the same columns, also log air density, and p / (R rho) reproduces
+    their airtemp as Fahrenheit (e.g. AS350B3 day 289: 18.1 against 18.7 F)
+    for every aircraft in the dataset.
     """
     row = test.by_run.get(run)
     try:
@@ -568,7 +574,7 @@ def run_atmosphere(test, run, fallback=None):
         raise ValueError('No usable ground weather for run ' + str(run))
 
     temperature, humidity, pressure = np.mean(np.array(samples, dtype=float), axis=0)
-    return fa.Atmosphere(temperature=temperature + 273.15,
+    return fa.Atmosphere(temperature=(temperature - 32.0) / 1.8 + 273.15,
                          pressure=pressure,
                          relative_humidity=humidity)
 

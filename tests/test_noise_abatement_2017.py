@@ -149,3 +149,23 @@ def test_is_steady_flight_card_treats_blank_as_maneuvering():
     blank on decelerating approaches, not on runs that just forgot to log 0."""
     assert not na.is_steady_flight_card(_row(accel_rate=''))
     assert not na.is_steady_flight_card(_row(bank_ang=''))
+
+
+def test_run_atmosphere_reads_station_temperature_as_fahrenheit(tmp_path):
+    """The ground stations log Fahrenheit; 32 F must come back as 273.15 K."""
+    stations = tmp_path / 'X_Weather' / 'X_Ground_Stations'
+    stations.mkdir(parents=True)
+    (stations / 'X_289_SWS1.csv').write_text(
+        '    utcsec,    time, airtemp, humidity, pressure\n'
+        '     39909, 11:05:09,       32.0,       71.3,    88.8300\n'
+        '     39919, 11:05:19,     -1000.0,       71.5,    88.8300\n')
+
+    class FakeTest:
+        base = str(tmp_path)
+        aircraft = 'X'
+        by_run = {'289100': {'utc_secs_from_mid_start': '39910'}}
+
+    atmosphere = na.run_atmosphere(FakeTest(), '289100')
+    assert atmosphere.temperature == pytest.approx(273.15)
+    assert atmosphere.relative_humidity == pytest.approx(71.3)
+    assert atmosphere.pressure == pytest.approx(88.83)
