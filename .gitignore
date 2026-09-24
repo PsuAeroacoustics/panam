@@ -163,3 +163,6 @@ demo_plots/
 
 # Generated audio output
 demo_audio/
+
+# This machine's data locations (see local_paths.example.toml)
+local_paths.toml

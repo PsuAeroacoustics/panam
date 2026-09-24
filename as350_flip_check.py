@@ -19,7 +19,10 @@ counter-clockwise rotor in them is louder at phi > 0 in descent, the
 clockwise EC130 and Mi-8 at phi < 0.  With the sign corrected the same
 residuals favour no flip, which is now the demo's setting.
 
-Run:  AS350_DEMO_PATH=~/Desktop/AS350_demo PYTHONPATH=. python as350_flip_check.py
+Run:  PYTHONPATH=. python as350_flip_check.py
+
+The demo data are found through the ``as350_demo`` entry of local_paths
+(``AS350_DEMO_PATH`` is still honoured and takes precedence).
 """
 
 from __future__ import annotations
@@ -29,10 +32,10 @@ import os
 import numpy as np
 
 import flight_acoustics as fa
+import local_paths
 import AS350_289108_demo as demo
 
-BASE = os.environ.get("AS350_DEMO_PATH",
-                      os.path.expanduser("~/Desktop/AS350_demo/"))
+BASE = local_paths.data_path("as350_demo", os.environ.get("AS350_DEMO_PATH"))
 REF = os.path.join(BASE, "AAM", "AS350B3108.nc")
 FREQS = (0.0, 2000.0)
 R_REF_FT = 100.0

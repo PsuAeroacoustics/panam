@@ -1,0 +1,8 @@
+# Copy to local_paths.toml (git-ignored) and point each entry at this
+# machine's copy.  Environment variables PANAM_<NAME> override these.
+# See local_paths.py for what each name is.
+
+[paths]
+noise_abatement_2017 = "/path/to/Noise_Abatement_2017"
+as350_demo = "/path/to/AS350_demo"
+norah2 = "/path/to/NORAH2_V2.0.74_public"

@@ -6,11 +6,13 @@ import numpy as np
 import pytest
 
 import flight_acoustics as fa
+import local_paths
 from panam_acoustics.atmosphere import Atmosphere
 
-NORAH2_HEMISPHERES = os.path.expanduser('~/Downloads/NORAH2_V2.0.74_public/Hemispheres')
+_NORAH2 = local_paths.data_path('norah2', required=False)
+NORAH2_HEMISPHERES = os.path.join(_NORAH2, 'Hemispheres') if _NORAH2 else ''
 needs_norah2 = pytest.mark.skipif(not os.path.isdir(NORAH2_HEMISPHERES),
-                                  reason='NORAH2 V2.0.74 distribution not present')
+                                  reason='NORAH2 distribution not configured (local_paths: norah2)')
 
 MEASURED = dict(temperature_k=288.15, pressure_kpa=98.0, relative_humidity=45.0)
 

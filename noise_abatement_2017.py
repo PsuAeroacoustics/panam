@@ -44,10 +44,10 @@ from concurrent.futures import ThreadPoolExecutor
 from netCDF4 import Dataset
 
 import flight_acoustics as fa
+import local_paths
 
-
-DEFAULT_ROOT = ('~/Library/CloudStorage/OneDrive-ThePennsylvaniaStateUniversity/'
-                'Data/Noise_Abatement_2017')
+#: Name under which :mod:`local_paths` finds the dataset root.
+DATA_ROOT_NAME = 'noise_abatement_2017'
 
 #: Dataset directory name -> sphere-file prefix used by the legacy database.
 #: These are not the dataset directory names: the shipped spheres are
@@ -131,9 +131,10 @@ def is_steady_flight_card(row):
 class NoiseAbatementTest:
     """Index one aircraft's directory of the 2017 Noise Abatement test."""
 
-    def __init__(self, aircraft, root=DEFAULT_ROOT):
+    def __init__(self, aircraft, root=None):
+        """``root`` defaults to the ``noise_abatement_2017`` entry of :mod:`local_paths`."""
         self.aircraft = aircraft
-        self.root = os.path.abspath(os.path.expanduser(root))
+        self.root = local_paths.data_path(DATA_ROOT_NAME, root)
         self.base = os.path.join(self.root, aircraft)
         if not os.path.isdir(self.base):
             raise FileNotFoundError('No such aircraft directory: ' + self.base)
@@ -818,7 +819,8 @@ def _run_file_paths(test, run):
 def _prefetch(paths, workers=PREFETCH_WORKERS):
     """Warm the cloud-storage cache for a run's files.
 
-    The dataset lives on OneDrive, where files are placeholders until read.
+    When the dataset lives on cloud storage such as OneDrive, files are
+    placeholders until read.
     Serial reads run at a few MB/s and dominate the batch -- a run is ~200 MB
     against ~17 s of computation -- so pull the next run's files in parallel
     while the current one is processed.
@@ -835,7 +837,7 @@ def _prefetch(paths, workers=PREFETCH_WORKERS):
         list(pool.map(touch, paths))
 
 
-def build_all(aircraft, output_directory, *, root=DEFAULT_ROOT, runs=None,
+def build_all(aircraft, output_directory, *, root=None, runs=None,
               steady_only=True, reference_directory=None, sphere_prefix=None,
               manifest_path=None, prefetch=True, norah2_directory=None, **kwargs):
     """Rebuild every usable run for one aircraft.
@@ -938,7 +940,8 @@ def main(argv=None):
         description='Rebuild 2017 Noise Abatement source spheres with ambient gating.')
     parser.add_argument('aircraft', help='dataset directory name, e.g. B407')
     parser.add_argument('output_directory')
-    parser.add_argument('--root', default=DEFAULT_ROOT)
+    parser.add_argument('--root', default=None,
+                        help='dataset root (default: the noise_abatement_2017 entry of local_paths)')
     parser.add_argument('--runs', nargs='*', default=None,
                         help='specific run ids (default: every steady, non-maneuvering run)')
     parser.add_argument('--include-maneuvers', action='store_true',

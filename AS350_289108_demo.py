@@ -3,6 +3,7 @@
 import os
 import argparse
 import flight_acoustics as fa
+import local_paths
 import matplotlib.pyplot as plt
 import numpy as np
 import logging
@@ -154,12 +155,13 @@ def main():
     parser = argparse.ArgumentParser(description='AS350 289108 Demo Plot Generator')
     parser.add_argument('--show', action='store_true', help='Display plots interactively instead of saving.')
     parser.add_argument('--outdir', default='demo_plots', help='Directory to save plots (default behavior).')
-    parser.add_argument('--basepath', default=os.path.expanduser('~/Desktop/AS350_demo/'), help='Base path to demo data.')
+    parser.add_argument('--basepath', default=None,
+                        help='Base path to demo data (default: the as350_demo entry of local_paths).')
     args = parser.parse_args()
 
     save_outputs = not args.show
 
-    basepath = args.basepath
+    basepath = local_paths.data_path('as350_demo', args.basepath)
     acoustics_path = os.path.join(basepath, 'Acoustic')
     ambient_path = os.path.join(basepath, 'Ambient')
     AAM_path = os.path.join(basepath, 'AAM')
