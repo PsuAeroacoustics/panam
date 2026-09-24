@@ -76,3 +76,47 @@ def test_depropagate_hemisphere_smoke():
 
     # Should have at least some finite values
     assert np.isfinite(oaspl).any()
+
+
+def test_broadband_levels_are_unbiased_between_frames():
+    """White noise heard at exactly r_ref must depropagate to its own band levels.
+
+    Emission times fall between spectrogram frames.  Interpolating each PSD
+    bin in dB there (the pre-2026-09-24 behaviour) took a geometric mean of
+    fluctuating periodogram bins and read about 0.7 dB low.
+    """
+    import pytest
+
+    rng = np.random.default_rng(3)
+    fs, duration, r_ref_ft = 8000.0, 60.0, 100.0
+    sigma = 1.0                                              # Pa rms, white
+    t = np.arange(0.0, duration, 1.0 / fs)
+    pressure = sigma * rng.standard_normal(t.size)
+
+    # Hovering r_ref straight above the microphone, emission times on an
+    # irregular grid so the observer times land between frames.
+    track_time = np.sort(rng.uniform(2.0, duration - 3.0, 400))
+    track_position = np.tile([0.0, 0.0, r_ref_ft], (track_time.size, 1))
+    track_velocity = np.tile([1e-6, 0.0, 0.0], (track_time.size, 1))
+
+    hemi = depropagate_hemisphere(
+        mic_locations=np.zeros((1, 3)), pressure=pressure[None, :], time=t,
+        track_time=track_time, track_position=track_position, track_velocity=track_velocity,
+        r_ref=r_ref_ft, freq_range=(0.0, 3500.0), window_time=0.5, window_overlap=0.5,
+        azi_step=30.0, elv_step=10.0, rmax=15.0, third_octave=True, third_octave_fmin=200.0,
+        return_scattered=True)
+
+    # Test the emission-point samples, where the interpolation happens: every
+    # point sits on the same grid node, and Shepard weighting there returns a
+    # single coincident sample rather than their mean.
+    scattered = hemi['scattered']['third_octave']
+    mean_power = np.mean(10.0 ** (scattered['bands_db'] / 10.0), axis=1)
+    psd = sigma ** 2 / (fs / 2.0)                            # one-sided, Pa^2/Hz
+    df = fs / 4096.0                                         # 0.5 s -> 4096-point frames
+    for fc, power in zip(scattered['band_centers_hz'], mean_power):
+        if fc > 3000.0:
+            continue
+        # The band's power is the sum of the FFT bins inside its edges.
+        nbins = int(np.ceil(fc * 2 ** (1 / 6) / df)) - int(np.ceil(fc / 2 ** (1 / 6) / df))
+        expected = 10.0 * np.log10(psd * nbins * df / P_REF ** 2)
+        assert 10.0 * np.log10(power) == pytest.approx(expected, abs=0.25), fc

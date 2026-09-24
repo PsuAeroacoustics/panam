@@ -1185,14 +1185,16 @@ def depropagate_hemisphere(
         az_v = az_sub[valid]
         el_v = el_sub[valid]
 
-        # Interpolate PSD at tobs_v for each selected frequency
+        # Interpolate the PSD at tobs_v in linear power (relative to
+        # pref^2/Hz).  Until 2026-09-24 this interpolated in dB, which between
+        # frames takes a geometric mean of single-periodogram bins whose values
+        # fluctuate strongly: broadband levels came out ~0.7 dB low in every
+        # band, and in OASPL.
         psd_sel_db = psd_db[fmask, :]
-        psd_v_db = np.empty((f_sel.size, tobs_v.size), dtype=float)
+        psd_sel_lin = 10.0 ** (psd_sel_db / 10.0)
+        psd_v_lin = np.empty((f_sel.size, tobs_v.size), dtype=float)
         for fi in range(f_sel.size):
-            psd_v_db[fi, :] = np.interp(tobs_v, t_abs, psd_sel_db[fi, :])
-
-        # Convert to linear PSD relative to pref^2/Hz
-        psd_v_lin = 10.0 ** (psd_v_db / 10.0)
+            psd_v_lin[fi, :] = np.interp(tobs_v, t_abs, psd_sel_lin[fi, :])
 
         # Per-bin ambient gating and background subtraction.  This has to
         # happen here, before spreading and absorption depropagation below,
