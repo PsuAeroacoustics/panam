@@ -35,8 +35,8 @@ Thin argparse wrappers around `flight_acoustics.py` functions:
 - **Config files**: `vehicle.cfg` (INI format) in sphere directories defines vehicle geometry and operating conditions
 
 ### Coordinate Systems
-- **ART (AAM/RNM/ANOPP)**: Aircraft noise standard with phi (lateral), theta (longitudinal) angles
-- **UMAPR**: Azimuth/elevation convention used internally; convert via `art2umapr(phi, theta)`
+- **ART (AAM/RNM/ANOPP)**: Aircraft noise standard with phi (lateral: 0 below, positive to starboard) and theta (longitudinal: 0 at the nose, 180 at the tail), per the AAM v3 Technical Reference sec. 2.4.1
+- **UMAPR**: Azimuth/elevation convention used internally (azimuth 180 ahead, 90 starboard, 270 port, 0 behind; elevation positive below the horizon); convert via `art2umapr(phi, theta)`
 - **Geodetic ↔ Local Array**: Use `geodetic2array`/`array2geodetic` with reference point and heading for microphone positioning
 
 ### Unit Philosophy

@@ -947,9 +947,11 @@ def depropagate_hemisphere(
       the reference read backwards in azimuth; take whichever fits. Judging it from the
       rendered plate cannot separate a geometry sign error from a plotting one -- that
       is how the pre-2026-08-19 label/projection mismatch (see :func:`lambert_lon`)
-      stayed hidden. ``as350_flip_check.py`` is a worked example: the AS350 demo data
-      genuinely needs the flip (MAD 0.72 dB against its AAM reference with it, 1.35 dB
-      against the reference's mirror without it).
+      stayed hidden. ``as350_flip_check.py`` is a worked example. It once concluded the
+      AS350 demo data needed the flip, but that was compensating for
+      :func:`art2umapr` putting ART phi = +90 to port; with the AAM manual's sign
+      (phi > 0 starboard) the same residuals favour no flip. A right-handed, z-up
+      frame needs no flip.
 
     Args:
         mic_locations: (Nmics, 3) microphone locations in local Cartesian coordinates.
@@ -2154,6 +2156,14 @@ def lowpass(x, fpass, fs, zero_phase=True):
 def art2umapr(phi, theta):
     """
     Convert between ART (AAM/RNM/ANOPP) coordinates and UMAPR coordinates
+
+    ART follows the AAM Technical Reference (v3, sec. 2.4.1 and 2.5): theta is
+    0 at the nose and 180 at the tail, phi is 0 directly below, positive to
+    starboard and negative to port.  UMAPR azimuth is 180 ahead, 90 starboard.
+    Before 2026-09-24 this used x = -sin(theta) sin(phi), putting phi = +90 to
+    port; ``flip_y_for_geometry=True`` compensated for it in the AAM export,
+    at the cost of mirroring every UMAPR hemisphere built that way.
+
     Args:
         phi: array of phi angles (radians)
         theta: array of theta angles (radians)
@@ -2161,7 +2171,7 @@ def art2umapr(phi, theta):
     Returns: tuple (azimuth, elevation) angles (radians)
 
     """
-    x = -np.sin(theta) * np.sin(phi)
+    x = np.sin(theta) * np.sin(phi)
     y = np.cos(theta)
     z = -np.sin(theta) * np.cos(phi)
     elv = -np.arctan2(z, np.sqrt(np.square(x) + np.square(y)))
@@ -3130,7 +3140,7 @@ def _umapr2art(azimuth, elevation):
     y = -cos_elevation * np.cos(azimuth)
     z = -np.sin(elevation)
     theta = np.arccos(np.clip(y, -1.0, 1.0))
-    phi = np.arctan2(-x, -z)
+    phi = np.arctan2(x, -z)
     return phi, theta
 
 

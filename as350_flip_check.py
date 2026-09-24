@@ -10,12 +10,14 @@ measured hemisphere both ways and see which one agrees with the
 reference. A lateral sign error shows up as the measured sphere matching
 the reference's MIRROR instead of the reference.
 
-Result (47 acoustic files, 2026-08-21): the flip is GENUINE -- the demo
-data's lateral axis really does run opposite to the convention hemigen
-assumes. With it, the measured hemisphere matches the reference to
-MAD 0.72 dB; without it, it matches the reference's MIRROR instead. It is
-not a workaround for the Lambert projection bug fixed on 2026-08-19, and
-must stay.
+Result (47 acoustic files, 2026-08-21): the flip appeared GENUINE, matching
+the reference to MAD 0.72 dB with it and its mirror without it.  It was in
+fact compensating for :func:`flight_acoustics.art2umapr`, which until
+2026-09-24 put ART phi = +90 to port.  The AAM Technical Reference (v3,
+sec. 2.4.1) puts it to starboard, and the shipped AAM spheres agree: every
+counter-clockwise rotor in them is louder at phi > 0 in descent, the
+clockwise EC130 and Mi-8 at phi < 0.  With the sign corrected the same
+residuals favour no flip, which is now the demo's setting.
 
 Run:  AS350_DEMO_PATH=~/Desktop/AS350_demo PYTHONPATH=. python as350_flip_check.py
 """

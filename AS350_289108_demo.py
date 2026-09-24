@@ -195,8 +195,9 @@ def main():
         logging.warning(f'Could not read reference FREQUENCY grid; exporting only over plot range. Reason: {e}')
     r_ref = 100.0  # Reference distance for depropagation in feet
 
-    # Mirror Y-axis per track convention
-    flip_y_for_geometry = True
+    # The track frame is right-handed and z-up, so no mirroring.  This was True
+    # until 2026-09-24, compensating for art2umapr's reversed lateral sign.
+    flip_y_for_geometry = False
 
     if not os.path.isdir(basepath):
         logging.error(f'Base path {basepath} does not exist.')

@@ -86,6 +86,30 @@ def test_art2umapr_basic():
     assert abs(elv[0]) < 1e-12
 
 
+def test_umapr_starboard_is_azimuth_90():
+    """hemigen in a right-handed, z-up frame: ahead 180, starboard 90, port 270, behind 0."""
+    from flight_acoustics import hemigen
+    # Flying east (+x) at 100 ft; starboard of an eastbound aircraft is south (-y).
+    observers = np.array([[1000.0, 0.0, 0.0], [0.0, -1000.0, 0.0], [0.0, 1000.0, 0.0], [-1000.0, 0.0, 0.0]])
+    azimuth, _, _, _, _ = hemigen(np.array([0.0]), np.array([[0.0, 0.0, 100.0]]),
+                                  np.array([[100.0, 0.0, 0.0]]), observers, 1100.0)
+    assert np.allclose(azimuth[0], [180.0, 90.0, 270.0, 0.0])
+
+
+def test_art2umapr_follows_the_aam_manual():
+    """AAM v3 sec. 2.4.1: theta 0 at the nose, phi 0 below and positive to starboard."""
+    from flight_acoustics import _umapr2art
+    phi = np.radians([90.0, -90.0, 0.0, 0.0, 0.0])
+    theta = np.radians([90.0, 90.0, 90.0, 0.0, 180.0])
+    azi, elv = art2umapr(phi, theta)
+    assert np.allclose(np.degrees(azi[[0, 1, 3, 4]]), [90.0, 270.0, 180.0, 0.0], atol=1e-9)
+    assert np.allclose(np.degrees(elv), [0.0, 0.0, 90.0, 0.0, 0.0], atol=1e-9)
+
+    P, T = np.meshgrid(np.radians(np.arange(-80.0, 81.0, 20.0)), np.radians(np.arange(10.0, 171.0, 20.0)))
+    back_phi, back_theta = _umapr2art(*art2umapr(P, T))
+    assert np.allclose(back_phi, P, atol=1e-9) and np.allclose(back_theta, T, atol=1e-9)
+
+
 def test_lambert_ea_points_default_umapr_grid():
     fig, ax, _ = lambert_ea_points(
         np.array([], dtype=float),

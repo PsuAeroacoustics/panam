@@ -617,7 +617,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
                  azi_step=10.0, elv_step=10.0, rmax=25.0, point_stride=1,
                  min_elevation_deg=10.0, max_array_range_ft=None,
                  max_propagation_range_ft=2000.0, min_steady_duration_s=8.0,
-                 flip_y_for_geometry=True,
+                 flip_y_for_geometry=False,
                  atmosphere=None, speed_of_sound_ft_s=None,
                  apply_absorption_deprop=True, overwrite=True):
     """Depropagate one run into an AAM-style source sphere.
