@@ -13,7 +13,7 @@ vold_kalman_filter(x, freq, fs, bandwidth, p, r=None)
 """
 
 import numpy as np
-from scipy.sparse import spdiags, eye as speye, block_diag, csr_matrix, lil_matrix
+from scipy.sparse import diags, kron, spdiags, eye as speye
 from scipy.sparse.linalg import spsolve
 from scipy.special import comb
 
@@ -202,12 +202,9 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None, solver="auto", use_cou
 
     # Setting the filter order & coefficients
     p_arr = np.atleast_1d(p).astype(int)
-    p_p_orig = int(np.max(p_arr))
-    p_p = p_p_orig
-
-    # Defining the matrix of linear equations
-    df = np.setdiff1d(p_arr, p_p)
-    nr = len(df)
+    p_p = int(np.max(p_arr))
+    if p_p < 1 or n_x <= p_p:
+        raise ValueError("p must be at least 1 and smaller than the signal length")
 
     def _diff_coeff(order: int) -> np.ndarray:
         """Binomial finite-difference coefficients with alternating sign."""
@@ -216,94 +213,22 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None, solver="auto", use_cou
     # Main difference coefficients for order p_p
     diff_main = _diff_coeff(p_p)
 
-    # Boundary coefficients use lower-order padding (df). If no lower order,
-    # fall back to first-order difference.
-    if nr > 0:
-        boundary_order = int(df[0])
-    else:
-        boundary_order = 1
-    boundary_coeff = _diff_coeff(boundary_order)
-
-    aa_cache_key = (n_x, n_ord, p_p, tuple(boundary_coeff))
+    # Smoothness operator: the p-th difference of each order's envelope, n_x - p
+    # rows per order.  Every row is a whole stencil, so it sums to zero and
+    # penalises only changes in the envelope, never its level, and the record
+    # ends are left free.  It used to be padded out to n_x rows per order with
+    # truncated (single order, p >= 2) or misaligned (several orders) boundary
+    # rows; those penalised the level itself and drove the envelope to zero at
+    # the ends of the record.  It was also built through dense n_x x n_x
+    # arrays, so memory grew as n_x**2.
+    aa_cache_key = (n_x, n_ord, p_p)
     AA_sparse = _AA_CACHE.get(aa_cache_key)
     if AA_sparse is None:
-        # A0: rows built from boundary coefficients (no sign flip beyond diff definition)
-        A0_dense = np.zeros((1 if boundary_coeff.size > 0 else 0, n_x))
-        if A0_dense.shape[0] > 0:
-            A0_dense[0, :boundary_coeff.size] = boundary_coeff
-
-        # A0_end: boundary condition for the end (shifted to last columns with reversed sign)
-        # MATLAB shows last row as [0...0, -1, 1] which is [-1, 1] at the end
-        # This is the reverse of A0's [1, -1]
-        A0_end = np.zeros((1 if boundary_coeff.size > 0 else 0, n_x))
-        if A0_end.shape[0] > 0:
-            # Reverse the boundary coefficients for the end
-            A0_end[0, -boundary_coeff.size:] = boundary_coeff[::-1]
-
-        # Build A as n_x x n_x with constant diagonals then fix first row to boundary coeffs
-        diag_offsets = np.arange(0, p_p + 1)
-        A_diags = np.zeros((p_p + 1, n_x))
-        for i in range(p_p + 1):
-            A_diags[i, :] = diff_main[i]
-
-        A_sparse = spdiags(A_diags, diag_offsets, n_x, n_x, format='csr')
-
-        # Build AA matrix for single or multi-order case
-        if n_ord == 1:
-            # Single order: build A_combined as dense (small matrix)
-            A_dense = A_sparse.toarray()
-            A_combined = np.vstack([A0_dense, A_dense, A0_end])
-
-            # Single order: simplify by selecting n_x rows from A_combined
-            # A_combined shape: (n_x+2, n_x) with rows [A0, A (n_x rows), A0_end]
-            # Use first boundary row, middle n_x-2 rows from A, last boundary row
-            # Skip rows 1 and n_x from A to get exactly n_x rows total
-            row_indices = [0] + list(range(2, n_x)) + [n_x + 1]
-            AA_dense = A_combined[row_indices, :]
-            AA_sparse = csr_matrix(AA_dense)
-        else:
-            # Multi-order: extract diagonals directly from A_sparse (stay sparse!)
-            diag_offsets = list(range(-p_p, p_p + 1))
-
-            # Extract diagonals from A_sparse - need to convert to array for diagonal extraction
-            # But only convert the small A_sparse (n_x x n_x), not the full AA matrix
-            A_small_dense = A_sparse.toarray()
-
-            diagonals_list = []
-            for offset in diag_offsets:
-                # Extract diagonal from the small dense matrix
-                diag = np.diagonal(A_small_dense, offset=offset)
-                # Pad to n_x
-                padded = np.zeros(n_x)
-                if offset >= 0:
-                    padded[:len(diag)] = diag
-                else:
-                    padded[-len(diag):] = diag
-                diagonals_list.append(padded)
-
-            # Build sparse matrix from diagonals for one order
-            diagonal_matrix = np.array(diagonals_list).T  # (n_x, n_diags)
-            diagonal_rep = np.tile(diagonal_matrix, (n_ord, 1))  # (n_tot, n_diags)
-
-            # Build square AA matrix using scipy spdiags with the extracted diagonals
-            AA_sparse = spdiags(diagonal_rep.T, diag_offsets, n_tot, n_tot, format='csr')
-
-            # Enforce boundary rows using lil_matrix (more efficient than dense conversion)
-            if boundary_coeff.size > 0:
-                AA_sparse = AA_sparse.tolil()  # Convert to lil for efficient row modification
-                for ord_idx in range(n_ord):
-                    row_base = ord_idx * n_x
-                    # Enforce first boundary row: [1, -1, 0, ...] using slice assignment
-                    AA_sparse[row_base, :] = 0.0
-                    AA_sparse[row_base, row_base:row_base + len(boundary_coeff)] = boundary_coeff
-                    # Enforce last boundary row: [0, ..., -1, 1] using slice assignment
-                    last_row = row_base + n_x - 1
-                    AA_sparse[last_row, :] = 0.0
-                    AA_sparse[last_row, last_row - len(boundary_coeff) + 1:last_row + 1] = boundary_coeff[::-1]
-                AA_sparse = AA_sparse.tocsr()  # Convert back to csr for efficient arithmetic
-
+        D = diags([np.full(n_x - p_p, c) for c in diff_main], list(range(p_p + 1)),
+                  shape=(n_x - p_p, n_x), format='csr')
+        AA_sparse = kron(speye(n_ord, format='csr'), D, format='csr')
         _AA_CACHE[aa_cache_key] = AA_sparse
-    
+
     # DEBUG: Verify AA boundaries
     if False:  # Set to True for debugging
         AA_check = AA_sparse.toarray()
@@ -333,13 +258,11 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None, solver="auto", use_cou
             weig_r = np.asarray(r).ravel()
             weig_r = np.tile(weig_r, n_ord) if len(weig_r) < n_tot else weig_r[:n_tot]
     
-    # Create RR matrix (square, matching AA)
-    RR = spdiags([weig_r], [0], n_tot, n_tot, format='csr')
-    
-    # Compute B0 = AA' * (RR²) * AA + I
-    # This is the main regularized least squares matrix
-    # Optimize: RR² is diagonal so compute directly instead of RR @ RR
-    RR_squared = spdiags([weig_r**2], [0], n_tot, n_tot, format='csr')
+    # Compute B0 = AA' * R^2 * AA + I, the regularised least-squares matrix.
+    # Each difference row takes the weight of the sample it starts at.
+    n_rows = n_ord * (n_x - p_p)
+    weig_r2 = (np.asarray(weig_r, dtype=float).reshape(n_x, n_ord, order="F")[:n_x - p_p] ** 2).ravel(order="F")
+    RR_squared = spdiags([weig_r2], [0], n_rows, n_rows, format='csr')
     B0 = AA_sparse.T @ RR_squared @ AA_sparse + speye(n_tot, format='csr')
     
     # Precompute conjugate phasor in (n_x, n_ord) form
@@ -376,45 +299,30 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None, solver="auto", use_cou
         print(f"B_mat is symmetric: {np.allclose(B_mat, B_mat.conj().T)}")
         print(f"cH_x[0:5] = {cH_x[0:5]}")
 
-    # Solve the linear equations using sparse solver
+    # Solve the linear equations using sparse solver.  Bad arguments raise here,
+    # outside the fallback below, instead of being swallowed by it.
+    solver_choice = (solver or "auto").lower()
+    if solver_choice not in ("auto", "pardiso", "umfpack", "superlu"):
+        raise ValueError(f"Unknown solver '{solver}'")
+    if solver_choice == "pardiso" and not _HAVE_PARDISO:
+        raise RuntimeError("pypardiso is not installed")
     # Convert to CSC for faster factorization in spsolve
+    B_mat = B_mat.tocsc()
     try:
-        if hasattr(B_mat, "tocsc"):
-            B_mat = B_mat.tocsc()
-
-        solver_choice = (solver or "auto").lower()
-        if solver_choice == "auto":
-            if _HAVE_PARDISO:
-                y_R = _pardiso_spsolve(B_mat, cH_x)
-            else:
-                try:
-                    y_R = spsolve(B_mat, cH_x, use_umfpack=_HAVE_UMFPACK)
-                except TypeError:
-                    y_R = spsolve(B_mat, cH_x)
-        elif solver_choice == "pardiso":
-            if not _HAVE_PARDISO:
-                raise RuntimeError("pypardiso is not installed")
+        if solver_choice in ("auto", "pardiso") and _HAVE_PARDISO:
             y_R = _pardiso_spsolve(B_mat, cH_x)
-        elif solver_choice == "umfpack":
-            try:
-                y_R = spsolve(B_mat, cH_x, use_umfpack=_HAVE_UMFPACK)
-            except TypeError:
-                y_R = spsolve(B_mat, cH_x)
-        elif solver_choice == "superlu":
-            try:
-                y_R = spsolve(B_mat, cH_x, use_umfpack=False)
-            except TypeError:
-                y_R = spsolve(B_mat, cH_x)
         else:
-            raise ValueError(f"Unknown solver '{solver}'")
+            try:
+                y_R = spsolve(B_mat, cH_x, use_umfpack=_HAVE_UMFPACK and solver_choice != "superlu")
+            except TypeError:
+                y_R = spsolve(B_mat, cH_x)
     except Exception:
-        # Fallback to dense solve if sparse solver fails
-        if hasattr(B_mat, 'toarray'):
-            B_mat_dense = B_mat.toarray()
-        else:
-            B_mat_dense = B_mat
-        y_R = np.linalg.solve(B_mat_dense, cH_x)
-    
+        if solver_choice != "auto":
+            raise
+        # pypardiso rejects complex matrices, and this system is complex:
+        # fall back to SuperLU, never to a dense solve (n_tot**2 memory).
+        y_R = spsolve(B_mat, cH_x, use_umfpack=False)
+
     # DEBUG: Check residual
     if False:  # Enable for debugging
         residual = B_mat @ y_R - cH_x
