@@ -6,7 +6,7 @@ This is a Python-based aeroacoustics analysis toolkit for rotorcraft noise model
 ## Architecture & Data Flow
 
 ### Core Module: `flight_acoustics.py`
-Central library containing all acoustic analysis and visualization functions. This is a **monolithic module** (~1800 lines) that other scripts import from. Key functional areas:
+Central library containing all acoustic analysis and visualization functions. This is a **monolithic module** that other scripts import from. Key functional areas:
 
 1. **Acoustic Signal Processing**: PSD computation (`psd`, `psd_welch`), spectrogram generation, A-weighting (`dBAw`), filtering
 2. **Spherical Noise Sources**: Load/manipulate netCDF acoustic hemispheres (`load_nc_sphere`, `extract_SPL`), coordinate transforms (ART ↔ UMAPR via `art2umapr`)
@@ -45,17 +45,12 @@ Thin argparse wrappers around `flight_acoustics.py` functions:
 All internal calculations use **SI-adjacent units** (meters, Hz, Pa) but I/O defaults to **aerospace units** (feet, knots, °C) per `default_units.py`. Use `unit_conversion.py` functions liberally; they auto-convert via intermediate base units.
 
 ### Atmospheric Modeling
-The `acoustics` package provides atmospheric absorption (`acoustics.atmosphere.Atmosphere`). The `atmosorb` function uses this model and takes Celsius, mbar, % RH → dB/m.
+The vendored `panam_acoustics` package (derived from python-acoustics, BSD-3) provides ISO 9613-1 atmospheric absorption: `panam_acoustics.atmosphere.Atmosphere(temperature=K, pressure=kPa, relative_humidity=%)`. `atmosorb(freq, temp, humid, pstat)` wraps it and takes °C, % RH and mbar → dB/m.
 
 ## Critical Patterns
 
 ### Handling Invalid Data in Spheres
-netCDF spheres often contain NaN or sentinel values (>1e34). Standard pattern:
-```python
-amplitude[np.isnan(amplitude)] = -np.inf
-amplitude[amplitude > 1.0e34] = -np.inf
-```
-This converts bad data to "no energy" for OASPL integration. Suppress numpy warnings: `np.seterr(invalid='ignore')`.
+netCDF spheres mark missing bands with NaN, -999 (the AAM convention, which this module writes) or a large positive value (>1e34, older output). `mask_missing_levels(amplitude)` turns all three into -inf, i.e. "no energy" for OASPL integration. Suppress the resulting numpy warnings locally with `with np.errstate(invalid='ignore'):`, not the global `np.seterr`.
 
 ### Frequency Band Processing
 A-weighting and OASPL integrate over frequency bands. Apply weighting **before** OASPL:
@@ -73,14 +68,16 @@ Modified Shepard's IDW used for hemispheric data (`shepIDW`, `IDWweights`). Uses
 ## Development Workflows
 
 ### Environment Setup
+Python ≥ 3.11 (`local_paths.py` uses `tomllib`).
 ```bash
-python3 -m venv panam
-source panam/bin/activate  # macOS/Linux
+python3 -m venv .venv
+source .venv/bin/activate  # macOS/Linux
 pip install -r requirements.txt
+pytest                     # from the repository root
 ```
 
 ### Running CLI Tools
-All scripts take `-h` for help. Common pattern:
+The CLI wrappers take `-h` for help. Common pattern:
 ```bash
 ./nc_lambert_ea.py input.nc -f 100:10000 -w A -o output.png
 ./fried_egg_plot.py sphere_dir/ -a 500 -c 30 -m mean -o plot.pdf
@@ -94,20 +91,31 @@ New acoustic analysis belongs in `flight_acoustics.py`. Follow patterns:
 - Handle infinities/NaNs explicitly for acoustic data
 
 ### Vehicle Configuration
-`vehicle.cfg` format (see `read_vehicle_data`):
+`vehicle.cfg` format (see `read_vehicle_data`). ConfigParser does not strip
+inline comments, so keep values bare. Radii in m, tip speeds in m/s,
+temperature in K, density in kg/m³, weight in kg, drag (flat-plate area) in m²:
 ```ini
 [Main Rotor]
 blades = 4
-radius = 5.33  # meters
-tip speed = 216  # m/s
+radius = 5.33
+tip speed = 216
+
+[Tail Rotor]
+blades = 2
+radius = 0.83
+tip speed = 216
 
 [Atmosphere]
-temperature = 293.15  # K
-density = 1.225  # kg/m³
+temperature = 293.15
+density = 1.225
+
+[Vehicle]
+weight = 2250
+drag = 0.82
 ```
 
 ## Dependencies & External Interfaces
-- **acoustics**: PSU fork with custom atmosphere models
+- **panam_acoustics** (vendored): ISO 9613-1 absorption, Butterworth filters, one-third octave filter bank
 - **pymap3d**: Geodetic transformations (`geodetic2enu`, `enu2geodetic`)
 - **simplekml**: KML/KMZ export for microphone arrays (`write_kml`)
 - **palettable**: Discrete ColorBrewer palettes (YlOrRd preferred)
@@ -117,5 +125,4 @@ density = 1.225  # kg/m³
 - **Unit confusion**: Radii in netCDF are feet, must convert to meters (`* 0.3048`)
 - **Speed conversion**: netCDF speeds in knots, use `0.514444` factor to m/s
 - **Reference pressure**: Acoustic calculations use 20 µPa (`pref = 2.0e-5`)
-- **Angle wrapping**: Azimuth > 90° flips (see `hemigen` overhead handling)
 - **Duration correction**: Use `Lmax + 10*log10(ref_speed/speed)` for SEL-like metrics

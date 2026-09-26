@@ -930,7 +930,7 @@ def depropagate_hemisphere(
     because the broadband level is dominated by the low-frequency bands
     where the signal is strong.
 
-    Supply the ambient reference in one of two ways:
+    Supply the ambient reference in one of three ways:
 
     * ``ambient_pressure`` -- a separate signal-free recording per
       microphone (same channel order as ``mic_locations``), e.g. a dedicated
@@ -1954,8 +1954,8 @@ def write_aam_hemisphere_netcdf(
         filename: Path to the output netCDF file.
         hemisphere: Output dict from :func:`depropagate_hemisphere`.
         mode: 'auto', 'third_octave', or 'narrowband'. 'auto' prefers third-octave.
-        phi_deg: Optional 1D ART phi grid (degrees). Default: 0..360 at the UMAPR azimuth step.
-        theta_deg: Optional 1D ART theta grid (degrees). Default: 0..180 at the UMAPR elevation step.
+        phi_deg: Optional 1D ART phi grid (degrees). Default: -90..90 in 10 degree steps.
+        theta_deg: Optional 1D ART theta grid (degrees). Default: 0..180 in 5 degree steps.
         speed_knots: Stored into ``SPEED`` (knots).
         flight_path_angle_deg: Stored into ``FLIGHT_PATH_ANGLE`` (deg).
         radius_ft: Optional override for ``RADIUS`` (ft). If None, derived from hemisphere metadata ``r_ref``.
@@ -4142,9 +4142,10 @@ def array2geodetic(local, reference, heading, units='ft'):
     Parameters
     ----------
     local : numpy.ndarray
-        Array of shape (N, 3) containing local coordinates [x, y, z] where:
-        - x: lateral position (positive right)
-        - y: longitudinal position (positive forward)
+        Array of shape (N, 3) containing local coordinates [x, y, z] in the
+        frame :func:`geodetic2array` produces (this is its inverse):
+        - x: along the heading (positive forward)
+        - y: perpendicular to the heading (positive left)
         - z: vertical position (positive up)
     reference : array-like
         Reference point in geodetic coordinates [latitude, longitude, height] in degrees 
