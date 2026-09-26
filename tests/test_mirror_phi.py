@@ -84,3 +84,16 @@ def test_theta_is_preserved_across_the_mirror():
     # Reflection is in azimuth only; every row spans the same theta axis.
     for row in range(theta.shape[0]):
         assert np.allclose(theta[row, :], THETA_LIST)
+
+
+def test_completed_sphere_rows_are_sorted_by_phi():
+    """NICE-OPS reads the gridded spectra as sorted by phi; they carry no angles
+    of their own, so completion order (lower half, then the mirrored upper
+    surface) put every spectrum in the wrong direction."""
+    n_theta = THETA_LIST.size
+    spla = np.repeat(PHI_LIST[:, None], n_theta, axis=1)
+    amplitude = np.repeat(spla[:, :, None], 4, axis=2)
+    phi, _, spla_f, _, amp_f = _complete_sphere(PHI_LIST, THETA_LIST, spla, spla.copy(), amplitude)
+    assert np.all(np.diff(phi[:, 0]) > 0)
+    # The spectra ride with the level rows through the sort.
+    assert np.array_equal(amp_f[:, :, 0], spla_f)

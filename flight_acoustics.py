@@ -2763,11 +2763,16 @@ def _complete_sphere(phi_list, theta_list, spla, eaa, amplitude):
     """
     mirror_phi, source_index = mirror_phi_to_upper_surface(phi_list)
     phi_full_list = np.concatenate((np.asarray(phi_list, dtype=float), mirror_phi))
-    theta, phi = np.meshgrid(theta_list, phi_full_list)
-    return (phi, theta,
-            np.concatenate((spla, spla[source_index])),
-            np.concatenate((eaa, eaa[source_index])),
-            np.concatenate((amplitude, amplitude[source_index])))
+    # Rows sorted by phi, so the spectra -- written gridded, without angles of
+    # their own -- are in the sorted order NICE-OPS reads them in.  Until
+    # 2026-09-25 they were left in completion order (-90..90, then the mirrored
+    # upper surface), which NICE-OPS read as sorted and so put every spectrum
+    # in the wrong direction.  dBA/EAA carry their angles per channel and were
+    # never affected.
+    order = np.argsort(phi_full_list, kind='stable')
+    rows = np.concatenate((np.arange(len(phi_list)), source_index))[order]
+    theta, phi = np.meshgrid(theta_list, phi_full_list[order])
+    return phi, theta, spla[rows], eaa[rows], amplitude[rows]
 
 
 def mirror_phi_to_upper_surface(phi_list):
