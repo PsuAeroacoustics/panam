@@ -4407,10 +4407,13 @@ def shepIDW(ielv, iazi, felv, fazi, f, rmax):
     fi_flat = np.empty_like(ielv_flat, dtype=float)
     for i in range(ielv_flat.size):
         wi = IDWweights(ielv_flat[i], iazi_flat[i], felv, fazi, rmax)
-        fi_flat[i] = np.sum(fvals * wi)
+        # Only the neighbours: 0 * NaN is NaN, so one bad sample anywhere
+        # would otherwise poison every node, however far away.
+        near = wi > 0.0
+        fi_flat[i] = np.sum(fvals[near] * wi[near])
 
     fi = fi_flat.reshape(orig_shape)
-    if fi.size == 1:
+    if fi.ndim == 0:
         return float(fi)
     return fi
 
