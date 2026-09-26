@@ -91,3 +91,26 @@ def test_ground_footprint_puts_starboard_on_the_right(tmp_path):
 
     x, y, level_a, _, _ = fa.project_sphere(str(path), 150.0, 20.0)
     assert level_a[x > 1.0].mean() > level_a[x < -1.0].mean() + 10.0
+
+
+@pytest.mark.parametrize("num_levels", [2, 9, 10, 16])
+def test_ylorrd_cmap_for_any_level_count(num_levels):
+    """Outside palettable's 3..9 the fallback must work on current Matplotlib
+    (matplotlib.cm.get_cmap was removed in 3.9)."""
+    assert len(fa.get_ylorrd_cmap(num_levels)(0.5)) == 4
+
+
+def test_plot_lambert_ea_fine_steps_and_leaves_input_alone():
+    """Many contour levels need the colormap fallback, and the caller's array
+    must come back untouched (it used to have -inf/NaN overwritten with 0)."""
+    import matplotlib.pyplot as plt
+    azi, elv = np.meshgrid(np.radians(np.arange(0.0, 361.0, 10.0)),
+                           np.radians(np.arange(0.0, 91.0, 10.0)))
+    spl = 70.0 + 20.0 * np.cos(elv)
+    spl[0, :5] = -np.inf
+    spl[1, :3] = np.nan
+    before = spl.copy()
+    fig, _, cs = fa.plot_lambert_ea(azi, elv, spl, level_step=1.0)
+    plt.close(fig)
+    assert len(cs.levels) > 9
+    np.testing.assert_array_equal(spl, before)

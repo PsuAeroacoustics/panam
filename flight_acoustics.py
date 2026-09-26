@@ -15,7 +15,7 @@ from scipy.special import erf
 import simplekml
 # Colormap helper will import palettable lazily
 import matplotlib
-from matplotlib import cm, tri
+from matplotlib import tri
 from matplotlib.pyplot import plot, subplots, colorbar, style, contourf, show
 from netCDF4 import Dataset
 from pyuff import UFF
@@ -3878,6 +3878,9 @@ def plot_lambert_ea(azi,elv,SPL,SPL_range=None,weight=None,grid_convention='umap
         The contour set object from the contourf plot.
 
     """
+    # Work on a copy, so the caller's -inf/NaN levels stay as they are; masked
+    # cells (a masked array) count as missing too.
+    SPL = np.ma.filled(np.ma.array(SPL, dtype=float, copy=True), np.nan)
     SPL[np.isinf(SPL)] = np.nan
     if SPL_range is None:
         minSPL = np.nanmin(SPL)
@@ -4222,7 +4225,7 @@ def get_ylorrd_cmap(num_levels=9):
             return getattr(cbseq, attr).mpl_colormap
     except Exception:
         pass
-    return cm.get_cmap('YlOrRd')
+    return matplotlib.colormaps['YlOrRd']
 
 def atmosorb(freq, temp, humid, pstat):
     """
