@@ -208,3 +208,22 @@ def test_array2geodetic_in_metres_leaves_its_input_alone():
     np.testing.assert_array_equal(local, before)
     np.testing.assert_array_equal(first, second)
     np.testing.assert_allclose(geodetic2array(first, reference, 30.0, units='m'), local, atol=1e-6)
+
+
+# IEC 61672-1:2013 Table 3, at the exact base-10 frequencies the standard uses.
+IEC_61672_A_WEIGHTING_DB = {10: -70.4, 31.5: -39.4, 63: -26.2, 125: -16.1, 250: -8.6, 500: -3.2,
+                            1000: 0.0, 2000: 1.2, 4000: 1.0, 8000: -1.1, 16000: -6.6, 20000: -9.3}
+
+
+@pytest.mark.parametrize('nominal_hz,table_db', IEC_61672_A_WEIGHTING_DB.items())
+def test_a_weighting_matches_iec_61672(nominal_hz, table_db):
+    exact_hz = 1000.0 * 10.0 ** (np.round(10.0 * np.log10(nominal_hz / 1000.0)) / 10.0)
+    assert float(dBAw(exact_hz)) == pytest.approx(table_db, abs=0.05)
+
+
+def test_atmosorb_matches_iso_9613_2_table():
+    """ISO 9613-2 Table 2, 20 C and 70 % RH, octave bands 63 Hz..8 kHz (dB/km)."""
+    table = [0.1, 0.3, 1.1, 2.8, 5.0, 9.0, 22.9, 76.6]
+    frequencies = 1000.0 * 10.0 ** (0.3 * np.arange(-4, 4))
+    alpha_db_per_km = 1000.0 * atmosorb(frequencies, 20.0, 70.0, 1013.25)
+    np.testing.assert_array_equal(np.round(alpha_db_per_km, 1), table)
