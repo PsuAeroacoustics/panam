@@ -2576,7 +2576,8 @@ def load_nc_signal(filename):
     sample_rate = file_handle.sample_rate
     start_time = file_handle.start_time
     file_handle.close()
-    time = np.arange(start_time, pressure.size / sample_rate + start_time, 1 / sample_rate)
+    # Not np.arange(start, stop, 1/fs): a float step can yield one sample too many.
+    time = start_time + np.arange(pressure.size) / sample_rate
     location = np.array([x, y, z])
     return pressure, time, location
 
@@ -2625,7 +2626,10 @@ def load_UFF_signal(filename, sets = None):
         data = file.read_sets()
     else:
         data = file.read_sets(sets)
-    
+    # pyuff returns a bare dict, not a one-element list, when it reads one set
+    if isinstance(data, dict):
+        data = [data]
+
     channels = len(data)
     datasize = len(data[0]['x'])
     time = data[0]['x']
