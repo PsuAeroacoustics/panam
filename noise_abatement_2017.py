@@ -296,21 +296,50 @@ def _open_csv(path):
     return open(path, encoding='utf-8-sig', errors='replace', newline='')
 
 
-def load_track(path):
-    """Load a tracking CSV, correcting the vertical velocity sign.
+def vz_sign(track):
+    """+1 if the track's ``vz`` is positive up, -1 if positive down, from ``z`` itself.
 
-    The file stores ``z`` positive up but ``vz`` positive down (checked against
-    ``d/dt`` of ``z``: correlation -0.997).  :func:`flight_acoustics.hemigen`
-    only takes heading from the horizontal components, so the raw sign does not
-    corrupt the hemisphere geometry, but it does invert flight path angle --
-    which is how a descent gets labelled as a climb.
+    The files do not agree: ``z`` is positive up throughout, and ``vz`` is
+    positive DOWN in every file (agreement with ``d/dt`` of ``z`` around -0.99)
+    except EC130B4 test day 298, whose 49 files have it positive UP (+1.000).
+    Assuming down everywhere labelled those days' descents climbs.
+
+    A track with too little vertical motion to judge -- level passes and hovers,
+    about 40 files across the dataset, all leaning negative -- falls back to
+    down, the form every day but one uses; there the sign hardly matters.
+    """
+    dz = np.gradient(track['z'], track['time'])
+    vz = track['vz']
+    # Uncentred, so a steady descent -- constant dz/dt, no variance to
+    # correlate -- still decides: vz . dz/dt is +|dz|^2 when they agree.
+    rms = lambda x: np.sqrt(np.mean(np.square(x)))
+    if rms(vz) < 0.5 or rms(dz) < 0.5:                 # ft/s
+        return -1.0
+    agreement = np.mean(vz * dz) / (rms(vz) * rms(dz))
+    if agreement > 0.5:
+        return 1.0
+    if agreement < -0.5:
+        return -1.0
+    warnings.warn('vz and dz/dt barely agree (cosine {:.2f}); taking vz as positive down, '
+                  'as every day but EC130B4 day 298 stores it'.format(agreement))
+    return -1.0
+
+
+def load_track(path):
+    """Load a tracking CSV, making the vertical velocity positive up.
+
+    ``z`` is positive up, but whether ``vz`` is depends on the aircraft; see
+    :func:`vz_sign`.  :func:`flight_acoustics.hemigen` only takes heading from
+    the horizontal components, so the sign does not corrupt the hemisphere
+    geometry, but it does set the flight path angle -- which is how a descent
+    gets labelled as a climb.
     """
     data = np.genfromtxt(path, delimiter=',', names=True)
     if data.size < 2:
         raise ValueError('Tracking file has too few samples: ' + path)
     track = {name: np.asarray(data[name], dtype=float) for name in data.dtype.names}
     track['time'] = track['utcsec']
-    track['vz_up'] = -track['vz']
+    track['vz_up'] = vz_sign(track) * track['vz']
     track['fpa_deg'] = np.degrees(np.arctan2(track['vz_up'],
                                              np.hypot(track['vx'], track['vy'])))
     track['ground_speed_knots'] = track['VGk']

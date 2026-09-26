@@ -176,3 +176,33 @@ def test_run_atmosphere_reads_station_temperature_as_fahrenheit(tmp_path):
     assert atmosphere.temperature == pytest.approx(273.15)
     assert atmosphere.relative_humidity == pytest.approx(71.3)
     assert atmosphere.pressure == pytest.approx(88.83)
+
+
+def _descending(vz_positive_up, rate_fps=10.0, n=500):
+    time = np.arange(n) * 0.02
+    z = 1000.0 - rate_fps * time
+    vz = -rate_fps if vz_positive_up else rate_fps
+    return dict(time=time, z=z, vz=np.full(n, vz) + 0.8 * np.sin(time))
+
+
+def test_vz_sign_follows_each_file_not_the_dataset():
+    """Every 2017 file stores vz positive down except EC130B4 day 298's, which store it up."""
+    assert na.vz_sign(_descending(vz_positive_up=False)) == -1.0
+    assert na.vz_sign(_descending(vz_positive_up=True)) == 1.0
+
+
+def test_vz_sign_on_a_level_track_falls_back_to_down():
+    time = np.arange(500) * 0.02
+    level = dict(time=time, z=np.full(500, 500.0), vz=np.zeros(500))
+    assert na.vz_sign(level) == -1.0
+
+
+def test_vz_sign_falls_back_to_down_with_a_warning_when_ambiguous():
+    """Level passes and hovers (about 40 files) barely correlate; they must still
+    load, as before the sign was checked, rather than fail the run."""
+    rng = np.random.default_rng(0)
+    time = np.arange(2000) * 0.02
+    track = dict(time=time, z=500.0 + np.cumsum(rng.normal(0, 0.1, time.size)),
+                 vz=rng.normal(0, 5.0, time.size))
+    with pytest.warns(UserWarning, match='barely agree'):
+        assert na.vz_sign(track) == -1.0
