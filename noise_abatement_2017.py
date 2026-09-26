@@ -706,9 +706,12 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     locations, pressures, times, mics = load_run_channels(test, run, mics, time_range)
 
     ambient_pressure = None
+    ambient_time = None
     ambient_percentile = None
     if ambient_run is not None:
-        ambient_pressure, _, _ = load_ambient_channels(test, ambient_run, mics)
+        # Keep the times: depropagate_hemisphere checks the ambient sample rate
+        # against the run's from them, and assumes they match without them.
+        ambient_pressure, ambient_time, _ = load_ambient_channels(test, ambient_run, mics)
     elif ambient_source.startswith('percentile'):
         ambient_percentile = float(ambient_fallback_percentile)
 
@@ -750,6 +753,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
         min_elevation_deg=min_elevation_deg,
         max_range=max_propagation_range_ft,
         ambient_pressure=ambient_pressure,
+        ambient_time=ambient_time,
         ambient_percentile=ambient_percentile,
         band_snr_gate_db=band_snr_gate_db,
         max_absorption_correction_db=max_absorption_correction_db,
