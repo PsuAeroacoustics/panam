@@ -12,14 +12,28 @@ vold_kalman_filter(x, freq, fs, bandwidth, p, r=None)
     Extract complex envelopes and phasors from acoustic signal using Vold-Kalman filtering.
 """
 
+import warnings
+
 import numpy as np
-from scipy.sparse import diags, kron, spdiags, eye as speye
+from scipy.sparse import bmat, csr_matrix, diags, kron, spdiags, vstack, eye as speye
 from scipy.sparse.linalg import spsolve
 from scipy.special import comb
 
 # Cache for expensive, size-dependent matrices/indices
 _AA_CACHE = {}
 _BU_INDEX_CACHE = {}
+
+#: The regularised normal equations  (I + AA' R^2 AA) a = C^H x  have a
+#: condition number of about 1 + r**2 * 4**p.  Up to this value they are solved
+#: as they are; beyond it rounding erodes their accuracy (by 1e16 the identity
+#: is lost next to the r**2 terms and the result is garbage), so the equivalent
+#: augmented system, conditioned like the square root of that, is solved instead.
+_NORMAL_EQUATIONS_MAX_CONDITION = 1e10
+
+#: Warn when even the augmented system (condition ~ sqrt(1 + r**2 * 4**p)) is
+#: past this: the requested band is too narrow for this sample rate and p.
+#: Measured band-edge gain errors: 0.15 % at 5e13, 3 % at 8e14, garbage by 1e19.
+_AUGMENTED_MAX_CONDITION = 1e14
 
 # Optional faster sparse solvers (if installed)
 try:
@@ -86,8 +100,9 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None, solver="auto", use_cou
     fs : float
         Sampling frequency of the acoustic signal and frequency vector, Hz
     bandwidth : float or ndarray
-        Bandwidth for weighting factor formulation, Hz.
-        Can be:
+        Full -3 dB width of the passband around each tracked order, Hz: a
+        component bandwidth/2 away from the order comes through at 1/sqrt(2).
+        Must be positive and below fs.  Can be:
         - scalar: single bandwidth for all orders
         - vector with same length as x: time-varying bandwidth
         - vector with length equal to number of orders: order-wise bandwidth
@@ -95,12 +110,18 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None, solver="auto", use_cou
     p : int
         Structural filter order (order of difference operator for regularization).
         NOT the harmonic order to track (those are specified by freq).
-        p=1: first-order differences (velocity constraint) - recommended for time-varying freq
-        p=2: second-order differences (acceleration constraint) - can cause envelope decay
-        p=3: third-order differences (jerk constraint) - typically too strong
+        It sets how sharply the passband falls off: a component Omega
+        rad/sample from the order comes through with gain
+        1 / (1 + r**2 (2 sin(Omega/2))**(2p)), which outside the band drops
+        by about 12p dB per octave.  With a 5 Hz band, a steady tone 1.5
+        bandwidths away is rejected by 14 dB at p=1, 31 dB at p=2 and 50 dB at
+        p=3, so higher p separates close orders better, at the cost of
+        slightly larger errors near the ends of the record.  Narrow bands at
+        high sample rates with p >= 2 are solved through a better-conditioned
+        formulation, automatically, at 2-5 times the cost.
     r : float or ndarray, optional
-        Weighting factor for the filter. If not provided, computed from bandwidth.
-        Default is None (compute from bandwidth).
+        Weighting factor for the filter, used instead of bandwidth when given;
+        same shapes as bandwidth.  Default is None (compute from bandwidth).
     solver : {"auto", "pardiso", "umfpack", "superlu"}, optional
         Sparse solver backend. "auto" prefers Pardiso (if installed), then UMFPACK,
         and falls back to SuperLU. Default is "auto".
@@ -111,16 +132,17 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None, solver="auto", use_cou
     Returns
     -------
     y : ndarray
-        Extracted complex envelopes of each order, shape (n_samples, n_orders)
+        Complex amplitude of each order, shape (n_samples, n_orders): twice
+        the complex envelope, so abs(y) is the order's amplitude
     phasor : ndarray
         Complex phasor corresponding to each order, shape (n_samples, n_orders)
     cost_Mat : ndarray
-        Cost matrix of the iterative solver
+        Residual of the solved normal equations, shape (n_samples * n_orders,)
 
     Notes
     -----
     Waveforms can be obtained by multiplying complex envelopes and phasors:
-        waveform = y * phasor
+        waveform = np.real(y * phasor)
 
     This algorithm tracks acoustic signals produced by shafts/orders given in the
     reference frequency vector.
@@ -137,26 +159,24 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None, solver="auto", use_cou
        
     2. **Time-varying frequency signals (frequency sweeps)**: Use FREQUENCY-ADAPTIVE bandwidth
        - bandwidth = 0.10 * freq  # 10% of instantaneous frequency
-       - p = 1                     # Keep filter order at 1 (higher orders degrade envelope)
+       - p = 1                     # or 2-3 to reject close orders more strongly (see p)
        - This maintains constant relative bandwidth throughout the sweep
     
     The key insight: **relative bandwidth** (bandwidth / frequency) must remain constant.
     For time-varying frequencies, use adaptive bandwidth to ensure this constancy.
-    Higher filter orders can degrade envelope preservation with adaptive bandwidth,
-    so keep p=1 for frequency-adaptive cases.
 
     Examples
     --------
     >>> # Constant frequency - use fixed bandwidth
     >>> x = np.sin(2*np.pi*100*np.arange(1000)/1000)
     >>> freq = 100 * np.ones(1000)
-    >>> y, phasor = vold_kalman_filter(x, freq, 1000, 20, 1)  # BW=20 Hz
+    >>> y, phasor, _ = vold_kalman_filter(x, freq, 1000, 20, 1)  # BW=20 Hz
     
     >>> # Time-varying frequency - use adaptive bandwidth  
     >>> freq_chirp = 50 + 100*np.arange(1000)/1000  # 50-150 Hz sweep
     >>> phase = 2 * np.pi * np.cumsum(freq_chirp) / 1000
     >>> x_chirp = np.sin(phase)
-    >>> y, phasor = vold_kalman_filter(x_chirp, freq_chirp, 1000, 0.10*freq_chirp, 1)
+    >>> y, phasor, _ = vold_kalman_filter(x_chirp, freq_chirp, 1000, 0.10*freq_chirp, 1)
     """
 
     # Input validation
@@ -181,24 +201,6 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None, solver="auto", use_cou
 
     # Creating the Phasor Vector
     phasor = np.exp(2j * np.pi * np.cumsum(freq, axis=0) * dt)
-
-    # Initializing the bandwidth vector
-    bandwidth = np.atleast_1d(bandwidth)
-    
-    if bandwidth.size == 1:
-        bw_band = bandwidth[0] * np.ones((n_x, 1))
-    elif bandwidth.shape == x.shape:
-        bw_band = bandwidth.reshape(-1, 1)
-    elif bandwidth.size == n_ord:
-        bw_band = np.tile(bandwidth, (n_x, 1))
-    elif bandwidth.shape == freq.shape:
-        bw_band = bandwidth
-    else:
-        raise ValueError(
-            "Bandwidth not chosen properly. Check bandwidth scalar/vector dimensions"
-        )
-
-    bw_rad = bw_band * np.pi / fs
 
     # Setting the filter order & coefficients
     p_arr = np.atleast_1d(p).astype(int)
@@ -235,34 +237,40 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None, solver="auto", use_cou
         print(f"AA[0, :10] = {AA_check[0, :10]}")
         print(f"AA[-1, -10:] = {AA_check[-1, -10:]}")
 
-    # Solving for r-weighting factor
+    # Weighting factor r for every sample and order, given or from the bandwidth
     if use_weight_factor:
-        # Compute weighting factor from bandwidth
-        if bw_rad.ndim == 1 or bw_rad.shape[1] == 1:
-            # Scalar or time-varying bandwidth
-            weig_r0 = _compute_weighting_factor(bw_rad.ravel(), p_p)
-            weig_r = np.tile(weig_r0, n_ord)
-        else:
-            # Order-wise bandwidth
-            weig_r_list = []
-            for j in range(n_ord):
-                weig_r0_j = _compute_weighting_factor(bw_rad[:, j], p_p)
-                weig_r_list.extend(weig_r0_j)
-            weig_r = np.array(weig_r_list)
-            weig_r = weig_r[:n_tot]
+        bw = _per_sample_and_order(bandwidth, n_x, n_ord, 'bandwidth')
+        if not np.all(np.isfinite(bw)) or np.any(bw <= 0.0) or np.any(bw >= fs):
+            raise ValueError('bandwidth (the full -3 dB width, Hz) must be positive and below the sample rate')
+        weight = _compute_weighting_factor(bw * np.pi / fs, p_p)
     else:
-        # Use provided weighting factor
-        if np.isscalar(r):
-            weig_r = r * np.ones(n_tot)
-        else:
-            weig_r = np.asarray(r).ravel()
-            weig_r = np.tile(weig_r, n_ord) if len(weig_r) < n_tot else weig_r[:n_tot]
-    
-    # Compute B0 = AA' * R^2 * AA + I, the regularised least-squares matrix.
+        weight = _per_sample_and_order(r, n_x, n_ord, 'r')
+        if not np.all(np.isfinite(weight)) or np.any(weight < 0.0):
+            raise ValueError('r must be finite and non-negative')
     # Each difference row takes the weight of the sample it starts at.
-    n_rows = n_ord * (n_x - p_p)
-    weig_r2 = (np.asarray(weig_r, dtype=float).reshape(n_x, n_ord, order="F")[:n_x - p_p] ** 2).ravel(order="F")
-    RR_squared = spdiags([weig_r2], [0], n_rows, n_rows, format='csr')
+    row_weight = weight[:n_x - p_p].ravel(order="F")
+    n_rows = row_weight.size
+
+    solver_choice = (solver or "auto").lower()
+    if solver_choice not in ("auto", "pardiso", "umfpack", "superlu"):
+        raise ValueError(f"Unknown solver '{solver}'")
+    if solver_choice == "pardiso" and not _HAVE_PARDISO:
+        raise RuntimeError("pypardiso is not installed")
+
+    condition = 1.0 + float(np.max(row_weight, initial=0.0)) ** 2 * 4.0 ** p_p
+    if condition > _NORMAL_EQUATIONS_MAX_CONDITION:
+        if np.sqrt(condition) > _AUGMENTED_MAX_CONDITION:
+            warnings.warn(
+                'the requested bandwidth is too narrow for this sample rate with p={:d} '
+                '(condition number ~{:.0e}), so the envelopes may be inaccurate; decimate '
+                'the signal first, or use a lower p'
+                .format(p_p, np.sqrt(condition)), RuntimeWarning, stacklevel=2)
+        y_R, cost_mat = _solve_augmented(x, phasor, AA_sparse, row_weight,
+                                         n_ord > 1 and use_coupling, solver_choice)
+        return 2.0 * y_R.reshape((n_x, n_ord), order="F"), phasor, cost_mat
+
+    # Compute B0 = AA' * R^2 * AA + I, the regularised least-squares matrix.
+    RR_squared = spdiags([row_weight ** 2], [0], n_rows, n_rows, format='csr')
     B0 = AA_sparse.T @ RR_squared @ AA_sparse + speye(n_tot, format='csr')
     
     # Precompute conjugate phasor in (n_x, n_ord) form
@@ -299,29 +307,9 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None, solver="auto", use_cou
         print(f"B_mat is symmetric: {np.allclose(B_mat, B_mat.conj().T)}")
         print(f"cH_x[0:5] = {cH_x[0:5]}")
 
-    # Solve the linear equations using sparse solver.  Bad arguments raise here,
-    # outside the fallback below, instead of being swallowed by it.
-    solver_choice = (solver or "auto").lower()
-    if solver_choice not in ("auto", "pardiso", "umfpack", "superlu"):
-        raise ValueError(f"Unknown solver '{solver}'")
-    if solver_choice == "pardiso" and not _HAVE_PARDISO:
-        raise RuntimeError("pypardiso is not installed")
-    # Convert to CSC for faster factorization in spsolve
+    # Solve the linear equations using sparse solver
     B_mat = B_mat.tocsc()
-    try:
-        if solver_choice in ("auto", "pardiso") and _HAVE_PARDISO:
-            y_R = _pardiso_spsolve(B_mat, cH_x)
-        else:
-            try:
-                y_R = spsolve(B_mat, cH_x, use_umfpack=_HAVE_UMFPACK and solver_choice != "superlu")
-            except TypeError:
-                y_R = spsolve(B_mat, cH_x)
-    except Exception:
-        if solver_choice != "auto":
-            raise
-        # pypardiso rejects complex matrices, and this system is complex:
-        # fall back to SuperLU, never to a dense solve (n_tot**2 memory).
-        y_R = spsolve(B_mat, cH_x, use_umfpack=False)
+    y_R = _solve_sparse(B_mat, cH_x, solver_choice)
 
     # DEBUG: Check residual
     if False:  # Enable for debugging
@@ -348,82 +336,104 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None, solver="auto", use_cou
     return y, phasor, cost_mat
 
 
-def _pascal_coefficients(n):
+def _per_sample_and_order(value, n_x, n_ord, name):
+    """``value`` broadcast to (n_x, n_ord): a scalar, one value per sample,
+    one per order, or one per sample and order.  A vector as long as both is
+    taken per sample."""
+    v = np.asarray(value, dtype=float)
+    if v.size == 1:
+        return np.full((n_x, n_ord), v.item())
+    if v.ndim == 1 or (v.ndim == 2 and 1 in v.shape):
+        flat = v.ravel()
+        if flat.size == n_x:
+            return np.repeat(flat[:, None], n_ord, axis=1)
+        if flat.size == n_ord:
+            return np.tile(flat[None, :], (n_x, 1))
+    elif v.shape == (n_x, n_ord):
+        return v.copy()
+    raise ValueError(f"{name} must be a scalar, or have n_samples ({n_x}), n_orders ({n_ord}) "
+                     f"or (n_samples, n_orders) values; got shape {v.shape}")
+
+
+def _solve_sparse(A, b, solver_choice):
+    """Solve A z = b with the selected sparse backend (A in CSC)."""
+    try:
+        if solver_choice in ("auto", "pardiso") and _HAVE_PARDISO:
+            return _pardiso_spsolve(A, b)
+        try:
+            return spsolve(A, b, use_umfpack=_HAVE_UMFPACK and solver_choice != "superlu")
+        except TypeError:
+            return spsolve(A, b)
+    except Exception:
+        if solver_choice != "auto":
+            raise
+        # pypardiso rejects complex matrices, and these systems are complex:
+        # fall back to SuperLU, never to a dense solve (n_tot**2 memory).
+        return spsolve(A, b, use_umfpack=False)
+
+
+def _solve_augmented(x, phasor, AA, row_weight, coupled, solver_choice):
+    """Solve the Vold-Kalman least-squares problem through its augmented system.
+
+    With M = [C; R AA] and y = [x; 0] the envelopes a minimise |y - M a|**2.
+    The normal equations M^H M a = M^H y add the identity to entries of order
+    r**2, which rounding swamps for narrow bands at high sample rates.  The
+    augmented system
+
+        [[I, M], [M^H, 0]] [s; a] = [y; 0],    s = y - M a,
+
+    has the same solution, never forms R**2 AA' AA, and is conditioned like
+    the square root of the normal equations.
+
+    Returns (a, M^H (y - M a)), the latter being the normal-equations residual.
     """
-    Generate Pascal's triangle coefficients.
+    n_x, n_ord = phasor.shape
+    n_tot = n_x * n_ord
+    unknowns = np.arange(n_tot)
+    values = phasor.ravel(order="F")
+    if coupled:
+        # Every order fits the one signal together (the cross-order coupling).
+        C = csr_matrix((values, (np.tile(np.arange(n_x), n_ord), unknowns)), shape=(n_x, n_tot))
+        data = np.asarray(x)
+    else:
+        # Each order fits the signal on its own.
+        C = csr_matrix((values, (unknowns, unknowns)), shape=(n_tot, n_tot))
+        data = np.tile(np.asarray(x), n_ord)
+    M = vstack((C, spdiags([row_weight], [0], row_weight.size, row_weight.size) @ AA), format="csr")
+    y = np.concatenate((data, np.zeros(row_weight.size))).astype(complex)
+    m = M.shape[0]
+    augmented = bmat([[speye(m), M], [M.conj().T, None]], format="csc")
+    solution = _solve_sparse(augmented, np.concatenate((y, np.zeros(n_tot, dtype=complex))), solver_choice)
+    a = solution[m:]
+    return a, M.conj().T @ (y - M @ a)
 
-    Parameters
-    ----------
-    n : int
-        Number of rows in Pascal's triangle
-
-    Returns
-    -------
-    ndarray
-        Pascal's triangle matrix, shape (n, n)
-    """
-    pascal = np.zeros((n, n))
-    for i in range(n):
-        pascal[i, 0] = 1
-        for j in range(1, i + 1):
-            pascal[i, j] = pascal[i - 1, j - 1] + pascal[i - 1, j]
-    return pascal
-
-
-# Module-level cache for Vandermonde coefficients (keyed by filter order)
-_vandermonde_cache = {}
 
 def _compute_weighting_factor(bw_rad, p_p):
-    """
-    Compute weighting factor from bandwidth using Vandermonde system.
+    """Weighting factor r that puts the filter's half-power points at +-bw_rad.
+
+    A component Omega rad/sample away from the tracked order reaches the
+    envelope with gain 1 / (1 + r**2 (2 sin(Omega/2))**(2p)) (Tuma 2005), so r
+    follows from setting that to 1/sqrt(2) at Omega = bw_rad, half the full
+    bandwidth.  This used to evaluate (2 - 2 cos Omega)**p as a cosine sum:
+    for a narrow band that is ~Omega**(2p), far below the rounding error of
+    its O(10) terms, and its 1e-12 clamp capped r at 6.4e5, silently widening
+    the band (p = 2 at 48 kHz could not go below 15 Hz, p = 3 at 8 kHz below
+    26 Hz).
 
     Parameters
     ----------
     bw_rad : ndarray
-        Bandwidth in radians, shape (n_samples,)
+        Half the bandwidth in radians per sample (pi * bandwidth_Hz / fs)
     p_p : int
         Filter order
 
     Returns
     -------
     ndarray
-        Weighting factor array, shape (n_samples,)
+        Weighting factor, same shape as bw_rad
     """
-    # MATLAB Vandermonde system approach with caching
-    # Coefficients depend only on filter order p_p, so cache them
-    if p_p not in _vandermonde_cache:
-        # Build coefficient matrix (weigF.coecos in MATLAB)
-        n = np.arange(p_p + 1)
-        sign = (-1.0) ** n
-        coecos = np.ones((p_p + 1, p_p + 1))
-        
-        for i in range(1, p_p + 1):
-            coecos[i, :] = (n ** (2 * (i - 1))) * sign
-        
-        # Right-hand side (weigF.coe in MATLAB)
-        coe = np.zeros(p_p + 1)
-        coe[0] = 2.0 ** (2 * p_p)
-        
-        # Solve Vandermonde system: coecos \ coe
-        coeff = np.linalg.solve(coecos, coe) * sign
-        _vandermonde_cache[p_p] = coeff
-    else:
-        coeff = _vandermonde_cache[p_p]
-    
-    # Compute denominator as sum of coeff[i] * cos(bw_rad * i) using vectorized operations
-    # Build cosine terms: cos(bw_rad * 0), cos(bw_rad * 1), ..., cos(bw_rad * (p_p))
-    cos_indices = np.arange(len(coeff))
-    cos_terms = np.cos(bw_rad[:, np.newaxis] * cos_indices[np.newaxis, :])
-    denominator = cos_terms @ coeff
-    
-    # Numerator is sqrt(2) - 1
-    numerator = np.sqrt(2.0) - 1.0
-    
-    # Avoid division by zero
-    denominator = np.maximum(denominator, 1e-12)
-    r0 = np.sqrt(np.maximum(numerator / denominator, 1e-12))
-    
-    return r0
+    bw_rad = np.asarray(bw_rad, dtype=float)
+    return np.sqrt((np.sqrt(2.0) - 1.0) / (2.0 * np.sin(0.5 * bw_rad)) ** (2 * p_p))
 
 
 if __name__ == "__main__":
