@@ -13,6 +13,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.io import loadmat
 from scipy.interpolate import interp1d
+from scipy.signal import resample_poly
 import os
 import time
 import concurrent.futures as cf
@@ -68,9 +69,11 @@ def load_hexacopter_data(mat_file_path, downsample_factor=8):
     print(f"Original data shape: T={acoustics_T.shape}, P={acoustics_P.shape}")
     print(f"Aircraft RPM shape: {aircraft_rpm.shape}")
     
-    # Downsample the acoustic data
+    # Downsample the acoustic data.  Low-pass before keeping every Nth sample:
+    # plain slicing folded everything above the new Nyquist back into the band,
+    # +3 dB at 2-3 kHz and +6 dB at 3-4 kHz on this record.
     acoustics_T = acoustics_T[::downsample_factor]
-    acoustics_P = acoustics_P[::downsample_factor, :]
+    acoustics_P = resample_poly(acoustics_P, 1, downsample_factor, axis=0)
     
     print(f"Downsampled data shape: T={acoustics_T.shape}, P={acoustics_P.shape}")
     
