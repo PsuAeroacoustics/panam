@@ -71,3 +71,18 @@ def test_netcdf_export_round_trips(tmp_path):
         p_r = nc['P_r_real'][:] + 1j * nc['P_r_imag'][:]
         assert p_r.shape == (2, 2, 2, 2)
         assert np.allclose(p_r.reshape(4, 2, 2), table['P_r'])
+
+
+def test_inverted_microphone_over_a_vanishing_plate_is_two_paths():
+    # 7 mm above a 0.01 mm plate on rigid ground: direct plus image about the
+    # ground, including the 10 kHz null.  (A 0.3 mm plate is not thin enough
+    # here: 2 k t is 0.11 rad at 10 kHz, visible near a null.)
+    t = 0.00001 / 0.3048
+    h = gp.INVERTED_MIC_HEIGHT_FT
+    f = np.array([2500.0, 10000.0])
+    el = np.array([30.0, 80.0])
+    pd, pr = ab.scattering(f, el, [90.0], C, flow_resistance=1e9, mic_height=h,
+                           thickness=t, edge_thickness=t, taper_length=0.0)
+    k = 2 * np.pi * f / C
+    exact = np.abs(1 + np.exp(2j * k[:, None] * (t + h) * np.sin(np.radians(el))[None, :]))
+    assert np.allclose(20 * np.log10(np.abs(pd + pr)[:, :, 0]), 20 * np.log10(exact), atol=0.1)

@@ -74,6 +74,25 @@ TEST_YEAR = 2017
 #: high-frequency bands this work is trying to clean up.
 GROUND_BOARD_INSTRUMENTS = ('gdbdfl', 'invgb7')
 
+#: The test site's ground (Amedee Army Airfield), fitted to the co-located
+#: pole and ground-plate microphone pairs: variable porosity, effective flow
+#: resistivity 200 kPa s/m^2 (docs/ground_plane_corrections.md, path 4 and
+#: the run-holdout profile).
+SITE_GROUND = dict(model='variable_porosity', sigma_e=200.0, alpha_e=0.0)
+
+#: Microphone height above its plate's top, feet, per ground-board instrument
+#: type.  Every ground microphone in the NASA test was a flush GRAS 67AX in a
+#: 400 mm GR1425 plate, at 3/4 of the radius, outboard of the track -- the
+#: dataset's ``invgb7`` label ("inverted over a ground board with a 7 mm gap")
+#: included, per the test team.  A true inverted layout (``axisymmetric_bem``'s
+#: ``mic_height``, plus the microphone body over the gap, which is not yet
+#: modelled) is for other tests.
+BOARD_MIC_HEIGHT_FT = {'gdbdfl': 0.0, 'invgb7': 0.0}
+
+#: Plate tables are computed at the run's sound speed rounded to this
+#: relative step (they scale with frequency / sound speed).
+PLATE_TABLE_SOUND_SPEED_STEP = 0.005
+
 #: Legacy sphere reference radius, feet.
 DEFAULT_R_REF_FT = 100.0
 
@@ -548,6 +567,75 @@ def load_ambient_channels(test, ambient_run, mics, max_duration_s=30.0,
 
 
 # --------------------------------------------------------------------------
+# Ground-plate response
+# --------------------------------------------------------------------------
+
+_PLATE_TABLES = {}
+
+
+def default_plate_table_directory():
+    """Where computed plate tables are kept between runs."""
+    return os.path.join(os.path.expanduser('~'), '.cache', 'panam', 'plate_tables')
+
+
+def plate_table(instrument, sound_speed_ft_s, bands, ground=None, directory=None):
+    """The axisymmetric BEM table (:func:`axisymmetric_bem.table`) for one board type.
+
+    Computed at ``sound_speed_ft_s`` rounded to :data:`PLATE_TABLE_SOUND_SPEED_STEP`
+    and cached in memory and in ``directory`` (default
+    :func:`default_plate_table_directory`); a table takes 15-45 s.
+    """
+    import pickle
+    import axisymmetric_bem as ab
+    ground = dict(SITE_GROUND if ground is None else ground)
+    step = np.log1p(PLATE_TABLE_SOUND_SPEED_STEP)
+    speed = float(np.exp(np.round(np.log(sound_speed_ft_s) / step) * step))
+    bands = np.asarray(bands, dtype=float)
+    ground_key = '_'.join('{}{}'.format(k, ground[k]) for k in sorted(ground))
+    # Keyed on what the table depends on, not the instrument's name.
+    key = 'h{:.2f}mm_{}_c{:.2f}_b{}-{:g}-{:g}'.format(BOARD_MIC_HEIGHT_FT[instrument] * 304.8, ground_key,
+                                                      speed, bands.size, bands[0], bands[-1])
+    if key in _PLATE_TABLES:
+        return _PLATE_TABLES[key]
+    directory = os.path.abspath(os.path.expanduser(directory or default_plate_table_directory()))
+    path = os.path.join(directory, key + '.pkl')
+    table = None
+    if os.path.exists(path):
+        with open(path, 'rb') as handle:
+            table = pickle.load(handle)
+        if not np.array_equal(table.get('bands'), bands):
+            table = None
+    if table is None:
+        logging.info('Computing the plate table %s', key)
+        flow = ground.get('sigma', ground.get('sigma_e'))
+        table = ab.table(bands, speed, flow_resistance=flow, ground=ground,
+                         mic_height=BOARD_MIC_HEIGHT_FT[instrument])
+        os.makedirs(directory, exist_ok=True)
+        temporary = path + '.{}.tmp'.format(os.getpid())
+        with open(temporary, 'wb') as handle:
+            pickle.dump(table, handle)
+        os.replace(temporary, path)             # parallel builds may race; either copy is right
+    _PLATE_TABLES[key] = table
+    return table
+
+
+def plate_response(tables, mirror, sound_speed_ft_s):
+    """A ``receiver_response_db`` for :func:`flight_acoustics.depropagate_hemisphere`.
+
+    ``tables[im]`` is microphone ``im``'s plate table and ``mirror[im]`` puts
+    its offset on -y (outboard for a microphone on the -y side of the track).
+    """
+    import axisymmetric_bem as ab
+
+    def response(im, bands, offset):
+        offset = np.asarray(offset, dtype=float)
+        return ab.board_level(bands, offset[:, 2], np.hypot(offset[:, 0], offset[:, 1]),
+                              sound_speed_ft_s, tables[im], source_dx=offset[:, 0],
+                              source_dy=offset[:, 1], mirror_y=bool(mirror[im]))
+    return response
+
+
+# --------------------------------------------------------------------------
 # Atmosphere
 # --------------------------------------------------------------------------
 
@@ -666,8 +754,19 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
                  flip_y_for_geometry=False,
                  atmosphere=None, speed_of_sound_ft_s=None,
                  apply_absorption_deprop=True, overwrite=True, norah2_directory=None,
-                 third_octave_method='fft'):
+                 third_octave_method='fft', board_correction='plate_bem', ground=None,
+                 plate_table_directory=None):
     """Depropagate one run into an AAM-style source sphere.
+
+    ``board_correction`` removes the ground board's effect: ``'plate_bem'``
+    (default) divides each band by the plate's modelled response for that
+    frame's geometry -- the axisymmetric BEM of the plate on the site's
+    ``ground`` (default :data:`SITE_GROUND`), per instrument type
+    (:data:`BOARD_MIC_HEIGHT_FT`), microphone outboard of the track -- and
+    ``'flat'`` applies the constant pressure-doubling factor 0.5 (-6 dB) the
+    spheres were built with before 2026-09-26.  Against the co-located pole
+    microphones the flat factor reads 2-4 dB high at mid frequencies at
+    10-40 deg elevation, where the plate's response falls short of +6 dB.
 
     ``norah2_directory``, if given, also writes the same hemisphere there as a
     NORAH2 ``.hem`` file named by :func:`norah2_file_name` (see
@@ -732,12 +831,17 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     time_range = (float(segment['time'][0]),
                   float(segment['time'][-1] + ranges.max() / speed_of_sound_ft_s + 2.0 * window_time))
 
-    locations, pressures, times, mics = load_run_channels(test, run, mics, time_range)
+    if board_correction not in ('plate_bem', 'flat'):
+        raise ValueError("board_correction must be 'plate_bem' or 'flat'")
+    board_scale = 0.5 if board_correction == 'flat' else 1.0
+    locations, pressures, times, mics = load_run_channels(test, run, mics, time_range,
+                                                          ground_board_scale=board_scale)
 
     ambient_pressure = None
     ambient_percentile = None
     if ambient_run is not None:
-        ambient_pressure, _, _ = load_ambient_channels(test, ambient_run, mics)
+        ambient_pressure, _, _ = load_ambient_channels(test, ambient_run, mics,
+                                                       ground_board_scale=board_scale)
     elif ambient_source.startswith('percentile'):
         ambient_percentile = float(ambient_fallback_percentile)
 
@@ -748,6 +852,13 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     else:
         band_centers = LEGACY_BAND_CENTERS_HZ
         phi_deg = theta_deg = None
+
+    receiver_response = None
+    if board_correction == 'plate_bem':
+        tables = [plate_table(test.instrument_types[m], speed_of_sound_ft_s, band_centers,
+                              ground=ground, directory=plate_table_directory) for m in mics]
+        side_y = locations[:, 1] * (-1.0 if flip_y_for_geometry else 1.0)
+        receiver_response = plate_response(tables, side_y < 0.0, speed_of_sound_ft_s)
 
     band_low = float(band_centers.min()) / 2.0 ** (1.0 / 6.0)
     band_high = float(band_centers.max()) * 2.0 ** (1.0 / 6.0)
@@ -782,6 +893,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
         ambient_percentile=ambient_percentile,
         band_snr_gate_db=band_snr_gate_db,
         max_absorption_correction_db=max_absorption_correction_db,
+        receiver_response_db=receiver_response,
     )
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)) or '.', exist_ok=True)
@@ -827,7 +939,10 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
                 temperature_k=atmosphere.temperature,
                 relative_humidity=atmosphere.relative_humidity,
                 pressure_kpa=atmosphere.pressure,
-                speed_of_sound_ft_s=speed_of_sound_ft_s)
+                speed_of_sound_ft_s=speed_of_sound_ft_s,
+                board_correction=board_correction if board_correction == 'flat' else
+                'plate_bem ' + ' '.join('{}={}'.format(k, v) for k, v in
+                                         sorted((ground or SITE_GROUND).items())))
 
 
 # --------------------------------------------------------------------------
@@ -952,7 +1067,8 @@ def write_manifest(path, records, failures):
               'ambient_source', 'mics',
               'speed_knots', 'flight_path_angle_deg', 'window_s', 'window_points',
               'min_elevation_deg', 'max_array_range_ft', 'temperature_k',
-              'relative_humidity', 'pressure_kpa', 'speed_of_sound_ft_s', 'error']
+              'relative_humidity', 'pressure_kpa', 'speed_of_sound_ft_s', 'board_correction',
+              'error']
     with open(path, 'w', encoding='utf-8', newline='') as handle:
         writer = csv.DictWriter(handle, fieldnames=fields, extrasaction='ignore')
         writer.writeheader()
@@ -983,6 +1099,9 @@ def main(argv=None):
     parser.add_argument('--norah2-directory', default=None,
                         help='also write each sphere as a NORAH2 .hem file here, with the '
                              'triangulation file NORAH2 needs to interpolate between them')
+    parser.add_argument('--board-correction', choices=('plate_bem', 'flat'), default='plate_bem',
+                        help="'plate_bem' (default) divides out the ground plate's modelled "
+                             "response per band and frame; 'flat' is the old constant -6 dB")
     parser.add_argument('--third-octave-method', choices=('fft', 'filter_bank'), default='fft',
                         help="'filter_bank' forms bands with a true one-third octave filter "
                              "bank, as an analyser does; it differs from the default FFT band "
@@ -1023,6 +1142,7 @@ def main(argv=None):
         reference_directory=args.reference_directory, manifest_path=args.manifest,
         norah2_directory=args.norah2_directory,
         third_octave_method=args.third_octave_method,
+        board_correction=args.board_correction,
         band_snr_gate_db=args.band_snr_gate_db,
         max_absorption_correction_db=args.max_absorption_correction_db,
         point_stride=args.point_stride, gate_ambient=not args.no_ambient_gate,

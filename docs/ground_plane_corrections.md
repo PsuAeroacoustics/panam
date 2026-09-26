@@ -837,6 +837,44 @@ path with `--ground_effect`:
     P_d and P_r themselves, was accurate to 0.065 dB but saves nothing once Q
     is quadratic.
 
+### In the sphere builds (2026-09-26)
+
+The 2017 spheres were built with the dataset's constant installation
+correction: board pressures times 0.5 (-6 dB). That correction is now the
+plate model, per band and per frame:
+
+- **The hook.** `flight_acoustics.depropagate_hemisphere(...,
+  receiver_response_db=...)` takes the installation's band-averaged response
+  for each emission point (the source position minus the mic's). It divides
+  each bin by its band's value after the ambient gate and before spreading,
+  so each band's energy is divided by the plate's band-averaged response.
+  Pressures then go in unscaled.
+- **The builder.** `noise_abatement_2017.build_sphere(board_correction=
+  'plate_bem')` is now the default; `'flat'` keeps the old -6 dB. Each mic's
+  response is `axisymmetric_bem.board_level`:
+  - on the GR1425 plate over `SITE_GROUND` (variable porosity, σe 200);
+  - mic outboard of the track (on the -y side for a mic at y < 0);
+  - Q at the run's sound speed.
+- **Table cache.** Tables are cached per sound speed (0.5% steps) in
+  `~/.cache/panam/plate_tables`, about 30 s each.
+- **Inverted mics.** Every ground microphone in the NASA test was a flush
+  67AX, including those the dataset labels `invgb7` (inverted, 7 mm gap), so
+  they all use the flush model.
+  - A true inverted layout is left for later tests. It needs the mic body
+    over the gap. A bare point 7 mm up (the validated `mic_height` option of
+    `axisymmetric_bem.scattering`) sits near the two-path null, 11 dB under
+    doubling at 10 kHz overhead, which the real arrangement doesn't show.
+- **Effect** on B407 run 283115 (level, 47 mics), plate minus flat, median
+  over azimuth:
+  - +0.2 to +0.4 dB below 100 Hz;
+  - +0.8 to +2.6 dB at 0.5-2 kHz, largest toward the sidelines (the lowest
+    elevations the 10° floor admits), where the plate's response is furthest
+    below +6 dB;
+  - within ±0.2 dB above 5 kHz.
+
+  The co-located pole microphones implied this size and direction: the
+  plate reads 2-4 dB under +6 dB at mid frequencies below 40°.
+
 ## Candidate models
 
 | Model | Mixed boundary | Grazing | Edge diffraction (ripple) | Cost per evaluation |

@@ -206,7 +206,7 @@ def plate_generator(radius=gp.PLATE_RADIUS_FT, thickness=gp.PLATE_THICKNESS_FT,
 def scattering(frequencies, elevations, azimuths, sound_speed, flow_resistance=gp.FLOW_RESISTANCE,
                ground=None, mic=(0.0, gp.PLATE_MIC_OFFSET_FT), segments_per_wavelength=10,
                max_segment=0.02, extra_modes=10, gauss=6, n_phi_uniform=None, generator=None,
-               mic_rz=None, **geometry):
+               mic_rz=None, mic_height=0.0, **geometry):
     """(P_d, P_r) at a flush microphone on a rigid plate lying on the ground, like
     :func:`ground_plane.raised_plate_scattering`, by azimuthal modes.
 
@@ -222,6 +222,12 @@ def scattering(frequencies, elevations, azimuths, sound_speed, flow_resistance=g
     discretised surface, e.g. a segment midpoint); ``mic`` then gives only its
     azimuth.  ``radius`` and ``thickness`` in ``geometry`` still size the
     modes and the Green's function table.
+
+    ``mic_height`` > 0 lifts the microphone that far above the plate's top, in
+    the air: an inverted microphone over a board (SAE ARP 4055's 7 mm gap,
+    :data:`ground_plane.INVERTED_MIC_HEIGHT_FT`).  Off the surface the field is
+    p_inc + K p, not the surface value 2 (p_inc + K p).  The microphone's own
+    body is not modelled.
     """
     frequencies = np.atleast_1d(np.asarray(frequencies, float))
     el = np.radians(np.atleast_1d(np.asarray(elevations, float)))
@@ -229,9 +235,12 @@ def scattering(frequencies, elevations, azimuths, sound_speed, flow_resistance=g
     radius = geometry.get('radius', gp.PLATE_RADIUS_FT)
     thickness = geometry.get('thickness', gp.PLATE_THICKNESS_FT)
     r_mic = float(np.hypot(*mic)); phi_mic = float(np.arctan2(mic[1], mic[0]))
-    z_mic = thickness
+    z_mic = thickness + float(mic_height)
+    surface = mic_height == 0.0
     if mic_rz is not None:
         r_mic, z_mic = float(mic_rz[0]), float(mic_rz[1])
+        surface = True
+    field_factor = 2.0 if surface else 1.0
     gx, gw = np.polynomial.legendre.leggauss(gauss)
     gx, gw = 0.5 * (gx + 1.0), 0.5 * gw
     pd_out = np.empty((frequencies.size, el.size, az.size), dtype=complex)
@@ -246,13 +255,20 @@ def scattering(frequencies, elevations, azimuths, sound_speed, flow_resistance=g
         m_max = int(np.ceil(k * radius)) + extra_modes
         n_phi = n_phi_uniform or max(16, 2 * m_max)
         beta = gp._ground_admittance(f, sound_speed, flow_resistance, ground)
-        table = gp.ImageIntegralTable(k, beta, 2.0 * radius * 1.02 + 2 * segment, 2.0 * thickness * 1.05)
+        # Vertical reach: source on the plate plus target, up to a raised microphone.
+        z_reach = max(2.0 * thickness, thickness + z_mic)
+        table = gp.ImageIntegralTable(k, beta, 2.0 * radius * 1.02 + 2 * segment, z_reach * 1.05)
         tab = (table.u[0], table.u[1] - table.u[0], table.u.size, table.v[0], table.v[1] - table.v[0],
                table.v.size, table.offset, np.ascontiguousarray(table.i_red), np.ascontiguousarray(table.j_red))
         mids = np.column_stack((0.5 * (segs[:, 0] + segs[:, 2]), 0.5 * (segs[:, 1] + segs[:, 3])))
         kern = _assemble(mids, segs, flat, m_max, k, complex(beta), tab, gx, gw, n_phi)
         target = np.array([[r_mic, z_mic]])
-        kmic = _assemble(target, segs, flat, m_max, k, complex(beta), tab, gx, gw, max(n_phi, 64))[:, 0, :]
+        # Off the surface the ring kernel peaks within ~ the height of the ring
+        # below, so resolve that in azimuth (a few points per height).
+        n_phi_mic = max(n_phi, 64)
+        if not surface:
+            n_phi_mic = max(n_phi_mic, int(np.ceil(2 * np.pi * r_mic / (float(mic_height) / 4.0))))
+        kmic = _assemble(target, segs, flat, m_max, k, complex(beta), tab, gx, gw, n_phi_mic)[:, 0, :]
         n = segs.shape[0]
         kappa = k * np.cos(el)                                  # (n_el,)
         kz = k * np.sin(el)
@@ -277,8 +293,8 @@ def scattering(frequencies, elevations, azimuths, sound_speed, flow_resistance=g
         inc_mic_r = mic_inc_h * np.exp(+1j * kz * z_mic)[:, None]
         sum_d = np.einsum('m,me,ma->ea', weights, c_d, phase)
         sum_r = np.einsum('m,me,ma->ea', weights, c_r, phase)
-        pd_out[fi] = 2.0 * (inc_mic_d + sum_d) / inc_mic_d
-        pr_out[fi] = 2.0 * (inc_mic_r + sum_r) / inc_mic_d
+        pd_out[fi] = field_factor * (inc_mic_d + sum_d) / inc_mic_d
+        pr_out[fi] = field_factor * (inc_mic_r + sum_r) / inc_mic_d
     return pd_out, pr_out
 
 
@@ -302,7 +318,8 @@ def table(bands, sound_speed, flow_resistance=gp.FLOW_RESISTANCE, ground=None, s
                 radius=options.get('radius', gp.PLATE_RADIUS_FT),
                 edge_thickness=options.get('edge_thickness', gp.PLATE_EDGE_THICKNESS_FT),
                 taper_length=options.get('taper_length', gp.PLATE_TAPER_LENGTH_FT),
-                mic=options.get('mic', (0.0, gp.PLATE_MIC_OFFSET_FT)))
+                mic=options.get('mic', (0.0, gp.PLATE_MIC_OFFSET_FT)),
+                mic_height=options.get('mic_height', 0.0))
 
 
 def board_level(bands, source_height, ground_distance, sound_speed, table, sub_bands=5,
@@ -390,6 +407,7 @@ def write_netcdf(path, table, description=''):
         nc.edge_thickness_m = table['edge_thickness'] * ft
         nc.taper_length_m = table['taper_length'] * ft
         nc.mic_x_m, nc.mic_y_m = (float(v) * ft for v in table['mic'])
+        nc.mic_height_m = float(table.get('mic_height', 0.0)) * ft
         nc.sound_speed_mps = table['sound_speed'] * ft
         nc.ground_model = ground['model']
         nc.flow_resistance = float(ground.get('sigma', ground.get('sigma_e', table['flow_resistance'])))

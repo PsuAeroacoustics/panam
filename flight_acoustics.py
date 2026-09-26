@@ -917,6 +917,7 @@ def depropagate_hemisphere(
         ambient_percentile=None,
         band_snr_gate_db=3.0,
         max_absorption_correction_db=None,
+        receiver_response_db=None,
 ):
     """Generate an acoustic hemisphere from microphone time series and vehicle tracking data.
 
@@ -987,6 +988,18 @@ def depropagate_hemisphere(
     correction exceeds what the measurement can support -- the band is simply
     not observable at that range, and a gap there is the honest result. It has
     no effect unless ``apply_absorption_deprop=True``.
+
+    ``receiver_response_db``, if given, removes what the microphone's
+    installation adds.  It is called as ``receiver_response_db(im, bands,
+    source_offset)``, with ``bands`` the one-third octave centres (the output
+    bands when ``third_octave``), ``source_offset`` the (Npts, 3) emission
+    positions minus microphone ``im``'s position, and returns the band-averaged
+    level re free field, dB, shaped (len(bands), Npts) -- for instance a
+    ground plate's response (:func:`axisymmetric_bem.board_level`).  Each bin
+    is divided by its band's value, after the ambient gate and before
+    spreading, so a band's energy is divided by the band-averaged response.
+    The pressures should then be supplied unscaled (no 0.5 pressure-doubling
+    factor).
 
     This is the "normal" processing flow used by the demo scripts: use the vehicle kinematics
     to compute emission-time geometry (azimuth/elevation/range) via :func:`hemigen`, sample
@@ -1192,6 +1205,16 @@ def depropagate_hemisphere(
         band_centers = np.array([], dtype=float)
         band_power_lists = []
 
+    # Bands the receiver response is evaluated in: the output bands, or the
+    # standard centres over the frequency range when there are none.
+    if third_octave:
+        response_centers = band_centers
+    else:
+        k_bands = np.arange(-50, 50)
+        response_centers = 1000.0 * 2.0 ** (k_bands / 3.0)
+        response_centers = response_centers[(response_centers * 2 ** (1 / 6) >= fmin)
+                                            & (response_centers / 2 ** (1 / 6) <= fmax)]
+
     psd_power_lists = []
     f_sel_master = None
     Aweight_db = None
@@ -1203,7 +1226,7 @@ def depropagate_hemisphere(
 
     pref_sq = (20e-6) ** 2
 
-    def _depropagate(lin, amb, r_v, alpha):
+    def _depropagate(lin, amb, r_v, alpha, response=None):
         """Gate against ambient, subtract it, then undo spreading and absorption.
 
         ``lin`` is (Nf, Npts) linear power (per bin or per band) at the
@@ -1217,6 +1240,10 @@ def depropagate_hemisphere(
         if amb is not None:
             gate = lin >= amb[:, None] * 10.0 ** (band_snr_gate_db / 10.0)
             lin = np.where(gate, np.maximum(lin - amb[:, None], 0.0), 0.0)
+
+        # The installation's response, as a power ratio to divide out.
+        if response is not None:
+            lin = lin * response
 
         # Spherical spreading depropagation to r_ref: multiply by (r/r_ref)^2
         lin = lin * ((r_v / float(r_ref)) ** 2)[None, :]
@@ -1353,7 +1380,19 @@ def depropagate_hemisphere(
             if use_filter_bank:
                 amb_band = np.percentile(band_frames, float(ambient_percentile), axis=1)
 
-        psd_v_lin = _depropagate(psd_v_lin, amb_lin, r_v, alpha_db_per_m)
+        response_bins = response_bands = None
+        if receiver_response_db is not None:
+            offset = pos_geom[tidx][valid] - mic_geom[im]
+            gain_db = np.asarray(receiver_response_db(im, response_centers, offset), dtype=float)
+            if gain_db.shape != (response_centers.size, tobs_v.size) or not np.all(np.isfinite(gain_db)):
+                raise ValueError('receiver_response_db must return finite values shaped (bands, points)')
+            inverse = 10.0 ** (-gain_db / 10.0)
+            band_of_bin = np.clip(np.searchsorted(response_centers * 2.0 ** (1.0 / 6.0), f_sel, side='right'),
+                                  0, response_centers.size - 1)
+            response_bins = inverse[band_of_bin]
+            response_bands = inverse
+
+        psd_v_lin = _depropagate(psd_v_lin, amb_lin, r_v, alpha_db_per_m, response_bins)
 
         # OASPL power over selected frequency range
         power_oaspl = np.sum(psd_v_lin * df, axis=0)
@@ -1375,7 +1414,7 @@ def depropagate_hemisphere(
                 band_v[ib, :] = np.interp(tobs_v, t_abs, band_frames[ib, :])
             alpha_band = (np.asarray(atmosphere.attenuation_coefficient(band_centers), dtype=float)
                           if apply_absorption_deprop else None)
-            band_v = _depropagate(band_v, amb_band, r_v, alpha_band)
+            band_v = _depropagate(band_v, amb_band, r_v, alpha_band, response_bands)
             for ib in range(band_centers.size):
                 band_power_lists[ib].append(band_v[ib, :])
         elif third_octave:

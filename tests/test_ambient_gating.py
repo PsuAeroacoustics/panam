@@ -216,3 +216,52 @@ def test_min_elevation_drops_grazing_incidence():
 
     assert gated['scattered']['elv_deg'].min() >= 78.0
     assert gated['scattered']['elv_deg'].size < ungated['scattered']['elv_deg'].size
+
+
+@pytest.mark.parametrize('method', ['fft', 'filter_bank'])
+def test_constant_receiver_response_matches_the_flat_scale(method):
+    """A constant +6.02 dB receiver response is the old 0.5 pressure scale.
+
+    The response is divided out after the ambient gate, so the ambient has to
+    be scaled the same way as the run in both forms for them to agree.
+    """
+    scenario = _scenario(seed=4)
+    ambient = _scenario(noise_only=True, seed=5)['pressure']
+    doubling_db = 20.0 * np.log10(2.0)
+    calls = []
+
+    def response(im, bands, offset):
+        calls.append((im, offset.shape))
+        return np.full((bands.size, offset.shape[0]), doubling_db)
+
+    flat = _run(dict(scenario, pressure=0.5 * scenario['pressure']), ambient_pressure=0.5 * ambient,
+                third_octave_method=method)
+    modelled = _run(scenario, ambient_pressure=ambient, receiver_response_db=response,
+                    third_octave_method=method)
+    assert {im for im, _ in calls} == {0, 1, 2} and all(shape[1] == 3 for _, shape in calls)
+    np.testing.assert_allclose(modelled['oaspl_db'], flat['oaspl_db'], atol=1e-9)
+    np.testing.assert_allclose(modelled['third_octave']['bands_db'], flat['third_octave']['bands_db'],
+                               atol=1e-9)
+
+
+def test_receiver_response_is_applied_per_band():
+    """Each band is divided by its own response, and the offset is source minus mic."""
+    scenario = _scenario(seed=6)
+
+    def response(im, bands, offset):
+        # 10 dB in the band holding 200 Hz, 0 elsewhere; check the geometry.
+        assert np.all(offset[:, 2] == 300.0)
+        gain = np.zeros((bands.size, offset.shape[0]))
+        gain[np.argmin(np.abs(bands - 200.0))] = 10.0
+        return gain
+
+    plain = _run(scenario)
+    modelled = _run(scenario, receiver_response_db=response)
+    bands = np.asarray(plain['third_octave']['band_centers_hz'])
+    grids_plain = plain['third_octave']['bands_db']
+    grids_model = modelled['third_octave']['bands_db']
+    for i, fc in enumerate(bands):
+        a, b = np.asarray(grids_plain[i]), np.asarray(grids_model[i])
+        finite = np.isfinite(a) & np.isfinite(b) & (a > -200.0)   # not the empty-cell floor
+        expected = -10.0 if i == np.argmin(np.abs(bands - 200.0)) else 0.0
+        np.testing.assert_allclose(b[finite] - a[finite], expected, atol=1e-9)
