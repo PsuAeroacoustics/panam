@@ -113,3 +113,40 @@ def test_depropagate_hemisphere_filter_bank_option():
 def test_unknown_third_octave_method_is_rejected():
     with pytest.raises(ValueError, match='third_octave_method'):
         _flyby('octave')
+
+
+@pytest.mark.parametrize('third_octave_method', ['fft', 'filter_bank'])
+def test_depropagation_does_not_depend_on_the_length_unit(third_octave_method):
+    """The same flyby in metres and in feet must give the same hemisphere.
+
+    unit_conversion used to rewrite the emission ranges in place, so with
+    length_units='m' the filter-bank pass reused ranges already converted to
+    feet: +10 dB of spreading plus over-applied absorption in every band.
+    """
+    def run(length_units, scale):
+        rng = np.random.default_rng(0)
+        p_ref = 2e-5
+        nt = 60
+        track_time = np.linspace(0.0, 8.0, nt)
+        fs = 4000.0
+        t = np.arange(0.0, 9.0, 1.0 / fs)
+        base = 1e3 * p_ref * (np.sin(2 * np.pi * 20.0 * t) + 0.3 * np.sin(2 * np.pi * 250.0 * t))
+        return depropagate_hemisphere(
+            mic_locations=scale * np.array([[0.0, -50.0, 0.0], [0.0, 0.0, 0.0], [0.0, 50.0, 0.0]]),
+            pressure=np.vstack([base + 50 * p_ref * rng.standard_normal(t.size) for _ in range(3)]),
+            time=t, track_time=track_time,
+            track_position=scale * np.column_stack([300.0 * track_time / track_time[-1] - 150.0,
+                                                    np.zeros(nt), np.full(nt, 150.0)]),
+            track_velocity=np.tile([scale * 300.0 / track_time[-1], 0.0, 0.0], (nt, 1)),
+            speed_of_sound=scale * 1135.0, length_units=length_units, r_ref=scale * 100.0,
+            freq_range=(0.0, 1500.0), window_time=0.5, window_overlap=0.5,
+            point_stride=2, azi_step=20.0, elv_step=15.0, rmax=40.0,
+            third_octave=True, third_octave_fmin=10.0, third_octave_method=third_octave_method,
+            apply_absorption_deprop=True)
+
+    feet = run('ft', 1.0)
+    metres = run('m', 0.3048)
+    covered = feet['oaspl_db'] > -100.0
+    np.testing.assert_allclose(metres['oaspl_db'][covered], feet['oaspl_db'][covered], atol=1e-6)
+    for f_db, m_db in zip(feet['third_octave']['bands_db'], metres['third_octave']['bands_db']):
+        np.testing.assert_allclose(m_db[covered], f_db[covered], atol=1e-6)

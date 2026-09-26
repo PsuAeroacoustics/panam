@@ -1,10 +1,12 @@
+from pathlib import Path
+
 import numpy as np
 import pytest
 
 import panam_acoustics
 from panam_acoustics import filters as pa_filters
 
-FIXTURE_PATH = "tests/data/python_acoustics_reference.npz"
+FIXTURE_PATH = Path(__file__).parent / "data" / "python_acoustics_reference.npz"
 
 
 @pytest.mark.parametrize("zero_phase", [False, True])

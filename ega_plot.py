@@ -6,6 +6,7 @@ Visualizes how sound attenuation varies with frequency, propagation distance,
 source/receiver height, and ground characteristics.
 """
 import argparse
+import os
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -148,7 +149,7 @@ Examples:
         help='Disable the grazing-incidence boundary-loss correction; use plane-wave reflection coefficient only',
     )
     parser.add_argument('--turbulence', type=float, default=0.0,
-                        help='Turbulence parameter (rad·s·√m) (default: 0.0)')
+                        help='Turbulence parameter, rad·s·m^-0.5; broadband mode only (default: 0.0)')
     parser.add_argument('--levels', type=int, default=50,
                         help='Number of contour levels (default: 50)')
     parser.add_argument('--resolution', type=int, default=100,
@@ -212,9 +213,9 @@ Examples:
         for i in range(X.shape[0]):
             for j in range(X.shape[1]):
                 Z[i, j], _ = ega(
-                    X[i, j],
+                    Y[i, j],    # source height
                     hr,
-                    Y[i, j],
+                    X[i, j],    # 2D distance
                     f_single,
                     c,
                     flores,
@@ -279,6 +280,7 @@ Examples:
     ax.set_title(f'Excess Ground Attenuation\n{mode_str} - {title_extra}')
     
     fig.tight_layout()
+    os.makedirs(os.path.dirname(args.output) or '.', exist_ok=True)
     fig.savefig(args.output, dpi=150, bbox_inches='tight')
     print(f'Plot saved to {args.output}')
 

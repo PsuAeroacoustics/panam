@@ -189,7 +189,10 @@ def main():
         _, _, _, f_ref, _, _, _ = fa.load_nc_sphere(ref_file)
         f_ref = np.asarray(f_ref, dtype=float)
         if f_ref.size >= 2 and np.all(np.isfinite(f_ref)):
-            export_freq_range_hz = (float(np.min(f_ref)), float(np.max(f_ref)))
+            # The FFT range must reach the outer bands' edges, not their centres,
+            # or the lowest and highest bands lose half their width (-3 dB).
+            band_lower, band_upper = fa.third_octave_band_edges(f_ref)
+            export_freq_range_hz = (float(np.min(band_lower)), float(np.max(band_upper)))
             export_third_octave_fmin_hz = float(np.min(f_ref))
             export_band_centers_hz = f_ref
             logging.info(f'Exporting hemisphere over reference band range: {export_freq_range_hz[0]:.1f}..{export_freq_range_hz[1]:.1f} Hz')

@@ -3,6 +3,7 @@ import pytest
 import matplotlib.pyplot as plt
 
 from flight_acoustics import psd, psd_welch, atmosorb, art2umapr, geodetic2array, array2geodetic, lambert_ea_points
+from flight_acoustics import dBAw, overall_SPL, level_history
 
 P_REF = 2.0e-5
 
@@ -55,6 +56,46 @@ def test_psd_welch_sine_level():
     assert -4.5 < level < -1.5
     # At 500 Hz A-weighting is negative; ensure it is lower than unweighted
     assert level_A <= level
+
+
+@pytest.mark.parametrize('f0', [100.0, 1000.0, 2000.0, 4000.0])
+def test_psd_welch_a_weighted_level_of_a_tone(f0):
+    """A tone's A-weighted level is its level plus the A-weighting at its frequency.
+
+    psd_welch once weighted the PSD by 10**(dBA/2) instead of 10**(dBA/10):
+    right at 1 kHz, where the weighting is 0 dB, but 77 dB low at 100 Hz and
+    5 dB high at 2 kHz -- which ``level_A <= level`` above cannot see.
+    """
+    fs = 48000
+    t = np.arange(10 * fs) / fs
+    signal = np.sqrt(2.0) * np.sin(2 * np.pi * f0 * t)      # 1 Pa rms
+    _, _, level, level_A = psd_welch(signal, fs)
+    assert level_A == pytest.approx(level + float(dBAw(f0)), abs=0.05)
+    assert level_A == pytest.approx(overall_SPL(signal, fs)[0], abs=0.05)
+
+
+@pytest.mark.parametrize('width_hz', [10.0, 40.0])
+def test_psd_welch_medfilter_width_is_in_hz(width_hz):
+    """medfilter is a width in Hz, as documented, not a number of bins."""
+    import scipy.signal
+    fs = 8192
+    signal = np.random.default_rng(7).normal(0.0, 1.0, 20 * fs)
+    f, raw_db, _, _ = psd_welch(signal, fs, window_time=0.25)         # df = 4 Hz
+    df = f[1] - f[0]
+    _, filtered_db, _, _ = psd_welch(signal, fs, window_time=0.25, medfilter=width_hz)
+    bins = 2 * int(round(0.5 * width_hz / df)) + 1
+    expected = 10.0 * np.log10(scipy.signal.medfilt(10.0 ** (raw_db / 10.0), bins))
+    assert df == 4.0
+    np.testing.assert_allclose(filtered_db, expected, atol=1e-9)
+
+
+def test_level_history_keeps_the_last_full_period():
+    """A 10 s record in 1 s periods has 10 levels; the last one was dropped."""
+    fs = 1000
+    signal = np.random.default_rng(0).standard_normal(10 * fs)
+    time, level_a, level_z = level_history(signal, fs, period=1.0)
+    np.testing.assert_array_equal(time, np.arange(10.0))
+    assert np.all(np.isfinite(level_a)) and np.all(np.isfinite(level_z))
 
 
 def test_atmosorb_shapes_monotonic():
@@ -154,3 +195,35 @@ def test_geodetic_local_roundtrip():
     # Roundtrip within a small tolerance
     assert np.allclose(local, local_rt, atol=1e-2), f"Roundtrip mismatch: {local_rt - local}"
 
+
+
+def test_array2geodetic_in_metres_leaves_its_input_alone():
+    """units='m' used to rewrite the caller's coordinates into feet in place,
+    so converting the same array twice put the microphones 3.28x too far out."""
+    reference = np.array([40.0, -77.0, 300.0])
+    local = np.array([[100.0, 0.0, 0.0], [0.0, 50.0, 1.5]])
+    before = local.copy()
+    first = array2geodetic(local, reference, heading=30.0, units='m')
+    second = array2geodetic(local, reference, heading=30.0, units='m')
+    np.testing.assert_array_equal(local, before)
+    np.testing.assert_array_equal(first, second)
+    np.testing.assert_allclose(geodetic2array(first, reference, 30.0, units='m'), local, atol=1e-6)
+
+
+# IEC 61672-1:2013 Table 3, at the exact base-10 frequencies the standard uses.
+IEC_61672_A_WEIGHTING_DB = {10: -70.4, 31.5: -39.4, 63: -26.2, 125: -16.1, 250: -8.6, 500: -3.2,
+                            1000: 0.0, 2000: 1.2, 4000: 1.0, 8000: -1.1, 16000: -6.6, 20000: -9.3}
+
+
+@pytest.mark.parametrize('nominal_hz,table_db', IEC_61672_A_WEIGHTING_DB.items())
+def test_a_weighting_matches_iec_61672(nominal_hz, table_db):
+    exact_hz = 1000.0 * 10.0 ** (np.round(10.0 * np.log10(nominal_hz / 1000.0)) / 10.0)
+    assert float(dBAw(exact_hz)) == pytest.approx(table_db, abs=0.05)
+
+
+def test_atmosorb_matches_iso_9613_2_table():
+    """ISO 9613-2 Table 2, 20 C and 70 % RH, octave bands 63 Hz..8 kHz (dB/km)."""
+    table = [0.1, 0.3, 1.1, 2.8, 5.0, 9.0, 22.9, 76.6]
+    frequencies = 1000.0 * 10.0 ** (0.3 * np.arange(-4, 4))
+    alpha_db_per_km = 1000.0 * atmosorb(frequencies, 20.0, 70.0, 1013.25)
+    np.testing.assert_array_equal(np.round(alpha_db_per_km, 1), table)

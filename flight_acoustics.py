@@ -15,7 +15,7 @@ from scipy.special import erf
 import simplekml
 # Colormap helper will import palettable lazily
 import matplotlib
-from matplotlib import cm, tri
+from matplotlib import tri
 from matplotlib.pyplot import plot, subplots, colorbar, style, contourf, show
 from netCDF4 import Dataset
 from pyuff import UFF
@@ -83,12 +83,14 @@ def psd_welch(signal, sampling_rate, cal=0.0, window_time=1.0, window_type='hann
         frequency = frequency[pass_indicies]
     df = frequency[1] - frequency[0]
     if medfilter is not None:
-        medfilter_width = int(np.ceil(medfilter) // 2 * 2 + 1)
+        # medfilter is a width in Hz; medfilt wants an odd number of bins.
+        medfilter_width = 2 * int(round(0.5 * float(medfilter) / df)) + 1
         power_spectral_density = scipy.signal.medfilt(power_spectral_density, medfilter_width)
     pref = 2.0e-5
     psd_db = 10.0 * np.log10(power_spectral_density / (pref ** 2))
     level = 20.0 * np.log10(np.sqrt(np.sum(power_spectral_density * df)) / pref)
-    weight = 10**(dBAw(frequency) / 2)
+    # dBAw is a level (dB), so the weight on a power spectral density is 10**(dB/10).
+    weight = 10**(dBAw(frequency) / 10)
     level_A = 20.0 * np.log10(np.sqrt(np.sum(weight * power_spectral_density * df)) / pref)
     return frequency, psd_db, level, level_A
 
@@ -122,7 +124,8 @@ def level_history(signal, sampling_rate, period=1.0):
         tuple (time, A-weighted level, Unweighted level)
     """
     binwidth = period * sampling_rate
-    edges = np.arange(0, len(signal), binwidth)
+    # One edge per complete period, including the end of the last one.
+    edges = np.arange(int(len(signal) // binwidth) + 1) * binwidth
 
     time = edges[0:-1] / sampling_rate
     level_a = np.zeros_like(time)
@@ -158,10 +161,17 @@ def third_octave_band_levels(signal, sampling_rate, cal=0.0, fmin=20.0, fmax=200
            band_centers is an array of third-octave band center frequencies
            band_levels is an array of third-octave band levels in dB
     """
-    # Define third-octave band center frequencies
+    # Define third-octave band center frequencies.  fmin/fmax are compared
+    # within a quarter band, so nominal limits keep their own bands: the exact
+    # centres of the 20 Hz and 20 kHz bands are 19.69 and 20159 Hz.  Bands
+    # reaching past Nyquist would be only partly filled, so they are dropped.
     k = np.arange(-50, 50)
     band_centers = 1000.0 * (2.0 ** (k / 3.0))
-    band_centers = band_centers[np.logical_and(band_centers >= fmin, band_centers <= fmax)]
+    tolerance = 2.0 ** (1.0 / 12.0)
+    band_centers = band_centers[np.logical_and.reduce((
+        band_centers >= fmin / tolerance,
+        band_centers <= fmax * tolerance,
+        band_centers * 2.0 ** (1.0 / 6.0) <= 0.5 * sampling_rate))]
     # Compute PSD
     frequency, psd_db, _ = psd(signal, sampling_rate, cal)
     pref = 2.0e-5
@@ -175,6 +185,39 @@ def third_octave_band_levels(signal, sampling_rate, cal=0.0, fmin=20.0, fmax=200
         band_power = np.sum(psd_linear[band_indices] * df)
         band_levels[i] = 10.0 * np.log10(band_power / (pref ** 2))
     return band_centers, band_levels
+
+
+def third_octave_band_edges(band_centers_hz):
+    """Lower and upper edges of one-third octave bands that tile without gaps.
+
+    Nominal centres (12.5, 1250, 1600 Hz, ...) are rounded, so edges taken as
+    ``fc * 2**(+-1/6)`` straight from them overlap their neighbours or leave
+    gaps -- up to 8 % of a band -- and a brick-wall band sum then drops or
+    double-counts whatever lies there (a 1410 Hz tone falls in no band, an
+    895 Hz one in two).  IEC 61260-1 defines each nominal band by its exact
+    base-10 midband ``1000 * 10**(k/10)``, with edges a twentieth of a decade
+    either side, so a nominal centre (within a quarter band of one) is given
+    those edges.  When every centre is one of this module's own exact base-2
+    centres ``1000 * 2**(k/3)``, they already tile and keep their
+    ``fc * 2**(+-1/6)`` edges.  In a set that mixes the two, the base-2
+    centres take their band's base-10 edges as well, because edges from the
+    two grids do not meet: keeping ``fc * 2**(+-1/6)`` for 1259.9 Hz next to a
+    nominal 1600 Hz band would overlap it by 1.7 Hz.  A centre near neither
+    grid keeps ``fc * 2**(+-1/6)``.
+
+    Args:
+        band_centers_hz: band centre frequencies, Hz (exact or nominal)
+    Returns: tuple (f_lower, f_upper) of arrays, Hz
+    """
+    fc = np.asarray(band_centers_hz, dtype=float)
+    base2 = 1000.0 * 2.0 ** (np.round(3.0 * np.log2(fc / 1000.0)) / 3.0)
+    if np.allclose(fc, base2, rtol=1e-9, atol=0.0):
+        return fc / 2.0 ** (1.0 / 6.0), fc * 2.0 ** (1.0 / 6.0)
+    base10 = 1000.0 * 10.0 ** (np.round(10.0 * np.log10(fc / 1000.0)) / 10.0)
+    nominal = np.abs(np.log2(fc / base10)) < 1.0 / 12.0
+    fm = np.where(nominal, base10, fc)
+    half_band = np.where(nominal, 10.0 ** (1.0 / 20.0), 2.0 ** (1.0 / 6.0))
+    return fm / half_band, fm * half_band
 
 
 # --------------------------------------------------------------------------
@@ -891,7 +934,7 @@ def depropagate_hemisphere(
     because the broadband level is dominated by the low-frequency bands
     where the signal is strong.
 
-    Supply the ambient reference in one of two ways:
+    Supply the ambient reference in one of three ways:
 
     * ``ambient_pressure`` -- a separate signal-free recording per
       microphone (same channel order as ``mic_locations``), e.g. a dedicated
@@ -1126,10 +1169,13 @@ def depropagate_hemisphere(
             band_centers = np.unique(band_centers)
             band_centers = band_centers[np.logical_and(band_centers >= float(third_octave_fmin), band_centers <= fmax)]
         else:
-            # Precompute band centers (same definition as in third_octave_band_levels)
+            # Precompute band centers (same definition as in third_octave_band_levels);
+            # third_octave_fmin is compared within a quarter band so a nominal
+            # limit keeps its own band (the 20 Hz band's exact centre is 19.69 Hz).
             k = np.arange(-50, 50)
             band_centers = 1000.0 * (2.0 ** (k / 3.0))
-            band_centers = band_centers[np.logical_and(band_centers >= float(third_octave_fmin), band_centers <= fmax)]
+            band_centers = band_centers[np.logical_and(
+                band_centers >= float(third_octave_fmin) / 2.0 ** (1.0 / 12.0), band_centers <= fmax)]
         band_power_lists = [list() for _ in range(band_centers.size)]
     else:
         band_centers = np.array([], dtype=float)
@@ -1322,10 +1368,10 @@ def depropagate_hemisphere(
             for ib in range(band_centers.size):
                 band_power_lists[ib].append(band_v[ib, :])
         elif third_octave:
-            # Integrate to third-octave bands in linear power
-            for ib, fc in enumerate(band_centers):
-                f_lower = fc / (2.0 ** (1.0 / 6.0))
-                f_upper = fc * (2.0 ** (1.0 / 6.0))
+            # Integrate to third-octave bands in linear power, on edges that
+            # tile even when the centres are nominal (see third_octave_band_edges)
+            band_lower, band_upper = third_octave_band_edges(band_centers)
+            for ib, (f_lower, f_upper) in enumerate(zip(band_lower, band_upper)):
                 band_mask = np.logical_and(f_sel >= f_lower, f_sel < f_upper)
                 if np.any(band_mask):
                     band_power = np.sum(psd_v_lin[band_mask, :] * df, axis=0)
@@ -1912,8 +1958,8 @@ def write_aam_hemisphere_netcdf(
         filename: Path to the output netCDF file.
         hemisphere: Output dict from :func:`depropagate_hemisphere`.
         mode: 'auto', 'third_octave', or 'narrowband'. 'auto' prefers third-octave.
-        phi_deg: Optional 1D ART phi grid (degrees). Default: 0..360 at the UMAPR azimuth step.
-        theta_deg: Optional 1D ART theta grid (degrees). Default: 0..180 at the UMAPR elevation step.
+        phi_deg: Optional 1D ART phi grid (degrees). Default: -90..90 in 10 degree steps.
+        theta_deg: Optional 1D ART theta grid (degrees). Default: 0..180 in 5 degree steps.
         speed_knots: Stored into ``SPEED`` (knots).
         flight_path_angle_deg: Stored into ``FLIGHT_PATH_ANGLE`` (deg).
         radius_ft: Optional override for ``RADIUS`` (ft). If None, derived from hemisphere metadata ``r_ref``.
@@ -2534,7 +2580,8 @@ def load_nc_signal(filename):
     sample_rate = file_handle.sample_rate
     start_time = file_handle.start_time
     file_handle.close()
-    time = np.arange(start_time, pressure.size / sample_rate + start_time, 1 / sample_rate)
+    # Not np.arange(start, stop, 1/fs): a float step can yield one sample too many.
+    time = start_time + np.arange(pressure.size) / sample_rate
     location = np.array([x, y, z])
     return pressure, time, location
 
@@ -2583,7 +2630,10 @@ def load_UFF_signal(filename, sets = None):
         data = file.read_sets()
     else:
         data = file.read_sets(sets)
-    
+    # pyuff returns a bare dict, not a one-element list, when it reads one set
+    if isinstance(data, dict):
+        data = [data]
+
     channels = len(data)
     datasize = len(data[0]['x'])
     time = data[0]['x']
@@ -2920,7 +2970,9 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     # Get list of full paths to netCDF files in directory
     local_glob = os.path.expanduser(directory_name) + '/*.nc'
     absolute_glob = os.path.abspath(local_glob)
-    file_list = glob(absolute_glob)
+    # Sorted, so group numbering and hover-sphere ties do not depend on the
+    # order the filesystem happens to list the directory in.
+    file_list = sorted(glob(absolute_glob))
 
     min_speed = np.inf
     min_speed_file = None
@@ -3052,6 +3104,9 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                          speed_or_level_speed, flight_path_angle, load_factor, main_rotor_radius,
                          main_rotor_tip_speed, weight_coefficient, frequency, amplitude_full,
                          write_grid_and_frequency=not shared_grid_and_frequency)
+    # Close explicitly: left to the garbage collector, a failed flush on close
+    # is swallowed and the file can stay open (locked) while a traceback lives.
+    ncdatabase.close()
 
 
 def _grid_and_frequency_are_shared(pending_groups):
@@ -3181,7 +3236,11 @@ def project_sphere(filename, altitude, elv_cutoff, infreqs=None,
     EAA = EAA[included_angles]
     slant_range = altitude / np.sin(elv)
     ground_range = np.sqrt(slant_range ** 2 - altitude ** 2)
-    x = -ground_range * np.sin(azi)
+    # Plan view from above, as lambert_lon draws hemispheres: the flight
+    # direction (azimuth 180) is +y and starboard (azimuth 90) is +x.  This was
+    # -sin(azi) until 2026-09, which with art2umapr's old phi sign cancelled out;
+    # once art2umapr put phi > 0 to starboard it mirrored every footprint.
+    x = ground_range * np.sin(azi)
     y = -ground_range * np.cos(azi)
     absorption = EAA / distance * (slant_range - radius)
     spreading = 20 * np.log10(radius / slant_range)
@@ -3301,7 +3360,7 @@ def project_directory(directory_name, altitude=500, cutoff=30, input_frequencies
     # Get list of full paths to netCDF files in directory
     local_glob = os.path.expanduser(directory_name) + '/*.nc'
     absolute_glob = os.path.abspath(local_glob)
-    file_list = glob(absolute_glob)
+    file_list = sorted(glob(absolute_glob))
     speeds = []
     flight_path_angles = []
     Lmax = []
@@ -3832,6 +3891,9 @@ def plot_lambert_ea(azi,elv,SPL,SPL_range=None,weight=None,grid_convention='umap
         The contour set object from the contourf plot.
 
     """
+    # Work on a copy, so the caller's -inf/NaN levels stay as they are; masked
+    # cells (a masked array) count as missing too.
+    SPL = np.ma.filled(np.ma.array(SPL, dtype=float, copy=True), np.nan)
     SPL[np.isinf(SPL)] = np.nan
     if SPL_range is None:
         minSPL = np.nanmin(SPL)
@@ -4084,9 +4146,10 @@ def array2geodetic(local, reference, heading, units='ft'):
     Parameters
     ----------
     local : numpy.ndarray
-        Array of shape (N, 3) containing local coordinates [x, y, z] where:
-        - x: lateral position (positive right)
-        - y: longitudinal position (positive forward)
+        Array of shape (N, 3) containing local coordinates [x, y, z] in the
+        frame :func:`geodetic2array` produces (this is its inverse):
+        - x: along the heading (positive forward)
+        - y: perpendicular to the heading (positive left)
         - z: vertical position (positive up)
     reference : array-like
         Reference point in geodetic coordinates [latitude, longitude, height] in degrees 
@@ -4176,7 +4239,7 @@ def get_ylorrd_cmap(num_levels=9):
             return getattr(cbseq, attr).mpl_colormap
     except Exception:
         pass
-    return cm.get_cmap('YlOrRd')
+    return matplotlib.colormaps['YlOrRd']
 
 def atmosorb(freq, temp, humid, pstat):
     """
@@ -4354,10 +4417,13 @@ def shepIDW(ielv, iazi, felv, fazi, f, rmax):
     fi_flat = np.empty_like(ielv_flat, dtype=float)
     for i in range(ielv_flat.size):
         wi = IDWweights(ielv_flat[i], iazi_flat[i], felv, fazi, rmax)
-        fi_flat[i] = np.sum(fvals * wi)
+        # Only the neighbours: 0 * NaN is NaN, so one bad sample anywhere
+        # would otherwise poison every node, however far away.
+        near = wi > 0.0
+        fi_flat[i] = np.sum(fvals[near] * wi[near])
 
     fi = fi_flat.reshape(orig_shape)
-    if fi.size == 1:
+    if fi.ndim == 0:
         return float(fi)
     return fi
 
@@ -4484,8 +4550,10 @@ def ega(hs, hr, d2, f, a, flores, pt=True, cturb=0.0, boundary_loss_correction=T
                 - Asphalt: 50000
                 - Water: 1e6 (effectively rigid)
         pt: True for pure tone (no third octave smearing), False for broadband (default: True)
-        cturb: Turbulence parameter (rad·s·(m or ft)^-0.5)
-               Typical: 0 to 16e-4 (rad·s·√m) or 0 to 52.5e-4 (rad·s·√ft)
+        cturb: Turbulence parameter (rad·s·(m or ft)^-0.5); it multiplies
+               f·sqrt(range), so its value depends on the length unit.
+               Typical: 0 to 16e-4 rad·s·m^-0.5, i.e. 0 to 8.8e-4 rad·s·ft^-0.5.
+               Used by the broadband mode only (pt=False).
          boundary_loss_correction: When True (default), includes the boundary-loss factor
              correction to the plane-wave reflection coefficient (Chessell), which is
              most relevant at grazing incidence. When False, uses only the plane-wave
