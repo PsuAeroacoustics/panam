@@ -2966,7 +2966,9 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     # Get list of full paths to netCDF files in directory
     local_glob = os.path.expanduser(directory_name) + '/*.nc'
     absolute_glob = os.path.abspath(local_glob)
-    file_list = glob(absolute_glob)
+    # Sorted, so group numbering and hover-sphere ties do not depend on the
+    # order the filesystem happens to list the directory in.
+    file_list = sorted(glob(absolute_glob))
 
     min_speed = np.inf
     min_speed_file = None
@@ -3098,6 +3100,9 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                          speed_or_level_speed, flight_path_angle, load_factor, main_rotor_radius,
                          main_rotor_tip_speed, weight_coefficient, frequency, amplitude_full,
                          write_grid_and_frequency=not shared_grid_and_frequency)
+    # Close explicitly: left to the garbage collector, a failed flush on close
+    # is swallowed and the file can stay open (locked) while a traceback lives.
+    ncdatabase.close()
 
 
 def _grid_and_frequency_are_shared(pending_groups):
@@ -3351,7 +3356,7 @@ def project_directory(directory_name, altitude=500, cutoff=30, input_frequencies
     # Get list of full paths to netCDF files in directory
     local_glob = os.path.expanduser(directory_name) + '/*.nc'
     absolute_glob = os.path.abspath(local_glob)
-    file_list = glob(absolute_glob)
+    file_list = sorted(glob(absolute_glob))
     speeds = []
     flight_path_angles = []
     Lmax = []
