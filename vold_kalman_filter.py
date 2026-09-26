@@ -32,8 +32,14 @@ _NORMAL_EQUATIONS_MAX_CONDITION = 1e10
 
 #: Warn when even the augmented system (condition ~ sqrt(1 + r**2 * 4**p)) is
 #: past this: the requested band is too narrow for this sample rate and p.
-#: Measured band-edge gain errors: 0.15 % at 5e13, 3 % at 8e14, garbage by 1e19.
+#: Measured band-edge gain errors: 0.15 % at 5e13; for p = 4, 6 and 8,
+#: 0.2-1.1 % at 1e14, 0.2-2.4 % at 1e15 and 0.2-5.6 % at 3e15.
 _AUGMENTED_MAX_CONDITION = 1e14
+
+#: Refuse past this, where the augmented system is singular to double precision:
+#: the measured errors are 8-37 % at 1e16 and erratic, up to 100 %, beyond.
+#: Far enough out r overflows, which gave NaN output or an OverflowError.
+_AUGMENTED_SINGULAR_CONDITION = 1.0 / np.finfo(float).eps
 
 # Optional faster sparse solvers (if installed)
 try:
@@ -107,6 +113,8 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None, solver="auto", use_cou
         - vector with same length as x: time-varying bandwidth
         - vector with length equal to number of orders: order-wise bandwidth
         - array same shape as freq: time and order-varying bandwidth
+        An (n_samples, 1) or (1, n_orders) array broadcasts against freq; any
+        other vector as long as both x and the orders is taken as time-varying.
     p : int
         Structural filter order (order of difference operator for regularization).
         NOT the harmonic order to track (those are specified by freq).
@@ -118,7 +126,11 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None, solver="auto", use_cou
         p=3, so higher p separates close orders better, at the cost of
         slightly larger errors near the ends of the record.  Narrow bands at
         high sample rates with p >= 2 are solved through a better-conditioned
-        formulation, automatically, at 2-5 times the cost.
+        formulation, automatically, at 2-5 times the cost.  Bands narrower
+        still lose accuracy (a RuntimeWarning says so) and then cannot be
+        resolved at all (a ValueError): at p=3, below about 1.2e-5 and 3.3e-6
+        times fs, or 0.6 and 0.16 Hz at 48 kHz.  Decimate the signal first,
+        or use a lower p.
     r : float or ndarray, optional
         Weighting factor for the filter, used instead of bandwidth when given;
         same shapes as bandwidth.  Default is None (compute from bandwidth).
@@ -266,14 +278,23 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None, solver="auto", use_cou
     if solver_choice == "pardiso" and not _HAVE_PARDISO:
         raise RuntimeError("pypardiso is not installed")
 
-    condition = 1.0 + float(np.max(row_weight, initial=0.0)) ** 2 * 4.0 ** p_p
+    # sqrt(1 + r**2 * 4**p), the augmented system's condition number, computed
+    # without overflow; r itself is inf for a band far too narrow to resolve.
+    with np.errstate(over='ignore'):
+        root_condition = float(np.hypot(1.0, np.ldexp(np.max(row_weight, initial=0.0), p_p)))
+    if not root_condition <= _AUGMENTED_SINGULAR_CONDITION:
+        raise ValueError(
+            'the requested bandwidth is too narrow to resolve at this sample rate with p={:d} '
+            '(condition number ~{:.0e}); decimate the signal first, or use a lower p{}'
+            .format(p_p, root_condition, '' if use_weight_factor else ' or a smaller r'))
+    condition = root_condition ** 2
     if condition > _NORMAL_EQUATIONS_MAX_CONDITION:
-        if np.sqrt(condition) > _AUGMENTED_MAX_CONDITION:
+        if root_condition > _AUGMENTED_MAX_CONDITION:
             warnings.warn(
                 'the requested bandwidth is too narrow for this sample rate with p={:d} '
                 '(condition number ~{:.0e}), so the envelopes may be inaccurate; decimate '
                 'the signal first, or use a lower p'
-                .format(p_p, np.sqrt(condition)), RuntimeWarning, stacklevel=2)
+                .format(p_p, root_condition), RuntimeWarning, stacklevel=2)
         y_R, cost_mat = _solve_augmented(x, phasor, AA_sparse, row_weight,
                                          n_ord > 1 and use_coupling, solver_choice)
         return 2.0 * y_R.reshape((n_x, n_ord), order="F"), phasor, cost_mat
@@ -347,19 +368,20 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None, solver="auto", use_cou
 
 def _per_sample_and_order(value, n_x, n_ord, name):
     """``value`` broadcast to (n_x, n_ord): a scalar, one value per sample,
-    one per order, or one per sample and order.  A vector as long as both is
-    taken per sample."""
+    one per order, or one per sample and order.  An (n_x, 1) column or a
+    (1, n_ord) row broadcasts as numpy would, even with as many samples as
+    orders; any other vector as long as both is taken per sample."""
     v = np.asarray(value, dtype=float)
     if v.size == 1:
         return np.full((n_x, n_ord), v.item())
+    if v.shape in ((n_x, n_ord), (n_x, 1), (1, n_ord)):
+        return np.broadcast_to(v, (n_x, n_ord)).copy()
     if v.ndim == 1 or (v.ndim == 2 and 1 in v.shape):
         flat = v.ravel()
         if flat.size == n_x:
             return np.repeat(flat[:, None], n_ord, axis=1)
         if flat.size == n_ord:
             return np.tile(flat[None, :], (n_x, 1))
-    elif v.shape == (n_x, n_ord):
-        return v.copy()
     raise ValueError(f"{name} must be a scalar, or have n_samples ({n_x}), n_orders ({n_ord}) "
                      f"or (n_samples, n_orders) values; got shape {v.shape}")
 
@@ -439,10 +461,12 @@ def _compute_weighting_factor(bw_rad, p_p):
     Returns
     -------
     ndarray
-        Weighting factor, same shape as bw_rad
+        Weighting factor, same shape as bw_rad; inf where it overflows, for
+        bands far too narrow to resolve
     """
     bw_rad = np.asarray(bw_rad, dtype=float)
-    return np.sqrt((np.sqrt(2.0) - 1.0) / (2.0 * np.sin(0.5 * bw_rad)) ** (2 * p_p))
+    with np.errstate(divide='ignore', over='ignore'):
+        return np.sqrt((np.sqrt(2.0) - 1.0) / (2.0 * np.sin(0.5 * bw_rad)) ** (2 * p_p))
 
 
 if __name__ == "__main__":

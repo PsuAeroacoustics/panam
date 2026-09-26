@@ -89,7 +89,21 @@ def test_a_band_too_narrow_to_resolve_says_so():
     freq = np.full(5000, 1000.0)
     x = np.cos(2 * np.pi * np.cumsum(freq) / 8192.0)
     with pytest.warns(RuntimeWarning, match='too narrow'):
-        vold_kalman_filter(x, freq, 8192.0, 3.0, 6)
+        vold_kalman_filter(x, freq, 8192.0, 15.0, 6)
+
+
+@pytest.mark.filterwarnings('error::RuntimeWarning')
+@pytest.mark.parametrize('fs,p,bandwidth,r', [(8192.0, 6, 3.0, None), (48000.0, 2, 1e-73, None),
+                                              (48000.0, 1, None, 1e200)])
+def test_a_band_too_narrow_to_solve_is_refused(fs, p, bandwidth, r):
+    """Past a condition number of 1/eps the solve is singular to double
+    precision and its output is noise (3 Hz at p = 6); further out r
+    overflows, to NaN output (1e-73 Hz at p = 2) or an OverflowError
+    (r = 1e200).  Such bands are refused rather than answered."""
+    freq = np.full(5000, 1000.0)
+    x = np.cos(2 * np.pi * np.cumsum(freq) / fs)
+    with pytest.raises(ValueError, match='too narrow'):
+        vold_kalman_filter(x, freq, fs, bandwidth, p, r=r)
 
 
 def test_equivalent_bandwidth_and_r_shapes_agree():
@@ -112,6 +126,22 @@ def test_equivalent_bandwidth_and_r_shapes_agree():
     scalar, _, _ = vold_kalman_filter(x, freq[:, 0], fs, None, 1, r=50.0)
     zero_d, _, _ = vold_kalman_filter(x, freq[:, 0], fs, None, 1, r=np.array(50.0))
     np.testing.assert_allclose(zero_d, scalar, atol=1e-12)
+
+
+def test_a_per_order_row_stays_per_order_with_as_many_samples_as_orders():
+    """A (1, n_orders) row is one value per order even when there are as many
+    samples as orders; it used to be flattened and taken per sample.  The
+    orders are fitted separately, which keeps each fit well posed with so few
+    samples."""
+    n, fs = 6, 1000.0
+    freq = np.tile([100.0, 160.0, 220.0, 280.0, 340.0, 400.0], (n, 1))
+    x = np.cos(2 * np.pi * 100.0 * np.arange(n) / fs)
+    per_order = np.array([1.0, 450.0, 1.0, 450.0, 1.0, 450.0])
+    reference, _, _ = vold_kalman_filter(x, freq, fs, np.tile(per_order, (n, 1)), 1, use_coupling=False)
+    as_row, _, _ = vold_kalman_filter(x, freq, fs, per_order[None, :], 1, use_coupling=False)
+    np.testing.assert_allclose(as_row, reference, atol=1e-12)
+    per_sample, _, _ = vold_kalman_filter(x, freq, fs, per_order[:, None], 1, use_coupling=False)
+    assert np.max(np.abs(per_sample - reference)) > 0.1
 
 
 @pytest.mark.parametrize('bandwidth', [0.0, -3.0, np.nan, 1000.0, [4.0, 5.0, 6.0]])
