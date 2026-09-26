@@ -1810,9 +1810,10 @@ def _sample_hemisphere_levels(hemisphere, mode, azi_q_deg, elv_q_deg, minimum_le
 
     The shared core of the sphere exporters: pick the spectrum ``mode`` selects,
     then interpolate each band over the UMAPR azimuth/elevation grid in linear
-    power.  Directions off the grid or nearest a grid cell with no data (NaN),
-    and levels below ``minimum_level_db``, come back as -inf; each writer turns
-    that into its own missing-value convention.
+    power, from the grid cells that have data (not NaN).  Directions off the
+    grid or with no such cell around them, and levels below
+    ``minimum_level_db``, come back as -inf; each writer turns that into its
+    own missing-value convention.
 
     Args:
         hemisphere: Output dict from :func:`depropagate_hemisphere`.
@@ -1906,19 +1907,26 @@ def _sample_hemisphere_levels(hemisphere, mode, azi_q_deg, elv_q_deg, minimum_le
     # measured, with no energy, and blends in as zero power.  A NaN cell has no
     # data, and must not: blended in as zero power it left the edge of coverage
     # low (a median 2.5 dB, up to 16 dB, on a synthetic flyby).  So a direction
-    # whose nearest grid cell has no data is missing, and any other takes its
-    # level from the cells around it that have data.
-    def interpolate(values, method='linear'):
-        return RegularGridInterpolator((elv_grid_deg, azi_axis), values, method=method,
+    # takes its level from the cells around it that have data, and is missing
+    # only when none of them has any -- the same directions as before, without
+    # the bias.
+    def interpolate(values):
+        return RegularGridInterpolator((elv_grid_deg, azi_axis), values,
                                        bounds_error=False, fill_value=0.0)(pts)
 
     for k in range(nfreq):
         Pk = np.power(10.0, levels_db_umapr[k, :, :] / 10.0)
         measured = ~np.isnan(Pk)
         weight = interpolate(measured.astype(float))
-        with np.errstate(divide='ignore', invalid='ignore'):
-            Lq = power_to_db(interpolate(np.where(measured, Pk, 0.0)) / weight)
-        Lq[interpolate(measured.astype(float), method='nearest') < 0.5] = -np.inf
+        power = interpolate(np.where(measured, Pk, 0.0))
+        # Renormalise only where the interpolation drew on cells with no data:
+        # elsewhere the weights already sum to one, and dividing by their
+        # rounded sum would only perturb the last bit.  A weight at rounding
+        # level means the direction sits on a cell with no data.
+        partial = (weight > 1e-9) & (weight < 1.0 - 1e-9)
+        power[partial] /= weight[partial]
+        power[weight <= 1e-9] = 0.0
+        Lq = power_to_db(power)
         Lq[~np.isfinite(Lq)] = -np.inf
         if np.isfinite(minimum_level_db):
             Lq[Lq < float(minimum_level_db)] = -np.inf
