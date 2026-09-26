@@ -3223,7 +3223,11 @@ def project_sphere(filename, altitude, elv_cutoff, infreqs=None,
     EAA = EAA[included_angles]
     slant_range = altitude / np.sin(elv)
     ground_range = np.sqrt(slant_range ** 2 - altitude ** 2)
-    x = -ground_range * np.sin(azi)
+    # Plan view from above, as lambert_lon draws hemispheres: the flight
+    # direction (azimuth 180) is +y and starboard (azimuth 90) is +x.  This was
+    # -sin(azi) until 2026-09, which with art2umapr's old phi sign cancelled out;
+    # once art2umapr put phi > 0 to starboard it mirrored every footprint.
+    x = ground_range * np.sin(azi)
     y = -ground_range * np.cos(azi)
     absorption = EAA / distance * (slant_range - radius)
     spreading = 20 * np.log10(radius / slant_range)

@@ -65,3 +65,29 @@ def test_starboard_lobe_lands_on_the_right():
     x, _ = fa.lambert_ea(np.radians(EL), fa.lambert_lon(np.radians(AZ)))
     # power-weighted centroid of the lobe on the page
     assert float((x * lobe).sum() / lobe.sum()) > 0.5
+
+
+def test_ground_footprint_puts_starboard_on_the_right(tmp_path):
+    """A sphere loud to starboard must project loud to the RIGHT of the track.
+
+    Footprints are the same view from above as these hemispheres. project_sphere
+    used x = -ground_range*sin(azimuth), which mirrored every footprint once
+    art2umapr put ART phi > 0 to starboard (the AAM manual's sign).
+    """
+    from netCDF4 import Dataset
+    path = tmp_path / 'starboard_loud.nc'
+    phi = np.arange(-90.0, 91.0, 10.0)
+    theta = np.arange(0.0, 181.0, 5.0)
+    frequency = np.array([100.0, 1000.0])
+    amplitude = np.full((phi.size, theta.size, frequency.size), 80.0)
+    amplitude[phi > 0] = 100.0                       # ART phi > 0 is starboard
+    with Dataset(str(path), 'w', format='NETCDF3_CLASSIC') as ds:
+        for name, values in (('PHI', phi), ('THETA', theta), ('FREQUENCY', frequency)):
+            ds.createDimension(name, values.size)
+            ds.createVariable(name, 'f4', (name,))[:] = values
+        ds.createVariable('AMPLITUDE', 'f4', ('PHI', 'THETA', 'FREQUENCY'))[:] = amplitude
+        for name, value in (('RADIUS', 100.0), ('SPEED', 60.0), ('FLIGHT_PATH_ANGLE', 0.0)):
+            ds.createVariable(name, 'f4').assignValue(value)
+
+    x, y, level_a, _, _ = fa.project_sphere(str(path), 150.0, 20.0)
+    assert level_a[x > 1.0].mean() > level_a[x < -1.0].mean() + 10.0
