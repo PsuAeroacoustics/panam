@@ -83,12 +83,14 @@ def psd_welch(signal, sampling_rate, cal=0.0, window_time=1.0, window_type='hann
         frequency = frequency[pass_indicies]
     df = frequency[1] - frequency[0]
     if medfilter is not None:
-        medfilter_width = int(np.ceil(medfilter) // 2 * 2 + 1)
+        # medfilter is a width in Hz; medfilt wants an odd number of bins.
+        medfilter_width = 2 * int(round(0.5 * float(medfilter) / df)) + 1
         power_spectral_density = scipy.signal.medfilt(power_spectral_density, medfilter_width)
     pref = 2.0e-5
     psd_db = 10.0 * np.log10(power_spectral_density / (pref ** 2))
     level = 20.0 * np.log10(np.sqrt(np.sum(power_spectral_density * df)) / pref)
-    weight = 10**(dBAw(frequency) / 2)
+    # dBAw is a level (dB), so the weight on a power spectral density is 10**(dB/10).
+    weight = 10**(dBAw(frequency) / 10)
     level_A = 20.0 * np.log10(np.sqrt(np.sum(weight * power_spectral_density * df)) / pref)
     return frequency, psd_db, level, level_A
 
@@ -122,7 +124,8 @@ def level_history(signal, sampling_rate, period=1.0):
         tuple (time, A-weighted level, Unweighted level)
     """
     binwidth = period * sampling_rate
-    edges = np.arange(0, len(signal), binwidth)
+    # One edge per complete period, including the end of the last one.
+    edges = np.arange(int(len(signal) // binwidth) + 1) * binwidth
 
     time = edges[0:-1] / sampling_rate
     level_a = np.zeros_like(time)
