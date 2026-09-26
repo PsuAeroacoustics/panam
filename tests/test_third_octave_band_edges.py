@@ -34,6 +34,16 @@ def test_nominal_centres_get_the_iec_base10_edges():
     np.testing.assert_allclose(upper, exact * 10.0 ** 0.05, rtol=1e-12)
 
 
+def test_a_set_mixing_exact_and_nominal_centres_still_tiles():
+    """Edges from the base-2 and base-10 grids do not meet, so in a mixed set the
+    exact base-2 centres take their band's base-10 edges too."""
+    mixed = np.array([1000.0 * 2.0 ** (1.0 / 3.0), 1600.0, 2000.0])   # base-2, nominal, both
+    lower, upper = fa.third_octave_band_edges(mixed)
+    np.testing.assert_allclose(upper[:-1], lower[1:], rtol=1e-12, atol=0.0)
+    exact = 1000.0 * 10.0 ** (np.arange(1, 4) / 10.0)
+    np.testing.assert_allclose(lower, exact / 10.0 ** 0.05, rtol=1e-12)
+
+
 @pytest.mark.parametrize('tone_hz,band_hz', [(1410.0, 1250.0), (895.0, 1000.0), (14.2, 16.0)])
 def test_every_frequency_falls_in_exactly_one_band(tone_hz, band_hz):
     lower, upper = fa.third_octave_band_edges(fa.NORAH2_BAND_CENTERS_HZ)

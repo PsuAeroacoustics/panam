@@ -197,9 +197,13 @@ def third_octave_band_edges(band_centers_hz):
     895 Hz one in two).  IEC 61260-1 defines each nominal band by its exact
     base-10 midband ``1000 * 10**(k/10)``, with edges a twentieth of a decade
     either side, so a nominal centre (within a quarter band of one) is given
-    those edges.  This module's own exact base-2 centres ``1000 * 2**(k/3)``
-    already tile and keep their ``fc * 2**(+-1/6)`` edges, as does any centre
-    that is neither.
+    those edges.  When every centre is one of this module's own exact base-2
+    centres ``1000 * 2**(k/3)``, they already tile and keep their
+    ``fc * 2**(+-1/6)`` edges.  In a set that mixes the two, the base-2
+    centres take their band's base-10 edges as well, because edges from the
+    two grids do not meet: keeping ``fc * 2**(+-1/6)`` for 1259.9 Hz next to a
+    nominal 1600 Hz band would overlap it by 1.7 Hz.  A centre near neither
+    grid keeps ``fc * 2**(+-1/6)``.
 
     Args:
         band_centers_hz: band centre frequencies, Hz (exact or nominal)
