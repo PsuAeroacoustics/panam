@@ -423,6 +423,63 @@ def effective_perceived_noise_level(band_level_history, dt=0.5,
     }
 
 
+def ten_db_down_interval(levels, down=10.0):
+    """Sample limits of the 10 dB-down duration of a level history.
+
+    ``(k1, k2)``: the first and last samples at or above ``max - down``.  Dips
+    below the threshold between them are inside the interval, as in the EPNL
+    duration of 14 CFR 36 A36.4.5 and the SEL convention that follows it --
+    a second rise (e.g. a hover at the end of an approach heard from upstream)
+    is part of the event, not cut off at the first dip.
+    """
+    levels = np.asarray(levels, dtype=float)
+    finite = np.isfinite(levels)
+    if not finite.any():
+        raise ValueError('no finite levels in the history')
+    peak = np.nanmax(np.where(finite, levels, -np.inf))
+    above = np.where(finite & (levels >= peak - float(down)))[0]
+    return int(above[0]), int(above[-1])
+
+
+def sound_exposure_level(levels, dt, down=10.0, weighted_levels=None):
+    """Sound exposure level of a noise event over its 10 dB-down duration.
+
+    SEL = 10 log10( sum 10^(L/10) dt / T0 ), T0 = 1 s, summed over the interval
+    from :func:`ten_db_down_interval` -- the standard duration for aircraft noise
+    metrics.  Pass ``down=np.inf`` to integrate the whole record instead.
+
+    Args:
+        levels: level history (dB; normally A-weighted, i.e. LA) at equal ``dt``.
+        dt: sample interval, s.
+        down: how far below the maximum the duration extends, dB (default 10).
+        weighted_levels: optional history to integrate over the interval chosen
+            from ``levels`` (e.g. choose the interval on LA, integrate LC).
+
+    Returns: dict with
+        sel: sound exposure level, dB
+        lmax: maximum level, dB
+        k1, k2: interval sample limits
+        duration_s: (k2 - k1 + 1) * dt
+        clipped: True when the interval touches the record edge -- the event
+            may extend beyond the data and the SEL is then a lower bound.
+    """
+    levels = np.asarray(levels, dtype=float)
+    if np.isfinite(down):
+        k1, k2 = ten_db_down_interval(levels, down)
+    else:
+        k1, k2 = 0, levels.size - 1
+    integrand = levels if weighted_levels is None else np.asarray(weighted_levels, dtype=float)
+    segment = integrand[k1:k2 + 1]
+    energy = np.sum(10.0 ** (segment[np.isfinite(segment)] / 10.0)) * float(dt)
+    return {
+        'sel': 10.0 * np.log10(energy) if energy > 0 else -np.inf,
+        'lmax': float(np.nanmax(levels)),
+        'k1': k1, 'k2': k2,
+        'duration_s': (k2 - k1 + 1) * float(dt),
+        'clipped': bool(k1 == 0 or k2 == levels.size - 1),
+    }
+
+
 def load_mil_std_1474e_table_c1(filename):
     """
     Load MIL-STD-1474E Table C-1 data from CSV.
