@@ -194,3 +194,17 @@ def test_geodetic_local_roundtrip():
     local_rt = geodetic2array(geod, ref, heading, units='ft')
     # Roundtrip within a small tolerance
     assert np.allclose(local, local_rt, atol=1e-2), f"Roundtrip mismatch: {local_rt - local}"
+
+
+
+def test_array2geodetic_in_metres_leaves_its_input_alone():
+    """units='m' used to rewrite the caller's coordinates into feet in place,
+    so converting the same array twice put the microphones 3.28x too far out."""
+    reference = np.array([40.0, -77.0, 300.0])
+    local = np.array([[100.0, 0.0, 0.0], [0.0, 50.0, 1.5]])
+    before = local.copy()
+    first = array2geodetic(local, reference, heading=30.0, units='m')
+    second = array2geodetic(local, reference, heading=30.0, units='m')
+    np.testing.assert_array_equal(local, before)
+    np.testing.assert_array_equal(first, second)
+    np.testing.assert_allclose(geodetic2array(first, reference, 30.0, units='m'), local, atol=1e-6)

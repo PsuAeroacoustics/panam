@@ -91,6 +91,7 @@ def area_conv(A, from_units=default_area_units,
     >>> area_conv(1000, from_units = 'm**2', to_units = 'in**2')
     1550003.1000061999
     """
+    A = A * 1.0  # a float copy: the arithmetic below must not change the caller's array
 
     if from_units == 'ft**2':
         pass
@@ -142,6 +143,7 @@ def density_conv(D, from_units, to_units):
     0.076474253491112101
 
     """
+    D = D * 1.0  # a float copy: the arithmetic below must not change the caller's array
 
     if from_units == 'kg/m**3':
         pass
@@ -170,6 +172,7 @@ def force_conv(F, from_units=default_weight_units,
     The incoming value is first converted to N, then it is converted to the
     desired return value.
     """
+    F = F * 1.0  # a float copy: the arithmetic below must not change the caller's array
 
     if from_units == 'N':
         pass
@@ -214,6 +217,7 @@ def len_conv(L, from_units=default_length_units,
     >>> len_conv(1000, from_units = 'm', to_units = 'km')
     0.99999999999999989
     """
+    L = L * 1.0  # a float copy: the arithmetic below must not change the caller's array
 
     if from_units == 'ft':
         pass
@@ -257,6 +261,7 @@ def power_conv(P, from_units=default_power_units,
     The units default to those specified in default_units.py
     
     """
+    P = P * 1.0  # a float copy: the arithmetic below must not change the caller's array
 
     if from_units == 'hp':
         pass
@@ -320,6 +325,7 @@ def press_conv(P, from_units=default_press_units,
     >>> press_conv(2116.22, from_units = 'psf', to_units = 'psi')
     14.695973160069311
     """
+    P = P * 1.0  # a float copy: the arithmetic below must not change the caller's array
 
     if from_units == 'in HG':
         P *= 3386.38  # from NASA Reference Publication 1046
@@ -370,6 +376,7 @@ def speed_conv(S, from_units=default_speed_units,
     199.86453563714903
 
     """
+    S = S * 1.0  # a float copy: the arithmetic below must not change the caller's array
 
     if from_units == 'kt':
         pass
@@ -430,6 +437,7 @@ def temp_conv(T, from_units=default_temp_units,
     >>> temp_conv(59, from_units = 'F', to_units = 'K')
     288.14999999999998
     """
+    T = T * 1.0  # a float copy: the arithmetic below must not change the caller's array
 
     if from_units == 'C':
         T += 273.15
@@ -481,6 +489,7 @@ def vol_conv(V, from_units=default_vol_units,
     >>> vol_conv(10, from_units = 'USG', to_units = 'l')
     37.854117840125852
     """
+    V = V * 1.0  # a float copy: the arithmetic below must not change the caller's array
 
     if from_units == 'ft**3':
         pass
@@ -542,6 +551,7 @@ def wt_conv(W, from_units=default_weight_units,
     
     
     """
+    W = W * 1.0  # a float copy: the arithmetic below must not change the caller's array
 
     if from_units == 'kg':
         pass
@@ -622,6 +632,7 @@ def avgas_conv(
     
     The temperature defaults to 15 deg C if it is not specified.
     """
+    AG = AG * 1.0  # a float copy: the arithmetic below must not change the caller's array
 
     lb_per_USG_15_nom = 6.01  # nominal density at 15 deg C from Canada Flight Supplement
     slope = -0.007256  # change in density per deg C based on data from Canada Flight Supplement
