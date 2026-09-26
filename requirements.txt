@@ -2,6 +2,7 @@ numpy
 h5py
 openpyxl
 scipy
+numba
 simplekml
 palettable
 matplotlib
