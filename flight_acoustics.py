@@ -161,10 +161,17 @@ def third_octave_band_levels(signal, sampling_rate, cal=0.0, fmin=20.0, fmax=200
            band_centers is an array of third-octave band center frequencies
            band_levels is an array of third-octave band levels in dB
     """
-    # Define third-octave band center frequencies
+    # Define third-octave band center frequencies.  fmin/fmax are compared
+    # within a quarter band, so nominal limits keep their own bands: the exact
+    # centres of the 20 Hz and 20 kHz bands are 19.69 and 20159 Hz.  Bands
+    # reaching past Nyquist would be only partly filled, so they are dropped.
     k = np.arange(-50, 50)
     band_centers = 1000.0 * (2.0 ** (k / 3.0))
-    band_centers = band_centers[np.logical_and(band_centers >= fmin, band_centers <= fmax)]
+    tolerance = 2.0 ** (1.0 / 12.0)
+    band_centers = band_centers[np.logical_and.reduce((
+        band_centers >= fmin / tolerance,
+        band_centers <= fmax * tolerance,
+        band_centers * 2.0 ** (1.0 / 6.0) <= 0.5 * sampling_rate))]
     # Compute PSD
     frequency, psd_db, _ = psd(signal, sampling_rate, cal)
     pref = 2.0e-5
@@ -178,6 +185,35 @@ def third_octave_band_levels(signal, sampling_rate, cal=0.0, fmin=20.0, fmax=200
         band_power = np.sum(psd_linear[band_indices] * df)
         band_levels[i] = 10.0 * np.log10(band_power / (pref ** 2))
     return band_centers, band_levels
+
+
+def third_octave_band_edges(band_centers_hz):
+    """Lower and upper edges of one-third octave bands that tile without gaps.
+
+    Nominal centres (12.5, 1250, 1600 Hz, ...) are rounded, so edges taken as
+    ``fc * 2**(+-1/6)`` straight from them overlap their neighbours or leave
+    gaps -- up to 8 % of a band -- and a brick-wall band sum then drops or
+    double-counts whatever lies there (a 1410 Hz tone falls in no band, an
+    895 Hz one in two).  IEC 61260-1 defines each nominal band by its exact
+    base-10 midband ``1000 * 10**(k/10)``, with edges a twentieth of a decade
+    either side, so a nominal centre (within a quarter band of one) is given
+    those edges.  This module's own exact base-2 centres ``1000 * 2**(k/3)``
+    already tile and keep their ``fc * 2**(+-1/6)`` edges, as does any centre
+    that is neither.
+
+    Args:
+        band_centers_hz: band centre frequencies, Hz (exact or nominal)
+    Returns: tuple (f_lower, f_upper) of arrays, Hz
+    """
+    fc = np.asarray(band_centers_hz, dtype=float)
+    base2 = 1000.0 * 2.0 ** (np.round(3.0 * np.log2(fc / 1000.0)) / 3.0)
+    if np.allclose(fc, base2, rtol=1e-9, atol=0.0):
+        return fc / 2.0 ** (1.0 / 6.0), fc * 2.0 ** (1.0 / 6.0)
+    base10 = 1000.0 * 10.0 ** (np.round(10.0 * np.log10(fc / 1000.0)) / 10.0)
+    nominal = np.abs(np.log2(fc / base10)) < 1.0 / 12.0
+    fm = np.where(nominal, base10, fc)
+    half_band = np.where(nominal, 10.0 ** (1.0 / 20.0), 2.0 ** (1.0 / 6.0))
+    return fm / half_band, fm * half_band
 
 
 # --------------------------------------------------------------------------
@@ -1129,10 +1165,13 @@ def depropagate_hemisphere(
             band_centers = np.unique(band_centers)
             band_centers = band_centers[np.logical_and(band_centers >= float(third_octave_fmin), band_centers <= fmax)]
         else:
-            # Precompute band centers (same definition as in third_octave_band_levels)
+            # Precompute band centers (same definition as in third_octave_band_levels);
+            # third_octave_fmin is compared within a quarter band so a nominal
+            # limit keeps its own band (the 20 Hz band's exact centre is 19.69 Hz).
             k = np.arange(-50, 50)
             band_centers = 1000.0 * (2.0 ** (k / 3.0))
-            band_centers = band_centers[np.logical_and(band_centers >= float(third_octave_fmin), band_centers <= fmax)]
+            band_centers = band_centers[np.logical_and(
+                band_centers >= float(third_octave_fmin) / 2.0 ** (1.0 / 12.0), band_centers <= fmax)]
         band_power_lists = [list() for _ in range(band_centers.size)]
     else:
         band_centers = np.array([], dtype=float)
@@ -1325,10 +1364,10 @@ def depropagate_hemisphere(
             for ib in range(band_centers.size):
                 band_power_lists[ib].append(band_v[ib, :])
         elif third_octave:
-            # Integrate to third-octave bands in linear power
-            for ib, fc in enumerate(band_centers):
-                f_lower = fc / (2.0 ** (1.0 / 6.0))
-                f_upper = fc * (2.0 ** (1.0 / 6.0))
+            # Integrate to third-octave bands in linear power, on edges that
+            # tile even when the centres are nominal (see third_octave_band_edges)
+            band_lower, band_upper = third_octave_band_edges(band_centers)
+            for ib, (f_lower, f_upper) in enumerate(zip(band_lower, band_upper)):
                 band_mask = np.logical_and(f_sel >= f_lower, f_sel < f_upper)
                 if np.any(band_mask):
                     band_power = np.sum(psd_v_lin[band_mask, :] * df, axis=0)
