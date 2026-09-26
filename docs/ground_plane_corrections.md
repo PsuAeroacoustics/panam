@@ -809,6 +809,34 @@ Not independently validated, and why:
   Australia 2026, Blandeau et al.) would be a further check. Their numbers
   were not accessible.
 
+### In NICE-OPS (2026-09-25)
+
+The ground models and the plate are now in NICE-OPS as well, on its spectral
+path with `--ground_effect`:
+
+- **Ground impedance, turbulence and roughness.** `--impedance_model`
+  (`delany_bazley`, `miki`, `variable_porosity`, `delany_bazley_layer`),
+  `--turbulence_model harmonoise --gamma_t`, and `--roughness`. They are the
+  formulas of `surface_admittance`, `turbulence_coherence` and the Ament
+  factor. NICE-OPS's tests check them against 15 `pole_level` cases to
+  1e-6 dB.
+- **The plate.** `axisymmetric_bem.write_netcdf` exports a `table()` as
+  netCDF: band x sub x elevation x azimuth, in metres, with the ground named.
+  NICE-OPS reads it with `--plate_table` and applies |P_d + Q P_r|^2,
+  band-averaged, with Q from its own ground model, and refuses a table built
+  for a different ground. NICE-OPS ships two tables at the databases' 31
+  bands (10 Hz-10 kHz): Delany-Bazley 225 and variable porosity σe 200.
+  - The exact form matches `board_level` to 1e-6 dB.
+  - The run path takes Q as quadratic in log f through each band's edges and
+    centre. That is 63 reflection coefficients per evaluation instead of
+    155, within 0.07 dB wherever the level is above -15 dB.
+  - A linear Q was tried and rejected. It was off by up to 0.8 dB above
+    -15 dB (2.9 dB in the grazing nulls), because P_d - P_r nearly cancels
+    there and any error in Q shows.
+  - Interpolating band-averaged quadratic moments of P_d and P_r, instead of
+    P_d and P_r themselves, was accurate to 0.065 dB but saves nothing once Q
+    is quadratic.
+
 ## Candidate models
 
 | Model | Mixed boundary | Grazing | Edge diffraction (ripple) | Cost per evaluation |

@@ -296,8 +296,13 @@ def table(bands, sound_speed, flow_resistance=gp.FLOW_RESISTANCE, ground=None, s
                           **options)
     return dict(frequencies=frequencies, elevations=np.asarray(elevations, float),
                 azimuths=np.asarray(azimuths, float), P_d=p_d, P_r=p_r, ground=ground,
-                flow_resistance=flow_resistance,
-                thickness=options.get('thickness', gp.PLATE_THICKNESS_FT))
+                flow_resistance=flow_resistance, bands=bands, sub_bands=sub_bands,
+                sound_speed=sound_speed,
+                thickness=options.get('thickness', gp.PLATE_THICKNESS_FT),
+                radius=options.get('radius', gp.PLATE_RADIUS_FT),
+                edge_thickness=options.get('edge_thickness', gp.PLATE_EDGE_THICKNESS_FT),
+                taper_length=options.get('taper_length', gp.PLATE_TAPER_LENGTH_FT),
+                mic=options.get('mic', (0.0, gp.PLATE_MIC_OFFSET_FT)))
 
 
 def board_level(bands, source_height, ground_distance, sound_speed, table, sub_bands=5,
@@ -347,3 +352,46 @@ def board_level(bands, source_height, ground_distance, sound_speed, table, sub_b
             p[b] = vals[0] + q[b] * vals[1]
         energy += np.abs(p) ** 2
     return 10.0 * np.log10(energy / sub_bands)
+
+
+def write_netcdf(path, table, description=''):
+    """Write a :func:`table` for NICE-OPS's ground-plane receiver (--plate_table).
+
+    Dimensions band x sub x elevation x azimuth; P_d and P_r as real and
+    imaginary parts.  Lengths in metres and the sound speed in m/s (NICE-OPS
+    is metric inside).  Azimuth is that of the horizontal propagation
+    direction, degrees from +x toward +y, in the plate's frame, where the
+    microphone is offset along +y; elevation is the source's, above the ground.
+    The ground the table was computed on is recorded, because P_d and P_r
+    depend on it: NICE-OPS checks it against its own.
+    """
+    from netCDF4 import Dataset
+    ft = 0.3048
+    bands = np.asarray(table['bands'], float)
+    n_sub = int(table['sub_bands'])
+    shape = (bands.size, n_sub, table['elevations'].size, table['azimuths'].size)
+    ground = table.get('ground') or dict(model='delany_bazley', sigma=table['flow_resistance'])
+    with Dataset(path, 'w') as nc:
+        nc.createDimension('band', bands.size)
+        nc.createDimension('sub', n_sub)
+        nc.createDimension('elevation', table['elevations'].size)
+        nc.createDimension('azimuth', table['azimuths'].size)
+        nc.createVariable('band_centre', 'f8', ('band',))[:] = bands
+        nc.createVariable('frequency', 'f8', ('band', 'sub'))[:] = table['frequencies'].reshape(bands.size, n_sub)
+        nc.createVariable('elevation', 'f8', ('elevation',))[:] = table['elevations']
+        nc.createVariable('azimuth', 'f8', ('azimuth',))[:] = table['azimuths']
+        for key in ('P_d', 'P_r'):
+            data = table[key].reshape(shape)
+            nc.createVariable(key + '_real', 'f8', ('band', 'sub', 'elevation', 'azimuth'), zlib=True)[:] = data.real
+            nc.createVariable(key + '_imag', 'f8', ('band', 'sub', 'elevation', 'azimuth'), zlib=True)[:] = data.imag
+        nc.description = description or 'Rigid plate lying on the ground: P = P_d + Q P_r re the direct wave'
+        nc.radius_m = table['radius'] * ft
+        nc.thickness_m = table['thickness'] * ft
+        nc.edge_thickness_m = table['edge_thickness'] * ft
+        nc.taper_length_m = table['taper_length'] * ft
+        nc.mic_x_m, nc.mic_y_m = (float(v) * ft for v in table['mic'])
+        nc.sound_speed_mps = table['sound_speed'] * ft
+        nc.ground_model = ground['model']
+        nc.flow_resistance = float(ground.get('sigma', ground.get('sigma_e', table['flow_resistance'])))
+        nc.porosity_rate = float(ground.get('alpha_e', 0.0))
+        nc.layer_depth_m = float(ground.get('depth', 0.0))

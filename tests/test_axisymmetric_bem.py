@@ -51,3 +51,23 @@ def test_converges_with_the_generator_mesh():
     fine = ab.scattering(**kw, segments_per_wavelength=30, max_segment=0.007)
     q = 0.2 + 0.1j
     assert abs(coarse[0] + q * coarse[1])[0, 0, 0] == pytest.approx(abs(fine[0] + q * fine[1])[0, 0, 0], rel=0.01)
+
+
+def test_netcdf_export_round_trips(tmp_path):
+    # The NICE-OPS --plate_table format: metres, the ground named, P_d and P_r
+    # laid out band x sub x elevation x azimuth.
+    from netCDF4 import Dataset
+    ground = dict(model='variable_porosity', sigma_e=200.0, alpha_e=0.0)
+    table = ab.table(np.array([500.0, 1000.0]), C, flow_resistance=200.0, ground=ground, sub_bands=2,
+                     elevations=np.array([5.0, 30.0]), azimuths=np.array([0.0, 180.0]))
+    path = tmp_path / 'plate.nc'
+    ab.write_netcdf(str(path), table)
+    with Dataset(path) as nc:
+        assert nc.ground_model == 'variable_porosity' and nc.flow_resistance == 200.0
+        assert nc.thickness_m == pytest.approx(0.008) and nc.radius_m == pytest.approx(0.2)
+        assert np.hypot(nc.mic_x_m, nc.mic_y_m) == pytest.approx(0.15)
+        assert nc.sound_speed_mps == pytest.approx(C * 0.3048)
+        assert np.allclose(nc['frequency'][:].ravel(), table['frequencies'])
+        p_r = nc['P_r_real'][:] + 1j * nc['P_r_imag'][:]
+        assert p_r.shape == (2, 2, 2, 2)
+        assert np.allclose(p_r.reshape(4, 2, 2), table['P_r'])
