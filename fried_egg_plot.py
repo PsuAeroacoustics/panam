@@ -9,7 +9,7 @@ import flight_acoustics
 def two_floats(value):
     values = value.strip("'").strip('"').split(':')
     if len(values) != 2:
-        raise argparse.ArgumentError
+        raise argparse.ArgumentTypeError('expected "low:high"')
     values = list(map(float, values))
     return values
 
@@ -31,7 +31,7 @@ parser.add_argument("-d", "--dimensional", dest='dimensionless', action='store_f
 parser.add_argument("-r", "--climb-rates", dest='climb_rates', action='store_true',
                     help="Use dimensional flight conditions with climb rates")
 parser.add_argument("-x", "--x-limits", dest='x_limits', action='store', type=two_floats, default=None,
-                    help="Set plot x limits \"low:high\"", nargs=1)
+                    help="Set plot x limits \"low:high\"")
 parser.add_argument("-y", "--y-limits", dest='y_limits', type=two_floats, default=None,
                     help="Set plot y limits \"low:high\"")
 parser.set_defaults(dimensionless=False)
@@ -43,12 +43,12 @@ fig, ax, cs = flight_acoustics.fried_egg_plot(args.indir, metric=args.metric, di
                                               altitude=args.altitude, cutoff=args.cutoff,
                                               input_frequencies=args.frequency, fpa_climb_cutoff=args.climb_cutoff,
                                               climb_rates=args.climb_rates,
-                                              duration_correction=args.speed_duration_correction, threshhold=.65)
+                                              duration_correction=args.speed_duration_correction, threshold=.65)
 
 if args.x_limits is not None:
-    ax.set_xlim(args.x_limits[0])
+    ax.set_xlim(args.x_limits)
 if args.y_limits is not None:
-    ax.set_ylim(args.y_limits[0])
+    ax.set_ylim(args.y_limits)
 if args.output:
     fig.savefig(args.output)
     if args.plot:

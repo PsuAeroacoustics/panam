@@ -4537,8 +4537,10 @@ def ega(hs, hr, d2, f, a, flores, pt=True, cturb=0.0, boundary_loss_correction=T
                 - Asphalt: 50000
                 - Water: 1e6 (effectively rigid)
         pt: True for pure tone (no third octave smearing), False for broadband (default: True)
-        cturb: Turbulence parameter (rad·s·(m or ft)^-0.5)
-               Typical: 0 to 16e-4 (rad·s·√m) or 0 to 52.5e-4 (rad·s·√ft)
+        cturb: Turbulence parameter (rad·s·(m or ft)^-0.5); it multiplies
+               f·sqrt(range), so its value depends on the length unit.
+               Typical: 0 to 16e-4 rad·s·m^-0.5, i.e. 0 to 8.8e-4 rad·s·ft^-0.5.
+               Used by the broadband mode only (pt=False).
          boundary_loss_correction: When True (default), includes the boundary-loss factor
              correction to the plane-wave reflection coefficient (Chessell), which is
              most relevant at grazing incidence. When False, uses only the plane-wave
