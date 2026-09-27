@@ -86,3 +86,16 @@ def test_inverted_microphone_over_a_vanishing_plate_is_two_paths():
     k = 2 * np.pi * f / C
     exact = np.abs(1 + np.exp(2j * k[:, None] * (t + h) * np.sin(np.radians(el))[None, :]))
     assert np.allclose(20 * np.log10(np.abs(pd + pr)[:, :, 0]), 20 * np.log10(exact), atol=0.1)
+
+
+def test_board_level_averages_over_the_tables_own_sub_frequencies():
+    # One band at two sub-frequencies, |P_d|^2 = 1 at the first and 4 at the
+    # second, P_r = 0: the band average is 2.5 whatever the ground.
+    p_d = np.array([1.0, 2.0])[:, None, None] * np.ones((2, 2, 2), dtype=complex)
+    table = dict(frequencies=1000.0 * 2.0 ** (np.array([-1.0, 1.0]) / 12.0),
+                 elevations=np.array([0.0, 90.0]), azimuths=np.array([0.0, 180.0]), P_d=p_d,
+                 P_r=np.zeros_like(p_d), thickness=gp.PLATE_THICKNESS_FT, flow_resistance=gp.FLOW_RESISTANCE,
+                 ground=None, sub_bands=2)
+    np.testing.assert_allclose(ab.board_level([1000.0], [100.0], [200.0], C, table), 10 * np.log10(2.5))
+    with pytest.raises(ValueError, match='2 sub-frequencies per band, not 5'):
+        ab.board_level([1000.0], [100.0], [200.0], C, table, sub_bands=5)

@@ -1,6 +1,11 @@
 # Ground-plane microphone corrections: mixed impedance and grazing incidence
 
-Status: research notes and plan (2026-09-25). Nothing here is implemented yet.
+Status: implemented (2026-09-26). The corrections are in `ground_plane.py` and
+`axisymmetric_bem.py`, the 2017 sphere builds divide out the plate's response
+by default ("In the sphere builds"), and NICE-OPS reads the exported plate
+table ("In NICE-OPS"). The notes are a research log in the order the work was
+done: later sections revise earlier ones, and the Plan at the end is the plan
+the work started from.
 
 ## Why this matters
 
@@ -55,6 +60,9 @@ rather than that the ground effect is small.
   geometry from the flush 67AX: a 40 cm plate with the mic
   7 mm above it. B407, AS350B3, B206L3 and R66 have 13 of these; EC130B4 and R44
   have none.
+  - Since corrected: the test team confirmed that these channels were flush
+    67AXs as well, despite the label, and the sphere builds treat them so
+    ("In the sphere builds").
 - `elevtd`: elevated (pole) microphones, mics 50, 51 and 52 on every aircraft.
   - Each is **co-located** with a ground-plane microphone at the same surveyed
     point (`*MicFullList.csv`: identical latitude, longitude and height).

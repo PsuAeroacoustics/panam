@@ -322,7 +322,7 @@ def table(bands, sound_speed, flow_resistance=gp.FLOW_RESISTANCE, ground=None, s
                 mic_height=options.get('mic_height', 0.0))
 
 
-def board_level(bands, source_height, ground_distance, sound_speed, table, sub_bands=5,
+def board_level(bands, source_height, ground_distance, sound_speed, table, sub_bands=None,
                 source_dx=None, source_dy=None, mirror_y=False):
     """The flush microphone on the plate lying on the ground, band averaged, dB re free field.
 
@@ -330,9 +330,11 @@ def board_level(bands, source_height, ground_distance, sound_speed, table, sub_b
     interpolated (real and imaginary parts, bilinear in elevation and azimuth)
     from ``table`` and Q from each frame's geometry, at the plate's top.
     Azimuth, ``mirror_y`` and NaN above the table as in
-    :func:`ground_plane.board_disc_bem`.
+    :func:`ground_plane.board_disc_bem`.  ``sub_bands`` is the table's own; a
+    different count would pick frequencies the table does not hold.
     """
     from scipy.interpolate import RegularGridInterpolator
+    sub_bands = gp.table_sub_bands(table, sub_bands)
     f, hs, d2 = gp._broadcast(bands, source_height, ground_distance)
     elevation = np.degrees(np.arctan2(hs, d2))
     height = table['thickness']

@@ -1439,7 +1439,10 @@ def depropagate_hemisphere(
             if gain_db.shape != (response_centers.size, tobs_v.size) or not np.all(np.isfinite(gain_db)):
                 raise ValueError('receiver_response_db must return finite values shaped (bands, points)')
             inverse = 10.0 ** (-gain_db / 10.0)
-            band_of_bin = np.clip(np.searchsorted(response_centers * 2.0 ** (1.0 / 6.0), f_sel, side='right'),
+            # Each bin takes the band the band sums below put it in: nominal
+            # centres get their base-10 edges (see third_octave_band_edges)
+            _, response_upper = third_octave_band_edges(response_centers)
+            band_of_bin = np.clip(np.searchsorted(response_upper, f_sel, side='right'),
                                   0, response_centers.size - 1)
             response_bins = inverse[band_of_bin]
             response_bands = inverse

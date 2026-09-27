@@ -595,8 +595,11 @@ def plate_table(instrument, sound_speed_ft_s, bands, ground=None, directory=None
     # Keyed on what the table depends on, not the instrument's name.
     key = 'h{:.2f}mm_{}_c{:.2f}_b{}-{:g}-{:g}'.format(BOARD_MIC_HEIGHT_FT[instrument] * 304.8, ground_key,
                                                       speed, bands.size, bands[0], bands[-1])
-    if key in _PLATE_TABLES:
-        return _PLATE_TABLES[key]
+    # The key holds only the ends of the band set, so check the bands, as for
+    # a table read from disk.
+    table = _PLATE_TABLES.get(key)
+    if table is not None and np.array_equal(table.get('bands'), bands):
+        return table
     directory = os.path.abspath(os.path.expanduser(directory or default_plate_table_directory()))
     path = os.path.join(directory, key + '.pkl')
     table = None

@@ -206,3 +206,132 @@ def test_vz_sign_falls_back_to_down_with_a_warning_when_ambiguous():
                  vz=rng.normal(0, 5.0, time.size))
     with pytest.warns(UserWarning, match='barely agree'):
         assert na.vz_sign(track) == -1.0
+
+
+def _plate_table_stub(gain_db, calls=None):
+    """Stands in for ``axisymmetric_bem.table``: a plate that reads ``gain_db``
+    over free field in every direction (P_d constant, P_r zero)."""
+    def table(bands, sound_speed, flow_resistance=None, ground=None, sub_bands=5, **options):
+        bands = np.asarray(bands, dtype=float)
+        if calls is not None:
+            calls.append(bands)
+        offsets = 2.0 ** ((np.arange(sub_bands) + 0.5) / sub_bands / 3.0 - 1.0 / 6.0)
+        frequencies = np.sort((bands[:, None] * offsets[None, :]).ravel())
+        p_d = np.full((frequencies.size, 2, 4), 10.0 ** (gain_db / 20.0), dtype=complex)
+        return dict(frequencies=frequencies, elevations=np.array([0.0, 90.0]),
+                    azimuths=np.array([0.0, 90.0, 180.0, 270.0]), P_d=p_d, P_r=np.zeros_like(p_d),
+                    ground=ground, flow_resistance=flow_resistance, bands=bands, sub_bands=sub_bands,
+                    thickness=0.008 / 0.3048, mic_height=options.get('mic_height', 0.0))
+    return table
+
+
+def test_plate_table_checks_the_bands_of_a_table_held_in_memory(monkeypatch, tmp_path):
+    """The cache key holds only the band count and ends, so two band sets that
+    share them must not share a table."""
+    import axisymmetric_bem as ab
+    calls = []
+    monkeypatch.setattr(ab, 'table', _plate_table_stub(0.0, calls))
+    monkeypatch.setattr(na, '_PLATE_TABLES', {})
+    first = na.plate_table('gdbdfl', 1125.0, [630.0, 800.0, 1000.0], directory=str(tmp_path))
+    second = na.plate_table('gdbdfl', 1125.0, [630.0, 793.7, 1000.0], directory=str(tmp_path))
+    np.testing.assert_array_equal(first['bands'], [630.0, 800.0, 1000.0])
+    np.testing.assert_array_equal(second['bands'], [630.0, 793.7, 1000.0])
+    assert na.plate_table('gdbdfl', 1125.0, [630.0, 793.7, 1000.0], directory=str(tmp_path)) is second
+    assert len(calls) == 2
+
+
+#: Microphone number -> (instrument type, location in ft).  Mic 4 has no
+#: ambient recording, so the build drops it; the pole microphone is not a
+#: ground board.
+ARCHIVE_MICS = {1: ('gdbdfl', (0.0, -150.0, 0.0)), 2: ('gdbdfl', (0.0, 0.0, 0.0)),
+                3: ('invgb7', (0.0, 150.0, 0.0)), 4: ('gdbdfl', (300.0, -80.0, 0.0)),
+                50: ('elevtd', (0.0, 0.0, 4.0))}
+
+
+def _write_csv(path, header, rows):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(''.join(','.join(str(value) for value in row) + '\n' for row in [header] + rows))
+
+
+def _write_signal(path, pressure, fs, start_time, location):
+    from netCDF4 import Dataset
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with Dataset(str(path), 'w') as handle:
+        handle.createDimension('samples', pressure.size)
+        handle.createVariable('pressure', 'f4', ('samples',))[:] = pressure
+        handle.sample_rate = fs
+        handle.start_time = start_time
+        handle.X, handle.Y, handle.Z = location
+
+
+def _archive(root):
+    """A level pass and its ambient run over ARCHIVE_MICS, laid out as the 2017
+    archive.  The pass is white noise 20 dB over the ambient, so the ambient
+    subtraction shows if the two are scaled differently."""
+    rng = np.random.default_rng(0)
+    base = root / 'AS350B3'
+    _write_csv(base / 'AS350B3FullRefList.csv',
+               ['combined', 'test_cond', 'layout', 'bank_ang', 'accel_rate', 'utc_secs_from_mid_start', 'run_num'],
+               [['289101', 'AMB', 'A', '0', '0', '60.0', '101'], ['289108', 'L1', 'A', '0', '0', '100.0', '108']])
+    _write_csv(base / 'AS350B3MicFullList.csv', ['M', 'insttype'],
+               [[mic, kind] for mic, (kind, _) in ARCHIVE_MICS.items()])
+    speed = 150.0                                           # ft/s, level at 300 ft, 10 s at 50 Hz
+    _write_csv(base / 'AS350B3_AC_Data' / '289108AC.csv',
+               ['utcsec', 'x', 'y', 'z', 'vx', 'vy', 'vz', 'VGk', 'roll', 'heading'],
+               [[t, speed * (t - 105.0), 0.0, 300.0, speed, 0.0, 0.0, speed * 0.3048 / 0.514444, 0.0, 90.0]
+                for t in 100.0 + np.arange(500) / 50.0])
+    fs = 25600.0
+    acoustic = base / 'AS350B3_Acoustic_Data' / '289'
+    for mic, (_, location) in ARCHIVE_MICS.items():
+        _write_signal(acoustic / '289108_{}_pascal.nc'.format(mic), 0.2 * rng.standard_normal(int(13 * fs)),
+                      fs, 99.0, location)
+        if mic != 4:
+            _write_signal(acoustic / '289101_{}_pascal.nc'.format(mic), 0.02 * rng.standard_normal(int(4 * fs)),
+                          fs, 60.0, location)
+
+
+def test_the_plate_correction_runs_through_the_sphere_build(monkeypatch, tmp_path):
+    """build_all with the default plate correction, against the flat factor.
+
+    With a plate that reads 3 dB over free field everywhere, the plate spheres
+    come out 20 log10(2) - 3 dB above the flat ones -- which holds only if the
+    run and its ambient both go in unscaled -- and each retained microphone
+    gets its own plate, outboard of the track.
+    """
+    import csv
+    import axisymmetric_bem as ab
+    import flight_acoustics as fa
+    _archive(tmp_path)
+    monkeypatch.setattr(ab, 'table', _plate_table_stub(3.0))
+    monkeypatch.setattr(na, '_PLATE_TABLES', {})
+    seen = []
+    plate_response = na.plate_response
+
+    def spy(tables, mirror, sound_speed):
+        seen.append((len(tables), list(mirror)))
+        return plate_response(tables, mirror, sound_speed)
+    monkeypatch.setattr(na, 'plate_response', spy)
+
+    spheres = {}
+    for correction in ('plate_bem', 'flat'):
+        manifest = tmp_path / (correction + '.csv')
+        records, failures = na.build_all('AS350B3', str(tmp_path / correction), root=str(tmp_path),
+                                         prefetch=False, manifest_path=str(manifest),
+                                         board_correction=correction,
+                                         plate_table_directory=str(tmp_path / 'tables'))
+        assert failures == [] and [r['run'] for r in records] == ['289108']
+        assert records[0]['mics'] == 3
+        with open(manifest, newline='') as handle:
+            spheres[correction] = (next(csv.DictReader(handle))['board_correction'],
+                                   fa.mask_missing_levels(fa.load_nc_sphere(records[0]['output'])[0]))
+
+    assert seen == [(3, [True, False, False])]
+    assert spheres['flat'][0] == 'flat'
+    assert spheres['plate_bem'][0] == 'plate_bem alpha_e=0.0 model=variable_porosity sigma_e=200.0'
+    plate, flat = spheres['plate_bem'][1], spheres['flat'][1]
+    expected = 20.0 * np.log10(2.0) - 3.0
+    # Cells clear of the writer's -100 dB floor (minimum_level_db) in both
+    # spheres; a cell kept in one and gated out of the other fails as inf.
+    clear = (flat > -90.0) | (plate > -90.0 + expected)
+    assert clear.sum() > 1000
+    np.testing.assert_allclose(plate[clear] - flat[clear], expected, atol=1e-4)

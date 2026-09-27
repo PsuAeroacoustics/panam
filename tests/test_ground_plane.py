@@ -258,3 +258,15 @@ def test_image_integral_table_interpolates():
     rho, z = np.array([0.003, 0.02, 0.1, 0.4, 1.2]), np.array([0.0, 0.0005, 0.02, 0.05, 0.0])
     direct, _ = gp.image_integrals(k, beta, rho, z)
     assert np.allclose(table(rho, z)[0], direct, rtol=5e-3)
+
+
+def test_disc_bem_table_is_read_at_its_own_sub_frequencies():
+    # On rigid ground the plate scatters nothing, so the flush microphone reads
+    # pressure doubling -- provided the table's two sub-frequencies are the ones
+    # evaluated.
+    table = gp.disc_bem_table([500.0], C, flow_resistance=1e9, sub_bands=2, elevations=[5.0, 45.0],
+                              azimuths=[0.0, 90.0], cells_per_wavelength=4, min_cells_across=8)
+    level = gp.board_disc_bem([500.0], [100.0], [10.0], C, flow_resistance=1e9, table=table)
+    np.testing.assert_allclose(level, 20 * np.log10(2.0), atol=0.01)
+    with pytest.raises(ValueError, match='2 sub-frequencies per band, not 5'):
+        gp.board_disc_bem([500.0], [100.0], [10.0], C, flow_resistance=1e9, sub_bands=5, table=table)

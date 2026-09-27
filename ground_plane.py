@@ -51,8 +51,9 @@ POLE_HEIGHT_FT = {50: 3.96, 51: 4.07, 52: 4.12}
 #: ARP 4055 position.  The diaphragm is in the plate's top surface, 0 above the
 #: reflecting plate.  In the 2017 test the plates lay on top of the ground, so
 #: that top surface stands 8 mm above the soft ground and the tapered edge is
-#: exposed.  (Not the SAE/ICAO inverted microphone 7 mm above a plate -- that
-#: is the dataset's `invgb7`.)
+#: exposed.  Every ground microphone in that test was mounted this way, those
+#: the dataset labels `invgb7` (inverted, 7 mm gap) included, per the test
+#: team; the SAE/ICAO inverted microphone 7 mm above a plate is another layout.
 PLATE_RADIUS_FT = 0.2 / 0.3048
 PLATE_MIC_HEIGHT_FT = 0.0
 #: Microphone position on the plate, per SAE ARP 4055 (and ICAO Annex 16 /
@@ -61,7 +62,8 @@ PLATE_MIC_HEIGHT_FT = 0.0
 #: types.  Here the offset is along +y of the test axes (x along the track); the
 #: side (+y or -y) is not recorded for the 2017 array.
 PLATE_MIC_OFFSET_FT = 0.75 * PLATE_RADIUS_FT
-#: The ARP 4055 inverted microphone's diaphragm-to-plate gap (the `invgb7` type).
+#: The ARP 4055 inverted microphone's diaphragm-to-plate gap.  Not the 2017
+#: `invgb7` channels, which were flush despite the label (above).
 INVERTED_MIC_HEIGHT_FT = 0.007 / 0.3048
 PLATE_THICKNESS_FT = 0.008 / 0.3048
 PLATE_EDGE_THICKNESS_FT = 0.0025 / 0.3048
@@ -1411,11 +1413,24 @@ def disc_bem_table(bands, sound_speed, flow_resistance=FLOW_RESISTANCE, sub_band
     return dict(frequencies=frequencies, elevations=np.asarray(elevations, float),
                 azimuths=np.asarray(azimuths, float), S=scattered,
                 mic_height=options.get('mic_height', PLATE_MIC_HEIGHT_FT),
-                ground=options.get('ground'), flow_resistance=flow_resistance)
+                ground=options.get('ground'), flow_resistance=flow_resistance, sub_bands=sub_bands)
+
+
+def table_sub_bands(table, sub_bands=None):
+    """The number of sub-frequencies per band ``table`` was computed with.
+
+    Evaluating a table at a different count picks frequencies it does not
+    hold, and averages over the wrong number, so a count that disagrees is
+    refused.  Tables from before the count was recorded used the default, 5.
+    """
+    stored = int(table.get('sub_bands', 5))
+    if sub_bands is not None and int(sub_bands) != stored:
+        raise ValueError('the table holds {} sub-frequencies per band, not {}'.format(stored, sub_bands))
+    return stored
 
 
 def board_disc_bem(bands, source_height, ground_distance, sound_speed,
-                   flow_resistance=FLOW_RESISTANCE, sub_bands=5, table=None,
+                   flow_resistance=FLOW_RESISTANCE, sub_bands=None, table=None,
                    source_dx=None, source_dy=None, mirror_y=False):
     """The ground-plane microphone on a thin rigid disc in soft ground, band averaged, dB re free field.
 
@@ -1427,10 +1442,12 @@ def board_disc_bem(bands, source_height, ground_distance, sound_speed,
     source's offset from the microphone); without them the source is taken to
     be along -x.  ``mirror_y`` puts the microphone on the plate's other side
     (the -y offset), by reflecting the azimuth.  Bands above the table's range
-    are NaN.
+    are NaN.  ``sub_bands`` is the table's own; a different count would pick
+    frequencies the table does not hold.
     """
     from scipy.interpolate import RegularGridInterpolator
 
+    sub_bands = table_sub_bands(table, sub_bands)
     f, hs, d2 = _broadcast(bands, source_height, ground_distance)
     elevation = np.degrees(np.arctan2(hs, d2))
     image_range = np.hypot(d2, hs)
