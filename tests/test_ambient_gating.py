@@ -216,3 +216,82 @@ def test_min_elevation_drops_grazing_incidence():
 
     assert gated['scattered']['elv_deg'].min() >= 78.0
     assert gated['scattered']['elv_deg'].size < ungated['scattered']['elv_deg'].size
+
+
+@pytest.mark.parametrize('method', ['fft', 'filter_bank'])
+def test_constant_receiver_response_matches_the_flat_scale(method):
+    """A constant +6.02 dB receiver response is the old 0.5 pressure scale.
+
+    The response is divided out after the ambient gate, so the ambient has to
+    be scaled the same way as the run in both forms for them to agree.
+    """
+    scenario = _scenario(seed=4)
+    ambient = _scenario(noise_only=True, seed=5)['pressure']
+    doubling_db = 20.0 * np.log10(2.0)
+    calls = []
+
+    def response(im, bands, offset):
+        calls.append((im, offset.shape))
+        return np.full((bands.size, offset.shape[0]), doubling_db)
+
+    flat = _run(dict(scenario, pressure=0.5 * scenario['pressure']), ambient_pressure=0.5 * ambient,
+                third_octave_method=method)
+    modelled = _run(scenario, ambient_pressure=ambient, receiver_response_db=response,
+                    third_octave_method=method)
+    assert {im for im, _ in calls} == {0, 1, 2} and all(shape[1] == 3 for _, shape in calls)
+    np.testing.assert_allclose(modelled['oaspl_db'], flat['oaspl_db'], atol=1e-9)
+    np.testing.assert_allclose(modelled['third_octave']['bands_db'], flat['third_octave']['bands_db'],
+                               atol=1e-9)
+
+
+def test_receiver_response_is_applied_per_band():
+    """Each band is divided by its own response, and the offset is source minus mic."""
+    scenario = _scenario(seed=6)
+
+    def response(im, bands, offset):
+        # 10 dB in the band holding 200 Hz, 0 elsewhere; check the geometry.
+        assert np.all(offset[:, 2] == 300.0)
+        gain = np.zeros((bands.size, offset.shape[0]))
+        gain[np.argmin(np.abs(bands - 200.0))] = 10.0
+        return gain
+
+    plain = _run(scenario)
+    modelled = _run(scenario, receiver_response_db=response)
+    bands = np.asarray(plain['third_octave']['band_centers_hz'])
+    grids_plain = plain['third_octave']['bands_db']
+    grids_model = modelled['third_octave']['bands_db']
+    for i, fc in enumerate(bands):
+        a, b = np.asarray(grids_plain[i]), np.asarray(grids_model[i])
+        finite = np.isfinite(a) & np.isfinite(b) & (a > -200.0)   # not the empty-cell floor
+        expected = -10.0 if i == np.argmin(np.abs(bands - 200.0)) else 0.0
+        np.testing.assert_allclose(b[finite] - a[finite], expected, atol=1e-9)
+
+
+def test_receiver_response_follows_the_band_sums_edges_for_nominal_centres():
+    """Each bin is divided by the response of the band it is summed into.
+
+    Nominal centres take their IEC base-10 edges in the band sums, so the 800
+    Hz band ends at 891.25 Hz, not at 800 * 2**(1/6) = 897.97 Hz.  The 894.53
+    Hz bin (fs 4000 Hz, 1024-point frames) lies between the two: summed into
+    the 1000 Hz band, it has to be divided by that band's response.
+    """
+    rng = np.random.default_rng(14)
+    fs = 4000.0
+    t = np.arange(0.0, 3.5, 1.0 / fs)
+    scenario = dict(_scenario(noise_only=True), time=t,
+                    pressure=np.vstack([0.05 * P_REF * rng.standard_normal(t.size) for _ in range(3)]))
+    centers = np.array([630.0, 800.0, 1000.0])
+    gains_db = {630.0: 0.0, 800.0: 6.0, 1000.0: 12.0}
+
+    def response(im, bands, offset):
+        return np.repeat([[gains_db[fc]] for fc in bands], offset.shape[0], axis=1)
+
+    options = dict(freq_range=(0.0, 1200.0), window_time=0.25, third_octave_fmin=630.0,
+                   third_octave_band_centers_hz=centers)
+    plain = _run(scenario, **options)
+    modelled = _run(scenario, receiver_response_db=response, **options)
+    np.testing.assert_array_equal(plain['third_octave']['band_centers_hz'], centers)
+    for fc, a, b in zip(centers, plain['third_octave']['bands_db'], modelled['third_octave']['bands_db']):
+        finite = np.isfinite(a)
+        assert finite.any()
+        np.testing.assert_allclose(b[finite] - a[finite], -gains_db[fc], atol=1e-9)

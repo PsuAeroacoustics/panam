@@ -1,0 +1,101 @@
+import numpy as np
+import pytest
+
+import axisymmetric_bem as ab
+import ground_plane as gp
+
+C = 1125.0
+THIN = dict(thickness=0.0003 / 0.3048, edge_thickness=0.0003 / 0.3048, taper_length=0.0)
+
+
+def test_generator_normals_point_into_the_air():
+    segs, flat = ab.plate_generator(segment=0.02)
+    dr, dz = segs[:, 2] - segs[:, 0], segs[:, 3] - segs[:, 1]
+    nr, nz = -dz, dr
+    assert np.all(nz >= 0.0) and np.all(nr[~flat] >= 0.0)
+    assert np.allclose(segs[flat, 1], gp.PLATE_THICKNESS_FT)
+    assert segs[-1, 3] == 0.0                          # the rim reaches the ground
+
+
+def test_thin_plate_on_rigid_ground_doubles_pressure():
+    pd, pr = ab.scattering([500.0, 2000.0], [10.0, 45.0], [90.0, 270.0], C, flow_resistance=1e9, **THIN)
+    assert np.allclose(np.abs(pd + pr), 2.0, atol=0.02)
+
+
+def test_centre_microphone_is_independent_of_azimuth():
+    pd, pr = ab.scattering([1500.0], [20.0], [0.0, 77.0, 200.0], C, mic=(0.0, 0.0))
+    q = 0.3 - 0.2j
+    p = np.abs(pd[0, 0] + q * pr[0, 0])
+    assert np.allclose(p, p[0], rtol=1e-6)
+
+
+def test_offset_microphone_mirror_symmetry():
+    # Microphone on +y: azimuth a and 180 - a are mirror images in x.
+    pd, pr = ab.scattering([2000.0], [15.0], [30.0, 150.0], C)
+    assert np.allclose(pd[0, 0, 0], pd[0, 0, 1], rtol=1e-6) and np.allclose(pr[0, 0, 0], pr[0, 0, 1], rtol=1e-6)
+
+
+def test_matches_the_3d_surface_model():
+    f, el = 500.0, 45.0
+    pd, pr = ab.scattering([f], [el], [90.0], C)
+    pd3, pr3 = gp.raised_plate_scattering([f], [el], [90.0], C, cells_per_wavelength=4, min_cells_across=16)
+    q = gp.fa.spherical_reflection_coefficient(np.sin(np.radians(el)), 1000.0, f, C, gp.FLOW_RESISTANCE)
+    a = 20 * np.log10(abs(pd[0, 0, 0] + q * pr[0, 0, 0]))
+    b = 20 * np.log10(abs(pd3[0, 0, 0] + q * pr3[0, 0, 0]))
+    assert a == pytest.approx(b, abs=0.25)
+
+
+def test_converges_with_the_generator_mesh():
+    kw = dict(frequencies=[2000.0], elevations=[10.0], azimuths=[90.0], sound_speed=C)
+    coarse = ab.scattering(**kw, segments_per_wavelength=10, max_segment=0.02)
+    fine = ab.scattering(**kw, segments_per_wavelength=30, max_segment=0.007)
+    q = 0.2 + 0.1j
+    assert abs(coarse[0] + q * coarse[1])[0, 0, 0] == pytest.approx(abs(fine[0] + q * fine[1])[0, 0, 0], rel=0.01)
+
+
+def test_netcdf_export_round_trips(tmp_path):
+    # The NICE-OPS --plate_table format: metres, the ground named, P_d and P_r
+    # laid out band x sub x elevation x azimuth.
+    from netCDF4 import Dataset
+    ground = dict(model='variable_porosity', sigma_e=200.0, alpha_e=0.0)
+    table = ab.table(np.array([500.0, 1000.0]), C, flow_resistance=200.0, ground=ground, sub_bands=2,
+                     elevations=np.array([5.0, 30.0]), azimuths=np.array([0.0, 180.0]))
+    path = tmp_path / 'plate.nc'
+    ab.write_netcdf(str(path), table)
+    with Dataset(path) as nc:
+        assert nc.ground_model == 'variable_porosity' and nc.flow_resistance == 200.0
+        assert nc.thickness_m == pytest.approx(0.008) and nc.radius_m == pytest.approx(0.2)
+        assert np.hypot(nc.mic_x_m, nc.mic_y_m) == pytest.approx(0.15)
+        assert nc.sound_speed_mps == pytest.approx(C * 0.3048)
+        assert np.allclose(nc['frequency'][:].ravel(), table['frequencies'])
+        p_r = nc['P_r_real'][:] + 1j * nc['P_r_imag'][:]
+        assert p_r.shape == (2, 2, 2, 2)
+        assert np.allclose(p_r.reshape(4, 2, 2), table['P_r'])
+
+
+def test_inverted_microphone_over_a_vanishing_plate_is_two_paths():
+    # 7 mm above a 0.01 mm plate on rigid ground: direct plus image about the
+    # ground, including the 10 kHz null.  (A 0.3 mm plate is not thin enough
+    # here: 2 k t is 0.11 rad at 10 kHz, visible near a null.)
+    t = 0.00001 / 0.3048
+    h = gp.INVERTED_MIC_HEIGHT_FT
+    f = np.array([2500.0, 10000.0])
+    el = np.array([30.0, 80.0])
+    pd, pr = ab.scattering(f, el, [90.0], C, flow_resistance=1e9, mic_height=h,
+                           thickness=t, edge_thickness=t, taper_length=0.0)
+    k = 2 * np.pi * f / C
+    exact = np.abs(1 + np.exp(2j * k[:, None] * (t + h) * np.sin(np.radians(el))[None, :]))
+    assert np.allclose(20 * np.log10(np.abs(pd + pr)[:, :, 0]), 20 * np.log10(exact), atol=0.1)
+
+
+def test_board_level_averages_over_the_tables_own_sub_frequencies():
+    # One band at two sub-frequencies, |P_d|^2 = 1 at the first and 4 at the
+    # second, P_r = 0: the band average is 2.5 whatever the ground.
+    p_d = np.array([1.0, 2.0])[:, None, None] * np.ones((2, 2, 2), dtype=complex)
+    table = dict(frequencies=1000.0 * 2.0 ** (np.array([-1.0, 1.0]) / 12.0),
+                 elevations=np.array([0.0, 90.0]), azimuths=np.array([0.0, 180.0]), P_d=p_d,
+                 P_r=np.zeros_like(p_d), thickness=gp.PLATE_THICKNESS_FT, flow_resistance=gp.FLOW_RESISTANCE,
+                 ground=None, sub_bands=2)
+    np.testing.assert_allclose(ab.board_level([1000.0], [100.0], [200.0], C, table), 10 * np.log10(2.5))
+    with pytest.raises(ValueError, match='2 sub-frequencies per band, not 5'):
+        ab.board_level([1000.0], [100.0], [200.0], C, table, sub_bands=5)

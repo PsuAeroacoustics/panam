@@ -466,6 +466,63 @@ def effective_perceived_noise_level(band_level_history, dt=0.5,
     }
 
 
+def ten_db_down_interval(levels, down=10.0):
+    """Sample limits of the 10 dB-down duration of a level history.
+
+    ``(k1, k2)``: the first and last samples at or above ``max - down``.  Dips
+    below the threshold between them are inside the interval, as in the EPNL
+    duration of 14 CFR 36 A36.4.5 and the SEL convention that follows it --
+    a second rise (e.g. a hover at the end of an approach heard from upstream)
+    is part of the event, not cut off at the first dip.
+    """
+    levels = np.asarray(levels, dtype=float)
+    finite = np.isfinite(levels)
+    if not finite.any():
+        raise ValueError('no finite levels in the history')
+    peak = np.nanmax(np.where(finite, levels, -np.inf))
+    above = np.where(finite & (levels >= peak - float(down)))[0]
+    return int(above[0]), int(above[-1])
+
+
+def sound_exposure_level(levels, dt, down=10.0, weighted_levels=None):
+    """Sound exposure level of a noise event over its 10 dB-down duration.
+
+    SEL = 10 log10( sum 10^(L/10) dt / T0 ), T0 = 1 s, summed over the interval
+    from :func:`ten_db_down_interval` -- the standard duration for aircraft noise
+    metrics.  Pass ``down=np.inf`` to integrate the whole record instead.
+
+    Args:
+        levels: level history (dB; normally A-weighted, i.e. LA) at equal ``dt``.
+        dt: sample interval, s.
+        down: how far below the maximum the duration extends, dB (default 10).
+        weighted_levels: optional history to integrate over the interval chosen
+            from ``levels`` (e.g. choose the interval on LA, integrate LC).
+
+    Returns: dict with
+        sel: sound exposure level, dB
+        lmax: maximum level, dB
+        k1, k2: interval sample limits
+        duration_s: (k2 - k1 + 1) * dt
+        clipped: True when the interval touches the record edge -- the event
+            may extend beyond the data and the SEL is then a lower bound.
+    """
+    levels = np.asarray(levels, dtype=float)
+    if np.isfinite(down):
+        k1, k2 = ten_db_down_interval(levels, down)
+    else:
+        k1, k2 = 0, levels.size - 1
+    integrand = levels if weighted_levels is None else np.asarray(weighted_levels, dtype=float)
+    segment = integrand[k1:k2 + 1]
+    energy = np.sum(10.0 ** (segment[np.isfinite(segment)] / 10.0)) * float(dt)
+    return {
+        'sel': 10.0 * np.log10(energy) if energy > 0 else -np.inf,
+        'lmax': float(np.nanmax(levels)),
+        'k1': k1, 'k2': k2,
+        'duration_s': (k2 - k1 + 1) * float(dt),
+        'clipped': bool(k1 == 0 or k2 == levels.size - 1),
+    }
+
+
 def load_mil_std_1474e_table_c1(filename):
     """
     Load MIL-STD-1474E Table C-1 data from CSV.
@@ -903,6 +960,7 @@ def depropagate_hemisphere(
         ambient_percentile=None,
         band_snr_gate_db=3.0,
         max_absorption_correction_db=None,
+        receiver_response_db=None,
 ):
     """Generate an acoustic hemisphere from microphone time series and vehicle tracking data.
 
@@ -973,6 +1031,18 @@ def depropagate_hemisphere(
     correction exceeds what the measurement can support -- the band is simply
     not observable at that range, and a gap there is the honest result. It has
     no effect unless ``apply_absorption_deprop=True``.
+
+    ``receiver_response_db``, if given, removes what the microphone's
+    installation adds.  It is called as ``receiver_response_db(im, bands,
+    source_offset)``, with ``bands`` the one-third octave centres (the output
+    bands when ``third_octave``), ``source_offset`` the (Npts, 3) emission
+    positions minus microphone ``im``'s position, and returns the band-averaged
+    level re free field, dB, shaped (len(bands), Npts) -- for instance a
+    ground plate's response (:func:`axisymmetric_bem.board_level`).  Each bin
+    is divided by its band's value, after the ambient gate and before
+    spreading, so a band's energy is divided by the band-averaged response.
+    The pressures should then be supplied unscaled (no 0.5 pressure-doubling
+    factor).
 
     This is the "normal" processing flow used by the demo scripts: use the vehicle kinematics
     to compute emission-time geometry (azimuth/elevation/range) via :func:`hemigen`, sample
@@ -1187,6 +1257,16 @@ def depropagate_hemisphere(
         band_centers = np.array([], dtype=float)
         band_power_lists = []
 
+    # Bands the receiver response is evaluated in: the output bands, or the
+    # standard centres over the frequency range when there are none.
+    if third_octave:
+        response_centers = band_centers
+    else:
+        k_bands = np.arange(-50, 50)
+        response_centers = 1000.0 * 2.0 ** (k_bands / 3.0)
+        response_centers = response_centers[(response_centers * 2 ** (1 / 6) >= fmin)
+                                            & (response_centers / 2 ** (1 / 6) <= fmax)]
+
     psd_power_lists = []
     f_sel_master = None
     Aweight_db = None
@@ -1198,7 +1278,7 @@ def depropagate_hemisphere(
 
     pref_sq = (20e-6) ** 2
 
-    def _depropagate(lin, amb, r_v, alpha):
+    def _depropagate(lin, amb, r_v, alpha, response=None):
         """Gate against ambient, subtract it, then undo spreading and absorption.
 
         ``lin`` is (Nf, Npts) linear power (per bin or per band) at the
@@ -1212,6 +1292,10 @@ def depropagate_hemisphere(
         if amb is not None:
             gate = lin >= amb[:, None] * 10.0 ** (band_snr_gate_db / 10.0)
             lin = np.where(gate, np.maximum(lin - amb[:, None], 0.0), 0.0)
+
+        # The installation's response, as a power ratio to divide out.
+        if response is not None:
+            lin = lin * response
 
         # Spherical spreading depropagation to r_ref: multiply by (r/r_ref)^2
         lin = lin * ((r_v / float(r_ref)) ** 2)[None, :]
@@ -1348,7 +1432,22 @@ def depropagate_hemisphere(
             if use_filter_bank:
                 amb_band = np.percentile(band_frames, float(ambient_percentile), axis=1)
 
-        psd_v_lin = _depropagate(psd_v_lin, amb_lin, r_v, alpha_db_per_m)
+        response_bins = response_bands = None
+        if receiver_response_db is not None:
+            offset = pos_geom[tidx][valid] - mic_geom[im]
+            gain_db = np.asarray(receiver_response_db(im, response_centers, offset), dtype=float)
+            if gain_db.shape != (response_centers.size, tobs_v.size) or not np.all(np.isfinite(gain_db)):
+                raise ValueError('receiver_response_db must return finite values shaped (bands, points)')
+            inverse = 10.0 ** (-gain_db / 10.0)
+            # Each bin takes the band the band sums below put it in: nominal
+            # centres get their base-10 edges (see third_octave_band_edges)
+            _, response_upper = third_octave_band_edges(response_centers)
+            band_of_bin = np.clip(np.searchsorted(response_upper, f_sel, side='right'),
+                                  0, response_centers.size - 1)
+            response_bins = inverse[band_of_bin]
+            response_bands = inverse
+
+        psd_v_lin = _depropagate(psd_v_lin, amb_lin, r_v, alpha_db_per_m, response_bins)
 
         # OASPL power over selected frequency range
         power_oaspl = np.sum(psd_v_lin * df, axis=0)
@@ -1370,7 +1469,7 @@ def depropagate_hemisphere(
                 band_v[ib, :] = np.interp(tobs_v, t_abs, band_frames[ib, :])
             alpha_band = (np.asarray(atmosphere.attenuation_coefficient(band_centers), dtype=float)
                           if apply_absorption_deprop else None)
-            band_v = _depropagate(band_v, amb_band, r_v, alpha_band)
+            band_v = _depropagate(band_v, amb_band, r_v, alpha_band, response_bands)
             for ib in range(band_centers.size):
                 band_power_lists[ib].append(band_v[ib, :])
         elif third_octave:
@@ -2840,11 +2939,16 @@ def _complete_sphere(phi_list, theta_list, spla, eaa, amplitude):
     """
     mirror_phi, source_index = mirror_phi_to_upper_surface(phi_list)
     phi_full_list = np.concatenate((np.asarray(phi_list, dtype=float), mirror_phi))
-    theta, phi = np.meshgrid(theta_list, phi_full_list)
-    return (phi, theta,
-            np.concatenate((spla, spla[source_index])),
-            np.concatenate((eaa, eaa[source_index])),
-            np.concatenate((amplitude, amplitude[source_index])))
+    # Rows sorted by phi, so the spectra -- written gridded, without angles of
+    # their own -- are in the sorted order NICE-OPS reads them in.  Until
+    # 2026-09-25 they were left in completion order (-90..90, then the mirrored
+    # upper surface), which NICE-OPS read as sorted and so put every spectrum
+    # in the wrong direction.  dBA/EAA carry their angles per channel and were
+    # never affected.
+    order = np.argsort(phi_full_list, kind='stable')
+    rows = np.concatenate((np.arange(len(phi_list)), source_index))[order]
+    theta, phi = np.meshgrid(theta_list, phi_full_list[order])
+    return phi, theta, spla[rows], eaa[rows], amplitude[rows]
 
 
 def mirror_phi_to_upper_surface(phi_list):
@@ -4558,6 +4662,52 @@ def filter_track(track, xlims = None, ylims = None, zlims = None, decimate=1):
             filtered_track[key] = filtered_track[key][::decimate]
     return filtered_track   
 
+def spherical_reflection_coefficient(cos_grazing, image_range, f, a, flores,
+                                     boundary_loss_correction=True, admittance=None):
+    """Spherical-wave reflection coefficient Q of a locally reacting ground (e^{-i omega t}).
+
+    Q = Rp + F(w) (1 - Rp): the plane-wave coefficient Rp with Chessell's
+    boundary-loss factor F, over a Delany-Bazley ground of flow resistance
+    ``flores`` (kPa s/m^2).  ``cos_grazing`` is the cosine of the angle from the
+    surface normal at the specular point, ``image_range`` the image-source path
+    length, ``a`` the sound speed (lengths and speed in matching units).  This is
+    the coefficient :func:`ega` uses; it is exposed so that models needing the
+    complex coefficient itself (impedance discontinuities, ground planes) use the
+    same one.
+
+    ``admittance``, when given, is the normalised surface admittance beta
+    (same shape as, or broadcastable to, ``f``) and replaces the
+    Delany-Bazley one from ``flores`` -- for other impedance models.
+    """
+    f = np.asarray(f, dtype=float)
+    if admittance is None:
+        flores = np.asarray(flores, dtype=float)
+        freq_resistance_ratio = f / flores  # Normalized frequency-to-resistance ratio
+        inv_freq_ratio = freq_resistance_ratio ** (-0.73)  # Inverse frequency ratio (Delany-Bazley)
+        impedance_ratio = 1.0 / (1.0 + 9.08 * inv_freq_ratio / (freq_resistance_ratio ** 0.02) + 1j * 11.9 * inv_freq_ratio)
+    else:
+        impedance_ratio = np.asarray(admittance, dtype=complex)
+
+    plane_wave_coeff = (cos_grazing - impedance_ratio) / (cos_grazing + impedance_ratio)  # Plane wave reflection coefficient
+    if not boundary_loss_correction:
+        return plane_wave_coeff
+
+    # Compute numerical distance (simplified: 0.5*k1 = π*f/a)
+    ground_effect_param = np.sqrt(
+        1j * np.pi * f * image_range / a / (1.0 + impedance_ratio * cos_grazing)
+    ) * (cos_grazing + impedance_ratio)
+    w = ground_effect_param ** 2  # Numerical distance parameter
+
+    # Compute boundary loss factor (ground surface effect)
+    boundary_loss = np.zeros_like(w, dtype=complex)
+    mask = np.abs(w) <= 500
+    sqrt_boundary = np.sqrt(w[mask])
+    boundary_loss[mask] = 1 + 1j * np.sqrt(np.pi * w[mask]) * np.exp(-w[mask]) * (1 - erf(-1j * sqrt_boundary))
+
+    # Combined reflection + boundary loss
+    return plane_wave_coeff + boundary_loss * (1.0 - plane_wave_coeff)
+
+
 def ega(hs, hr, d2, f, a, flores, pt=True, cturb=0.0, boundary_loss_correction=True):
     """
     Calculate excess ground attenuation for a non-directional point source.
@@ -4633,31 +4783,8 @@ def ega(hs, hr, d2, f, a, flores, pt=True, cturb=0.0, boundary_loss_correction=T
     path_delay = (image_range - direct_range) / a  # Time delay between direct and image paths
     range_ratio = image_range / direct_range  # Ratio of distances
     
-    # Compute ground impedance and reflection coefficient
-    freq_resistance_ratio = f / flores  # Normalized frequency-to-resistance ratio
-    inv_freq_ratio = freq_resistance_ratio ** (-0.73)  # Inverse frequency ratio (Delany-Bazley)
-    impedance_ratio = 1.0 / (1.0 + 9.08 * inv_freq_ratio / (freq_resistance_ratio ** 0.02) + 1j * 11.9 * inv_freq_ratio)
-    
-    cos_grazing = np.cos(grazing_angle)  # Cosine of grazing angle
-    plane_wave_coeff = (cos_grazing - impedance_ratio) / (cos_grazing + impedance_ratio)  # Plane wave reflection coefficient
-    
-    if boundary_loss_correction:
-        # Compute numerical distance (simplified: 0.5*k1 = π*f/a)
-        ground_effect_param = np.sqrt(
-            1j * np.pi * f * image_range / a / (1.0 + impedance_ratio * cos_grazing)
-        ) * (cos_grazing + impedance_ratio)
-        w = ground_effect_param ** 2  # Numerical distance parameter
-
-        # Compute boundary loss factor (ground surface effect)
-        boundary_loss = np.zeros_like(w, dtype=complex)
-        mask = np.abs(w) <= 500
-        sqrt_boundary = np.sqrt(w[mask])
-        boundary_loss[mask] = 1 + 1j * np.sqrt(np.pi * w[mask]) * np.exp(-w[mask]) * (1 - erf(-1j * sqrt_boundary))
-
-        # Combined reflection + boundary loss
-        image_source_coeff = plane_wave_coeff + boundary_loss * (1.0 - plane_wave_coeff)
-    else:
-        image_source_coeff = plane_wave_coeff
+    image_source_coeff = spherical_reflection_coefficient(
+        np.cos(grazing_angle), image_range, f, a, flores, boundary_loss_correction)
     image_source_magnitude = np.abs(image_source_coeff)  # Magnitude of image source term
     image_source_phase = np.angle(image_source_coeff)  # Phase of image source term
     
