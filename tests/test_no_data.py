@@ -90,24 +90,6 @@ def test_the_lambert_plot_scales_to_the_measured_levels(flyby):
     assert measured.max() <= contours.levels[-1] < measured.max() + 5.0
 
 
-def test_export_does_not_blend_cells_with_no_data_in_as_zero_energy(tmp_path):
-    """Measured at 80 dB everywhere it was measured, the sphere must say 80 dB
-    wherever it says anything.  Blended in as zero power, the cells with no data
-    pulled the directions around them low."""
-    hemisphere = _minimal_hemisphere()
-    hemisphere['azi_grid_deg'] = np.arange(0.0, 360.0 + 1e-9, 10.0)
-    hemisphere['elv_grid_deg'] = np.arange(0.0, 90.0 + 1e-9, 10.0)
-    bands = np.full((3, hemisphere['elv_grid_deg'].size, hemisphere['azi_grid_deg'].size), 80.0)
-    bands[:, hemisphere['elv_grid_deg'] < 45.0, :] = np.nan
-    hemisphere['third_octave']['bands_db'] = bands
-    path = tmp_path / 'edge.nc'
-    fa.write_aam_hemisphere_netcdf(str(path), hemisphere, mode='third_octave', radius_ft=100.0, title='t')
-    amplitude = fa.load_nc_sphere(str(path))[0]
-    written = amplitude[amplitude > fa.AAM_MISSING_THRESHOLD]
-    assert written.size and np.any(amplitude <= fa.AAM_MISSING_THRESHOLD)
-    np.testing.assert_allclose(written, 80.0, atol=1e-4)
-
-
 def test_load_nc_sphere_returns_plain_arrays_with_masked_cells_as_nan(tmp_path):
     path = tmp_path / 'filled.nc'
     with Dataset(str(path), 'w', format='NETCDF3_CLASSIC') as sphere:

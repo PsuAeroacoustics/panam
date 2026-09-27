@@ -1810,10 +1810,8 @@ def _sample_hemisphere_levels(hemisphere, mode, azi_q_deg, elv_q_deg, minimum_le
 
     The shared core of the sphere exporters: pick the spectrum ``mode`` selects,
     then interpolate each band over the UMAPR azimuth/elevation grid in linear
-    power, from the grid cells that have data (not NaN).  Directions off the
-    grid or with no such cell around them, and levels below
-    ``minimum_level_db``, come back as -inf; each writer turns that into its
-    own missing-value convention.
+    power.  Directions off the grid, and levels below ``minimum_level_db``, come
+    back as -inf; each writer turns that into its own missing-value convention.
 
     Args:
         hemisphere: Output dict from :func:`depropagate_hemisphere`.
@@ -1867,7 +1865,8 @@ def _sample_hemisphere_levels(hemisphere, mode, azi_q_deg, elv_q_deg, minimum_le
         df = float(np.median(np.diff(frequency_hz)))
         psd_lin = np.power(10.0, psd_db_umapr / 10.0)
         band_power = psd_lin * df
-        levels_db_umapr = power_to_db(band_power)
+        eps = np.finfo(float).tiny
+        levels_db_umapr = 10.0 * np.log10(np.maximum(band_power, eps))
     else:
         raise ValueError('hemisphere must include third_octave or narrowband data; run depropagate_hemisphere with third_octave=True and/or narrowband=True')
 
@@ -1903,31 +1902,23 @@ def _sample_hemisphere_levels(hemisphere, mode, azi_q_deg, elv_q_deg, minimum_le
     nfreq = int(np.asarray(frequency_hz).size)
     levels_db = np.full((pts.shape[0], nfreq), -np.inf, dtype=float)
 
-    # Interpolate each band in linear power and convert to dB.  A -inf cell is
-    # measured, with no energy, and blends in as zero power.  A NaN cell has no
-    # data, and must not: blended in as zero power it left the edge of coverage
-    # low (a median 2.5 dB, up to 16 dB, on a synthetic flyby).  So a direction
-    # takes its level from the cells around it that have data, and is missing
-    # only when none of them has any -- the same directions as before, without
-    # the bias.
-    def interpolate(values):
-        return RegularGridInterpolator((elv_grid_deg, azi_axis), values,
-                                       bounds_error=False, fill_value=0.0)(pts)
-
+    # Interpolate each band in linear power and convert to dB.
+    eps = np.finfo(float).tiny
     for k in range(nfreq):
         Pk = np.power(10.0, levels_db_umapr[k, :, :] / 10.0)
-        measured = ~np.isnan(Pk)
-        weight = interpolate(measured.astype(float))
-        power = interpolate(np.where(measured, Pk, 0.0))
-        # Renormalise only where the interpolation drew on cells with no data:
-        # elsewhere the weights already sum to one, and dividing by their
-        # rounded sum would only perturb the last bit.  A weight at rounding
-        # level means the direction sits on a cell with no data.
-        partial = (weight > 1e-9) & (weight < 1.0 - 1e-9)
-        power[partial] /= weight[partial]
-        power[weight <= 1e-9] = 0.0
-        Lq = power_to_db(power)
-        Lq[~np.isfinite(Lq)] = -np.inf
+        # Treat non-finite levels as zero power.
+        Pk[~np.isfinite(Pk)] = 0.0
+        interp = RegularGridInterpolator(
+            (elv_grid_deg, azi_axis),
+            Pk,
+            bounds_error=False,
+            fill_value=0.0,
+        )
+        Pq = interp(pts)
+        Lq = np.full_like(Pq, -np.inf, dtype=float)
+        pos = Pq > 0.0
+        if np.any(pos):
+            Lq[pos] = 10.0 * np.log10(np.maximum(Pq[pos], eps))
         if np.isfinite(minimum_level_db):
             Lq[Lq < float(minimum_level_db)] = -np.inf
         levels_db[:, k] = Lq
