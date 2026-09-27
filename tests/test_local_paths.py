@@ -5,12 +5,19 @@ import pytest
 import local_paths
 
 
+@pytest.fixture(autouse=True)
+def no_panam_environment(monkeypatch):
+    """The tests set PANAM_* themselves; a developer's own must not leak in."""
+    for name in list(os.environ):
+        if name.startswith('PANAM_'):
+            monkeypatch.delenv(name)
+
+
 @pytest.fixture
 def config(tmp_path, monkeypatch):
     path = tmp_path / 'local_paths.toml'
     path.write_text('[paths]\nnorah2 = "~/from_config"\nempty = ""\n')
     monkeypatch.setattr(local_paths, 'CONFIG_FILE', str(path))
-    monkeypatch.delenv('PANAM_NORAH2', raising=False)
     return path
 
 
@@ -33,5 +40,4 @@ def test_missing_name_raises_or_returns_none(config):
 
 def test_no_config_file_at_all(tmp_path, monkeypatch):
     monkeypatch.setattr(local_paths, 'CONFIG_FILE', str(tmp_path / 'absent.toml'))
-    monkeypatch.delenv('PANAM_NORAH2', raising=False)
     assert local_paths.data_path('norah2', required=False) is None

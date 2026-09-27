@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 import flight_acoustics as fa
 from netCDF4 import Dataset
@@ -412,3 +413,34 @@ def test_mismatched_grids_fall_back_to_per_condition_storage(tmp_path):
             assert 'phi' in group.variables
             assert 'theta' in group.variables
             assert 'frequency' in group.variables
+
+
+def test_export_keeps_starboard_and_ahead_where_they_are(tmp_path):
+    """A hemisphere loud to starboard / ahead must export loud at phi > 0 / theta < 90.
+
+    Every other hemisphere in this file is uniform in azimuth, so a mirrored
+    export (port for starboard, or tail for nose) passed all of them.
+    """
+    azi = np.arange(0.0, 361.0, 10.0)
+    elv = np.arange(0.0, 91.0, 10.0)
+    AZI, _ = np.meshgrid(azi, elv)
+    for loud, axis_test in (((AZI > 45.0) & (AZI < 135.0), 'phi'),       # UMAPR 90 = starboard
+                            ((AZI > 135.0) & (AZI < 225.0), 'theta')):   # UMAPR 180 = ahead
+        bands = np.where(loud, 80.0, 60.0)[None, :, :]
+        hemisphere = {'azi_grid_deg': azi, 'elv_grid_deg': elv,
+                      'third_octave': {'band_centers_hz': np.array([1000.0]), 'bands_db': bands},
+                      'metadata': {'r_ref': 100.0, 'length_units': 'ft'}}
+        path = tmp_path / f'loud_{axis_test}.nc'
+        fa.write_aam_hemisphere_netcdf(str(path), hemisphere, mode='third_octave', radius_ft=100.0)
+        amplitude, phi, theta, _, _, _, _ = fa.load_nc_sphere(str(path))
+        level = np.asarray(amplitude, dtype=float)[:, :, 0]
+
+        def at(phi_deg, theta_deg):
+            return level[np.argmin(np.abs(phi - phi_deg)), np.argmin(np.abs(theta - theta_deg))]
+
+        if axis_test == 'phi':      # starboard vs port, in the lateral plane
+            assert at(60.0, 90.0) == pytest.approx(80.0, abs=0.5)
+            assert at(-60.0, 90.0) == pytest.approx(60.0, abs=0.5)
+        else:                       # ahead vs behind, straight below the flight path
+            assert at(0.0, 30.0) == pytest.approx(80.0, abs=0.5)
+            assert at(0.0, 150.0) == pytest.approx(60.0, abs=0.5)

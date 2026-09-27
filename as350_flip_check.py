@@ -41,7 +41,6 @@ FREQS = (0.0, 2000.0)
 R_REF_FT = 100.0
 AZI_STEP = ELV_STEP = 10.0
 RMAX = 25.0
-EPS = 1e-30
 
 
 def _reference_on_grid(azi_grid, elv_grid):
@@ -61,8 +60,10 @@ def _reference_on_grid(azi_grid, elv_grid):
     a = np.concatenate([azi_d, azi_d + 360.0, azi_d - 360.0])
     e = np.concatenate([elv_d, elv_d, elv_d])
     p = np.concatenate([pw, pw, pw])
+    # NaN where the reference has no data within RMAX, -inf where it has no
+    # energy: np.isfinite in main() then leaves both out of the statistics.
     g = fa.shepIDW(elv_grid, azi_grid, e, a, p, rmax=RMAX)
-    out = 10.0 * np.log10(np.maximum(g, EPS))
+    out = fa.power_to_db(g)
     if out.shape[1] > 1:
         out[:, -1] = out[:, 0]
     return out

@@ -1,0 +1,40 @@
+"""unit_conversion must never modify the array it is given.
+
+Every converter used in-place arithmetic (``L /= 0.3048``) on its argument, so a
+numpy array passed in came back rewritten in the pivot unit, and an integer
+array raised.  depropagate_hemisphere converts its emission ranges this way;
+with length_units='m' the filter-bank pass then reused the rewritten ranges and
+came out about 10 dB high.
+"""
+
+import numpy as np
+import pytest
+
+import unit_conversion as uc
+
+CASES = [
+    (uc.len_conv, 'm', 'ft'), (uc.len_conv, 'in', 'm'), (uc.area_conv, 'm**2', 'in**2'),
+    (uc.vol_conv, 'l', 'm**3'), (uc.speed_conv, 'km/h', 'm/s'), (uc.press_conv, 'mb', 'psi'),
+    (uc.temp_conv, 'C', 'K'), (uc.density_conv, 'lb/ft**3', 'kg/m**3'), (uc.force_conv, 'N', 'lb'),
+    (uc.wt_conv, 'kg', 'lb'), (uc.power_conv, 'W', 'hp'), (uc.avgas_conv, 'USG', 'kg'),
+]
+
+
+@pytest.mark.parametrize('convert,from_units,to_units', CASES)
+def test_input_array_is_left_alone(convert, from_units, to_units):
+    values = np.array([1.0, 20.0, 300.0])
+    before = values.copy()
+    result = convert(values, from_units=from_units, to_units=to_units)
+    np.testing.assert_array_equal(values, before)
+    assert result is not values
+
+
+@pytest.mark.parametrize('convert,from_units,to_units', CASES)
+def test_integer_input_matches_float_input(convert, from_units, to_units):
+    np.testing.assert_allclose(convert(np.array([1, 20, 300]), from_units=from_units, to_units=to_units),
+                               convert(np.array([1.0, 20.0, 300.0]), from_units=from_units, to_units=to_units))
+
+
+def test_scalars_stay_scalars():
+    assert isinstance(uc.len_conv(1.0, from_units='m', to_units='ft'), float)
+    assert uc.len_conv(0.3048, from_units='m', to_units='ft') == pytest.approx(1.0)

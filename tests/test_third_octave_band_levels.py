@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 import flight_acoustics as fa
 
@@ -50,3 +51,27 @@ def test_third_octave_band_levels_1khz_calibrator_level():
 
     # Energy should be concentrated in the 1 kHz third-octave band.
     assert measured_level_db - np.max(np.delete(band_levels, center_index)) > 20.0
+
+
+def test_third_octave_band_levels_nominal_limits_keep_their_bands():
+    """The default 20 Hz..20 kHz limits give all 31 bands from 20 Hz to 20 kHz.
+
+    The exact centres of those two bands are 19.69 and 20159 Hz, so comparing
+    them directly against the nominal limits dropped both end bands.
+    """
+    fs = 48000
+    noise = np.random.default_rng(3).standard_normal(4 * fs)
+    band_centers, band_levels = fa.third_octave_band_levels(noise, fs)
+    assert band_centers.size == 31
+    assert band_centers[0] == pytest.approx(20.0, rel=0.02)
+    assert band_centers[-1] == pytest.approx(20000.0, rel=0.02)
+    assert np.all(np.isfinite(band_levels))
+
+
+def test_third_octave_band_levels_drops_bands_past_nyquist():
+    """A band reaching past Nyquist would be only partly filled, so it is left out."""
+    fs = 40000
+    noise = np.random.default_rng(4).standard_normal(4 * fs)
+    band_centers, _ = fa.third_octave_band_levels(noise, fs)
+    assert np.all(band_centers * 2.0 ** (1.0 / 6.0) <= fs / 2.0)
+    assert band_centers[-1] == pytest.approx(16000.0)

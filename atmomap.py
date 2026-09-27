@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import argparse
+import os
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -68,6 +69,7 @@ def main():
     ax.set_title(f"{title_line1}\n{title_line2}")
 
     fig.tight_layout()
+    os.makedirs(os.path.dirname(args.output) or '.', exist_ok=True)
     fig.savefig(args.output, bbox_inches='tight')
 
 if __name__ == '__main__':

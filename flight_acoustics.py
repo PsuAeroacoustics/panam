@@ -15,7 +15,7 @@ from scipy.special import erf
 import simplekml
 # Colormap helper will import palettable lazily
 import matplotlib
-from matplotlib import cm, tri
+from matplotlib import tri
 from matplotlib.pyplot import plot, subplots, colorbar, style, contourf, show
 from netCDF4 import Dataset
 from pyuff import UFF
@@ -83,12 +83,14 @@ def psd_welch(signal, sampling_rate, cal=0.0, window_time=1.0, window_type='hann
         frequency = frequency[pass_indicies]
     df = frequency[1] - frequency[0]
     if medfilter is not None:
-        medfilter_width = int(np.ceil(medfilter) // 2 * 2 + 1)
+        # medfilter is a width in Hz; medfilt wants an odd number of bins.
+        medfilter_width = 2 * int(round(0.5 * float(medfilter) / df)) + 1
         power_spectral_density = scipy.signal.medfilt(power_spectral_density, medfilter_width)
     pref = 2.0e-5
     psd_db = 10.0 * np.log10(power_spectral_density / (pref ** 2))
     level = 20.0 * np.log10(np.sqrt(np.sum(power_spectral_density * df)) / pref)
-    weight = 10**(dBAw(frequency) / 2)
+    # dBAw is a level (dB), so the weight on a power spectral density is 10**(dB/10).
+    weight = 10**(dBAw(frequency) / 10)
     level_A = 20.0 * np.log10(np.sqrt(np.sum(weight * power_spectral_density * df)) / pref)
     return frequency, psd_db, level, level_A
 
@@ -122,7 +124,8 @@ def level_history(signal, sampling_rate, period=1.0):
         tuple (time, A-weighted level, Unweighted level)
     """
     binwidth = period * sampling_rate
-    edges = np.arange(0, len(signal), binwidth)
+    # One edge per complete period, including the end of the last one.
+    edges = np.arange(int(len(signal) // binwidth) + 1) * binwidth
 
     time = edges[0:-1] / sampling_rate
     level_a = np.zeros_like(time)
@@ -158,10 +161,17 @@ def third_octave_band_levels(signal, sampling_rate, cal=0.0, fmin=20.0, fmax=200
            band_centers is an array of third-octave band center frequencies
            band_levels is an array of third-octave band levels in dB
     """
-    # Define third-octave band center frequencies
+    # Define third-octave band center frequencies.  fmin/fmax are compared
+    # within a quarter band, so nominal limits keep their own bands: the exact
+    # centres of the 20 Hz and 20 kHz bands are 19.69 and 20159 Hz.  Bands
+    # reaching past Nyquist would be only partly filled, so they are dropped.
     k = np.arange(-50, 50)
     band_centers = 1000.0 * (2.0 ** (k / 3.0))
-    band_centers = band_centers[np.logical_and(band_centers >= fmin, band_centers <= fmax)]
+    tolerance = 2.0 ** (1.0 / 12.0)
+    band_centers = band_centers[np.logical_and.reduce((
+        band_centers >= fmin / tolerance,
+        band_centers <= fmax * tolerance,
+        band_centers * 2.0 ** (1.0 / 6.0) <= 0.5 * sampling_rate))]
     # Compute PSD
     frequency, psd_db, _ = psd(signal, sampling_rate, cal)
     pref = 2.0e-5
@@ -175,6 +185,39 @@ def third_octave_band_levels(signal, sampling_rate, cal=0.0, fmin=20.0, fmax=200
         band_power = np.sum(psd_linear[band_indices] * df)
         band_levels[i] = 10.0 * np.log10(band_power / (pref ** 2))
     return band_centers, band_levels
+
+
+def third_octave_band_edges(band_centers_hz):
+    """Lower and upper edges of one-third octave bands that tile without gaps.
+
+    Nominal centres (12.5, 1250, 1600 Hz, ...) are rounded, so edges taken as
+    ``fc * 2**(+-1/6)`` straight from them overlap their neighbours or leave
+    gaps -- up to 8 % of a band -- and a brick-wall band sum then drops or
+    double-counts whatever lies there (a 1410 Hz tone falls in no band, an
+    895 Hz one in two).  IEC 61260-1 defines each nominal band by its exact
+    base-10 midband ``1000 * 10**(k/10)``, with edges a twentieth of a decade
+    either side, so a nominal centre (within a quarter band of one) is given
+    those edges.  When every centre is one of this module's own exact base-2
+    centres ``1000 * 2**(k/3)``, they already tile and keep their
+    ``fc * 2**(+-1/6)`` edges.  In a set that mixes the two, the base-2
+    centres take their band's base-10 edges as well, because edges from the
+    two grids do not meet: keeping ``fc * 2**(+-1/6)`` for 1259.9 Hz next to a
+    nominal 1600 Hz band would overlap it by 1.7 Hz.  A centre near neither
+    grid keeps ``fc * 2**(+-1/6)``.
+
+    Args:
+        band_centers_hz: band centre frequencies, Hz (exact or nominal)
+    Returns: tuple (f_lower, f_upper) of arrays, Hz
+    """
+    fc = np.asarray(band_centers_hz, dtype=float)
+    base2 = 1000.0 * 2.0 ** (np.round(3.0 * np.log2(fc / 1000.0)) / 3.0)
+    if np.allclose(fc, base2, rtol=1e-9, atol=0.0):
+        return fc / 2.0 ** (1.0 / 6.0), fc * 2.0 ** (1.0 / 6.0)
+    base10 = 1000.0 * 10.0 ** (np.round(10.0 * np.log10(fc / 1000.0)) / 10.0)
+    nominal = np.abs(np.log2(fc / base10)) < 1.0 / 12.0
+    fm = np.where(nominal, base10, fc)
+    half_band = np.where(nominal, 10.0 ** (1.0 / 20.0), 2.0 ** (1.0 / 6.0))
+    return fm / half_band, fm * half_band
 
 
 # --------------------------------------------------------------------------
@@ -949,7 +992,7 @@ def depropagate_hemisphere(
     because the broadband level is dominated by the low-frequency bands
     where the signal is strong.
 
-    Supply the ambient reference in one of two ways:
+    Supply the ambient reference in one of three ways:
 
     * ``ambient_pressure`` -- a separate signal-free recording per
       microphone (same channel order as ``mic_locations``), e.g. a dedicated
@@ -1075,6 +1118,12 @@ def depropagate_hemisphere(
                             also included under 'scattered'.
             - when third_octave=True: 'third_octave' (band centers + band grids)
             - when narrowband=True: 'narrowband' (frequency + PSD grids)
+
+        Grid cells with no sample within ``rmax`` are NaN: nothing was
+        measured there.  Cells (and scattered samples) whose power is zero,
+        e.g. gated out as ambient, are -inf: measured, with no energy left.
+        Summing energy, a -inf contributes nothing and a NaN makes the sum
+        unknown.
     """
 
     mic_locations = np.asarray(mic_locations, dtype=float)
@@ -1196,10 +1245,13 @@ def depropagate_hemisphere(
             band_centers = np.unique(band_centers)
             band_centers = band_centers[np.logical_and(band_centers >= float(third_octave_fmin), band_centers <= fmax)]
         else:
-            # Precompute band centers (same definition as in third_octave_band_levels)
+            # Precompute band centers (same definition as in third_octave_band_levels);
+            # third_octave_fmin is compared within a quarter band so a nominal
+            # limit keeps its own band (the 20 Hz band's exact centre is 19.69 Hz).
             k = np.arange(-50, 50)
             band_centers = 1000.0 * (2.0 ** (k / 3.0))
-            band_centers = band_centers[np.logical_and(band_centers >= float(third_octave_fmin), band_centers <= fmax)]
+            band_centers = band_centers[np.logical_and(
+                band_centers >= float(third_octave_fmin) / 2.0 ** (1.0 / 12.0), band_centers <= fmax)]
         band_power_lists = [list() for _ in range(band_centers.size)]
     else:
         band_centers = np.array([], dtype=float)
@@ -1418,10 +1470,10 @@ def depropagate_hemisphere(
             for ib in range(band_centers.size):
                 band_power_lists[ib].append(band_v[ib, :])
         elif third_octave:
-            # Integrate to third-octave bands in linear power
-            for ib, fc in enumerate(band_centers):
-                f_lower = fc / (2.0 ** (1.0 / 6.0))
-                f_upper = fc * (2.0 ** (1.0 / 6.0))
+            # Integrate to third-octave bands in linear power, on edges that
+            # tile even when the centres are nominal (see third_octave_band_edges)
+            band_lower, band_upper = third_octave_band_edges(band_centers)
+            for ib, (f_lower, f_upper) in enumerate(zip(band_lower, band_upper)):
                 band_mask = np.logical_and(f_sel >= f_lower, f_sel < f_upper)
                 if np.any(band_mask):
                     band_power = np.sum(psd_v_lin[band_mask, :] * df, axis=0)
@@ -1444,15 +1496,16 @@ def depropagate_hemisphere(
     felv_ext = np.concatenate((felv_pts, felv_pts, felv_pts))
     P_oaspl_ext = np.concatenate((P_oaspl_pts, P_oaspl_pts, P_oaspl_pts))
 
+    # Cells with no sample within rmax come out NaN (no data) and cells whose
+    # samples carry no energy -inf, never a finite floor; see power_to_db.
     P_oaspl_grid = shepIDW(ELV_GRID, AZI_GRID, felv_ext, fazi_ext, P_oaspl_ext, rmax=float(rmax))
-    eps = np.finfo(float).tiny
-    oaspl_db = 10.0 * np.log10(np.maximum(P_oaspl_grid, eps))
+    oaspl_db = power_to_db(P_oaspl_grid)
     if oaspl_db.shape[1] > 1:
         oaspl_db[:, -1] = oaspl_db[:, 0]
 
     P_spl_a_ext = np.concatenate((P_spl_a_pts, P_spl_a_pts, P_spl_a_pts))
     P_spl_a_grid = shepIDW(ELV_GRID, AZI_GRID, felv_ext, fazi_ext, P_spl_a_ext, rmax=float(rmax))
-    spl_a_db = 10.0 * np.log10(np.maximum(P_spl_a_grid, eps))
+    spl_a_db = power_to_db(P_spl_a_grid)
     if spl_a_db.shape[1] > 1:
         spl_a_db[:, -1] = spl_a_db[:, 0]
 
@@ -1508,7 +1561,7 @@ def depropagate_hemisphere(
                 raise ValueError('Internal error: third-octave sample count does not match scattered angle count')
             P_band_ext = np.concatenate((P_band_pts, P_band_pts, P_band_pts))
             P_band_grid = shepIDW(ELV_GRID, AZI_GRID, felv_ext, fazi_ext, P_band_ext, rmax=float(rmax))
-            band_grids_db[ib, :, :] = 10.0 * np.log10(np.maximum(P_band_grid, eps))
+            band_grids_db[ib, :, :] = power_to_db(P_band_grid)
             band_grids_db[ib, :, -1] = band_grids_db[ib, :, 0]
 
         out['third_octave'] = {
@@ -1524,7 +1577,7 @@ def depropagate_hemisphere(
                     raise ValueError('Internal error: third-octave sample count does not match scattered angle count')
                 scattered['third_octave'] = {
                     'band_centers_hz': band_centers,
-                    'bands_db': 10.0 * np.log10(np.maximum(band_power_pts, eps)),
+                    'bands_db': power_to_db(band_power_pts),
                 }
             else:
                 scattered['third_octave'] = {
@@ -1548,7 +1601,7 @@ def depropagate_hemisphere(
             P_f_pts = psd_power_pts[fi, :]
             P_f_ext = np.concatenate((P_f_pts, P_f_pts, P_f_pts))
             P_f_grid = shepIDW(ELV_GRID, AZI_GRID, felv_ext, fazi_ext, P_f_ext, rmax=float(rmax))
-            psd_grid_db[i_f, :, :] = 10.0 * np.log10(np.maximum(P_f_grid, eps))
+            psd_grid_db[i_f, :, :] = power_to_db(P_f_grid)
             psd_grid_db[i_f, :, -1] = psd_grid_db[i_f, :, 0]
 
         out['narrowband'] = {
@@ -1560,7 +1613,7 @@ def depropagate_hemisphere(
             assert scattered is not None
             scattered['narrowband'] = {
                 'frequency_hz': f_nb,
-                'psd_db': 10.0 * np.log10(np.maximum(psd_power_pts[::narrowband_stride, :], eps)),
+                'psd_db': power_to_db(psd_power_pts[::narrowband_stride, :]),
             }
 
     return out
@@ -1784,21 +1837,29 @@ def load_nc_sphere(filename):
     radius is the sphere radius (feet)
     speed is the sphere speed (knots)
     flight_path_angle is the sphere flight path angle (degrees)
+
+    Every array is a plain float array.  netCDF4 returns masked arrays, and
+    their masked cells came through arithmetic as masked scalars that
+    :func:`safe_log10` cannot test (409 RuntimeWarnings reducing one synthetic
+    flyby sphere), while other results came out right only because a mask
+    happened to propagate.  Anything netCDF4 masks (a _FillValue, missing_value or
+    valid-range hit) is NaN instead, which :func:`mask_missing_levels` reads
+    as missing along with the in-band sentinels.
     """
-    file_handle = Dataset(filename, mode='r')
-    # Noise spheres sometimes contain NaN; we'll handle them later, so suppress the warning
-    np_error_settings = np.seterr()
-    np.seterr(invalid='ignore')
-    phi = file_handle.variables['PHI'][:].astype(float)
-    theta = file_handle.variables['THETA'][:].astype(float)
-    frequency = file_handle.variables['FREQUENCY'][:].astype(float)
-    amplitude = file_handle.variables['AMPLITUDE'][:].astype(float)
-    radius = file_handle.variables['RADIUS'][:].astype(float)
-    speed = file_handle.variables['SPEED'][:].astype(float)
-    flight_path_angle = file_handle.variables['FLIGHT_PATH_ANGLE'][:].astype(float)
-    # Reset warning settings
-    np.seterr(**np_error_settings)
-    file_handle.close()
+    def read(variable):
+        return np.ma.filled(np.ma.asarray(variable[:], dtype=float), np.nan)
+
+    with Dataset(filename, mode='r') as file_handle:
+        # Noise spheres sometimes contain NaN, which netCDF4's masking compares
+        # against; they are handled downstream, so do not warn about them.
+        with np.errstate(invalid='ignore'):
+            phi = read(file_handle.variables['PHI'])
+            theta = read(file_handle.variables['THETA'])
+            frequency = read(file_handle.variables['FREQUENCY'])
+            amplitude = read(file_handle.variables['AMPLITUDE'])
+            radius = read(file_handle.variables['RADIUS'])
+            speed = read(file_handle.variables['SPEED'])
+            flight_path_angle = read(file_handle.variables['FLIGHT_PATH_ANGLE'])
     return amplitude, phi, theta, frequency, radius, speed, flight_path_angle
 
 
@@ -2008,20 +2069,20 @@ def write_aam_hemisphere_netcdf(
         filename: Path to the output netCDF file.
         hemisphere: Output dict from :func:`depropagate_hemisphere`.
         mode: 'auto', 'third_octave', or 'narrowband'. 'auto' prefers third-octave.
-        phi_deg: Optional 1D ART phi grid (degrees). Default: 0..360 at the UMAPR azimuth step.
-        theta_deg: Optional 1D ART theta grid (degrees). Default: 0..180 at the UMAPR elevation step.
+        phi_deg: Optional 1D ART phi grid (degrees). Default: -90..90 in 10 degree steps.
+        theta_deg: Optional 1D ART theta grid (degrees). Default: 0..180 in 5 degree steps.
         speed_knots: Stored into ``SPEED`` (knots).
         flight_path_angle_deg: Stored into ``FLIGHT_PATH_ANGLE`` (deg).
         radius_ft: Optional override for ``RADIUS`` (ft). If None, derived from hemisphere metadata ``r_ref``.
         minimum_level_db: bands below this level are written as the AAM missing
-            sentinel rather than as a number. Interpolating a hemisphere whose
-            bands were gated to zero power yields denormal-tiny positives rather
-            than exact zeros, which come out as levels near -3000 dB. Those are
-            zero energy and consumers handle them, but "not measured" is what
-            they mean and what AAM has a convention for. The default sits far
-            below any real measurement at a 100 ft sphere radius, so it catches
-            the gated bands and nothing else. Pass -inf to keep every finite
-            level.
+            sentinel rather than as a number. Hemispheres built before
+            2026-09-26 carry a -3076 dB floor where bands were gated to zero
+            power (and where there was no data), which interpolates to levels
+            near -3000 dB. Those are zero energy and consumers handle them, but
+            "not measured" is what they mean and what AAM has a convention for.
+            The default sits far below any real measurement at a 100 ft sphere
+            radius, so it catches the gated bands and nothing else. Pass -inf
+            to keep every finite level.
         overwrite: If False, raises when filename exists.
 
     Returns:
@@ -2565,6 +2626,18 @@ def OASPL(amplitudes):
     return 10.0 * safe_log10(np.sum(np.power(10.0, amplitudes / 10.0)))
 
 
+def power_to_db(power):
+    """10 * log10(power), for power relative to its reference (p**2 / pref**2).
+
+    Zero power comes back as -inf (no energy) and NaN stays NaN (no data), with
+    none of numpy's divide-by-zero warnings.  Neither becomes a finite floor:
+    the -3076 dB that ``np.maximum(power, np.finfo(float).tiny)`` gives reads as
+    a level, pulling plot colour scales and statistics down with it.
+    """
+    with np.errstate(divide='ignore', invalid='ignore'):
+        return 10.0 * np.log10(np.asarray(power, dtype=float))
+
+
 def safe_log10(x):
     """
     Safe version of log10, where values below zero are returned as NaN and values equal to zero are -inf
@@ -2630,7 +2703,8 @@ def load_nc_signal(filename):
     sample_rate = file_handle.sample_rate
     start_time = file_handle.start_time
     file_handle.close()
-    time = np.arange(start_time, pressure.size / sample_rate + start_time, 1 / sample_rate)
+    # Not np.arange(start, stop, 1/fs): a float step can yield one sample too many.
+    time = start_time + np.arange(pressure.size) / sample_rate
     location = np.array([x, y, z])
     return pressure, time, location
 
@@ -2679,7 +2753,10 @@ def load_UFF_signal(filename, sets = None):
         data = file.read_sets()
     else:
         data = file.read_sets(sets)
-    
+    # pyuff returns a bare dict, not a one-element list, when it reads one set
+    if isinstance(data, dict):
+        data = [data]
+
     channels = len(data)
     datasize = len(data[0]['x'])
     time = data[0]['x']
@@ -3021,7 +3098,9 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     # Get list of full paths to netCDF files in directory
     local_glob = os.path.expanduser(directory_name) + '/*.nc'
     absolute_glob = os.path.abspath(local_glob)
-    file_list = glob(absolute_glob)
+    # Sorted, so group numbering and hover-sphere ties do not depend on the
+    # order the filesystem happens to list the directory in.
+    file_list = sorted(glob(absolute_glob))
 
     min_speed = np.inf
     min_speed_file = None
@@ -3153,6 +3232,9 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                          speed_or_level_speed, flight_path_angle, load_factor, main_rotor_radius,
                          main_rotor_tip_speed, weight_coefficient, frequency, amplitude_full,
                          write_grid_and_frequency=not shared_grid_and_frequency)
+    # Close explicitly: left to the garbage collector, a failed flush on close
+    # is swallowed and the file can stay open (locked) while a traceback lives.
+    ncdatabase.close()
 
 
 def _grid_and_frequency_are_shared(pending_groups):
@@ -3273,6 +3355,10 @@ def project_sphere(filename, altitude, elv_cutoff, infreqs=None,
     distance = 1000  # reference distance for EAA
     azi, elv, phi, theta, radius, SPLO, SPLA, EAA, speed, flight_path_angle, _, _ = extract_SPL(filename, infreqs, distance,
                                                                                           atmosphere)
+    # A direction with no energy (every band missing) has SPLA = -inf and an EAA
+    # of -inf - -inf = NaN; give it EAA = 0, as the database does, so its ground
+    # level is -inf (no energy) rather than NaN.
+    SPLA, EAA = _finite_sphere_levels(SPLA, EAA)
     # Discard values outside of elevation cutoff
     included_angles = elv >= np.radians(elv_cutoff)
     azi = azi[included_angles]
@@ -3282,7 +3368,11 @@ def project_sphere(filename, altitude, elv_cutoff, infreqs=None,
     EAA = EAA[included_angles]
     slant_range = altitude / np.sin(elv)
     ground_range = np.sqrt(slant_range ** 2 - altitude ** 2)
-    x = -ground_range * np.sin(azi)
+    # Plan view from above, as lambert_lon draws hemispheres: the flight
+    # direction (azimuth 180) is +y and starboard (azimuth 90) is +x.  This was
+    # -sin(azi) until 2026-09, which with art2umapr's old phi sign cancelled out;
+    # once art2umapr put phi > 0 to starboard it mirrored every footprint.
+    x = ground_range * np.sin(azi)
     y = -ground_range * np.cos(azi)
     absorption = EAA / distance * (slant_range - radius)
     spreading = 20 * np.log10(radius / slant_range)
@@ -3402,7 +3492,7 @@ def project_directory(directory_name, altitude=500, cutoff=30, input_frequencies
     # Get list of full paths to netCDF files in directory
     local_glob = os.path.expanduser(directory_name) + '/*.nc'
     absolute_glob = os.path.abspath(local_glob)
-    file_list = glob(absolute_glob)
+    file_list = sorted(glob(absolute_glob))
     speeds = []
     flight_path_angles = []
     Lmax = []
@@ -3411,9 +3501,14 @@ def project_directory(directory_name, altitude=500, cutoff=30, input_frequencies
     for filename in file_list:
         x, y, LA, speed, flight_path_angle = project_sphere(filename, altitude, cutoff, input_frequencies, atmosphere)
         if flight_path_angle <= fpa_climb_cutoff:
+            # Directions with no energy (-inf) carry no level to take a max or
+            # mean of; masked arrays used to hide them from these reductions.
+            stencil = (np.sqrt(x ** 2 + y ** 2) > 0) & np.isfinite(LA)
+            if not np.any(stencil):
+                warnings.warn('{}: no direction below the aircraft has a level; skipping it'.format(filename))
+                continue
             speeds.append(speed)
             flight_path_angles.append(flight_path_angle)
-            stencil = np.sqrt(x ** 2 + y ** 2) > 0
             Lmax.append(np.max(LA[stencil]))
             Lmean.append(np.mean(LA[stencil]))
             runs.append(int(filename[-6:-3]))
@@ -3625,6 +3720,8 @@ def nc_unwrapped(filename, infreqs=None, weight=None):
         SPL = SPLA
     else:
         SPL = SPLO
+    # Directions with no energy (-inf) are left blank and do not set the scale.
+    SPL = np.ma.masked_invalid(SPL)
     minSPL = np.min(SPL)
     maxSPL = np.max(SPL)
     num_levels = 9
@@ -3666,12 +3763,16 @@ def plot_projection(filename, altitude=500, cutoff=30, infreqs=None, units='m'):
     fig, ax = subplots(facecolor='white')
     xi = np.linspace(np.min(x), np.max(x), 100)
     yi = np.linspace(np.min(y), np.max(y), 100)
+    # Directions with no level (no energy) stay in the triangulation as NaN,
+    # so the triangles touching them are left blank instead of interpolated
+    # across, and they do not set the colour scale.
+    LA = np.where(np.isfinite(LA), LA, np.nan)
     triangles = tri.Triangulation(x, y)
     interpolator = tri.LinearTriInterpolator(triangles, LA)
     xim, yim = np.meshgrid(xi, yi)
     li = interpolator(xim, yim)
     num_levels = 9
-    levels = np.round(10 * np.linspace(np.min(LA), np.max(LA), num_levels)) / 10
+    levels = np.round(10 * np.linspace(np.nanmin(LA), np.nanmax(LA), num_levels)) / 10
     color_map = get_ylorrd_cmap(num_levels)
     xi = unit_conversion.len_conv(xi, from_units='m', to_units=units)
     yi = unit_conversion.len_conv(yi, from_units='m', to_units=units)
@@ -3933,6 +4034,9 @@ def plot_lambert_ea(azi,elv,SPL,SPL_range=None,weight=None,grid_convention='umap
         The contour set object from the contourf plot.
 
     """
+    # Work on a copy, so the caller's -inf/NaN levels stay as they are; masked
+    # cells (a masked array) count as missing too.
+    SPL = np.ma.filled(np.ma.array(SPL, dtype=float, copy=True), np.nan)
     SPL[np.isinf(SPL)] = np.nan
     if SPL_range is None:
         minSPL = np.nanmin(SPL)
@@ -4185,9 +4289,10 @@ def array2geodetic(local, reference, heading, units='ft'):
     Parameters
     ----------
     local : numpy.ndarray
-        Array of shape (N, 3) containing local coordinates [x, y, z] where:
-        - x: lateral position (positive right)
-        - y: longitudinal position (positive forward)
+        Array of shape (N, 3) containing local coordinates [x, y, z] in the
+        frame :func:`geodetic2array` produces (this is its inverse):
+        - x: along the heading (positive forward)
+        - y: perpendicular to the heading (positive left)
         - z: vertical position (positive up)
     reference : array-like
         Reference point in geodetic coordinates [latitude, longitude, height] in degrees 
@@ -4277,7 +4382,7 @@ def get_ylorrd_cmap(num_levels=9):
             return getattr(cbseq, attr).mpl_colormap
     except Exception:
         pass
-    return cm.get_cmap('YlOrRd')
+    return matplotlib.colormaps['YlOrRd']
 
 def atmosorb(freq, temp, humid, pstat):
     """
@@ -4436,6 +4541,9 @@ def shepIDW(ielv, iazi, felv, fazi, f, rmax):
 
     Returns:
         numpy.ndarray of interpolated values with the same shape as `ielv` (or scalar if scalar inputs).
+        NaN where no data point lies within `rmax`: there is no data there.
+        (The MATLAB original gives 0, which reads as a measured zero -- zero
+        energy, once the values are powers.)
     """
     # Ensure numpy arrays and broadcasting for data fields
     felv = np.asarray(felv, dtype=float)
@@ -4455,10 +4563,13 @@ def shepIDW(ielv, iazi, felv, fazi, f, rmax):
     fi_flat = np.empty_like(ielv_flat, dtype=float)
     for i in range(ielv_flat.size):
         wi = IDWweights(ielv_flat[i], iazi_flat[i], felv, fazi, rmax)
-        fi_flat[i] = np.sum(fvals * wi)
+        # Only the neighbours: 0 * NaN is NaN, so one bad sample anywhere
+        # would otherwise poison every node, however far away.
+        near = wi > 0.0
+        fi_flat[i] = np.sum(fvals[near] * wi[near]) if near.any() else np.nan
 
     fi = fi_flat.reshape(orig_shape)
-    if fi.size == 1:
+    if fi.ndim == 0:
         return float(fi)
     return fi
 
@@ -4631,8 +4742,10 @@ def ega(hs, hr, d2, f, a, flores, pt=True, cturb=0.0, boundary_loss_correction=T
                 - Asphalt: 50000
                 - Water: 1e6 (effectively rigid)
         pt: True for pure tone (no third octave smearing), False for broadband (default: True)
-        cturb: Turbulence parameter (rad·s·(m or ft)^-0.5)
-               Typical: 0 to 16e-4 (rad·s·√m) or 0 to 52.5e-4 (rad·s·√ft)
+        cturb: Turbulence parameter (rad·s·(m or ft)^-0.5); it multiplies
+               f·sqrt(range), so its value depends on the length unit.
+               Typical: 0 to 16e-4 rad·s·m^-0.5, i.e. 0 to 8.8e-4 rad·s·ft^-0.5.
+               Used by the broadband mode only (pt=False).
          boundary_loss_correction: When True (default), includes the boundary-loss factor
              correction to the plane-wave reflection coefficient (Chessell), which is
              most relevant at grazing incidence. When False, uses only the plane-wave
