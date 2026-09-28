@@ -883,6 +883,31 @@ plate model, per band and per frame:
   The co-located pole microphones implied this size and direction: the
   plate reads 2-4 dB under +6 dB at mid frequencies below 40°.
 
+### Field maps, pole nulls and emission times (2026-09-28)
+
+- **`axisymmetric_bem.field`** evaluates the BEM's surface solution anywhere in the air
+  around the plate (p = p_inc + K p off the surface), for one frequency and one plane-wave
+  direction. At a microphone point it reproduces `scattering` to about 1e-6.
+  `board_field_plot.py` maps the level re free field around a plate on soft ground, together
+  with the level along the microphone height.
+  - At 4 kHz and 30 deg over grass (225 kPa s/m^2), the plate lifts the level near its top
+    to about the +6 dB of a rigid plane. It rings at the edges and throws a diffraction
+    shadow downwind.
+  - The two possible positions of a 3/4-radius microphone differ by about 3 dB.
+- **Pole interference nulls** (`ground_plane.path_difference`,
+  `height_from_path_difference`, `null_frequencies`, `two_path_db`, `fit_two_path`,
+  `reflection_phase`). The direct and reflected paths at a pole microphone come from the
+  same emission, so their nulls fix the path difference whatever the source's phase.
+  - Fitting the pole-minus-board narrowband difference gives dR. With the pole height,
+    dR gives the arrival elevation or the source height.
+  - This checks the flight geometry and the pole height independently of any level model.
+  - Use run-to-run scatter for intervals: the least-squares standard errors ignore
+    correlation between neighboring bins.
+- **`ground_plane.emission_times`** solves t_e = t - |x(t_e) - receiver| / c to
+  convergence for a trajectory given as a callable, with the receiver fixed or moving.
+  A single pass leaves a moving source about M^2 R cos(phi) short along its path: about
+  10 m at 600 m range and M 0.13.
+
 ## Candidate models
 
 | Model | Mixed boundary | Grazing | Edge diffraction (ripple) | Cost per evaluation |

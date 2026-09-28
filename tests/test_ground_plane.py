@@ -270,3 +270,86 @@ def test_disc_bem_table_is_read_at_its_own_sub_frequencies():
     np.testing.assert_allclose(level, 20 * np.log10(2.0), atol=0.01)
     with pytest.raises(ValueError, match='2 sub-frequencies per band, not 5'):
         gp.board_disc_bem([500.0], [100.0], [10.0], C, flow_resistance=1e9, sub_bands=5, table=table)
+
+
+# ---------------------------------------------------------------- emission times
+
+def _line(t0=-2000.0, v=150.0, h=500.0):
+    return lambda t: np.column_stack((t0 + v * np.asarray(t), np.zeros_like(t), np.full_like(t, h)))
+
+
+def test_emission_times_match_the_closed_form_for_a_straight_pass():
+    # x(t) = x0 + v t at height h, receiver at the origin: (t_r - t_e) c = |x(t_e)|
+    x0, v, h = -2000.0, 150.0, 500.0
+    t_r = np.linspace(2.0, 30.0, 15)
+    t_e, x = gp.emission_times(_line(x0, v, h), t_r, [0.0, 0.0, 0.0], C)
+    # (c^2 - v^2) t_e^2 - 2 (c^2 t_r + x0 v) t_e + c^2 t_r^2 - x0^2 - h^2 = 0, smaller root
+    a = C ** 2 - v ** 2
+    b = -2 * (C ** 2 * t_r + x0 * v)
+    c = C ** 2 * t_r ** 2 - x0 ** 2 - h ** 2
+    exact = (-b - np.sqrt(b ** 2 - 4 * a * c)) / (2 * a)
+    assert np.allclose(t_e, exact, atol=1e-8)
+    assert np.allclose(np.linalg.norm(x, axis=1), C * (t_r - t_e), rtol=1e-9)
+
+
+def test_emission_times_agree_with_emission_geometry():
+    t = np.linspace(0.0, 40.0, 40001)
+    xyz = _line()(t)
+    track = {'time': t, 'x': xyz[:, 0], 'y': xyz[:, 1], 'z': xyz[:, 2]}
+    mic = np.array([300.0, 200.0, 0.0])
+    t_r = np.linspace(5.0, 30.0, 11)
+    g = gp.emission_geometry(track, mic, t_r, C)
+    _, x = gp.emission_times(_line(), t_r, mic, C)
+    assert np.allclose(x[:, 2] - mic[2], g['source_height'], atol=1e-6)
+    assert np.allclose(x[:, 0] - mic[0], g['source_dx'], atol=1e-3)
+
+
+def test_one_pass_emission_time_is_short_by_about_m2_r():
+    # the error a single pass leaves: the source placed ~M^2 R cos(phi) toward the mic
+    t_r = np.array([3.0])
+    t_1 = t_r - np.linalg.norm(_line()(t_r), axis=1) / C          # one pass from t_e = t_r
+    t_e, _ = gp.emission_times(_line(), t_r, [0.0, 0.0, 0.0], C)
+    assert abs(t_1[0] - t_e[0]) > 1e-3
+
+
+def test_emission_times_refuse_a_supersonic_approach():
+    with pytest.raises(RuntimeError):
+        gp.emission_times(_line(v=2 * C), np.array([1.0]), [0.0, 0.0, 0.0], C, max_iter=20)
+
+
+# ---------------------------------------------------------------- pole interference nulls
+
+def test_path_difference_and_its_inverse():
+    hr, d2 = 4.0, np.array([50.0, 150.0, 400.0])
+    hs = np.array([30.0, 60.0, 90.0])
+    dR = gp.path_difference(hs, d2, hr)
+    assert np.allclose(dR, 2 * hr * hs / np.hypot(d2, hs), rtol=0.01)       # far field: 2 hr sin(el)
+    assert np.allclose(gp.height_from_path_difference(dR, d2, hr), hs, rtol=1e-9)
+    assert np.all(np.isnan(gp.height_from_path_difference([0.0, 8.0], [100.0, 100.0], hr)))
+
+
+def test_null_frequencies():
+    f = gp.null_frequencies(0.5, C, 0.0, 3)
+    assert np.allclose(f, [C / 1.0, 3 * C / 1.0, 5 * C / 1.0])
+    assert gp.null_frequencies(0.5, C, 0.2, 1)[0] < f[0]          # a positive phase lowers the nulls
+
+
+def test_fit_two_path_recovers_the_path_difference():
+    rng = np.random.default_rng(0)
+    f = np.arange(50.0, 6000.0, 4.0)
+    true = dict(offset_db=-5.0, amplitude=0.85, amplitude_rolloff=4000.0, dR=0.62, phase=0.05)
+    y = gp.two_path_db(f, true['offset_db'], true['amplitude'], true['amplitude_rolloff'], true['dR'],
+                       true['phase'], C) + rng.normal(0.0, 0.8, f.size)
+    fit = gp.fit_two_path(f, y, dR_guess=0.45, sound_speed=C, receiver_height=4.0)
+    assert fit['dR'] == pytest.approx(true['dR'], rel=0.01)
+    assert fit['phase'] == pytest.approx(true['phase'], abs=0.1)
+    assert fit['f1'] == pytest.approx(gp.null_frequencies(true['dR'], C, true['phase'], 1)[0], rel=0.02)
+    held = gp.fit_two_path(f, y, dR_guess=0.45, sound_speed=C, receiver_height=4.0, fix_phase=true['phase'])
+    assert held['dR'] == pytest.approx(true['dR'], rel=0.01) and held['phase_se'] == 0.0
+
+
+def test_reflection_phase_is_zero_over_rigid_ground_and_small_over_stiff():
+    rigid = gp.reflection_phase([500.0, 2000.0], 100.0, 300.0, 4.0, C, flow_resistance=gp.RIGID_FLOW_RESISTANCE)
+    assert np.allclose(rigid, 0.0, atol=1e-6)
+    stiff = gp.reflection_phase(2000.0, 100.0, 300.0, 4.0, C, flow_resistance=2e4)
+    assert 0.0 < abs(float(stiff)) < 0.2
