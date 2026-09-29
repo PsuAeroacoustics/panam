@@ -298,6 +298,71 @@ def scattering(frequencies, elevations, azimuths, sound_speed, flow_resistance=g
     return pd_out, pr_out
 
 
+def field(frequency, elevation, azimuth, sound_speed, points, flow_resistance=gp.FLOW_RESISTANCE, ground=None,
+          segments_per_wavelength=10, max_segment=0.02, extra_modes=10, gauss=6, n_phi_uniform=None,
+          **geometry):
+    """(P_d, P_r) at arbitrary points in the air around the plate on the ground, for one
+    frequency and one plane-wave direction: the same surface solution as :func:`scattering`,
+    evaluated off the surface (p = p_inc + K p there).
+
+    ``points`` (n, 3): x, y, z in feet, the plate centered on the z axis with its base on the
+    ground (z = 0).  Unlike :func:`scattering`, P_d and P_r are NOT normalized by the direct
+    wave at each point: they are the complex fields per unit direct plane wave of phase zero at
+    the origin, so the total field over the ground is P_d + Q P_r and the free field is
+    exp(i k . x).  Points inside the plate are NaN.  ``geometry`` as in :func:`scattering`.
+    """
+    pts = np.atleast_2d(np.asarray(points, float))
+    radius = geometry.get('radius', gp.PLATE_RADIUS_FT)
+    thickness = geometry.get('thickness', gp.PLATE_THICKNESS_FT)
+    f = float(frequency)
+    el, az = np.radians(float(elevation)), np.radians(float(azimuth))
+    k = 2 * np.pi * f / sound_speed
+    segment = min(max_segment, sound_speed / f / segments_per_wavelength)
+    segs, flat = plate_generator(segment=segment, **geometry)
+    m_max = int(np.ceil(k * radius)) + extra_modes
+    n_phi = n_phi_uniform or max(16, 2 * m_max)
+    beta = gp._ground_admittance(f, sound_speed, flow_resistance, ground)
+    r_t = np.hypot(pts[:, 0], pts[:, 1])
+    phi_t = np.arctan2(pts[:, 1], pts[:, 0])
+    z_t = pts[:, 2]
+    inside = (r_t < radius) & (z_t < thickness)
+    rho_max = max(2.0 * radius, float(r_t.max()) + radius) * 1.02 + 2 * segment
+    z_max = max(2.0 * thickness, float(z_t.max()) + thickness) * 1.05
+    tbl = gp.ImageIntegralTable(k, beta, rho_max, z_max)
+    tab = (tbl.u[0], tbl.u[1] - tbl.u[0], tbl.u.size, tbl.v[0], tbl.v[1] - tbl.v[0], tbl.v.size, tbl.offset,
+           np.ascontiguousarray(tbl.i_red), np.ascontiguousarray(tbl.j_red))
+    gx, gw = np.polynomial.legendre.leggauss(gauss)
+    gx, gw = 0.5 * (gx + 1.0), 0.5 * gw
+    mids = np.column_stack((0.5 * (segs[:, 0] + segs[:, 2]), 0.5 * (segs[:, 1] + segs[:, 3])))
+    kern = _assemble(mids, segs, flat, m_max, k, complex(beta), tab, gx, gw, n_phi)
+    kappa, kz = k * np.cos(el), k * np.sin(el)
+    m = np.arange(m_max + 1)
+    jm = jv(m[:, None], kappa * mids[None, :, 0])
+    im = (1j ** m)[:, None]
+    inc_d = im * jm * np.exp(-1j * kz * mids[None, :, 1])
+    inc_r = im * jm * np.exp(+1j * kz * mids[None, :, 1])
+    n = segs.shape[0]
+    sol_d = np.empty((m_max + 1, n), dtype=complex)
+    sol_r = np.empty_like(sol_d)
+    for mm in range(m_max + 1):
+        system = 0.5 * np.eye(n) - kern[mm]
+        sol = np.linalg.solve(system, np.column_stack((inc_d[mm], inc_r[mm])))
+        sol_d[mm], sol_r[mm] = sol[:, 0], sol[:, 1]
+    ok = ~inside
+    targets = np.column_stack((r_t[ok], z_t[ok]))
+    ktar = _assemble(targets, segs, flat, m_max, k, complex(beta), tab, gx, gw, n_phi)   # (m, t, s)
+    weights = np.where(m == 0, 1.0, 2.0)
+    phase = weights[:, None] * np.cos(m[:, None] * (phi_t[ok][None, :] - az))            # (m, t)
+    scat_d = np.einsum('mt,mts,ms->t', phase, ktar, sol_d)
+    scat_r = np.einsum('mt,mts,ms->t', phase, ktar, sol_r)
+    h = np.exp(1j * kappa * r_t[ok] * np.cos(phi_t[ok] - az))
+    P_d = np.full(pts.shape[0], np.nan + 0j)
+    P_r = np.full(pts.shape[0], np.nan + 0j)
+    P_d[ok] = h * np.exp(-1j * kz * z_t[ok]) + scat_d
+    P_r[ok] = h * np.exp(+1j * kz * z_t[ok]) + scat_r
+    return P_d, P_r
+
+
 # --------------------------------------------------------------------------
 # Tables for many frames
 # --------------------------------------------------------------------------

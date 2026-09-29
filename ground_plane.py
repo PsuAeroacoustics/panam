@@ -115,6 +115,38 @@ def emission_geometry(track, location, reception_times, sound_speed):
     return {key: np.where(inside, value, np.nan) for key, value in out.items()}
 
 
+def emission_times(position, reception_times, receiver, sound_speed, tol=1e-9, max_iter=50):
+    """Emission times of the sound reaching ``receiver`` at ``reception_times``, for a
+    source whose position is a function of time.
+
+    Solves t_e = t - |x(t_e) - receiver| / c by fixed-point iteration from t_e = t.  Each
+    pass shrinks the error by about the source's Mach number toward the receiver, so a
+    single pass leaves the source about M^2 R cos(phi) short along its path (several
+    meters at a few hundred meters' range and M ~ 0.15); the iteration runs to ``tol``
+    (s).  Unlike :func:`emission_geometry`, which inverts a sampled track's arrival
+    times, ``position`` can be any callable -- an interpolated, smoothed or shifted track
+    -- and the receiver may move: ``receiver`` is (3,) or (n, 3), one row per reception
+    time.
+
+    ``position(t)`` takes an (n,) array of times and returns (n, 3) positions; lengths
+    and ``sound_speed`` in matching units.  Returns (t_e, x(t_e)).  Raises
+    RuntimeError if the iteration has not converged after ``max_iter`` passes (a
+    supersonic approach has no unique solution).
+    """
+    t = np.asarray(reception_times, dtype=float)
+    rec = np.asarray(receiver, dtype=float)
+    t_e = t.copy()
+    for _ in range(max_iter):
+        x = np.asarray(position(t_e), dtype=float)
+        new = t - np.linalg.norm(x - rec, axis=-1) / sound_speed
+        step = np.nanmax(np.abs(new - t_e), initial=0.0)
+        t_e = new
+        if step < tol:
+            return t_e, np.asarray(position(t_e), dtype=float)
+    raise RuntimeError(f'emission_times did not converge in {max_iter} passes (last step {step:.3g} s)')
+
+
+
 # --------------------------------------------------------------------------
 # Measured pairs
 # --------------------------------------------------------------------------
@@ -732,6 +764,151 @@ def _ground_admittance(frequency, sound_speed, flow_resistance, ground):
     params = {k: v for k, v in ground.items() if k != 'model'}
     return surface_admittance(frequency, ground['model'], sound_speed_mps=sound_speed * 0.3048,
                               **params)
+
+
+
+# --------------------------------------------------------------------------
+# Pole interference nulls (a phase-free check of the geometry)
+# --------------------------------------------------------------------------
+#
+# A pole (elevated) microphone hears the direct and the ground-reflected path of the
+# SAME emission, so the interference nulls in its spectrum -- or in its level difference
+# from a co-located ground-plane microphone, where the source spectrum cancels -- depend
+# only on the path difference dR and the reflection phase, not on the source's phase.
+# Fitting the null pattern gives dR, and with the known pole height the arrival elevation
+# or source height.  Lengths are in feet and speeds in ft/s as elsewhere here; the purely
+# geometric functions work in any consistent unit.
+
+def path_difference(source_height, ground_distance, receiver_height):
+    """Image minus direct path length for a receiver ``receiver_height`` above the plane."""
+    hs = np.asarray(source_height, dtype=float)
+    d2 = np.asarray(ground_distance, dtype=float)
+    return np.hypot(d2, hs + receiver_height) - np.hypot(d2, hs - receiver_height)
+
+
+def height_from_path_difference(dR, ground_distance, receiver_height, iterations=40):
+    """Source height giving path difference ``dR`` at ``ground_distance`` (inverse of
+    :func:`path_difference`), vectorised.
+
+    Newton's method from the small-angle guess h = dR d2 / (2 hr): dR(h) rises
+    monotonically and concavely from 0 to 2 hr, so the iterates climb to the root.
+    NaN where dR is outside (0, 2 hr).
+    """
+    hr = float(receiver_height)
+    dR, d2 = np.broadcast_arrays(np.asarray(dR, float), np.asarray(ground_distance, float))
+    ok = np.isfinite(dR) & np.isfinite(d2) & (dR > 0.0) & (dR < 2 * hr * 0.9999)
+    h = np.where(ok, np.maximum(dR * d2 / (2 * hr), 1e-9), np.nan)
+    for _ in range(iterations):
+        up, dn = np.hypot(d2, h + hr), np.hypot(d2, h - hr)
+        step = (up - dn - dR) / ((h + hr) / up - (h - hr) / dn)
+        h = np.maximum(h - step, 1e-9)
+        if np.nanmax(np.abs(step), initial=0.0) < 1e-12 * max(1.0, hr):
+            break
+    return np.where(ok, h, np.nan)
+
+
+def null_frequencies(dR, sound_speed, phase=0.0, n=2):
+    """The first ``n`` interference null frequencies, 2 pi f dR / c + phase = (2k - 1) pi.
+
+    ``phase`` (rad) is arg Q of the ground reflection (0 for a rigid ground, small and
+    positive for a stiff one).  Returns (..., n) for an array ``dR``.
+    """
+    k = np.arange(1, n + 1)
+    return ((2 * k - 1) * np.pi - phase) * sound_speed / (2 * np.pi * np.asarray(dR, float)[..., None])
+
+
+def two_path_db(frequency, offset_db, amplitude, amplitude_rolloff, dR, phase, sound_speed):
+    """Two-path level re an arbitrary reference, dB: C + 10 log10 |1 + A e^{i(k dR + phase)}|^2.
+
+    A = ``amplitude`` exp(-f / ``amplitude_rolloff``): the reflected path's relative
+    amplitude, falling with frequency as coherence and reflection loss grow.  The pole
+    minus ground-plane level difference has this form with C absorbing the plate's
+    pressure doubling and any calibration offset.
+    """
+    f = np.asarray(frequency, dtype=float)
+    a = amplitude * np.exp(-f / amplitude_rolloff)
+    arg = 2 * np.pi * f * dR / sound_speed + phase
+    return offset_db + 10 * np.log10(np.maximum(1 + a ** 2 + 2 * a * np.cos(arg), 1e-12))
+
+
+def fit_two_path(frequency, level_db, dR_guess, sound_speed, receiver_height, fix_phase=None,
+                 fmin=None, fmax=None, phase_bound=0.6):
+    """Fit :func:`two_path_db` to a measured pole spectrum or pole-minus-board difference.
+
+    The window runs from ``fmin`` (default 0.2 c / dR_guess) to ``fmax`` (default
+    2.2 c / dR_guess, just below the guess's third null), so the first two nulls lie
+    inside.  A grid over dR (0.4-2.2 times the guess, zero phase) finds the basin; a
+    robust (soft-L1) least-squares fit then frees C, A, the roll-off, dR and the phase
+    (bounded by +-``phase_bound`` rad, or held at ``fix_phase``).  Use narrowband data
+    (a few Hz) averaged over frames at nearly the same geometry: third-octave bands smear
+    the nulls.
+
+    Returns dict(dR, phase, offset_db, amplitude, amplitude_rolloff, dR_se, phase_se,
+    f1, f2, rms, n, fmin, fmax, at_bound).  ``dR_se`` and ``phase_se`` are the
+    least-squares standard errors, which ignore correlation between frequency bins:
+    use them for ranking, and the scatter over independent groups (runs) for
+    intervals.
+    """
+    from scipy.optimize import least_squares
+    f = np.asarray(frequency, dtype=float)
+    y = np.asarray(level_db, dtype=float)
+    hr = float(receiver_height)
+    fmin = 0.2 * sound_speed / dR_guess if fmin is None else fmin
+    fmax = min(2.2 * sound_speed / dR_guess, f.max()) if fmax is None else fmax
+    sel = (f >= fmin) & (f <= fmax) & np.isfinite(y)
+    f, y = f[sel], y[sel]
+    grid = np.linspace(0.4, 2.2, 361) * dR_guess
+    grid = grid[grid < 2 * hr]
+    best = None
+    for a0 in (0.6, 0.8, 0.92):
+        shapes = np.array([two_path_db(f, 0.0, a0, 1e5, r, 0.0, sound_speed) for r in grid])
+        offset = np.median(y[None, :] - shapes, axis=1)
+        cost = np.mean(np.abs(y[None, :] - shapes - offset[:, None]), axis=1)
+        k = int(np.argmin(cost))
+        if best is None or cost[k] < best[0]:
+            best = (cost[k], grid[k], a0, offset[k])
+    _, r0, a00, c0 = best
+    if fix_phase is None:
+        p0 = [c0, a00, 3000.0, r0, 0.0]
+        lo, hi = [-40, 0.05, 100.0, 0.02 * r0, -phase_bound], [40, 0.999, 1e6, 2 * hr, phase_bound]
+        fun = lambda p: two_path_db(f, *p, sound_speed) - y
+    else:
+        p0 = [c0, a00, 3000.0, r0]
+        lo, hi = [-40, 0.05, 100.0, 0.02 * r0], [40, 0.999, 1e6, 2 * hr]
+        fun = lambda p: two_path_db(f, *p, fix_phase, sound_speed) - y
+    res = least_squares(fun, p0, bounds=(lo, hi), loss='soft_l1', f_scale=2.0)
+    p = res.x
+    dof = max(1, f.size - p.size)
+    s2 = float(np.sum(res.fun ** 2) / dof)
+    try:
+        se = np.sqrt(np.clip(np.diag(np.linalg.pinv(res.jac.T @ res.jac) * s2), 0.0, None))
+    except np.linalg.LinAlgError:
+        se = np.full(p.size, np.nan)
+    phase = float(p[4]) if fix_phase is None else float(fix_phase)
+    f12 = null_frequencies(p[3], sound_speed, phase, 2)
+    return dict(dR=float(p[3]), phase=phase, offset_db=float(p[0]), amplitude=float(p[1]),
+                amplitude_rolloff=float(p[2]), dR_se=float(se[3]),
+                phase_se=float(se[4]) if fix_phase is None else 0.0, f1=float(f12[0]), f2=float(f12[1]),
+                rms=float(np.sqrt(np.mean(res.fun ** 2))), n=int(f.size), fmin=float(fmin), fmax=float(fmax),
+                at_bound=bool(fix_phase is None and abs(phase) > 0.98 * phase_bound))
+
+
+def reflection_phase(frequency, source_height, ground_distance, receiver_height, sound_speed,
+                     flow_resistance=FLOW_RESISTANCE, ground=None):
+    """arg Q (rad) of the spherical-wave reflection coefficient at a pole microphone.
+
+    The phase shifts the nulls (:func:`null_frequencies`); over a stiff ground it is
+    small, so fitting it freely or holding it at this value are both reasonable.
+    ``ground`` is a ground-model dict (:func:`surface_admittance`); without it,
+    Delany-Bazley at ``flow_resistance``.
+    """
+    f, hs, d2 = np.broadcast_arrays(np.asarray(frequency, float), np.asarray(source_height, float),
+                                    np.asarray(ground_distance, float))
+    image = np.hypot(d2, hs + receiver_height)
+    cos_theta = (hs + receiver_height) / image
+    beta = _ground_admittance(f, sound_speed, flow_resistance, ground)
+    q = fa.spherical_reflection_coefficient(cos_theta, image, f, sound_speed, flow_resistance, admittance=beta)
+    return np.angle(q)
 
 
 # --------------------------------------------------------------------------

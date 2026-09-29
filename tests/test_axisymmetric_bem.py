@@ -99,3 +99,29 @@ def test_board_level_averages_over_the_tables_own_sub_frequencies():
     np.testing.assert_allclose(ab.board_level([1000.0], [100.0], [200.0], C, table), 10 * np.log10(2.5))
     with pytest.raises(ValueError, match='2 sub-frequencies per band, not 5'):
         ab.board_level([1000.0], [100.0], [200.0], C, table, sub_bands=5)
+
+
+def test_field_matches_scattering_at_the_microphone():
+    """field() off the surface reproduces scattering() at an inverted mic 7 mm above the plate."""
+    f, el, az = 3000.0, 25.0, 40.0
+    gap = gp.INVERTED_MIC_HEIGHT_FT
+    rm = gp.PLATE_MIC_OFFSET_FT
+    pd, pr = ab.scattering([f], [el], [az], C, mic=(0.0, rm), mic_height=gap)
+    Pd, Pr = ab.field(f, el, az, C, [[0.0, rm, gp.PLATE_THICKNESS_FT + gap]])
+    k = 2 * np.pi * f / C
+    inc = np.exp(1j * k * np.cos(np.radians(el)) * rm * np.sin(np.radians(az))) * \
+        np.exp(-1j * k * np.sin(np.radians(el)) * (gp.PLATE_THICKNESS_FT + gap))
+    assert Pd[0] / inc == pytest.approx(pd[0, 0, 0], rel=1e-5)
+    assert Pr[0] / inc == pytest.approx(pr[0, 0, 0], rel=1e-5)
+
+
+def test_field_inside_the_plate_is_nan_and_far_field_tends_to_the_bare_ground():
+    f, el = 2000.0, 30.0
+    pts = [[0.0, 0.0, 0.5 * THIN["thickness"]], [0.0, 0.0, 30.0]]
+    Pd, Pr = ab.field(f, el, 0.0, C, pts, **THIN)
+    assert np.isnan(Pd[0]) and np.isnan(Pr[0])
+    k = 2 * np.pi * f / C
+    z = 30.0
+    # 30 ft up, the plate's scattered wave is small next to the unit plane waves
+    assert abs(Pd[1] - np.exp(-1j * k * np.sin(np.radians(el)) * z)) < 0.05
+    assert abs(Pr[1] - np.exp(1j * k * np.sin(np.radians(el)) * z)) < 0.05

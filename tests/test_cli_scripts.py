@@ -45,3 +45,10 @@ def test_default_outputs_work_in_a_fresh_checkout(tmp_path):
         result = _run(script, cwd=tmp_path)
         assert result.returncode == 0, result.stderr
         assert (tmp_path / 'demo_plots' / output).is_file()
+
+
+def test_board_field_plot_runs(tmp_path):
+    result = _run('board_field_plot.py', '--frequency', '1000', '--elevation', '30', '--grid', '21x9',
+                  '-o', 'field.png', cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / 'field.png').stat().st_size > 0
