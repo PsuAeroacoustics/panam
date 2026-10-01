@@ -758,8 +758,15 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
                  atmosphere=None, speed_of_sound_ft_s=None,
                  apply_absorption_deprop=True, overwrite=True, norah2_directory=None,
                  third_octave_method='fft', board_correction='plate_bem', ground=None,
-                 plate_table_directory=None):
+                 plate_table_directory=None, ray_model=None):
     """Depropagate one run into an AAM-style source sphere.
+
+    ``ray_model`` (see :mod:`refracted_rays`) depropagates along refracted rays
+    through the run's atmosphere instead of straight lines in uniform air: the
+    samples are filed at the rays' launch angles, spreading is undone over the
+    ray tubes and absorption over the arcs, and the plate correction is taken at
+    the rays' arrival angles.  ``min_elevation_deg`` then bounds the launch
+    angle.  Default None: straight lines, as before.
 
     ``board_correction`` removes the ground board's effect: ``'plate_bem'``
     (default) divides each band by the plate's modelled response for that
@@ -901,6 +908,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
         band_snr_gate_db=band_snr_gate_db,
         max_absorption_correction_db=max_absorption_correction_db,
         receiver_response_db=receiver_response,
+        ray_model=ray_model,
     )
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)) or '.', exist_ok=True)
@@ -947,6 +955,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
                 relative_humidity=atmosphere.relative_humidity,
                 pressure_kpa=atmosphere.pressure,
                 speed_of_sound_ft_s=speed_of_sound_ft_s,
+                rays='straight' if ray_model is None else getattr(ray_model, 'description', 'custom'),
                 board_correction=board_correction if board_correction == 'flat' else
                 'plate_bem ' + ' '.join('{}={}'.format(k, v) for k, v in
                                          sorted((ground or SITE_GROUND).items())))
@@ -990,8 +999,13 @@ def _prefetch(paths, workers=PREFETCH_WORKERS):
 
 def build_all(aircraft, output_directory, *, root=None, runs=None,
               steady_only=True, reference_directory=None, sphere_prefix=None,
-              manifest_path=None, prefetch=True, norah2_directory=None, **kwargs):
+              manifest_path=None, prefetch=True, norah2_directory=None, ray_models=None, **kwargs):
     """Rebuild every usable run for one aircraft.
+
+    ``ray_models``, if given, is called with each run id and returns that run's
+    ``ray_model`` for :func:`build_sphere` (its own atmosphere), or None to
+    build that run along straight lines; the manifest's ``rays`` column says
+    which.
 
     ``norah2_directory``, if given, also receives each sphere as a NORAH2
     ``.hem`` file and, once the batch is done, the ``[prefix]_Triangulation.int``
@@ -1035,6 +1049,7 @@ def build_all(aircraft, output_directory, *, root=None, runs=None,
         try:
             record = build_sphere(test, run, os.path.join(output_directory, name),
                                   reference_sphere=reference, norah2_directory=norah2_directory,
+                                  ray_model=ray_models(run) if ray_models is not None else None,
                                   **kwargs)
         except Exception as error:                      # noqa: BLE001
             logging.warning('[%d/%d] %s failed: %s', number, len(runs), run, error)
@@ -1075,7 +1090,7 @@ def write_manifest(path, records, failures):
               'speed_knots', 'flight_path_angle_deg', 'window_s', 'window_points',
               'min_elevation_deg', 'max_array_range_ft', 'temperature_k',
               'relative_humidity', 'pressure_kpa', 'speed_of_sound_ft_s', 'board_correction',
-              'error']
+              'rays', 'error']
     with open(path, 'w', encoding='utf-8', newline='') as handle:
         writer = csv.DictWriter(handle, fieldnames=fields, extrasaction='ignore')
         writer.writeheader()

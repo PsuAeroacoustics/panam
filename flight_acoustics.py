@@ -961,6 +961,7 @@ def depropagate_hemisphere(
         band_snr_gate_db=3.0,
         max_absorption_correction_db=None,
         receiver_response_db=None,
+        ray_model=None,
 ):
     """Generate an acoustic hemisphere from microphone time series and vehicle tracking data.
 
@@ -1043,6 +1044,18 @@ def depropagate_hemisphere(
     spreading, so a band's energy is divided by the band-averaged response.
     The pressures should then be supplied unscaled (no 0.5 pressure-doubling
     factor).
+
+    ``ray_model``, if given, replaces the straight line in uniform air with a
+    refracted ray (see :mod:`refracted_rays`, which defines the interface and
+    wraps NICE-OPS's ray tracer).  For each sampled emission point and
+    microphone it supplies where the sample is filed (the ray's launch
+    depression in place of the straight line's elevation; the azimuth is
+    unchanged), the reception time, the range spherical spreading is undone
+    over (the ray tube's), the arc absorption is undone over, and the source
+    offset ``receiver_response_db`` sees (the equivalent geometry at the ray's
+    arrival angle).  Pairs it marks invalid (no ray arrives) are skipped.
+    ``min_elevation_deg`` then applies to the filing angle; ``max_range``
+    stays on the straight-line distance.  Without one the result is unchanged.
 
     This is the "normal" processing flow used by the demo scripts: use the vehicle kinematics
     to compute emission-time geometry (azimuth/elevation/range) via :func:`hemigen`, sample
@@ -1215,6 +1228,31 @@ def depropagate_hemisphere(
         raise ValueError('point_stride must be >= 1')
     tidx = np.arange(0, track_time.size, point_stride)
 
+    # Refracted rays, at the sampled points only: the filing angle and the
+    # reception time replace hemigen's; the spreading and absorption ranges and
+    # the receiver's source offset are kept alongside.
+    spread_geom = path_geom = ray_offset = ray_valid = None
+    if ray_model is not None:
+        rays = ray_model(np.asarray(track_position, dtype=float)[tidx], np.asarray(mic_locations, dtype=float))
+        shape = (tidx.size, nmics)
+        for key in ('depression_deg', 'travel_time', 'spreading_range', 'path_length', 'valid'):
+            if np.shape(rays[key]) != shape:
+                raise ValueError('ray_model {!r} must be shaped {}, got {}'.format(key, shape, np.shape(rays[key])))
+        if np.shape(rays['offset']) != shape + (3,):
+            raise ValueError('ray_model offset must be shaped {}'.format(shape + (3,)))
+        el_deg = np.array(el_deg, dtype=float)
+        t_obs = np.array(t_obs, dtype=float)
+        el_deg[tidx] = rays['depression_deg']
+        t_obs[tidx] = np.asarray(track_time, dtype=float)[tidx][:, None] + rays['travel_time']
+        spread_geom = np.full(r_geom.shape, np.nan)
+        path_geom = np.full(r_geom.shape, np.nan)
+        spread_geom[tidx] = rays['spreading_range']
+        path_geom[tidx] = rays['path_length']
+        ray_offset = np.array(rays['offset'], dtype=float)
+        if flip_y_for_geometry:
+            ray_offset[..., 1] *= -1.0
+        ray_valid = np.asarray(rays['valid'], dtype=bool) & np.all(np.isfinite(ray_offset), axis=-1)
+
     # Regular hemisphere grid (degrees) with seam closure at 360
     azi_grid_deg = np.arange(0.0, 360.0 + 1e-9, float(azi_step))
     elv_grid_deg = np.arange(0.0, 90.0 + 1e-9, float(elv_step))
@@ -1278,14 +1316,17 @@ def depropagate_hemisphere(
 
     pref_sq = (20e-6) ** 2
 
-    def _depropagate(lin, amb, r_v, alpha, response=None):
+    def _depropagate(lin, amb, r_v, alpha, response=None, r_path=None):
         """Gate against ambient, subtract it, then undo spreading and absorption.
 
         ``lin`` is (Nf, Npts) linear power (per bin or per band) at the
         microphone; ``amb`` the matching (Nf,) ambient or None; ``alpha`` the
         (Nf,) absorption coefficients in dB/m, used when absorption
-        depropagation is on.
+        depropagation is on.  Spreading is undone over ``r_v`` and absorption
+        over ``r_path`` (the same, without a ray model).
         """
+        if r_path is None:
+            r_path = r_v
         # Ambient gating and background subtraction have to happen before
         # spreading and absorption depropagation, or an ambient-limited band
         # gets amplified by both.
@@ -1303,7 +1344,7 @@ def depropagate_hemisphere(
         # Optional absorption depropagation back to r_ref
         if apply_absorption_deprop:
             assert r_ref_m is not None
-            r_m = unit_conversion.len_conv(r_v, from_units=length_units, to_units='m').astype(float)
+            r_m = unit_conversion.len_conv(r_path, from_units=length_units, to_units='m').astype(float)
             deltaL = np.asarray(alpha, dtype=float)[:, None] * (r_m[None, :] - r_ref_m)
             if max_absorption_correction_db is not None:
                 # Drop bins the measurement cannot support before applying the
@@ -1363,11 +1404,15 @@ def depropagate_hemisphere(
             valid = np.logical_and(valid, el_sub >= float(min_elevation_deg))
         if max_range is not None:
             valid = np.logical_and(valid, r_sub <= float(max_range))
+        if ray_valid is not None:
+            valid = np.logical_and(valid, ray_valid[:, im])
         if not np.any(valid):
             continue
 
         tobs_v = tobs_sub[valid]
         r_v = r_sub[valid]
+        spread_v = spread_geom[tidx, im][valid] if spread_geom is not None else r_v
+        path_v = path_geom[tidx, im][valid] if path_geom is not None else r_v
         az_v = az_sub[valid]
         el_v = el_sub[valid]
 
@@ -1434,7 +1479,8 @@ def depropagate_hemisphere(
 
         response_bins = response_bands = None
         if receiver_response_db is not None:
-            offset = pos_geom[tidx][valid] - mic_geom[im]
+            offset = (ray_offset[:, im][valid] if ray_offset is not None
+                      else pos_geom[tidx][valid] - mic_geom[im])
             gain_db = np.asarray(receiver_response_db(im, response_centers, offset), dtype=float)
             if gain_db.shape != (response_centers.size, tobs_v.size) or not np.all(np.isfinite(gain_db)):
                 raise ValueError('receiver_response_db must return finite values shaped (bands, points)')
@@ -1447,7 +1493,7 @@ def depropagate_hemisphere(
             response_bins = inverse[band_of_bin]
             response_bands = inverse
 
-        psd_v_lin = _depropagate(psd_v_lin, amb_lin, r_v, alpha_db_per_m, response_bins)
+        psd_v_lin = _depropagate(psd_v_lin, amb_lin, spread_v, alpha_db_per_m, response_bins, path_v)
 
         # OASPL power over selected frequency range
         power_oaspl = np.sum(psd_v_lin * df, axis=0)
@@ -1469,7 +1515,7 @@ def depropagate_hemisphere(
                 band_v[ib, :] = np.interp(tobs_v, t_abs, band_frames[ib, :])
             alpha_band = (np.asarray(atmosphere.attenuation_coefficient(band_centers), dtype=float)
                           if apply_absorption_deprop else None)
-            band_v = _depropagate(band_v, amb_band, r_v, alpha_band, response_bands)
+            band_v = _depropagate(band_v, amb_band, spread_v, alpha_band, response_bands, path_v)
             for ib in range(band_centers.size):
                 band_power_lists[ib].append(band_v[ib, :])
         elif third_octave:
