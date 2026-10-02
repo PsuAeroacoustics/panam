@@ -132,3 +132,22 @@ def test_depropagate_hemisphere_adaptive_runs_and_reports():
     assert np.array_equal(np.isnan(out['oaspl_db'][:, :-1]), np.isnan(info['radius_deg'][:, :-1]))
     with pytest.raises(ValueError, match='unknown interpolation'):
         depropagate_hemisphere(**common, interpolation=dict(radius=3))
+
+
+def test_relaxing_the_microphone_count_fills_what_three_cannot_and_says_so():
+    felv, fazi, mic = _lines(np.random.default_rng(5))
+    res = np.full(felv.size, 0.5)
+    ielv, iazi = _nodes()
+    _, _, strict_gap = adaptive_idw_weights(ielv, iazi, felv, fazi, mic, res, max_radius_deg=60.0,
+                                            relax_min_mics=False)
+    w, radius, gap, relaxed = adaptive_idw_weights(ielv, iazi, felv, fazi, mic, res, max_radius_deg=60.0,
+                                                   return_relaxed=True)
+    assert strict_gap.sum() > 0
+    # The relaxed rule fills a subset of the strict gaps, and only those.
+    assert np.all(relaxed <= strict_gap) and np.all(gap <= strict_gap)
+    assert gap.sum() < strict_gap.sum() and relaxed.sum() == strict_gap.sum() - gap.sum()
+    sums = np.asarray(w.sum(axis=1)).ravel()
+    assert np.allclose(sums[relaxed], 1.0)
+    for node in np.flatnonzero(relaxed)[::5]:
+        h = geodist(ielv[node], iazi[node], felv, fazi)
+        assert np.sum(h < radius[node]) >= 8

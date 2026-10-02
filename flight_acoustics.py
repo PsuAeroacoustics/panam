@@ -960,6 +960,7 @@ def depropagate_hemisphere(
         ambient_percentile=None,
         band_snr_gate_db=3.0,
         max_absorption_correction_db=None,
+        max_response_correction_db=None,
         receiver_response_db=None,
         ray_model=None,
         interpolation=None,
@@ -1033,7 +1034,11 @@ def depropagate_hemisphere(
     ``max_absorption_correction_db`` to discard bins whose absorption
     correction exceeds what the measurement can support -- the band is simply
     not observable at that range, and a gap there is the honest result. It has
-    no effect unless ``apply_absorption_deprop=True``.
+    no effect unless ``apply_absorption_deprop=True``.  ``max_response_correction_db``
+    likewise discards bands whose receiver response (``receiver_response_db``) would have to
+    be divided out by more than that many dB: near grazing a ground board's modelled
+    response is a deep null, and dividing by it turns small measurement and model errors
+    into tens of dB.
 
     ``receiver_response_db``, if given, removes what the microphone's
     installation adds.  It is called as ``receiver_response_db(im, bands,
@@ -1523,6 +1528,13 @@ def depropagate_hemisphere(
             if gain_db.shape != (response_centers.size, tobs_v.size) or not np.all(np.isfinite(gain_db)):
                 raise ValueError('receiver_response_db must return finite values shaped (bands, points)')
             inverse = 10.0 ** (-gain_db / 10.0)
+            if max_response_correction_db is not None:
+                # As the absorption cap: a band the installation all but nulls
+                # cannot be divided back up.  A flush board's modelled response
+                # falls to -25 to -40 dB as the arrival nears grazing, and a
+                # curved ray arriving within half a degree of it turned a 90 dB
+                # sample into 125.
+                inverse = np.where(-gain_db <= float(max_response_correction_db), inverse, 0.0)
             # Each bin takes the band the band sums below put it in: nominal
             # centres get their base-10 edges (see third_octave_band_edges)
             _, response_upper = third_octave_band_edges(response_centers)
@@ -1600,19 +1612,23 @@ def depropagate_hemisphere(
     if interp_settings is not None:
         # One weight matrix for every quantity gridded: the radius is the node's,
         # not the band's.  Geodesic distances, so the samples once, not at +-360.
-        weights, node_radius, node_gap = adaptive_idw_weights(
+        weights, node_radius, node_gap, node_relaxed = adaptive_idw_weights(
             ELV_GRID.ravel(), AZI_GRID.ravel(), felv_pts, fazi_pts, np.concatenate(fmic_list),
             np.concatenate(fres_list), k=interp_settings['k'], min_mics=interp_settings['min_mics'],
             kappa=interp_settings['kappa'], resolution_factor=interp_settings['resolution_factor'],
-            max_radius_deg=interp_settings['max_radius_deg'])
+            max_radius_deg=interp_settings['max_radius_deg'],
+            relax_min_mics=interp_settings.get('relax_min_mics', True), return_relaxed=True)
         node_gap = node_gap.reshape(ELV_GRID.shape)
+        node_relaxed = node_relaxed.reshape(ELV_GRID.shape)
 
         def grid_power(power_pts):
             g = np.asarray(weights @ np.asarray(power_pts, dtype=float)).reshape(ELV_GRID.shape)
             return np.where(node_gap, np.nan, g)
         interpolation_info = dict(interp_settings, mode='adaptive',
                                   radius_deg=node_radius.reshape(ELV_GRID.shape),
-                                  gaps=int(node_gap[:, :-1].sum()) if node_gap.shape[1] > 1 else int(node_gap.sum()))
+                                  gaps=int(node_gap[:, :-1].sum()) if node_gap.shape[1] > 1 else int(node_gap.sum()),
+                                  relaxed=int(node_relaxed[:, :-1].sum()) if node_relaxed.shape[1] > 1
+                                  else int(node_relaxed.sum()))
     else:
         def grid_power(power_pts):
             ext = np.concatenate((power_pts, power_pts, power_pts))
@@ -4677,11 +4693,13 @@ def IDWweights(ielv, iazi, felv, fazi, rmax):
 #: 10-40 deg below the horizon, and 30-50 deg overhead, where they are sparse and one window
 #: spans a wide arc; 60 deg is the most a node may borrow from before it counts as a gap.
 ADAPTIVE_INTERPOLATION = dict(k=8, min_mics=3, kappa=1.3, resolution_factor=0.5, max_radius_deg=60.0,
+                              relax_min_mics=True,
                               source_extent=0.0)
 
 
 def adaptive_idw_weights(ielv, iazi, felv, fazi, mic, resolution_deg, *, k=8, min_mics=3, kappa=1.3,
-                         resolution_factor=0.5, max_radius_deg=60.0, chunk=256):
+                         resolution_factor=0.5, max_radius_deg=60.0, chunk=256, relax_min_mics=True,
+                         return_relaxed=False):
     """Shepard weights with a radius chosen per node from the samples around it.
 
     A fixed radius has to be as large as the sparsest part of the sphere needs, or that part
@@ -4701,6 +4719,13 @@ def adaptive_idw_weights(ielv, iazi, felv, fazi, mic, resolution_deg, *, k=8, mi
     line of samples.  kappa > 1 keeps the k-th sample inside the Franke and Nielson weight,
     which falls to zero at R.  A node that would need more than max_radius_deg is a genuine
     gap in the coverage, not a hole to smooth over: its row is empty and it is reported.
+
+    With ``relax_min_mics`` (the default) such a node is first retried without the
+    microphone count -- its k nearest samples, from however many microphones, within the
+    cap -- and is a gap only if that fails too.  The nodes it fills are the ones only one
+    or two microphones see (steep to the side of a pass over a single line of them, a
+    descent's far end); left empty they were filled by the sphere writer's resampling,
+    which reads past the grid's edge.  ``return_relaxed`` adds their mask to the result.
 
     Args:
         ielv, iazi: node elevations and azimuths (deg), 1-D, same length.
@@ -4738,6 +4763,7 @@ def adaptive_idw_weights(ielv, iazi, felv, fazi, mic, resolution_deg, *, k=8, mi
     mic_starts = np.flatnonzero(np.r_[True, np.diff(mic_index[by_mic]) != 0])
     rows, cols, vals = [], [], []
     radius = np.full(ielv.size, np.nan)
+    relaxed = np.zeros(ielv.size, dtype=bool)
     eps = 10.0 * np.finfo(float).eps
     for start in range(0, ielv.size, chunk):
         stop = min(start + chunk, ielv.size)
@@ -4752,6 +4778,11 @@ def adaptive_idw_weights(ielv, iazi, felv, fazi, mic, resolution_deg, *, k=8, mi
             d_m = np.full(stop - start, np.inf)
         s = np.median(resolution_deg[order[:, :k]], axis=1)
         r = np.maximum(np.maximum(kappa * d_k, kappa * d_m), resolution_factor * s)
+        if relax_min_mics:
+            r_relaxed = np.maximum(kappa * d_k, resolution_factor * s)
+            retry = ~(r <= max_radius_deg) & (r_relaxed <= max_radius_deg)
+            relaxed[start:stop] = retry
+            r = np.where(retry, r_relaxed, r)
         for i in range(stop - start):
             node = start + i
             hi = h[i]
@@ -4778,7 +4809,10 @@ def adaptive_idw_weights(ielv, iazi, felv, fazi, mic, resolution_deg, *, k=8, mi
                                     shape=(ielv.size, n))
     else:
         weights = sparse.csr_matrix((ielv.size, n))
-    return weights, radius, ~np.isfinite(radius)
+    gap = ~np.isfinite(radius)
+    if return_relaxed:
+        return weights, radius, gap, relaxed & ~gap
+    return weights, radius, gap
 
 
 def shepIDW(ielv, iazi, felv, fazi, f, rmax):
