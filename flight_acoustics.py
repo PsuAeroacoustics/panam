@@ -3124,7 +3124,8 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                                                    relative_humidity=20.0),
                              extended_flight_path_angles=None,
                              level_flight_tolerance=LEVEL_FLIGHT_TOLERANCE,
-                             store_spectrum=True, clamp_empty_directions=True):
+                             store_spectrum=True, clamp_empty_directions=True,
+                             hover_correction=None):
     """Build a NICE-OPS sphere database from a directory of sphere files.
 
     load_factors scales thrust: each source condition is written once per load
@@ -3158,6 +3159,13 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     these angles at its own airspeed, on the assumption that directivity at a
     given airspeed carries over to a steeper flight path.  The shipped
     databases use (-24.0, 35.0).
+
+    hover_correction, when given, is added to the synthesised hover sphere's band levels
+    after the fore-to-aft average: a callable taking phi and theta (degrees, arrays shaped
+    like the sphere's (phi, theta) grid) and the band centres (Hz), returning dB with shape
+    (phi, theta, frequency).  It is how measured hovers, which cover only part of the
+    sphere, are blended into the synthesised one; the caller owns where it applies and how
+    it tapers.  Its ``description`` attribute, if any, is written to the database.
 
     clamp_empty_directions replaces the NaN that EAA becomes where ambient
     gating emptied a direction (``-inf - -inf``) with zero.  A NaN there is not
@@ -3216,6 +3224,8 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     if main_rotor_tip_speed is not None:
         ncdatabase.createVariable("main_rotor_tip_speed_meters_per_sec", 'f8')
         ncdatabase['main_rotor_tip_speed_meters_per_sec'][:] = float(main_rotor_tip_speed)
+    if hover_correction is not None:
+        ncdatabase.hover_correction = str(getattr(hover_correction, 'description', 'applied'))
     vehicle_weight_newtons = read_vehicle_weight_newtons(directory_name)
     if vehicle_weight_newtons is not None:
         ncdatabase.createVariable("vehicle_weight_newtons", 'f8')
@@ -3290,6 +3300,15 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     # (a) is not an energy average, and (b) leaves EAA untouched, so level and
     # excess attenuation end up describing different spheres.
     amplitude = average_fore_and_aft(amplitude)
+    if hover_correction is not None:
+        theta_grid, phi_grid = np.meshgrid(np.asarray(theta_list, dtype=float),
+                                           np.asarray(phi_list, dtype=float))
+        correction = np.asarray(hover_correction(phi_grid, theta_grid, np.asarray(frequency, dtype=float)),
+                                dtype=float)
+        if correction.shape != amplitude.shape:
+            raise ValueError('hover_correction returned shape {}, the sphere is {}'.format(
+                correction.shape, amplitude.shape))
+        amplitude = amplitude + correction
     SPLA, EAA = spla_and_eaa_from_spectrum(amplitude, frequency, distance, atmosphere)
     if clamp_empty_directions:
         SPLA, EAA = _finite_sphere_levels(SPLA, EAA)

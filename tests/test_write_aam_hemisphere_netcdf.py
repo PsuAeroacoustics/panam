@@ -444,3 +444,43 @@ def test_export_keeps_starboard_and_ahead_where_they_are(tmp_path):
         else:                       # ahead vs behind, straight below the flight path
             assert at(0.0, 30.0) == pytest.approx(80.0, abs=0.5)
             assert at(0.0, 150.0) == pytest.approx(60.0, abs=0.5)
+
+
+def test_hover_correction_lifts_the_hover_alone_and_follows_direction_and_band(tmp_path):
+    """build_empirical_database(hover_correction=...) adds dB to the synthesised hover's
+    bands only: forward-flight groups are untouched, and a correction confined to one
+    side shows up there and not elsewhere."""
+    sphere_dir = _sphere_dir_with_two_conditions(tmp_path)
+    plain = tmp_path / 'plain.nod'
+    fa.build_empirical_database(str(sphere_dir), str(plain), load_factors=None)
+
+    def starboard_lift(phi, theta, frequency):
+        lift = np.where(phi > 0.0, 6.0, 0.0)
+        return np.repeat(lift[:, :, None], frequency.size, axis=2)
+    starboard_lift.description = 'starboard +6 dB'
+    lifted = tmp_path / 'lifted.nod'
+    fa.build_empirical_database(str(sphere_dir), str(lifted), load_factors=None,
+                                hover_correction=starboard_lift)
+
+    with Dataset(str(plain)) as a, Dataset(str(lifted)) as b:
+        assert b.hover_correction == 'starboard +6 dB'
+        phi = np.asarray(a['phi'][:])
+        for name in a.groups:
+            da, db = np.asarray(a.groups[name]['dBA'][:]), np.asarray(b.groups[name]['dBA'][:])
+            if float(a.groups[name]['advance_ratio'][...]) > 0.0:
+                np.testing.assert_array_equal(da, db)
+                continue
+            ok = np.isfinite(da) & np.isfinite(db)
+            # The written sphere is completed onto its upper half by mirroring, so
+            # starboard below maps to starboard above: phi in (0, 180) lifted.
+            starboard = ok & (phi > 0.0) & (phi < 90.0)
+            port = ok & (phi < 0.0) & (phi > -90.0)
+            np.testing.assert_allclose(db[starboard] - da[starboard], 6.0, atol=1e-9)
+            np.testing.assert_allclose(db[port] - da[port], 0.0, atol=1e-9)
+
+
+def test_hover_correction_of_the_wrong_shape_is_refused(tmp_path):
+    sphere_dir = _sphere_dir_with_two_conditions(tmp_path)
+    with pytest.raises(ValueError, match='hover_correction returned shape'):
+        fa.build_empirical_database(str(sphere_dir), str(tmp_path / 'x.nod'), load_factors=None,
+                                    hover_correction=lambda phi, theta, f: np.zeros(3))
