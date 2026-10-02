@@ -1618,7 +1618,8 @@ def depropagate_hemisphere(
             kappa=interp_settings['kappa'], resolution_factor=interp_settings['resolution_factor'],
             max_radius_deg=interp_settings['max_radius_deg'],
             relax_min_mics=interp_settings.get('relax_min_mics', True), return_relaxed=True,
-            kernel=interp_settings.get('kernel', 'shepard'), aspect=interp_settings.get('aspect', 1.0))
+            kernel=interp_settings.get('kernel', 'shepard'), aspect=interp_settings.get('aspect', 1.0),
+            shepard_floor=interp_settings.get('shepard_floor', 0.0))
         node_gap = node_gap.reshape(ELV_GRID.shape)
         node_relaxed = node_relaxed.reshape(ELV_GRID.shape)
 
@@ -4695,12 +4696,12 @@ def IDWweights(ielv, iazi, felv, fazi, rmax):
 #: spans a wide arc; 60 deg is the most a node may borrow from before it counts as a gap.
 ADAPTIVE_INTERPOLATION = dict(k=8, min_mics=3, kappa=1.3, resolution_factor=0.5, max_radius_deg=60.0,
                               relax_min_mics=True, kernel='shepard', aspect=1.0,
-                              source_extent=0.0)
+                              shepard_floor=0.0, source_extent=0.0)
 
 
 def adaptive_idw_weights(ielv, iazi, felv, fazi, mic, resolution_deg, *, k=8, min_mics=3, kappa=1.3,
                          resolution_factor=0.5, max_radius_deg=60.0, chunk=256, relax_min_mics=True,
-                         return_relaxed=False, aspect=1.0, kernel='shepard'):
+                         return_relaxed=False, aspect=1.0, kernel='shepard', shepard_floor=0.0):
     """Shepard weights with a radius chosen per node from the samples around it.
 
     A fixed radius has to be as large as the sparsest part of the sphere needs, or that part
@@ -4733,7 +4734,9 @@ def adaptive_idw_weights(ielv, iazi, felv, fazi, mic, resolution_deg, *, k=8, mi
     ``kernel`` 'shepard' (the default) is Franke and Nielson's weight, ((R - h)/(R h))^2,
     which grows without bound at a sample and so nearly interpolates: a node on one
     microphone's line follows that microphone.  'biweight', (1 - (h/R)^2)^2, is finite
-    everywhere and averages its neighbourhood instead.
+    everywhere and averages its neighbourhood instead.  ``shepard_floor`` keeps Shepard's
+    form but stops it interpolating: each distance h is taken as sqrt(h^2 + (f R)^2) in the
+    weight, f the floor as a fraction of the node's radius R.
 
     With ``relax_min_mics`` (the default) such a node is first retried without the
     microphone count -- its k nearest samples, from however many microphones, within the
@@ -4810,7 +4813,7 @@ def adaptive_idw_weights(ielv, iazi, felv, fazi, mic, resolution_deg, *, k=8, mi
             node = start + i
             hi = h[i]
             j_min = order[i, 0]
-            if kernel == 'shepard' and hi[j_min] <= eps:
+            if kernel == 'shepard' and shepard_floor <= 0.0 and hi[j_min] <= eps:
                 rows.append(np.array([node]))
                 cols.append(np.array([j_min]))
                 vals.append(np.array([1.0]))
@@ -4821,6 +4824,9 @@ def adaptive_idw_weights(ielv, iazi, felv, fazi, mic, resolution_deg, *, k=8, mi
             near = np.flatnonzero(hi < r[i])
             if kernel == 'biweight':
                 m = (1.0 - (hi[near] / r[i]) ** 2) ** 2
+            elif shepard_floor > 0.0:
+                h_eff = np.sqrt(hi[near] ** 2 + (shepard_floor * r[i]) ** 2)
+                m = ((r[i] - hi[near]) / (r[i] * h_eff)) ** 2
             else:
                 m = ((r[i] - hi[near]) / (r[i] * hi[near])) ** 2
             total = m.sum()

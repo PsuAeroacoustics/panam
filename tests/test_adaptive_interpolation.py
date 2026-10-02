@@ -183,3 +183,32 @@ def test_a_biweight_stretched_in_azimuth_averages_across_microphone_lines_and_ke
     # The gradient in elevation survives: a straight-line fit of the gridded level.
     slope = np.polyfit(ielv[band], smooth[band], 1)[0]
     assert abs(slope - 0.2) < 0.03
+
+
+def test_a_floored_shepard_weight_stops_interpolating_and_moves_toward_the_biweight():
+    """shepard_floor: Shepard's weight with each distance floored at a fraction of the radius
+    no longer follows the nearest microphone's line; stretched in azimuth it lands between
+    plain Shepard and the biweight, and the elevation gradient survives."""
+    rng = np.random.default_rng(8)
+    felv, fazi, mic = _lines(rng, n_mics=15, height=200.0)
+    offset = rng.normal(0.0, 1.0, mic.max() + 1)
+    level = lambda e: 0.2 * e                                            # noqa: E731
+    power = 10.0 ** (0.1 * (level(felv) + offset[mic]))
+    ielv, iazi = _nodes()
+    res = np.full(felv.size, 0.5)
+
+    def grid(**options):
+        w, _, gap = adaptive_idw_weights(ielv, iazi, felv, fazi, mic, res, max_radius_deg=60.0, **options)
+        return 10.0 * np.log10(np.asarray(w @ power).ravel()), gap
+
+    plain, g0 = grid(aspect=5.0)
+    floored, g1 = grid(aspect=5.0, shepard_floor=1.0)
+    biweight, g2 = grid(aspect=5.0, kernel='biweight')
+    band = (ielv >= 10) & (ielv <= 40) & ~g0 & ~g1 & ~g2
+
+    def ripple(g):
+        e = g[band] - level(ielv[band])
+        return np.std(e - np.mean(e))
+    assert ripple(floored) < ripple(plain)
+    assert ripple(biweight) <= ripple(floored) * 1.05
+    assert abs(np.polyfit(ielv[band], floored[band], 1)[0] - 0.2) < 0.03
