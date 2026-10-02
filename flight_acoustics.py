@@ -963,6 +963,7 @@ def depropagate_hemisphere(
         receiver_response_db=None,
         ray_model=None,
         interpolation=None,
+        rim_range=None,
 ):
     """Generate an acoustic hemisphere from microphone time series and vehicle tracking data.
 
@@ -1057,6 +1058,17 @@ def depropagate_hemisphere(
     arrival angle).  Pairs it marks invalid (no ray arrives) are skipped.
     ``min_elevation_deg`` then applies to the filing angle; ``max_range``
     stays on the straight-line distance.  Without one the result is unchanged.
+
+    ``rim_range``, if given as (elevation_deg, range), lets samples filed less than
+    ``elevation_deg`` below the horizon come from as far as ``range`` instead of
+    ``max_range``.  The range cap keeps a pass's samples to its steeper directions:
+    at 2,000 ft a pass at 480 ft never files below 14 deg, so a sphere's rim came
+    from low passes alone, and on the 2017 B407 data high passes of the same
+    condition imply a forward rim 1-3.5 dB louder (and an aft rim ~1 dB quieter)
+    than low passes do at the same angle.  With a ``ray_model`` the filing angle is
+    the ray's launch angle and the far samples are depropagated along it; the
+    absorption cap (``max_absorption_correction_db``) still drops the bands the
+    range makes unobservable.
 
     ``interpolation``, if given (a dict; ``{}`` takes the defaults in
     :data:`ADAPTIVE_INTERPOLATION`), grids the samples with a radius chosen per
@@ -1423,7 +1435,11 @@ def depropagate_hemisphere(
         if min_elevation_deg > 0.0:
             valid = np.logical_and(valid, el_sub >= float(min_elevation_deg))
         if max_range is not None:
-            valid = np.logical_and(valid, r_sub <= float(max_range))
+            cap = np.full(r_sub.shape, float(max_range))
+            if rim_range is not None:
+                rim_elevation, rim_cap = float(rim_range[0]), float(rim_range[1])
+                cap = np.where(el_sub < rim_elevation, max(rim_cap, float(max_range)), cap)
+            valid = np.logical_and(valid, r_sub <= cap)
         if ray_valid is not None:
             valid = np.logical_and(valid, ray_valid[:, im])
         if not np.any(valid):
@@ -1621,6 +1637,7 @@ def depropagate_hemisphere(
             'window_overlap': float(window_overlap),
             'point_stride': int(point_stride),
             'rmax_deg': float(rmax),
+            'rim_range': None if rim_range is None else (float(rim_range[0]), float(rim_range[1])),
             'apply_absorption_deprop': bool(apply_absorption_deprop),
             'third_octave_method': str(third_octave_method),
             # Depropagation removes absorption over r - r_ref only, so the

@@ -120,3 +120,24 @@ def test_external_model_under_an_inversion_launches_shallower(tmp_path):
     assert (got['depression_deg'] < straight['depression_deg']).all()
     arrival = np.degrees(np.arctan2(got['offset'][..., 2], np.hypot(got['offset'][..., 0], got['offset'][..., 1])))
     assert (arrival > straight['depression_deg']).all()
+
+
+def test_rim_range_admits_far_samples_only_at_the_rim():
+    # A long, high pass: within the 600 ft cap it never files below ~24 deg; with the
+    # rim range the shallow directions come in from further out, and nothing steeper
+    # changes.
+    flight = _flyover()
+    flight['track_position'] = flight['track_position'] * np.array([3.0, 1.0, 1.0])
+    flight['track_velocity'] = flight['track_velocity'] * 3.0
+    common = dict(**flight, speed_of_sound=SPEED, length_units='ft', r_ref=100.0, freq_range=(50.0, 1500.0),
+                  window_time=0.25, window_overlap=0.5, point_stride=2, azi_step=20.0, elv_step=10.0,
+                  rmax=30.0, third_octave=True, third_octave_fmin=100.0, return_scattered=True,
+                  max_range=600.0)
+    plain = depropagate_hemisphere(**common)['scattered']
+    rim = depropagate_hemisphere(**common, rim_range=(25.0, 1300.0))['scattered']
+    assert rim['elv_deg'].size > plain['elv_deg'].size
+    # Every extra sample is filed below the rim elevation.
+    steep_plain = np.sort(plain['elv_deg'][plain['elv_deg'] >= 25.0])
+    steep_rim = np.sort(rim['elv_deg'][rim['elv_deg'] >= 25.0])
+    assert np.allclose(steep_plain, steep_rim)
+    assert (rim['elv_deg'] < 25.0).sum() > (plain['elv_deg'] < 25.0).sum()

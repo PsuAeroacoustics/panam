@@ -758,7 +758,8 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
                  atmosphere=None, speed_of_sound_ft_s=None,
                  apply_absorption_deprop=True, overwrite=True, norah2_directory=None,
                  third_octave_method='fft', board_correction='plate_bem', ground=None,
-                 plate_table_directory=None, ray_model=None, interpolation=None):
+                 plate_table_directory=None, ray_model=None, interpolation=None,
+                 rim_elevation_deg=None, max_rim_range_ft=None):
     """Depropagate one run into an AAM-style source sphere.
 
     ``ray_model`` (see :mod:`refracted_rays`) depropagates along refracted rays
@@ -767,6 +768,11 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     ray tubes and absorption over the arcs, and the plate correction is taken at
     the rays' arrival angles.  ``min_elevation_deg`` then bounds the launch
     angle.  Default None: straight lines, as before.
+
+    ``max_rim_range_ft`` with ``rim_elevation_deg`` lets samples filed shallower than
+    that come from as far as that range instead of ``max_propagation_range_ft``
+    (:func:`flight_acoustics.depropagate_hemisphere`'s ``rim_range``), so that every
+    pass contributes to the rim, not only the low ones.
 
     ``interpolation`` grids the samples with a radius chosen per node (see
     :func:`flight_acoustics.adaptive_idw_weights`): ``{}`` for the defaults,
@@ -914,6 +920,8 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
         receiver_response_db=receiver_response,
         ray_model=ray_model,
         interpolation=interpolation,
+        rim_range=(None if max_rim_range_ft is None else
+                   (14.0 if rim_elevation_deg is None else rim_elevation_deg, max_rim_range_ft)),
     )
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)) or '.', exist_ok=True)
@@ -965,6 +973,8 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
                                'adaptive ' + ' '.join('{}={}'.format(k, v) for k, v in sorted(
                                    dict(fa.ADAPTIVE_INTERPOLATION, **interpolation).items()))),
                 gaps=(hemisphere.get('interpolation', {}).get('gaps', 0)),
+                rim_range='' if max_rim_range_ft is None else '{:g} ft below {:g} deg'.format(
+                    max_rim_range_ft, 14.0 if rim_elevation_deg is None else rim_elevation_deg),
                 board_correction=board_correction if board_correction == 'flat' else
                 'plate_bem ' + ' '.join('{}={}'.format(k, v) for k, v in
                                          sorted((ground or SITE_GROUND).items())))
@@ -1099,7 +1109,7 @@ def write_manifest(path, records, failures):
               'speed_knots', 'flight_path_angle_deg', 'window_s', 'window_points',
               'min_elevation_deg', 'max_array_range_ft', 'temperature_k',
               'relative_humidity', 'pressure_kpa', 'speed_of_sound_ft_s', 'board_correction',
-              'rays', 'interpolation', 'gaps', 'error']
+              'rays', 'interpolation', 'gaps', 'rim_range', 'error']
     with open(path, 'w', encoding='utf-8', newline='') as handle:
         writer = csv.DictWriter(handle, fieldnames=fields, extrasaction='ignore')
         writer.writeheader()
