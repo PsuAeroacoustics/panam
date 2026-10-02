@@ -151,3 +151,35 @@ def test_relaxing_the_microphone_count_fills_what_three_cannot_and_says_so():
     for node in np.flatnonzero(relaxed)[::5]:
         h = geodist(ielv[node], iazi[node], felv, fazi)
         assert np.sum(h < radius[node]) >= 8
+
+
+def test_a_biweight_stretched_in_azimuth_averages_across_microphone_lines_and_keeps_the_gradient():
+    """Each microphone carries its own offset (calibration, installation, ground), which
+    Shepard's near-interpolating weight prints onto the grid along that microphone's line.
+    A biweight reaching five times as far in azimuth averages across the lines and leaves
+    the elevation gradient where it was."""
+    rng = np.random.default_rng(8)
+    felv, fazi, mic = _lines(rng, n_mics=15, height=200.0)
+    offset = rng.normal(0.0, 1.0, mic.max() + 1)
+    level = lambda e: 0.2 * e                                            # noqa: E731
+    power = 10.0 ** (0.1 * (level(felv) + offset[mic]))
+    ielv, iazi = _nodes()
+    res = np.full(felv.size, 0.5)
+
+    def grid(**options):
+        w, _, gap = adaptive_idw_weights(ielv, iazi, felv, fazi, mic, res, max_radius_deg=60.0, **options)
+        return 10.0 * np.log10(np.asarray(w @ power).ravel()), gap
+
+    shepard, gap_s = grid()
+    smooth, gap_b = grid(kernel='biweight', aspect=5.0)
+    band = (ielv >= 10) & (ielv <= 40) & ~gap_s & ~gap_b
+    # Ripple: what is left after the true level and the overall offset are taken out.
+    def ripple(g):
+        e = g[band] - level(ielv[band])
+        return np.std(e - np.mean(e))
+    # 1.09 -> 0.82 dB here, where 15 lines 214 ft apart leave few to average across
+    # overhead; 0.72 -> 0.48 on a real B407 descent (283145).
+    assert ripple(smooth) < 0.8 * ripple(shepard)
+    # The gradient in elevation survives: a straight-line fit of the gridded level.
+    slope = np.polyfit(ielv[band], smooth[band], 1)[0]
+    assert abs(slope - 0.2) < 0.03

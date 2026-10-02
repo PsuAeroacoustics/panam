@@ -1617,7 +1617,8 @@ def depropagate_hemisphere(
             np.concatenate(fres_list), k=interp_settings['k'], min_mics=interp_settings['min_mics'],
             kappa=interp_settings['kappa'], resolution_factor=interp_settings['resolution_factor'],
             max_radius_deg=interp_settings['max_radius_deg'],
-            relax_min_mics=interp_settings.get('relax_min_mics', True), return_relaxed=True)
+            relax_min_mics=interp_settings.get('relax_min_mics', True), return_relaxed=True,
+            kernel=interp_settings.get('kernel', 'shepard'), aspect=interp_settings.get('aspect', 1.0))
         node_gap = node_gap.reshape(ELV_GRID.shape)
         node_relaxed = node_relaxed.reshape(ELV_GRID.shape)
 
@@ -4693,13 +4694,13 @@ def IDWweights(ielv, iazi, felv, fazi, rmax):
 #: 10-40 deg below the horizon, and 30-50 deg overhead, where they are sparse and one window
 #: spans a wide arc; 60 deg is the most a node may borrow from before it counts as a gap.
 ADAPTIVE_INTERPOLATION = dict(k=8, min_mics=3, kappa=1.3, resolution_factor=0.5, max_radius_deg=60.0,
-                              relax_min_mics=True,
+                              relax_min_mics=True, kernel='shepard', aspect=1.0,
                               source_extent=0.0)
 
 
 def adaptive_idw_weights(ielv, iazi, felv, fazi, mic, resolution_deg, *, k=8, min_mics=3, kappa=1.3,
                          resolution_factor=0.5, max_radius_deg=60.0, chunk=256, relax_min_mics=True,
-                         return_relaxed=False):
+                         return_relaxed=False, aspect=1.0, kernel='shepard'):
     """Shepard weights with a radius chosen per node from the samples around it.
 
     A fixed radius has to be as large as the sparsest part of the sphere needs, or that part
@@ -4719,6 +4720,20 @@ def adaptive_idw_weights(ielv, iazi, felv, fazi, mic, resolution_deg, *, k=8, mi
     line of samples.  kappa > 1 keeps the k-th sample inside the Franke and Nielson weight,
     which falls to zero at R.  A node that would need more than max_radius_deg is a genuine
     gap in the coverage, not a hole to smooth over: its row is empty and it is reported.
+
+    ``aspect`` > 1 stretches the neighbourhood in azimuth: distances are measured as
+    sqrt(de^2 + (da cos e / aspect)^2), elevation differences de and azimuth differences da
+    along the circle of latitude, so a node reaches aspect times as far across the sphere in
+    azimuth as in elevation.  A pass's microphones each trace a line of samples nose to tail,
+    so at fixed elevation azimuth steps from one microphone's line to the next, while the
+    level's steepest change near the horizon is in elevation: a wide reach in azimuth
+    averages across the lines and a narrow one in elevation keeps that gradient.  1 (the
+    default) is the geodesic distance, as before.
+
+    ``kernel`` 'shepard' (the default) is Franke and Nielson's weight, ((R - h)/(R h))^2,
+    which grows without bound at a sample and so nearly interpolates: a node on one
+    microphone's line follows that microphone.  'biweight', (1 - (h/R)^2)^2, is finite
+    everywhere and averages its neighbourhood instead.
 
     With ``relax_min_mics`` (the default) such a node is first retried without the
     microphone count -- its k nearest samples, from however many microphones, within the
@@ -4750,6 +4765,8 @@ def adaptive_idw_weights(ielv, iazi, felv, fazi, mic, resolution_deg, *, k=8, mi
     if not (fazi.size == mic.size == resolution_deg.size == n):
         raise ValueError('felv, fazi, mic and resolution_deg must have the same length')
     k = int(min(max(k, 1), n))
+    if kernel not in ('shepard', 'biweight'):
+        raise ValueError("kernel must be 'shepard' or 'biweight'")
 
     def unit(elv, azi):
         e, a = np.deg2rad(elv), np.deg2rad(azi)
@@ -4767,7 +4784,13 @@ def adaptive_idw_weights(ielv, iazi, felv, fazi, mic, resolution_deg, *, k=8, mi
     eps = 10.0 * np.finfo(float).eps
     for start in range(0, ielv.size, chunk):
         stop = min(start + chunk, ielv.size)
-        h = np.degrees(np.arccos(np.clip(nodes[start:stop] @ samples.T, -1.0, 1.0)))
+        if aspect == 1.0:
+            h = np.degrees(np.arccos(np.clip(nodes[start:stop] @ samples.T, -1.0, 1.0)))
+        else:
+            de = ielv[start:stop, None] - felv[None, :]
+            da = (iazi[start:stop, None] - fazi[None, :] + 180.0) % 360.0 - 180.0
+            da *= np.cos(np.deg2rad(0.5 * (ielv[start:stop, None] + felv[None, :])))
+            h = np.sqrt(de ** 2 + (da / float(aspect)) ** 2)
         order = np.argsort(h, axis=1)
         d_k = np.take_along_axis(h, order[:, k - 1:k], axis=1)[:, 0]
         # Nearest sample of each microphone, then the min_mics-th nearest microphone.
@@ -4787,7 +4810,7 @@ def adaptive_idw_weights(ielv, iazi, felv, fazi, mic, resolution_deg, *, k=8, mi
             node = start + i
             hi = h[i]
             j_min = order[i, 0]
-            if hi[j_min] <= eps:
+            if kernel == 'shepard' and hi[j_min] <= eps:
                 rows.append(np.array([node]))
                 cols.append(np.array([j_min]))
                 vals.append(np.array([1.0]))
@@ -4796,7 +4819,10 @@ def adaptive_idw_weights(ielv, iazi, felv, fazi, mic, resolution_deg, *, k=8, mi
             if not (r[i] <= max_radius_deg):
                 continue
             near = np.flatnonzero(hi < r[i])
-            m = ((r[i] - hi[near]) / (r[i] * hi[near])) ** 2
+            if kernel == 'biweight':
+                m = (1.0 - (hi[near] / r[i]) ** 2) ** 2
+            else:
+                m = ((r[i] - hi[near]) / (r[i] * hi[near])) ** 2
             total = m.sum()
             if not total > 0.0:
                 continue
