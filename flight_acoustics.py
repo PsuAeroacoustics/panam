@@ -1298,6 +1298,8 @@ def depropagate_hemisphere(
     felv_list = []
     fmic_list = []
     fres_list = []
+    frange_list = []
+    fheight_list = []
     interp_settings = None
     if interpolation is not None:
         unknown = set(interpolation) - set(ADAPTIVE_INTERPOLATION)
@@ -1538,6 +1540,8 @@ def depropagate_hemisphere(
         fazi_list.append(az_v)
         felv_list.append(el_v)
         fmic_list.append(np.full(az_v.size, im))
+        frange_list.append(r_v)
+        fheight_list.append(pos_geom[tidx][valid][:, 2] - mic_geom[im][2])
         if interpolation is not None:
             # The arc one analysis window smears over: the source's motion across
             # the line of sight in window_time, and its own size, over the range.
@@ -1666,6 +1670,10 @@ def depropagate_hemisphere(
             'oaspl_power': P_oaspl_pts,
             'spl_a_power': P_spl_a_pts,
             'mic': np.concatenate(fmic_list),
+            # Straight-line slant range and the source's height above the microphone, in
+            # length_units, at each sample's emission time.
+            'range': np.concatenate(frange_list),
+            'source_height': np.concatenate(fheight_list),
         })
         if fres_list:
             scattered['resolution_deg'] = np.concatenate(fres_list)
