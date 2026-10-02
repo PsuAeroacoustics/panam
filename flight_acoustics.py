@@ -962,6 +962,7 @@ def depropagate_hemisphere(
         max_absorption_correction_db=None,
         receiver_response_db=None,
         ray_model=None,
+        interpolation=None,
 ):
     """Generate an acoustic hemisphere from microphone time series and vehicle tracking data.
 
@@ -1056,6 +1057,17 @@ def depropagate_hemisphere(
     arrival angle).  Pairs it marks invalid (no ray arrives) are skipped.
     ``min_elevation_deg`` then applies to the filing angle; ``max_range``
     stays on the straight-line distance.  Without one the result is unchanged.
+
+    ``interpolation``, if given (a dict; ``{}`` takes the defaults in
+    :data:`ADAPTIVE_INTERPOLATION`), grids the samples with a radius chosen per
+    node instead of the fixed ``rmax``: wide enough for ``k`` samples from
+    ``min_mics`` microphones and for the samples' own angular resolution, capped
+    at ``max_radius_deg`` (see :func:`adaptive_idw_weights`).  A sample's
+    resolution is the arc its analysis window smears over, the source's motion
+    across the line of sight in ``window_time`` plus ``source_extent`` (a length,
+    e.g. the rotor diameter), over the range.  Nodes beyond the cap are left NaN
+    and counted in ``out['interpolation']['gaps']``.  Without it the fixed
+    ``rmax`` gridding is unchanged.
 
     This is the "normal" processing flow used by the demo scripts: use the vehicle kinematics
     to compute emission-time geometry (azimuth/elevation/range) via :func:`hemigen`, sample
@@ -1272,6 +1284,14 @@ def depropagate_hemisphere(
     # Accumulate scattered samples
     fazi_list = []
     felv_list = []
+    fmic_list = []
+    fres_list = []
+    interp_settings = None
+    if interpolation is not None:
+        unknown = set(interpolation) - set(ADAPTIVE_INTERPOLATION)
+        if unknown:
+            raise ValueError('unknown interpolation settings: {}'.format(sorted(unknown)))
+        interp_settings = dict(ADAPTIVE_INTERPOLATION, **interpolation)
     oaspl_power_list = []
     spl_a_power_list = []
     if third_octave:
@@ -1501,6 +1521,16 @@ def depropagate_hemisphere(
 
         fazi_list.append(az_v)
         felv_list.append(el_v)
+        fmic_list.append(np.full(az_v.size, im))
+        if interpolation is not None:
+            # The arc one analysis window smears over: the source's motion across
+            # the line of sight in window_time, and its own size, over the range.
+            line = pos_geom[tidx][valid] - mic_geom[im]
+            unit_line = line / np.linalg.norm(line, axis=1)[:, None]
+            v = np.asarray(vel_geom, dtype=float)[tidx][valid]
+            across = np.linalg.norm(v - np.sum(v * unit_line, axis=1)[:, None] * unit_line, axis=1)
+            extent = float(interp_settings['source_extent'])
+            fres_list.append(np.degrees(np.hypot(across * float(window_time), extent) / r_v))
         oaspl_power_list.append(power_oaspl)
         spl_a_power_list.append(power_spl_a)
 
@@ -1543,17 +1573,37 @@ def depropagate_hemisphere(
     # Enforce azimuth periodicity: duplicate scattered points at ±360 and close seam column
     fazi_ext = np.concatenate((fazi_pts, fazi_pts + 360.0, fazi_pts - 360.0))
     felv_ext = np.concatenate((felv_pts, felv_pts, felv_pts))
-    P_oaspl_ext = np.concatenate((P_oaspl_pts, P_oaspl_pts, P_oaspl_pts))
 
-    # Cells with no sample within rmax come out NaN (no data) and cells whose
+    # Cells with no sample within reach come out NaN (no data) and cells whose
     # samples carry no energy -inf, never a finite floor; see power_to_db.
-    P_oaspl_grid = shepIDW(ELV_GRID, AZI_GRID, felv_ext, fazi_ext, P_oaspl_ext, rmax=float(rmax))
+    interpolation_info = None
+    if interp_settings is not None:
+        # One weight matrix for every quantity gridded: the radius is the node's,
+        # not the band's.  Geodesic distances, so the samples once, not at +-360.
+        weights, node_radius, node_gap = adaptive_idw_weights(
+            ELV_GRID.ravel(), AZI_GRID.ravel(), felv_pts, fazi_pts, np.concatenate(fmic_list),
+            np.concatenate(fres_list), k=interp_settings['k'], min_mics=interp_settings['min_mics'],
+            kappa=interp_settings['kappa'], resolution_factor=interp_settings['resolution_factor'],
+            max_radius_deg=interp_settings['max_radius_deg'])
+        node_gap = node_gap.reshape(ELV_GRID.shape)
+
+        def grid_power(power_pts):
+            g = np.asarray(weights @ np.asarray(power_pts, dtype=float)).reshape(ELV_GRID.shape)
+            return np.where(node_gap, np.nan, g)
+        interpolation_info = dict(interp_settings, mode='adaptive',
+                                  radius_deg=node_radius.reshape(ELV_GRID.shape),
+                                  gaps=int(node_gap[:, :-1].sum()) if node_gap.shape[1] > 1 else int(node_gap.sum()))
+    else:
+        def grid_power(power_pts):
+            ext = np.concatenate((power_pts, power_pts, power_pts))
+            return shepIDW(ELV_GRID, AZI_GRID, felv_ext, fazi_ext, ext, rmax=float(rmax))
+
+    P_oaspl_grid = grid_power(P_oaspl_pts)
     oaspl_db = power_to_db(P_oaspl_grid)
     if oaspl_db.shape[1] > 1:
         oaspl_db[:, -1] = oaspl_db[:, 0]
 
-    P_spl_a_ext = np.concatenate((P_spl_a_pts, P_spl_a_pts, P_spl_a_pts))
-    P_spl_a_grid = shepIDW(ELV_GRID, AZI_GRID, felv_ext, fazi_ext, P_spl_a_ext, rmax=float(rmax))
+    P_spl_a_grid = grid_power(P_spl_a_pts)
     spl_a_db = power_to_db(P_spl_a_grid)
     if spl_a_db.shape[1] > 1:
         spl_a_db[:, -1] = spl_a_db[:, 0]
@@ -1588,6 +1638,8 @@ def depropagate_hemisphere(
             'narrowband_stride': int(narrowband_stride),
         }
     }
+    if interpolation_info is not None:
+        out['interpolation'] = interpolation_info
 
     scattered: Optional[dict[str, Any]] = None
     if return_scattered:
@@ -1596,7 +1648,10 @@ def depropagate_hemisphere(
             'elv_deg': felv_pts,
             'oaspl_power': P_oaspl_pts,
             'spl_a_power': P_spl_a_pts,
+            'mic': np.concatenate(fmic_list),
         })
+        if fres_list:
+            scattered['resolution_deg'] = np.concatenate(fres_list)
         out['scattered'] = scattered
 
     if third_octave:
@@ -1608,8 +1663,7 @@ def depropagate_hemisphere(
             P_band_pts = np.concatenate(band_power_lists[ib])
             if P_band_pts.size != fazi_pts.size:
                 raise ValueError('Internal error: third-octave sample count does not match scattered angle count')
-            P_band_ext = np.concatenate((P_band_pts, P_band_pts, P_band_pts))
-            P_band_grid = shepIDW(ELV_GRID, AZI_GRID, felv_ext, fazi_ext, P_band_ext, rmax=float(rmax))
+            P_band_grid = grid_power(P_band_pts)
             band_grids_db[ib, :, :] = power_to_db(P_band_grid)
             band_grids_db[ib, :, -1] = band_grids_db[ib, :, 0]
 
@@ -1647,9 +1701,7 @@ def depropagate_hemisphere(
         f_nb = f_sel_master[::narrowband_stride]
         psd_grid_db = np.full((f_nb.size, ELV_GRID.shape[0], ELV_GRID.shape[1]), -np.inf, dtype=float)
         for i_f, fi in enumerate(range(0, f_sel_master.size, narrowband_stride)):
-            P_f_pts = psd_power_pts[fi, :]
-            P_f_ext = np.concatenate((P_f_pts, P_f_pts, P_f_pts))
-            P_f_grid = shepIDW(ELV_GRID, AZI_GRID, felv_ext, fazi_ext, P_f_ext, rmax=float(rmax))
+            P_f_grid = grid_power(psd_power_pts[fi, :])
             psd_grid_db[i_f, :, :] = power_to_db(P_f_grid)
             psd_grid_db[i_f, :, -1] = psd_grid_db[i_f, :, 0]
 
@@ -4573,6 +4625,116 @@ def IDWweights(ielv, iazi, felv, fazi, rmax):
         # No neighbors within rmax — return zeros (matches safe behavior)
         wi = m
     return wi
+
+
+#: Defaults for depropagate_hemisphere(interpolation={...}); see adaptive_idw_weights.
+#: resolution_factor 0.5 takes half the window's arc, the sample being its centre.  On a
+#: 2017 B407 sphere this gives about 3-5 deg at the rim, where samples crowd, 10-20 deg at
+#: 10-40 deg below the horizon, and 30-50 deg overhead, where they are sparse and one window
+#: spans a wide arc; 60 deg is the most a node may borrow from before it counts as a gap.
+ADAPTIVE_INTERPOLATION = dict(k=8, min_mics=3, kappa=1.3, resolution_factor=0.5, max_radius_deg=60.0,
+                              source_extent=0.0)
+
+
+def adaptive_idw_weights(ielv, iazi, felv, fazi, mic, resolution_deg, *, k=8, min_mics=3, kappa=1.3,
+                         resolution_factor=0.5, max_radius_deg=60.0, chunk=256):
+    """Shepard weights with a radius chosen per node from the samples around it.
+
+    A fixed radius has to be as large as the sparsest part of the sphere needs, or that part
+    has holes, and is then far larger than the dense part can use.  On a 2017 B407 sphere the
+    nearest sample is under a degree away at the rim but up to 18 deg away overhead, so the
+    25 deg radius that keeps the overhead filled smears the rim -- by +1 dB at 2-4 deg below
+    the horizon and -0.3 dB at 10-20 deg against the samples themselves.
+
+    Here each node x gets
+        R(x) = max(kappa d_k(x), kappa d_M(x), resolution_factor s(x)),
+    with d_k the geodesic distance to the k-th nearest sample, d_M the distance within which
+    samples from min_mics distinct microphones lie, and s the median angular resolution of
+    its k nearest samples (``resolution_deg``: how much of the sphere one sample's window
+    smears over).  Every node within reach of k samples from min_mics microphones is
+    therefore filled -- no holes -- and each value brackets the node with several
+    microphones, laterally and along track, rather than extrapolating off one microphone's
+    line of samples.  kappa > 1 keeps the k-th sample inside the Franke and Nielson weight,
+    which falls to zero at R.  A node that would need more than max_radius_deg is a genuine
+    gap in the coverage, not a hole to smooth over: its row is empty and it is reported.
+
+    Args:
+        ielv, iazi: node elevations and azimuths (deg), 1-D, same length.
+        felv, fazi: sample elevations and azimuths (deg), 1-D.  Geodesic distances, so no
+            +-360 copies are needed (or wanted: they would be counted as extra samples).
+        mic: (N,) the microphone each sample came from.
+        resolution_deg: (N,) each sample's angular resolution, deg.
+
+    Returns:
+        (weights, radius_deg, gap): a scipy.sparse CSR matrix (nodes x samples) whose rows sum
+        to one (empty for gaps), each node's radius (NaN for gaps), and the gap mask.
+    """
+    import scipy.sparse as sparse
+
+    ielv = np.asarray(ielv, dtype=float).ravel()
+    iazi = np.asarray(iazi, dtype=float).ravel()
+    felv = np.asarray(felv, dtype=float).ravel()
+    fazi = np.asarray(fazi, dtype=float).ravel()
+    mic = np.asarray(mic).ravel()
+    resolution_deg = np.asarray(resolution_deg, dtype=float).ravel()
+    n = felv.size
+    if not (fazi.size == mic.size == resolution_deg.size == n):
+        raise ValueError('felv, fazi, mic and resolution_deg must have the same length')
+    k = int(min(max(k, 1), n))
+
+    def unit(elv, azi):
+        e, a = np.deg2rad(elv), np.deg2rad(azi)
+        return np.column_stack((np.cos(e) * np.cos(a), np.cos(e) * np.sin(a), np.sin(e)))
+
+    samples = unit(felv, fazi)
+    nodes = unit(ielv, iazi)
+    mic_codes, mic_index = np.unique(mic, return_inverse=True)
+    n_mics = mic_codes.size
+    by_mic = np.argsort(mic_index, kind='stable')
+    mic_starts = np.flatnonzero(np.r_[True, np.diff(mic_index[by_mic]) != 0])
+    rows, cols, vals = [], [], []
+    radius = np.full(ielv.size, np.nan)
+    eps = 10.0 * np.finfo(float).eps
+    for start in range(0, ielv.size, chunk):
+        stop = min(start + chunk, ielv.size)
+        h = np.degrees(np.arccos(np.clip(nodes[start:stop] @ samples.T, -1.0, 1.0)))
+        order = np.argsort(h, axis=1)
+        d_k = np.take_along_axis(h, order[:, k - 1:k], axis=1)[:, 0]
+        # Nearest sample of each microphone, then the min_mics-th nearest microphone.
+        nearest_per_mic = np.minimum.reduceat(h[:, by_mic], mic_starts, axis=1)
+        if n_mics >= min_mics:
+            d_m = np.sort(nearest_per_mic, axis=1)[:, min_mics - 1]
+        else:
+            d_m = np.full(stop - start, np.inf)
+        s = np.median(resolution_deg[order[:, :k]], axis=1)
+        r = np.maximum(np.maximum(kappa * d_k, kappa * d_m), resolution_factor * s)
+        for i in range(stop - start):
+            node = start + i
+            hi = h[i]
+            j_min = order[i, 0]
+            if hi[j_min] <= eps:
+                rows.append(np.array([node]))
+                cols.append(np.array([j_min]))
+                vals.append(np.array([1.0]))
+                radius[node] = r[i]
+                continue
+            if not (r[i] <= max_radius_deg):
+                continue
+            near = np.flatnonzero(hi < r[i])
+            m = ((r[i] - hi[near]) / (r[i] * hi[near])) ** 2
+            total = m.sum()
+            if not total > 0.0:
+                continue
+            rows.append(np.full(near.size, node))
+            cols.append(near)
+            vals.append(m / total)
+            radius[node] = r[i]
+    if rows:
+        weights = sparse.csr_matrix((np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
+                                    shape=(ielv.size, n))
+    else:
+        weights = sparse.csr_matrix((ielv.size, n))
+    return weights, radius, ~np.isfinite(radius)
 
 
 def shepIDW(ielv, iazi, felv, fazi, f, rmax):
