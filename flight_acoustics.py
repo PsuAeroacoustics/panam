@@ -1,6 +1,7 @@
 # coding=UTF-8
 import os
 import warnings
+from collections import namedtuple
 from configparser import ConfigParser
 from glob import glob
 
@@ -2873,10 +2874,75 @@ def lambert_lon(azimuth):
 #                energy basis with EAA recomputed from the averaged spectrum.
 DATABASE_FORMAT_VERSION = 1
 
+# Values of the root attribute speed_reference: whether a condition's advance
+# ratio and flight path angle are taken against the ground or the air.
+SPEED_REFERENCES = ('ground', 'air')
+
 # A condition is "near level flight" within this many degrees of zero flight
 # path angle.  Used both to pick the source sphere for hover and to choose which
 # conditions get re-emitted at extended flight path angles.
 LEVEL_FLIGHT_TOLERANCE = 2.0
+
+# One condition to write, ready for add_sphere_group.  ``frequency`` and
+# ``amplitude`` are None when the database carries no spectra; ``coverage`` is
+# (n_phi, n_theta, n_bands) bool, see _complete_sphere_with_coverage.
+_SphereCondition = namedtuple('_SphereCondition', [
+    'name', 'phi', 'theta', 'radius', 'SPLA', 'EAA', 'speed', 'flight_path_angle',
+    'load_factor', 'frequency', 'amplitude', 'coverage'])
+
+
+def _read_doppler_shift_removed(filename):
+    """The DOPPLER_SHIFT_REMOVED flag a sphere file carries, or None if it has none.
+
+    0 means received-frame spheres (the normal case), 1 de-Dopplerized
+    (stationary-frame) ones.  :func:`write_aam_hemisphere_netcdf` writes it.
+    """
+    with Dataset(filename, mode='r') as file_handle:
+        if 'DOPPLER_SHIFT_REMOVED' not in file_handle.variables:
+            return None
+        raw = np.ma.filled(np.ma.asarray(file_handle.variables['DOPPLER_SHIFT_REMOVED'][...],
+                                         dtype=float), np.nan)
+    flag = np.asarray(raw, dtype=float).ravel()
+    if flag.size != 1 or flag[0] not in (0.0, 1.0):
+        raise ValueError('{}: DOPPLER_SHIFT_REMOVED must be 0 or 1, found {}'.format(filename, raw))
+    return int(flag[0])
+
+
+def _resolve_doppler_shift_removed(filenames, argument=None):
+    """The single DOPPLER_SHIFT_REMOVED flag every source sphere shares.
+
+    A sphere that carries the flag is taken at its word, and an ``argument``
+    given alongside must agree with it.  A sphere without the flag takes the
+    argument, or 0 (received frame) when there is none, with a warning.  Sources
+    that disagree would be combined into one database, so they are refused.
+    Returns the shared flag, 0 when there are no sources.
+    """
+    if argument is not None and argument not in (0, 1):
+        raise ValueError('doppler_shift_removed must be 0, 1 or None, not {!r}'.format(argument))
+    fallback = 0 if argument is None else int(argument)
+    resolved = {}
+    unlabelled = []
+    for filename in filenames:
+        flag = _read_doppler_shift_removed(filename)
+        if flag is None:
+            unlabelled.append(filename)
+            resolved[filename] = fallback
+            continue
+        if argument is not None and flag != argument:
+            raise ValueError('{} carries DOPPLER_SHIFT_REMOVED = {}, but the build was asked for {}'
+                             .format(os.path.basename(filename), flag, argument))
+        resolved[filename] = flag
+    if unlabelled and argument is None:
+        warnings.warn('{} source sphere(s) carry no DOPPLER_SHIFT_REMOVED; assuming 0 '
+                      '(received-frame spheres)'.format(len(unlabelled)))
+    values = set(resolved.values())
+    if len(values) > 1:
+        groups = ['{}: {}'.format(value, ', '.join(os.path.basename(f) for f, v in resolved.items()
+                                                    if v == value))
+                  for value in sorted(values)]
+        raise ValueError('DOPPLER_SHIFT_REMOVED differs between the sources of one database '
+                         '(' + '; '.join(groups) + '); combine spheres of one convention only')
+    return values.pop() if values else fallback
 
 
 def average_fore_and_aft(spectrum):
@@ -2937,7 +3003,23 @@ def _complete_sphere(phi_list, theta_list, spla, eaa, amplitude):
     data, so every array stays row-aligned with its azimuth -- the failure mode
     of the three-part slicing this replaces.
     """
+    phi, theta, spla, eaa, amplitude, _ = _complete_sphere_with_coverage(
+        phi_list, theta_list, spla, eaa, amplitude, measured=None)
+    return phi, theta, spla, eaa, amplitude
+
+
+def _complete_sphere_with_coverage(phi_list, theta_list, spla, eaa, amplitude, measured):
+    """:func:`_complete_sphere`, and the coverage of the completed rows.
+
+    ``measured`` is (n_phi, n_theta, n_bands) bool over the source rows, True
+    where a bin carries a measurement (see :func:`_measured_bins`), or None.
+    The returned coverage has the completed shape and is True only on source
+    rows, where the bin is measured.  The reflected upper surface is never
+    measured: it is a symmetry fill, so it is recorded as unmeasured.  Returns
+    None for coverage when ``measured`` is None.
+    """
     mirror_phi, source_index = mirror_phi_to_upper_surface(phi_list)
+    n_source = len(phi_list)
     phi_full_list = np.concatenate((np.asarray(phi_list, dtype=float), mirror_phi))
     # Rows sorted by phi, so the spectra -- written gridded, without angles of
     # their own -- are in the sorted order NICE-OPS reads them in.  Until
@@ -2946,9 +3028,45 @@ def _complete_sphere(phi_list, theta_list, spla, eaa, amplitude):
     # in the wrong direction.  dBA/EAA carry their angles per channel and were
     # never affected.
     order = np.argsort(phi_full_list, kind='stable')
-    rows = np.concatenate((np.arange(len(phi_list)), source_index))[order]
+    rows = np.concatenate((np.arange(n_source), source_index))[order]
+    # Which completed rows are source rows.  Mirror rows index source data too
+    # (source_index), so the row index alone cannot say which is which.
+    is_source = np.concatenate((np.ones(n_source, dtype=bool),
+                                np.zeros(source_index.size, dtype=bool)))[order]
     theta, phi = np.meshgrid(theta_list, phi_full_list[order])
-    return phi, theta, spla[rows], eaa[rows], amplitude[rows]
+    coverage = None
+    if measured is not None:
+        coverage = measured[rows] & is_source[:, None, None]
+    return phi, theta, spla[rows], eaa[rows], amplitude[rows], coverage
+
+
+def _measured_bins(amplitude, eaa):
+    """(n_phi, n_theta, n_bands) bool: True where a bin carries a measurement.
+
+    A bin is measured when its level is finite after :func:`mask_missing_levels`,
+    which turns the masked, gated and empty bins into -inf.  A direction whose
+    EAA is not finite is not measured either: :func:`_finite_sphere_levels`
+    zeroes that EAA, so the value is a fill, not an observation.
+    """
+    return np.isfinite(amplitude) & np.isfinite(eaa)[:, :, None]
+
+
+def _fore_aft_measured(measured):
+    """Coverage of a fore-to-aft averaged spectrum (see :func:`average_fore_and_aft`).
+
+    An averaged pair is measured only where both partners are.  Averaging a
+    measured bin with a gated partner gives both cells a level taken from the
+    partner, which is a fill, not a measurement.  The middle theta of an
+    odd-length axis is its own partner and is left as it is.
+    """
+    averaged = np.array(measured, dtype=bool, copy=True)
+    n_theta = averaged.shape[1]
+    for i in range(n_theta // 2):
+        j = n_theta - 1 - i
+        both = measured[:, i, :] & measured[:, j, :]
+        averaged[:, i, :] = both
+        averaged[:, j, :] = both
+    return averaged
 
 
 def mirror_phi_to_upper_surface(phi_list):
@@ -3001,7 +3119,8 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                                                    relative_humidity=20.0),
                              extended_flight_path_angles=None,
                              level_flight_tolerance=LEVEL_FLIGHT_TOLERANCE,
-                             store_spectrum=True, clamp_empty_directions=True):
+                             store_spectrum=True, clamp_empty_directions=True,
+                             speed_reference='ground', doppler_shift_removed=None):
     """Build a NICE-OPS sphere database from a directory of sphere files.
 
     load_factors scales thrust: each source condition is written once per load
@@ -3046,9 +3165,31 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     different propagation distance -- without the original sphere files.  It
     accounts for roughly seven eighths of the file size and no consumer reads it
     today, so turn it off for databases that only need levels.
+
+    The database records what it was built against, so NICE-OPS can refuse a
+    mismatch instead of passing it silently.  Root attributes: speed_reference
+    ("ground" or "air"; the reference the conditions' advance ratio and flight
+    path angle are taken in), and build_temperature_K, build_pressure_kPa and
+    build_relative_humidity_percent, the atmosphere the broadband EAA was
+    computed in (taken from ``atmosphere``).  Each condition group carries
+    DOPPLER_SHIFT_REMOVED (0 received-frame, 1 de-Dopplerized) and a coverage
+    mask: 1 where a cell was measured, 0 where it was gated, masked, mirrored
+    from the other half of the sphere, or averaged from a gated partner.  It is
+    one int8 value per channel, in the same group and order as dBA; with
+    spectra it is per band, over the spectrum's own (PHI, THETA, frequency)
+    dimensions, and without, a channel is measured only when all its bands are.
+
+    speed_reference is written as given.  doppler_shift_removed, when given,
+    is the flag assumed for any source sphere that does not carry one; a sphere
+    that carries one must agree with it.  Sources with different flags are
+    refused, because they would be combined into one database.
     """
     # TODO pack in redimensionalization data
     # TODO add reinterpolation flag
+
+    if speed_reference not in SPEED_REFERENCES:
+        raise ValueError('speed_reference must be one of {}, not {!r}'.format(
+            SPEED_REFERENCES, speed_reference))
 
     # None means "write the LF=1 reference only, let the reader scale it" --
     # see the docstring.  Every load-factor loop below iterates this instead
@@ -3061,6 +3202,16 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     # Get vehicle attributes
     (main_rotor_radius, main_rotor_area, main_rotor_tip_speed,
      _, _, _, _, _, _, weight_coefficient, _, _, _, _) = read_vehicle_data(directory_name)
+
+    # Get list of full paths to netCDF files in directory
+    local_glob = os.path.expanduser(directory_name) + '/*.nc'
+    absolute_glob = os.path.abspath(local_glob)
+    # Sorted, so group numbering and hover-sphere ties do not depend on the
+    # order the filesystem happens to list the directory in.
+    file_list = sorted(glob(absolute_glob))
+    # Settled before the output exists, so a refused mix of sources leaves no
+    # half-written database behind.
+    doppler = _resolve_doppler_shift_removed(file_list, doppler_shift_removed)
 
     # Set up database
     ncdatabase = Dataset(os.path.abspath(os.path.expanduser(database_filename)), 'w')
@@ -3080,6 +3231,14 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     # whenever the on-disk meaning of the sphere data changes.
     ncdatabase.createVariable("database_version", 'i4')
     ncdatabase['database_version'][:] = DATABASE_FORMAT_VERSION
+    # Optional root attributes recording what the database was built against.
+    # The EAA is computed with ``atmosphere`` (extract_SPL, spla_and_eaa_from_spectrum),
+    # so these are that atmosphere: temperature in K, pressure in kPa (the ISO 9613-1
+    # reference unit, as Atmosphere is written), relative humidity in percent.
+    ncdatabase.speed_reference = speed_reference
+    ncdatabase.build_temperature_K = float(atmosphere.temperature)
+    ncdatabase.build_pressure_kPa = float(atmosphere.pressure)
+    ncdatabase.build_relative_humidity_percent = float(atmosphere.relative_humidity)
 
     # Root vehicle data, as carried by every shipped database (S-76D_M3.nod,
     # AW139_M1.nod, Be407_spectral.nod).  NICE-OPS reads them to redimensionalize
@@ -3098,13 +3257,6 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
         ncdatabase.createVariable("vehicle_weight_newtons", 'f8')
         ncdatabase['vehicle_weight_newtons'][:] = float(vehicle_weight_newtons)
 
-    # Get list of full paths to netCDF files in directory
-    local_glob = os.path.expanduser(directory_name) + '/*.nc'
-    absolute_glob = os.path.abspath(local_glob)
-    # Sorted, so group numbering and hover-sphere ties do not depend on the
-    # order the filesystem happens to list the directory in.
-    file_list = sorted(glob(absolute_glob))
-
     min_speed = np.inf
     min_speed_file = None
     slowest_speed = np.inf
@@ -3120,6 +3272,9 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
         # Load the sphere data
         (_, _, phi_list, theta_list, radius, _, SPLA, EAA, speed, flight_path_angle,
          frequency, amplitude) = extract_SPL(filename, infreqs, distance, atmosphere)
+        # Which bins carry a measurement.  Taken before the clamp, and before the
+        # completion fills the upper surface, so a gated bin is recorded as such.
+        measured = _measured_bins(amplitude, EAA)
         if clamp_empty_directions:
             SPLA, EAA = _finite_sphere_levels(SPLA, EAA)
         # Find the lowest speed file near level flight
@@ -3131,21 +3286,22 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
             slowest_speed = speed
             slowest_file = filename
         # Complete the sphere onto its upper surface
-        phi_full, theta_full, SPLA_full, EAA_full, amplitude_full = _complete_sphere(
-            phi_list, theta_list, SPLA, EAA, amplitude)
+        phi_full, theta_full, SPLA_full, EAA_full, amplitude_full, coverage_full = (
+            _complete_sphere_with_coverage(phi_list, theta_list, SPLA, EAA, amplitude, measured))
         # Remember near-level conditions; they are the ones re-emitted at the
         # extended flight path angles below.
         if extended_flight_path_angles is not None and np.abs(flight_path_angle) < level_flight_tolerance:
             level_conditions.append((phi_full, theta_full, radius, SPLA_full, EAA_full,
-                                     speed, frequency, amplitude_full))
+                                     speed, frequency, amplitude_full, coverage_full))
         # Augment load factor data
         for load_factor in load_factors_to_write:
             groupname = "sphere" + str(sphere_index)
             sphere_index = sphere_index + 1
-            pending_groups.append((groupname, phi_full, theta_full, radius, SPLA_full, EAA_full,
-                                   speed, flight_path_angle, load_factor,
-                                   frequency if store_spectrum else None,
-                                   amplitude_full if store_spectrum else None))
+            pending_groups.append(_SphereCondition(
+                groupname, phi_full, theta_full, radius, SPLA_full, EAA_full,
+                speed, flight_path_angle, load_factor,
+                frequency if store_spectrum else None,
+                amplitude_full if store_spectrum else None, coverage_full))
 
     if min_speed_file is None:
         # No sphere within level_flight_tolerance of level flight.  The hover
@@ -3160,8 +3316,11 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
         min_speed_file = slowest_file
 
     # Now, adapt the lowest speed sphere to a hover sphere by averaging from fore to aft
-    (_, _, phi_list, theta_list, radius, _, _, _, _, _,
+    (_, _, phi_list, theta_list, radius, _, _, eaa_source, _, _,
      frequency, amplitude) = extract_SPL(min_speed_file, infreqs, distance, atmosphere)
+    # The averaging below gives a gated bin the level of its partner, so the
+    # hover's coverage is measured only where both partners were.
+    measured = _fore_aft_measured(_measured_bins(amplitude, eaa_source))
     # Average the SPECTRUM fore-to-aft on an energy basis, then derive SPLA and
     # EAA from the averaged spectrum.  Averaging the broadband dB levels instead
     # (a) is not an energy average, and (b) leaves EAA untouched, so level and
@@ -3171,8 +3330,8 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     if clamp_empty_directions:
         SPLA, EAA = _finite_sphere_levels(SPLA, EAA)
     # Complete the sphere onto its upper surface
-    phi_full, theta_full, SPLA_full, EAA_full, amplitude_full = _complete_sphere(
-        phi_list, theta_list, SPLA, EAA, amplitude)
+    phi_full, theta_full, SPLA_full, EAA_full, amplitude_full, coverage_full = (
+        _complete_sphere_with_coverage(phi_list, theta_list, SPLA, EAA, amplitude, measured))
     # Set hover conditions.  Hover is a near-level condition, so it is written
     # at the extended angles as well as level flight.
     speed = 0
@@ -3185,27 +3344,29 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
         for flight_path_angle in flight_path_angles:
             groupname = "sphere" + str(sphere_index)
             sphere_index = sphere_index + 1
-            pending_groups.append((groupname, phi_full, theta_full, radius, SPLA_full, EAA_full,
-                                   speed, flight_path_angle, load_factor,
-                                   frequency if store_spectrum else None,
-                                   amplitude_full if store_spectrum else None))
+            pending_groups.append(_SphereCondition(
+                groupname, phi_full, theta_full, radius, SPLA_full, EAA_full,
+                speed, flight_path_angle, load_factor,
+                frequency if store_spectrum else None,
+                amplitude_full if store_spectrum else None, coverage_full))
 
     # Widen the flight-path-angle envelope: re-emit each near-level condition at
     # the extended angles, keeping its own airspeed and directivity.  Hover is
     # already covered above, so skip any condition at zero airspeed.
     if extended_flight_path_angles is not None:
         for (phi_full, theta_full, radius, SPLA_full, EAA_full,
-             level_speed, frequency, amplitude_full) in level_conditions:
+             level_speed, frequency, amplitude_full, coverage_full) in level_conditions:
             if level_speed == 0:
                 continue
             for extended_angle in extended_flight_path_angles:
                 for load_factor in load_factors_to_write:
                     groupname = "sphere" + str(sphere_index)
                     sphere_index = sphere_index + 1
-                    pending_groups.append((groupname, phi_full, theta_full, radius, SPLA_full,
-                                           EAA_full, level_speed, extended_angle, load_factor,
-                                           frequency if store_spectrum else None,
-                                           amplitude_full if store_spectrum else None))
+                    pending_groups.append(_SphereCondition(
+                        groupname, phi_full, theta_full, radius, SPLA_full, EAA_full,
+                        level_speed, extended_angle, load_factor,
+                        frequency if store_spectrum else None,
+                        amplitude_full if store_spectrum else None, coverage_full))
 
     # phi/theta (and frequency, for a spectral database) are usually the same
     # on every condition -- panam completes every sphere onto a common grid
@@ -3218,23 +3379,25 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     ncdatabase.createVariable("shared_grid_and_frequency", 'b')
     ncdatabase['shared_grid_and_frequency'][:] = shared_grid_and_frequency
     if shared_grid_and_frequency:
-        (_, phi0, theta0, _, _, _, _, _, _, frequency0, _) = pending_groups[0]
-        ncdatabase.createDimension("channels", phi0.size)
+        first = pending_groups[0]
+        ncdatabase.createDimension("channels", first.phi.size)
         ncdatabase.createVariable("phi", 'f8', ("channels",))
-        ncdatabase['phi'][:] = phi0.flatten()
+        ncdatabase['phi'][:] = first.phi.flatten()
         ncdatabase.createVariable("theta", 'f8', ("channels",))
-        ncdatabase['theta'][:] = theta0.flatten()
-        if frequency0 is not None:
-            ncdatabase.createDimension("frequency", np.size(frequency0))
+        ncdatabase['theta'][:] = first.theta.flatten()
+        if first.frequency is not None:
+            ncdatabase.createDimension("frequency", np.size(first.frequency))
             ncdatabase.createVariable("frequency", 'f8', ("frequency",))
-            ncdatabase['frequency'][:] = np.asarray(frequency0).flatten()
+            ncdatabase['frequency'][:] = np.asarray(first.frequency).flatten()
 
-    for (groupname, phi_full, theta_full, radius, SPLA_full, EAA_full, speed_or_level_speed,
-         flight_path_angle, load_factor, frequency, amplitude_full) in pending_groups:
-        add_sphere_group(ncdatabase, groupname, phi_full, theta_full, radius, SPLA_full, EAA_full,
-                         speed_or_level_speed, flight_path_angle, load_factor, main_rotor_radius,
-                         main_rotor_tip_speed, weight_coefficient, frequency, amplitude_full,
-                         write_grid_and_frequency=not shared_grid_and_frequency)
+    for condition in pending_groups:
+        add_sphere_group(ncdatabase, condition.name, condition.phi, condition.theta,
+                         condition.radius, condition.SPLA, condition.EAA,
+                         condition.speed, condition.flight_path_angle, condition.load_factor,
+                         main_rotor_radius, main_rotor_tip_speed, weight_coefficient,
+                         condition.frequency, condition.amplitude,
+                         write_grid_and_frequency=not shared_grid_and_frequency,
+                         doppler_shift_removed=doppler, coverage=condition.coverage)
     # Close explicitly: left to the garbage collector, a failed flush on close
     # is swallowed and the file can stay open (locked) while a traceback lives.
     ncdatabase.close()
@@ -3248,8 +3411,11 @@ def _grid_and_frequency_are_shared(pending_groups):
     """
     if not pending_groups:
         return False
-    _, phi0, theta0, *_, frequency0, _ = pending_groups[0]
-    for _, phi, theta, *_, frequency, _ in pending_groups[1:]:
+    first = pending_groups[0]
+    for condition in pending_groups[1:]:
+        phi, phi0 = condition.phi, first.phi
+        theta, theta0 = condition.theta, first.theta
+        frequency, frequency0 = condition.frequency, first.frequency
         if phi.shape != phi0.shape or not np.array_equal(phi, phi0):
             return False
         if theta.shape != theta0.shape or not np.array_equal(theta, theta0):
@@ -3291,7 +3457,18 @@ def _finite_sphere_levels(spla, eaa):
 
 def add_sphere_group(ncdatabase, groupname, phi, theta, radius, SPLA, EAA, speed, flight_path_angle, load_factor,
                      main_rotor_radius, main_rotor_tip_speed, weight_coefficient, frequency=None, amplitude=None,
-                     write_grid_and_frequency=True):
+                     write_grid_and_frequency=True, doppler_shift_removed=None, coverage=None):
+    """Write one condition group.
+
+    doppler_shift_removed, when given, is written as the group's scalar int
+    DOPPLER_SHIFT_REMOVED (0 received-frame, 1 de-Dopplerized).  coverage, when
+    given, is the (n_phi, n_theta, n_bands) bool measured mask of the completed
+    sphere.  It is written as int8 ``coverage`` over the amplitude's dimensions
+    ("PHI", "THETA", "frequency") when the group has spectra, and otherwise over
+    ("channels",), one value per channel in dBA's order, where a channel is
+    measured only if every band of it is.  Both are optional so that a caller
+    building a group by hand is unaffected.
+    """
     # Create a new group for this sphere
     this_group = ncdatabase.createGroup(groupname)
     # Define sphere nondimensional radius
@@ -3350,6 +3527,31 @@ def add_sphere_group(ncdatabase, groupname, phi, theta, radius, SPLA, EAA, speed
             this_group.variables['frequency'][:] = np.asarray(frequency).flatten()
         this_group.createVariable("amplitude", 'f8', ("PHI", "THETA", "frequency"))
         this_group.variables['amplitude'][:] = amplitude
+    has_spectrum = frequency is not None and amplitude is not None
+
+    if doppler_shift_removed is not None:
+        if doppler_shift_removed not in (0, 1):
+            raise ValueError('doppler_shift_removed must be 0 or 1, not {!r}'.format(doppler_shift_removed))
+        this_group.createVariable("DOPPLER_SHIFT_REMOVED", 'i4')
+        this_group.variables['DOPPLER_SHIFT_REMOVED'][:] = int(doppler_shift_removed)
+
+    if coverage is not None:
+        measured = np.asarray(coverage, dtype=bool)
+        if measured.ndim != 3 or measured.shape[:2] != phi.shape:
+            raise ValueError('coverage must be (n_phi, n_theta, n_bands) to match phi, not {}'.format(
+                measured.shape))
+        if has_spectrum:
+            # The same dimensions as the amplitude it masks: gridded (PHI, THETA, frequency).
+            this_group.createVariable("coverage", 'i1', ("PHI", "THETA", "frequency"))
+            this_group.variables['coverage'][:] = measured.astype(np.int8)
+        else:
+            # One value per channel, in the same order as dBA and EAA.  No spectrum to
+            # keep the bands in: a cell is measured only if all its bands are.
+            this_group.createVariable("coverage", 'i1', ("channels",))
+            this_group.variables['coverage'][:] = measured.all(axis=2).reshape(-1).astype(np.int8)
+        this_group.variables['coverage'].description = (
+            '1 = measured cell (every band measured, when there is no spectrum); 0 = unmeasured: '
+            'gated, masked, mirrored from the other half of the sphere, or averaged from a gated partner')
 
 
 def project_sphere(filename, altitude, elv_cutoff, infreqs=None,
