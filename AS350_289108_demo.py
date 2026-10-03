@@ -4,6 +4,7 @@ import os
 import argparse
 import flight_acoustics as fa
 import local_paths
+import noise_abatement_2017 as na
 import matplotlib.pyplot as plt
 import numpy as np
 import logging
@@ -97,6 +98,32 @@ def filter_microphones(nc_files, miclocs, pressures, times, x_range=(-2500,-1500
     filtered_pressures = [pressures[idx_by_file[f]] for f in filtered_nc_files]
     filtered_times = [times[idx_by_file[f]] for f in filtered_nc_files]
     return filtered_miclocs, filtered_pressures, filtered_times
+
+def load_track(basepath):
+    """The run's track and its filtered, decimated segment, with ``vz_up``.
+
+    The 2017 tracking files store ``vz`` positive DOWN while ``z`` is positive
+    up (:func:`noise_abatement_2017.vz_sign` checks each file against dz/dt),
+    so the velocity handed on is (vx, vy, vz_up).
+    """
+    track = fa.load_NASA_track(os.path.join(basepath, 'Tracking', '289108AC.csv'))
+    track['vz_up'] = na.vz_sign(track) * track['vz']
+    filter_track = fa.filter_track(track, xlims=(-4000, 0), zlims=(50, 1500), decimate=10)
+    return track, filter_track
+
+
+def track_kinematics(filter_track):
+    """Source positions and up-positive velocities, (n, 3) each."""
+    source = np.column_stack((filter_track['x'], filter_track['y'], filter_track['z']))
+    velocity = np.column_stack((filter_track['vx'], filter_track['vy'], filter_track['vz_up']))
+    return source, velocity
+
+
+def demo_atmosphere():
+    """The demo's atmosphere and its speed of sound in ft/s, from that atmosphere."""
+    atmosphere = fa.Atmosphere(temperature=293.15, pressure=101.325, relative_humidity=20.0)
+    return atmosphere, na.sound_speed_ft_s(atmosphere)
+
 
 def plot_trajectory(track, filter_track=None):
     fig1 = plt.figure()
@@ -225,8 +252,7 @@ def main():
     yf = [loc[1] for loc in filtered_miclocs]
 
     # Trajectory
-    track = fa.load_NASA_track(os.path.join(basepath, 'Tracking','289108AC.csv'))
-    filter_track = fa.filter_track(track, xlims=(-4000,0), zlims=(50,1500),decimate=10)
+    track, filter_track = load_track(basepath)
     traj_figs = plot_trajectory(track, filter_track)
     figs.extend(traj_figs)
     names.extend(['trajectory_xz', 'trajectory_xy'])
@@ -236,15 +262,14 @@ def main():
     names.append('microphone_array')
 
     # Kinematics inputs for hemisphere generation
-    source = np.array([filter_track['x'], filter_track['y'], filter_track['z']]).transpose()
-    velocity = np.array([filter_track['vx'], filter_track['vy'], filter_track['vz']]).transpose()
+    source, velocity = track_kinematics(filter_track)
 
     # Build a hemisphere and interpolate onto a regular spherical grid
     if build_hemisphere:
         # Pressure correction: adjust for pressure doubling at the ground board.
         pressures_corrected = [np.asarray(p, dtype=float) * 0.5 for p in filtered_pressures]
 
-        atm = fa.Atmosphere(temperature=293.15, pressure=101.325, relative_humidity=20.0)
+        atm, speed_of_sound_ft_s = demo_atmosphere()
         hemi = fa.depropagate_hemisphere(
             mic_locations=filtered_miclocs,
             pressure=pressures_corrected,
@@ -252,7 +277,7 @@ def main():
             track_time=filter_track['time'],
             track_position=source,
             track_velocity=velocity,
-            speed_of_sound=1135.0,
+            speed_of_sound=speed_of_sound_ft_s,
             length_units='ft',
             r_ref=r_ref,
             freq_range=export_freq_range_hz if export_freq_range_hz is not None else hemisphere_freq_range_hz,
@@ -450,7 +475,7 @@ def main():
                     phi_export = None
                     theta_export = None
                     radius_export_ft = r_ref
-                    # Estimate flight condition from track velocity
+                    # Estimate flight condition from track velocity (z up)
                     v = velocity.astype(float)
                     sp_ft_s = np.sqrt(np.sum(v ** 2, axis=1))
                     speed_export_knots = float(np.nanmedian(sp_ft_s) / 1.6878098571011957)

@@ -673,6 +673,11 @@ def plate_response(tables, mirror, sound_speed_ft_s):
 # Atmosphere
 # --------------------------------------------------------------------------
 
+def sound_speed_ft_s(atmosphere):
+    """``atmosphere``'s speed of sound in ft/s, the dataset's length unit."""
+    return float(fa.unit_conversion.len_conv(atmosphere.soundspeed, from_units='m', to_units='ft'))
+
+
 def run_atmosphere(test, run, fallback=None):
     """Atmosphere measured by the ground weather stations at the time of ``run``.
 
@@ -826,8 +831,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
         atmosphere = run_atmosphere(test, run, fallback=fa.Atmosphere(
             temperature=293.15, pressure=101.325, relative_humidity=20.0))
     if speed_of_sound_ft_s is None:
-        speed_of_sound_ft_s = float(fa.unit_conversion.len_conv(
-            atmosphere.soundspeed, from_units='m', to_units='ft'))
+        speed_of_sound_ft_s = sound_speed_ft_s(atmosphere)
 
     mics = test.ground_board_mics(run)
     if not mics:
