@@ -404,46 +404,22 @@ def board_level(bands, source_height, ground_distance, sound_speed, table, sub_b
     interpolated (real and imaginary parts, bilinear in elevation and azimuth)
     from ``table`` and Q from each frame's geometry, at the plate's top.
     Azimuth, ``mirror_y`` and NaN for bands not in the table as in
-    :func:`ground_plane.board_disc_bem`.  ``sub_bands`` is the table's own; a
+    :func:`ground_plane.table_frames`.  ``sub_bands`` is the table's own; a
     different count would pick frequencies the table does not hold.
     """
-    from scipy.interpolate import RegularGridInterpolator
-    sub_bands = gp.table_sub_bands(table, sub_bands)
-    f, hs, d2 = gp._broadcast(bands, source_height, ground_distance)
-    elevation = np.degrees(np.arctan2(hs, d2))
+    f, hs, d2, elevation, offsets, values = gp.table_frames(
+        table, ('P_d', 'P_r'), bands, source_height, ground_distance, source_dx, source_dy, mirror_y, sub_bands)
     height = table['thickness']
     image_range = np.hypot(d2, hs + height)
     cos_theta = (hs + height) / image_range
-    if source_dx is None:
-        azimuth = np.zeros_like(hs)
-    else:
-        _, dx, dy = gp._broadcast(bands, source_dx, source_dy)
-        azimuth = np.mod(np.degrees(np.arctan2(-dy, -dx)), 360.0)
-    if mirror_y:
-        azimuth = np.mod(-azimuth, 360.0)
-    t_az = np.concatenate((table['azimuths'], [table['azimuths'][0] + 360.0]))
-    offsets = gp.sub_band_factors(sub_bands)
     energy = np.zeros(f.shape)
-    for factor in offsets:
+    for factor, (p_d, p_r) in zip(offsets, values):
         fj = f * factor
         q = gp.fa.spherical_reflection_coefficient(
             cos_theta, image_range, fj, sound_speed, table['flow_resistance'],
             admittance=gp._ground_admittance(fj, sound_speed, table['flow_resistance'], table.get('ground')))
-        p = np.full(f.shape, np.nan, dtype=complex)
-        rows = gp.table_rows(table['frequencies'], fj[:, 0])
-        for b, row in enumerate(rows):
-            if row < 0:
-                continue
-            points = np.column_stack((np.clip(elevation[b], table['elevations'][0], table['elevations'][-1]),
-                                      azimuth[b]))
-            vals = []
-            for key in ('P_d', 'P_r'):
-                grid = np.concatenate((table[key][row], table[key][row][:, :1]), axis=1)
-                vals.append(RegularGridInterpolator((table['elevations'], t_az), grid.real)(points)
-                            + 1j * RegularGridInterpolator((table['elevations'], t_az), grid.imag)(points))
-            p[b] = vals[0] + q[b] * vals[1]
-        energy += np.abs(p) ** 2
-    return 10.0 * np.log10(energy / sub_bands)
+        energy += np.abs(p_d + q * p_r) ** 2
+    return 10.0 * np.log10(energy / offsets.size)
 
 
 def write_netcdf(path, table, description=''):

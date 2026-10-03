@@ -402,3 +402,27 @@ def test_board_disc_bem_takes_q_at_the_microphone_height():
         q = gp.fa.spherical_reflection_coefficient((hs + h) / r2, r2, f, C, gp.FLOW_RESISTANCE)
         energy += abs(1 + q * np.exp(2j * 2 * np.pi * f / C * h * np.sin(np.arctan2(hs, d2)))) ** 2
     assert level == pytest.approx(10 * np.log10(energy / 2), abs=1e-9)
+
+
+
+def test_table_frames_interpolate_bilinearly_and_wrap_in_azimuth():
+    # Values linear in elevation and, near 0 deg, in azimuth (350 deg -> 350,
+    # 0 deg -> 360): the bilinear lookup is exact, across 350 -> 360 = 0 too.
+    table = _disc_table(np.array([1000.0]))
+    table['elevations'] = np.array([0.0, 10.0, 90.0])
+    table['azimuths'] = np.arange(0.0, 360.0, 10.0)
+    el, az = np.meshgrid(table['elevations'], table['azimuths'], indexing='ij')
+    wrapped = np.where(az == 0.0, 360.0, np.where(az > 300.0, az, 0.0))
+    table['S'] = np.broadcast_to(el + 1j * wrapped, (2,) + el.shape)
+    hs, d2 = np.tan(np.radians(5.0)) * 100.0, 100.0
+    toward = np.radians([355.0, 15.0, 5.0])                 # propagation azimuths
+    f, _, _, elevation, offsets, values = gp.table_frames(
+        table, ('S',), [1000.0, 2000.0], [hs] * 3, [d2] * 3, source_dx=-np.cos(toward),
+        source_dy=-np.sin(toward))
+    assert values.shape == (2, 1, 2, 3) and np.allclose(elevation, 5.0)
+    np.testing.assert_allclose(values[:, 0, 0], np.broadcast_to(5.0 + 1j * np.array([355.0, 0.0, 180.0]),
+                                                                (2, 3)), atol=1e-9)
+    assert np.all(np.isnan(values[:, 0, 1]))               # no 2 kHz rows
+    mirrored = gp.table_frames(table, ('S',), [1000.0], [hs] * 3, [d2] * 3, source_dx=-np.cos(toward),
+                               source_dy=-np.sin(toward), mirror_y=True)[-1]
+    np.testing.assert_allclose(mirrored[0, 0, 0].imag, [180.0, 345.0, 355.0], atol=1e-9)

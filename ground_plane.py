@@ -1629,6 +1629,59 @@ def table_rows(frequencies, wanted, rtol=1e-6):
     return np.where(np.abs(frequencies[row] - wanted) <= rtol * wanted, row, -1)
 
 
+def _grid_interval(grid, x):
+    """Interval index and fraction of ``x`` on an ascending ``grid``, ends extrapolated."""
+    i = np.clip(np.searchsorted(grid, x) - 1, 0, grid.size - 2)
+    return i, (x - grid[i]) / (grid[i + 1] - grid[i])
+
+
+def table_frames(table, keys, bands, source_height, ground_distance, source_dx=None, source_dy=None,
+                 mirror_y=False, sub_bands=None):
+    """A plate table's ``keys`` at each frame's direction and each band's sub-frequencies.
+
+    Shared by :func:`board_disc_bem` and :func:`axisymmetric_bem.board_level`.
+    The elevation is the source's above the ground.  The propagation azimuth
+    is from the source toward the microphone, from ``source_dx``,
+    ``source_dy`` (the source's offset from the microphone); without them
+    the source is taken to be along -x.  ``mirror_y`` puts the microphone on
+    the plate's other side (the -y offset), by reflecting the azimuth.
+    Values are bilinear in elevation (clipped to the table's) and azimuth
+    (periodic), with one set of weights for every band and sub-frequency:
+    the direction does not depend on frequency.
+
+    Returns (f, hs, d2, elevation, offsets, values): the (band, frame)
+    arrays of :func:`_broadcast`, the elevation in degrees, the sub-band
+    factors and ``values`` (sub, key, band, frame), complex, NaN for bands
+    the table does not hold (:func:`table_rows`).
+    """
+    sub_bands = table_sub_bands(table, sub_bands)
+    f, hs, d2 = _broadcast(bands, source_height, ground_distance)
+    elevation = np.degrees(np.arctan2(hs, d2))
+    if source_dx is None:
+        azimuth = np.zeros_like(hs)
+    else:
+        _, dx, dy = _broadcast(bands, source_dx, source_dy)
+        azimuth = np.mod(np.degrees(np.arctan2(-dy, -dx)), 360.0)
+    if mirror_y:
+        azimuth = np.mod(-azimuth, 360.0)
+    t_el = np.asarray(table['elevations'], dtype=float)
+    t_az = np.asarray(table['azimuths'], dtype=float)
+    i, ti = _grid_interval(t_el, np.clip(elevation[0], t_el[0], t_el[-1]))
+    j, tj = _grid_interval(np.append(t_az, t_az[0] + 360.0), t_az[0] + np.mod(azimuth[0] - t_az[0], 360.0))
+    j1 = (j + 1) % t_az.size
+    corners = (((1.0 - ti) * (1.0 - tj), i, j), (ti * (1.0 - tj), i + 1, j),
+               ((1.0 - ti) * tj, i, j1), (ti * tj, i + 1, j1))
+    offsets = sub_band_factors(sub_bands)
+    values = np.full((sub_bands, len(keys)) + f.shape, np.nan, dtype=complex)
+    for s, factor in enumerate(offsets):
+        rows = table_rows(table['frequencies'], f[:, 0] * factor)
+        have = rows >= 0
+        for k, key in enumerate(keys):
+            grid = np.asarray(table[key])[rows[have]]                  # (band, elevation, azimuth)
+            values[s, k, have] = sum(w * grid[:, ic, jc] for w, ic, jc in corners)
+    return f, hs, d2, elevation, offsets, values
+
+
 def board_disc_bem(bands, source_height, ground_distance, sound_speed,
                    flow_resistance=FLOW_RESISTANCE, sub_bands=None, table=None,
                    source_dx=None, source_dy=None, mirror_y=False):
@@ -1637,53 +1690,27 @@ def board_disc_bem(bands, source_height, ground_distance, sound_speed,
     |1 + Q e^{2ikh sin(el)} + (1 + Q) S|^2, averaged over ``sub_bands``
     frequencies per band, with S interpolated (real and imaginary parts,
     bilinearly in elevation and azimuth) from ``table`` (:func:`disc_bem_table`)
-    and Q from each frame's own geometry.  The propagation azimuth is from the
-    source toward the microphone, from ``source_dx``, ``source_dy`` (the
-    source's offset from the microphone); without them the source is taken to
-    be along -x.  ``mirror_y`` puts the microphone on the plate's other side
-    (the -y offset), by reflecting the azimuth.  Bands the table was not
-    computed for are NaN.  ``sub_bands`` is the table's own; a different count would pick
+    and Q from each frame's own geometry.  Azimuth (``source_dx``,
+    ``source_dy``) and ``mirror_y`` as in :func:`table_frames`.  Bands the
+    table was not computed for are NaN.  ``sub_bands`` is the table's own; a different count would pick
     frequencies the table does not hold.
     """
-    from scipy.interpolate import RegularGridInterpolator
-
-    sub_bands = table_sub_bands(table, sub_bands)
-    f, hs, d2 = _broadcast(bands, source_height, ground_distance)
-    elevation = np.degrees(np.arctan2(hs, d2))
+    f, hs, d2, elevation, offsets, values = table_frames(
+        table, ('S',), bands, source_height, ground_distance, source_dx, source_dy, mirror_y, sub_bands)
     height = table['mic_height']
     # Q at the microphone's own height, like the phase e^{2ikh sin(el)} below.
     image_range = np.hypot(d2, hs + height)
     cos_theta = (hs + height) / image_range
-    if source_dx is None:
-        azimuth = np.zeros_like(hs)
-    else:
-        _, dx, dy = _broadcast(bands, source_dx, source_dy)
-        azimuth = np.mod(np.degrees(np.arctan2(-dy, -dx)), 360.0)
-    if mirror_y:
-        azimuth = np.mod(-azimuth, 360.0)
-    t_az = np.concatenate((table['azimuths'], [table['azimuths'][0] + 360.0]))
-    offsets = sub_band_factors(sub_bands)
     energy = np.zeros(f.shape)
-    for factor in offsets:
+    for factor, (s_frame,) in zip(offsets, values):
         fj = f * factor
         q = fa.spherical_reflection_coefficient(
             cos_theta, image_range, fj, sound_speed, flow_resistance,
             admittance=_ground_admittance(fj, sound_speed, flow_resistance, table.get('ground')))
-        s_frame = np.full(f.shape, np.nan, dtype=complex)
-        rows = table_rows(table['frequencies'], fj[:, 0])
-        for b, row in enumerate(rows):
-            if row < 0:
-                continue
-            grid = table['S'][row]
-            grid = np.concatenate((grid, grid[:, :1]), axis=1)          # periodic in azimuth
-            points = np.column_stack((np.clip(elevation[b], table['elevations'][0],
-                                              table['elevations'][-1]), azimuth[b]))
-            s_frame[b] = (RegularGridInterpolator((table['elevations'], t_az), grid.real)(points)
-                          + 1j * RegularGridInterpolator((table['elevations'], t_az), grid.imag)(points))
         k = 2.0 * np.pi * fj / sound_speed
         ratio = 1.0 + q * np.exp(2j * k * height * np.sin(np.radians(elevation))) + (1.0 + q) * s_frame
         energy += np.abs(ratio) ** 2
-    return 10.0 * np.log10(energy / sub_bands)
+    return 10.0 * np.log10(energy / offsets.size)
 
 
 def board_soft_ground(bands, source_height, ground_distance, sound_speed,
