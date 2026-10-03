@@ -139,3 +139,40 @@ def test_board_level_is_nan_for_bands_the_table_does_not_hold():
     level = ab.board_level([400.0, 500.0, 630.0, 800.0, 1000.0, 1250.0], [100.0], [200.0], C, table)[:, 0]
     np.testing.assert_allclose(level[[1, 4]], 0.0, atol=1e-12)
     assert np.all(np.isnan(level[[0, 2, 3, 5]]))
+
+
+def test_netcdf_export_orders_the_bands(tmp_path):
+    # Bands given high to low: each band_center must still head its own
+    # sub-frequencies and their P_d, P_r.
+    from netCDF4 import Dataset
+    table = ab.table(np.array([1000.0, 500.0]), C, sub_bands=2, elevations=np.array([5.0, 30.0]),
+                     azimuths=np.array([0.0, 180.0]))
+    path = tmp_path / 'plate.nc'
+    ab.write_netcdf(str(path), table)
+    with Dataset(path) as nc:
+        centers, frequency = nc['band_center'][:], nc['frequency'][:]
+        p_d = nc['P_d_real'][:] + 1j * nc['P_d_imag'][:]
+    np.testing.assert_array_equal(centers, [500.0, 1000.0])
+    np.testing.assert_allclose(frequency, centers[:, None] * gp.sub_band_factors(2)[None, :], rtol=1e-12)
+    for i in range(2):
+        for j in range(2):
+            row = np.argmin(np.abs(table['frequencies'] - frequency[i, j]))
+            np.testing.assert_array_equal(p_d[i, j], table['P_d'][row])
+    table['bands'] = np.array([500.0, 900.0])
+    with pytest.raises(ValueError, match="sub-frequencies"):
+        ab.write_netcdf(str(tmp_path / 'bad.nc'), table)
+
+
+def test_field_over_the_taper_is_air():
+    # Halfway along the taper the surface is midway between the 8 mm top and
+    # the 2.5 mm rim: a point 1 mm above it is in the air, 1 mm below it inside.
+    r = gp.PLATE_RADIUS_FT - 0.5 * gp.PLATE_TAPER_LENGTH_FT
+    surface = 0.5 * (gp.PLATE_THICKNESS_FT + gp.PLATE_EDGE_THICKNESS_FT)
+    mm = 0.001 / 0.3048
+    Pd, Pr = ab.field(2000.0, 30.0, 0.0, C, [[r, 0.0, surface + mm], [r, 0.0, surface - mm],
+                                            [gp.PLATE_RADIUS_FT + mm, 0.0, gp.PLATE_THICKNESS_FT - mm]])
+    assert np.isfinite(Pd[0]) and np.isfinite(Pr[0])
+    assert np.isnan(Pd[1]) and np.isnan(Pr[1])
+    assert np.isfinite(Pd[2])                        # beside the rim
+    # Near-surface pressure over a rigid plate on soft ground: of order the doubled wave.
+    assert 0.5 < abs(Pd[0]) < 3.0

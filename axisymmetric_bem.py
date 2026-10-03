@@ -328,7 +328,13 @@ def field(frequency, elevation, azimuth, sound_speed, points, flow_resistance=gp
     r_t = np.hypot(pts[:, 0], pts[:, 1])
     phi_t = np.arctan2(pts[:, 1], pts[:, 0])
     z_t = pts[:, 2]
-    inside = (r_t < radius) & (z_t < thickness)
+    # Below the plate's own profile (flat top, taper, rim), not its bounding
+    # cylinder: the air over the taper is outside.
+    edge_thickness = geometry.get('edge_thickness', gp.PLATE_EDGE_THICKNESS_FT)
+    taper_length = geometry.get('taper_length', gp.PLATE_TAPER_LENGTH_FT)
+    top = (np.interp(r_t, [radius - taper_length, radius], [thickness, edge_thickness])
+           if taper_length > 0.0 else thickness)
+    inside = (r_t < radius) & (z_t < top)
     rho_max = max(2.0 * radius, float(r_t.max()) + radius) * 1.02 + 2 * segment
     z_max = max(2.0 * thickness, float(z_t.max()) + thickness) * 1.05
     tbl = gp.ImageIntegralTable(k, beta, rho_max, z_max)
@@ -453,8 +459,14 @@ def write_netcdf(path, table, description=''):
     """
     from netCDF4 import Dataset
     ft = 0.3048
-    bands = np.asarray(table['bands'], float)
+    # The table's frequencies are sorted, so they fall into (band, sub) rows
+    # only in ascending band order, and only if no two bands' sub-frequencies
+    # interleave.
+    bands = np.sort(np.asarray(table['bands'], float))
     n_sub = int(table['sub_bands'])
+    frequency = np.asarray(table['frequencies'], float).reshape(bands.size, n_sub)
+    if not np.allclose(frequency, bands[:, None] * gp.sub_band_factors(n_sub)[None, :], rtol=1e-9, atol=0.0):
+        raise ValueError("the table's frequencies do not split into its bands' sub-frequencies")
     shape = (bands.size, n_sub, table['elevations'].size, table['azimuths'].size)
     ground = table.get('ground') or dict(model='delany_bazley', sigma=table['flow_resistance'])
     with Dataset(path, 'w') as nc:
@@ -463,7 +475,7 @@ def write_netcdf(path, table, description=''):
         nc.createDimension('elevation', table['elevations'].size)
         nc.createDimension('azimuth', table['azimuths'].size)
         nc.createVariable('band_center', 'f8', ('band',))[:] = bands
-        nc.createVariable('frequency', 'f8', ('band', 'sub'))[:] = table['frequencies'].reshape(bands.size, n_sub)
+        nc.createVariable('frequency', 'f8', ('band', 'sub'))[:] = frequency
         nc.createVariable('elevation', 'f8', ('elevation',))[:] = table['elevations']
         nc.createVariable('azimuth', 'f8', ('azimuth',))[:] = table['azimuths']
         for key in ('P_d', 'P_r'):
