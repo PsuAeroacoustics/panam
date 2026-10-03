@@ -24,6 +24,7 @@ rest of the 2017 pipeline; flow resistance is in kPa s/m^2, as in
 """
 import numpy as np
 import scipy.signal as sig
+from numba import njit, prange
 
 import flight_acoustics as fa
 
@@ -959,49 +960,71 @@ def image_integrals(k, beta, rho, z_sum, n=10):
     # Z < 0 (even by rounding) would put the root on the growing branch.
     z = np.maximum(np.broadcast_to(np.asarray(z_sum, dtype=float), rho.shape).ravel(), 0.0)
     rho = np.maximum(rho, 0.0)
-    m = rho.size
-    rho_s = np.maximum(rho, 1e-12)
-    w = np.clip(np.sqrt(2.0 * np.maximum(z, 0.0) / rho_s), 1e-6, 0.25)
+    x, w = np.polynomial.legendre.leggauss(n)
+    return _image_integral_nodes(float(k), complex(beta), rho, z, x, w)
+
+
+@njit(parallel=True, cache=True)
+def _image_integral_nodes(k, beta, rho, z, x, w):
+    """The quadrature of :func:`image_integrals`, compiled and parallel over the points."""
     half = 0.5 * np.pi
     # Breakpoints on the decay scale of e^{-k beta q} too: far from the plate
     # the integral is carried by q << rho.
     decay_q = np.array([0.3, 1.0, 3.0, 10.0, 30.0]) / (k * max(abs(beta), 1e-6))
-    # Below rho: phi in [0, pi/2], q = rho sin(phi), rho^2 - q^2 = rho^2 cos^2(phi).
-    ea = np.concatenate((np.zeros((m, 1)),
-                         np.arcsin(np.minimum(decay_q[None, :] / rho_s[:, None], 1.0)),
-                         np.stack((half - 4 * w, half - w, half - 0.25 * w, half * np.ones(m)), axis=1)),
-                        axis=1)
-    ea = np.sort(np.clip(ea, 0.0, half), axis=1)
-    phi, wphi = _gauss_segments(ea, n)
-    qa = rho[:, None] * np.sin(phi)
-    ja = rho[:, None] * np.cos(phi) * wphi
-    arg_a = (rho[:, None] * np.cos(phi)) ** 2 + z[:, None] ** 2 + 2j * z[:, None] * qa
-    # Above rho: psi in [0, psi_max], q = rho cosh(psi), rho^2 - q^2 = -rho^2 sinh^2(psi).
     q_top = 40.0 / k
-    psi_max = np.arccosh(1.0 + q_top / rho_s)
-    eb = np.concatenate((np.zeros((m, 1)),
-                         np.stack((0.25 * w, w, 4 * w), axis=1),
-                         np.arccosh(1.0 + decay_q[None, :] / rho_s[:, None]),
-                         psi_max[:, None]), axis=1)
-    eb = np.sort(np.minimum(eb, psi_max[:, None]), axis=1)
-    psi, wpsi = _gauss_segments(eb, n)
-    qb = rho[:, None] * np.cosh(psi)
-    jb = rho[:, None] * np.sinh(psi) * wpsi
-    arg_b = -(rho[:, None] * np.sinh(psi)) ** 2 + z[:, None] ** 2 + 2j * z[:, None] * qb
-    q = np.concatenate((qa, qb), axis=1)
-    jac = np.concatenate((ja, jb), axis=1)
-    arg = np.concatenate((arg_a, arg_b), axis=1)
-    # On the branch cut (Z = 0, q > rho) take the +i root: e^{ikR} must decay.
-    with np.errstate(invalid='ignore'):
-        r = np.where((arg.imag == 0.0) & (arg.real < 0.0), 1j * np.sqrt(np.abs(arg.real)), np.sqrt(arg))
-    decay = np.exp(-k * beta * q)
-    # Zero-width segments (breakpoints that coincide) put nodes on the
-    # singular point with zero weight; drop them rather than form 0 * inf.
-    live = (jac != 0.0) & (np.abs(r) > 0.0)
-    r = np.where(live, r, 1.0)
-    g = np.where(live, np.exp(1j * k * r) / (4.0 * np.pi * r), 0.0)
-    big_i = np.sum(decay * g * jac, axis=1)
-    big_j = np.sum(decay * g * (1j * k - 1.0 / r) / r * jac, axis=1)
+    big_i = np.empty(rho.size, dtype=np.complex128)
+    big_j = np.empty(rho.size, dtype=np.complex128)
+    for p in prange(rho.size):
+        r0, z0 = rho[p], z[p]
+        rho_s = max(r0, 1e-12)
+        width = min(max(np.sqrt(2.0 * max(z0, 0.0) / rho_s), 1e-6), 0.25)
+        # Below rho: phi in [0, pi/2], q = rho sin(phi), rho^2 - q^2 = rho^2 cos^2(phi).
+        ea = np.empty(10)
+        ea[0] = 0.0
+        for i in range(5):
+            ea[1 + i] = np.arcsin(min(decay_q[i] / rho_s, 1.0))
+        ea[6], ea[7], ea[8], ea[9] = half - 4 * width, half - width, half - 0.25 * width, half
+        ea = np.sort(np.minimum(np.maximum(ea, 0.0), half))
+        # Above rho: psi in [0, psi_max], q = rho cosh(psi), rho^2 - q^2 = -rho^2 sinh^2(psi).
+        psi_max = np.arccosh(1.0 + q_top / rho_s)
+        eb = np.empty(10)
+        eb[0], eb[1], eb[2], eb[3] = 0.0, 0.25 * width, width, 4 * width
+        for i in range(5):
+            eb[4 + i] = np.arccosh(1.0 + decay_q[i] / rho_s)
+        eb[9] = psi_max
+        eb = np.sort(np.minimum(eb, psi_max))
+        acc_i = 0.0 + 0.0j
+        acc_j = 0.0 + 0.0j
+        for below in (True, False):
+            edges = ea if below else eb
+            for s in range(edges.size - 1):
+                a, b = edges[s], edges[s + 1]
+                for g in range(x.size):
+                    t = 0.5 * (b - a) * x[g] + 0.5 * (a + b)
+                    wt = 0.5 * (b - a) * w[g]
+                    if below:
+                        q = r0 * np.sin(t)
+                        jac = r0 * np.cos(t) * wt
+                        arg = (r0 * np.cos(t)) ** 2 + z0 ** 2 + 2j * z0 * q
+                    else:
+                        q = r0 * np.cosh(t)
+                        jac = r0 * np.sinh(t) * wt
+                        arg = -(r0 * np.sinh(t)) ** 2 + z0 ** 2 + 2j * z0 * q
+                    # On the branch cut (Z = 0, q > rho) take the +i root: e^{ikR} must decay.
+                    if arg.imag == 0.0 and arg.real < 0.0:
+                        r = 1j * np.sqrt(abs(arg.real))
+                    else:
+                        r = np.sqrt(arg)
+                    # Zero-width segments (breakpoints that coincide) put nodes on the
+                    # singular point with zero weight; drop them rather than form 0 * inf.
+                    if jac == 0.0 or abs(r) == 0.0:
+                        continue
+                    decay = np.exp(-k * beta * q)
+                    green = np.exp(1j * k * r) / (4.0 * np.pi * r)
+                    acc_i += decay * green * jac
+                    acc_j += decay * green * (1j * k - 1.0 / r) / r * jac
+        big_i[p] = acc_i
+        big_j[p] = acc_j
     return big_i, big_j
 
 
