@@ -6,12 +6,12 @@ from flight_acoustics import depropagate_hemisphere
 from panam_acoustics.filters import third_octave_filter_bank
 
 FS = 25000.0
-CENTRES = 1000.0 * 2.0 ** (np.arange(-20, 11) / 3.0)      # 10 Hz .. 10 kHz
+CENTERS = 1000.0 * 2.0 ** (np.arange(-20, 11) / 3.0)      # 10 Hz .. 10 kHz
 FRAME = 16384                                              # build_sphere's 0.5 s window at 25 kHz
 
 
 def frames(duration, fs=FS, n=FRAME):
-    """Frame centres (s) of a 50 %-overlap spectrogram, as depropagate_hemisphere uses."""
+    """Frame centers (s) of a 50 %-overlap spectrogram, as depropagate_hemisphere uses."""
     return (np.arange(0, int(duration * fs) - n + 1, n // 2) + n / 2) / fs
 
 
@@ -23,36 +23,36 @@ def db(x):
 def test_tone_level_and_skirts_follow_the_butterworth_response(tone_hz):
     t = np.arange(0.0, 20.0, 1.0 / FS)
     x = np.sqrt(2.0) * np.sin(2 * np.pi * tone_hz * t)            # unit mean square
-    centres = frames(20.0)
-    keep = (centres > 3.0) & (centres < 17.0)
-    P = third_octave_filter_bank(x, FS, CENTRES, centres, FRAME)[:, keep].mean(axis=1)
+    centers = frames(20.0)
+    keep = (centers > 3.0) & (centers < 17.0)
+    P = third_octave_filter_bank(x, FS, CENTERS, centers, FRAME)[:, keep].mean(axis=1)
 
-    own = int(np.argmin(np.abs(np.log2(CENTRES / tone_hz))))
+    own = int(np.argmin(np.abs(np.log2(CENTERS / tone_hz))))
     assert db(P[own]) == pytest.approx(0.0, abs=0.3)
-    # The neighbouring bands see the tone through their filter's skirt.
+    # The neighboring bands see the tone through their filter's skirt.
     for k in (own - 1, own + 1):
-        fc = CENTRES[k]
+        fc = CENTERS[k]
         sos = sig.butter(3, [fc / 2 ** (1 / 6), fc * 2 ** (1 / 6)], btype='bandpass', fs=FS, output='sos')
         _, h = sig.sosfreqz(sos, worN=[tone_hz], fs=FS)
         assert db(P[k]) == pytest.approx(db(np.abs(h[0]) ** 2), abs=1.0)
 
 
 def test_group_delay_is_compensated():
-    """A 20 Hz burst centred at 10 s must come out centred at 10 s, not ~0.14 s later."""
+    """A 20 Hz burst centerd at 10 s must come out centerd at 10 s, not ~0.14 s later."""
     t = np.arange(0.0, 20.0, 1.0 / FS)
     burst = np.exp(-0.5 * ((t - 10.0) / 1.0) ** 2) * np.sin(2 * np.pi * 20.0 * t)
     n = 2048
-    centres = (np.arange(0, t.size - n + 1, n // 4) + n / 2) / FS
-    P = third_octave_filter_bank(burst, FS, [20.0], centres, n)[0]
-    assert np.sum(P * centres) / np.sum(P) == pytest.approx(10.0, abs=0.05)
+    centers = (np.arange(0, t.size - n + 1, n // 4) + n / 2) / FS
+    P = third_octave_filter_bank(burst, FS, [20.0], centers, n)[0]
+    assert np.sum(P * centers) / np.sum(P) == pytest.approx(10.0, abs=0.05)
 
 
 def test_broadband_noise_matches_the_psd_band_sum():
     rng = np.random.default_rng(1)
     x = rng.standard_normal(int(30.0 * FS))
     f, tf, S = sig.spectrogram(x, FS, sig.get_window('hann', FRAME), noverlap=FRAME // 2, mode='psd')
-    P = third_octave_filter_bank(x, FS, CENTRES, tf, FRAME)
-    for i, fc in enumerate(CENTRES[CENTRES >= 100.0], start=int(np.sum(CENTRES < 100.0))):
+    P = third_octave_filter_bank(x, FS, CENTERS, tf, FRAME)
+    for i, fc in enumerate(CENTERS[CENTERS >= 100.0], start=int(np.sum(CENTERS < 100.0))):
         band = (f >= fc / 2 ** (1 / 6)) & (f < fc * 2 ** (1 / 6))
         fft_band = np.mean(S[band].sum(axis=0) * (f[1] - f[0]))
         # An order-3 Butterworth passes ~5 % more noise than a brick wall (+0.2 dB).
@@ -92,11 +92,11 @@ def test_depropagate_hemisphere_filter_bank_option():
     bank = _flyby('filter_bank')
     assert bank['metadata']['third_octave_method'] == 'filter_bank'
     assert fft['metadata']['third_octave_method'] == 'fft'
-    centres = bank['third_octave']['band_centers_hz']
-    assert np.allclose(centres, fft['third_octave']['band_centers_hz'])
+    centers = bank['third_octave']['band_centers_hz']
+    assert np.allclose(centers, fft['third_octave']['band_centers_hz'])
 
     def band_mean(h, fc):
-        k = int(np.argmin(np.abs(centres - fc)))
+        k = int(np.argmin(np.abs(centers - fc)))
         return 10 * np.log10(np.nanmean(10 ** (h['third_octave']['bands_db'][k] / 10)))
 
     # Where the tone sits, and in broadband noise well away from it, they agree...
@@ -117,7 +117,7 @@ def test_unknown_third_octave_method_is_rejected():
 
 @pytest.mark.parametrize('third_octave_method', ['fft', 'filter_bank'])
 def test_depropagation_does_not_depend_on_the_length_unit(third_octave_method):
-    """The same flyby in metres and in feet must give the same hemisphere.
+    """The same flyby in meters and in feet must give the same hemisphere.
 
     unit_conversion used to rewrite the emission ranges in place, so with
     length_units='m' the filter-bank pass reused ranges already converted to
@@ -145,8 +145,8 @@ def test_depropagation_does_not_depend_on_the_length_unit(third_octave_method):
             apply_absorption_deprop=True)
 
     feet = run('ft', 1.0)
-    metres = run('m', 0.3048)
+    meters = run('m', 0.3048)
     covered = feet['oaspl_db'] > -100.0
-    np.testing.assert_allclose(metres['oaspl_db'][covered], feet['oaspl_db'][covered], atol=1e-6)
-    for f_db, m_db in zip(feet['third_octave']['bands_db'], metres['third_octave']['bands_db']):
+    np.testing.assert_allclose(meters['oaspl_db'][covered], feet['oaspl_db'][covered], atol=1e-6)
+    for f_db, m_db in zip(feet['third_octave']['bands_db'], meters['third_octave']['bands_db']):
         np.testing.assert_allclose(m_db[covered], f_db[covered], atol=1e-6)

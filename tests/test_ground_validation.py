@@ -113,7 +113,7 @@ def test_axisymmetric_bem_matches_the_rigid_sphere(ka, el, az):
         e, a = np.radians(el), np.radians(az)
         kd = np.array([np.cos(e) * np.cos(a), np.cos(e) * np.sin(a), -np.sin(e)])
         kr = kd * [1.0, 1.0, -1.0]
-        # Both waves are referred to the sphere's centre, on the ground, where they are equal.
+        # Both waves are referred to the sphere's center, on the ground, where they are equal.
         exact = sphere_surface_pressure(ka, kd @ xhat) + sphere_surface_pressure(ka, kr @ xhat)
         direct = np.exp(1j * k * radius * (kd @ xhat))
         exact_ratio = exact / direct

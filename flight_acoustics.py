@@ -163,7 +163,7 @@ def third_octave_band_levels(signal, sampling_rate, cal=0.0, fmin=20.0, fmax=200
     """
     # Define third-octave band center frequencies.  fmin/fmax are compared
     # within a quarter band, so nominal limits keep their own bands: the exact
-    # centres of the 20 Hz and 20 kHz bands are 19.69 and 20159 Hz.  Bands
+    # centers of the 20 Hz and 20 kHz bands are 19.69 and 20159 Hz.  Bands
     # reaching past Nyquist would be only partly filled, so they are dropped.
     k = np.arange(-50, 50)
     band_centers = 1000.0 * (2.0 ** (k / 3.0))
@@ -190,23 +190,23 @@ def third_octave_band_levels(signal, sampling_rate, cal=0.0, fmin=20.0, fmax=200
 def third_octave_band_edges(band_centers_hz):
     """Lower and upper edges of one-third octave bands that tile without gaps.
 
-    Nominal centres (12.5, 1250, 1600 Hz, ...) are rounded, so edges taken as
-    ``fc * 2**(+-1/6)`` straight from them overlap their neighbours or leave
+    Nominal centers (12.5, 1250, 1600 Hz, ...) are rounded, so edges taken as
+    ``fc * 2**(+-1/6)`` straight from them overlap their neighbors or leave
     gaps -- up to 8 % of a band -- and a brick-wall band sum then drops or
     double-counts whatever lies there (a 1410 Hz tone falls in no band, an
     895 Hz one in two).  IEC 61260-1 defines each nominal band by its exact
     base-10 midband ``1000 * 10**(k/10)``, with edges a twentieth of a decade
-    either side, so a nominal centre (within a quarter band of one) is given
-    those edges.  When every centre is one of this module's own exact base-2
-    centres ``1000 * 2**(k/3)``, they already tile and keep their
+    either side, so a nominal center (within a quarter band of one) is given
+    those edges.  When every center is one of this module's own exact base-2
+    centers ``1000 * 2**(k/3)``, they already tile and keep their
     ``fc * 2**(+-1/6)`` edges.  In a set that mixes the two, the base-2
-    centres take their band's base-10 edges as well, because edges from the
+    centers take their band's base-10 edges as well, because edges from the
     two grids do not meet: keeping ``fc * 2**(+-1/6)`` for 1259.9 Hz next to a
-    nominal 1600 Hz band would overlap it by 1.7 Hz.  A centre near neither
+    nominal 1600 Hz band would overlap it by 1.7 Hz.  A center near neither
     grid keeps ``fc * 2**(+-1/6)``.
 
     Args:
-        band_centers_hz: band centre frequencies, Hz (exact or nominal)
+        band_centers_hz: band center frequencies, Hz (exact or nominal)
     Returns: tuple (f_lower, f_upper) of arrays, Hz
     """
     fc = np.asarray(band_centers_hz, dtype=float)
@@ -430,7 +430,7 @@ def effective_perceived_noise_level(band_level_history, dt=0.5,
         pnlt, pnl, c_max, tone_band: per-sample histories
         clipped: True when the 10 dB-down interval hits the record edge
 
-    The duration correction uses the exact 10*log10(dt/T) normalisation with
+    The duration correction uses the exact 10*log10(dt/T) normalization with
     T = 10 s; the regulation's specialised "-13" constant for dt = 0.5 s is a
     rounding of this (difference 0.01 dB).
     """
@@ -443,7 +443,7 @@ def effective_perceived_noise_level(band_level_history, dt=0.5,
     pnltm = float(pnlt[k_m])
     if bandshare_adjustment:
         # A36.4.4.2: if C at PNLTM is below the average of the five
-        # consecutive intervals centred there, tone suppression by band
+        # consecutive intervals centerd there, tone suppression by band
         # sharing is suspected; recompute PNLTM with the average C.
         lo, hi = max(0, k_m - 2), min(len(pnlt), k_m + 3)
         c_avg = float(np.mean(c_max[lo:hi]))
@@ -986,7 +986,7 @@ def depropagate_hemisphere(
     carries no source information, but spreading and especially absorption
     depropagation multiply it by (r/r_ref)^2 and 10^(alpha(f)(r-r_ref)/10).
     At the top third-octave bands alpha is tens of dB/km, so an ambient-
-    limited 10 kHz band at a kilometre of range is amplified into a
+    limited 10 kHz band at a kilometer of range is amplified into a
     physically impossible source level -- the Be407 spheres reach 216 dB at
     10 kHz on the aft pole this way. A broadband SNR gate cannot catch it,
     because the broadband level is dominated by the low-frequency bands
@@ -1026,7 +1026,7 @@ def depropagate_hemisphere(
     emission point 2.7 km away carries a correction near 250 dB: an ambient
     fluctuation that clears any plausible SNR gate still lands at a source
     level hundreds of dB too high, and because the hemisphere averages in
-    linear power, one such point dominates its whole neighbourhood. Set
+    linear power, one such point dominates its whole neighborhood. Set
     ``max_absorption_correction_db`` to discard bins whose absorption
     correction exceeds what the measurement can support -- the band is simply
     not observable at that range, and a gap there is the honest result. It has
@@ -1034,7 +1034,7 @@ def depropagate_hemisphere(
 
     ``receiver_response_db``, if given, removes what the microphone's
     installation adds.  It is called as ``receiver_response_db(im, bands,
-    source_offset)``, with ``bands`` the one-third octave centres (the output
+    source_offset)``, with ``bands`` the one-third octave centers (the output
     bands when ``third_octave``), ``source_offset`` the (Npts, 3) emission
     positions minus microphone ``im``'s position, and returns the band-averaged
     level re free field, dB, shaped (len(bands), Npts) -- for instance a
@@ -1097,14 +1097,14 @@ def depropagate_hemisphere(
             'fft' (default) sums the PSD bins between each band's edges, a
             brick-wall band.  'filter_bank' uses a true one-third octave
             filter bank (:func:`panam_acoustics.filters.third_octave_filter_bank`,
-            order-3 Butterworth, as an analyser implements), averaged over the
+            order-3 Butterworth, as an analyzer implements), averaged over the
             same frames.  The two agree within about 0.5 dB above 100 Hz; below
             it the filter skirts carry a strong rotor tone into the
-            neighbouring bands, several dB for the bands between main-rotor
-            harmonics, which is what analyser-based data such as NORAH2
+            neighboring bands, several dB for the bands between main-rotor
+            harmonics, which is what analyzer-based data such as NORAH2
             contain.  In 'filter_bank' mode the ambient gate, subtraction and
             absorption cap act per band rather than per bin, and absorption is
-            taken at the band centre.  OASPL, A-weighted and narrowband output
+            taken at the band center.  OASPL, A-weighted and narrowband output
             are FFT-based either way.
 
     Returns:
@@ -1247,7 +1247,7 @@ def depropagate_hemisphere(
         else:
             # Precompute band centers (same definition as in third_octave_band_levels);
             # third_octave_fmin is compared within a quarter band so a nominal
-            # limit keeps its own band (the 20 Hz band's exact centre is 19.69 Hz).
+            # limit keeps its own band (the 20 Hz band's exact center is 19.69 Hz).
             k = np.arange(-50, 50)
             band_centers = 1000.0 * (2.0 ** (k / 3.0))
             band_centers = band_centers[np.logical_and(
@@ -1258,7 +1258,7 @@ def depropagate_hemisphere(
         band_power_lists = []
 
     # Bands the receiver response is evaluated in: the output bands, or the
-    # standard centres over the frequency range when there are none.
+    # standard centers over the frequency range when there are none.
     if third_octave:
         response_centers = band_centers
     else:
@@ -1440,7 +1440,7 @@ def depropagate_hemisphere(
                 raise ValueError('receiver_response_db must return finite values shaped (bands, points)')
             inverse = 10.0 ** (-gain_db / 10.0)
             # Each bin takes the band the band sums below put it in: nominal
-            # centres get their base-10 edges (see third_octave_band_edges)
+            # centers get their base-10 edges (see third_octave_band_edges)
             _, response_upper = third_octave_band_edges(response_centers)
             band_of_bin = np.clip(np.searchsorted(response_upper, f_sel, side='right'),
                                   0, response_centers.size - 1)
@@ -1474,7 +1474,7 @@ def depropagate_hemisphere(
                 band_power_lists[ib].append(band_v[ib, :])
         elif third_octave:
             # Integrate to third-octave bands in linear power, on edges that
-            # tile even when the centres are nominal (see third_octave_band_edges)
+            # tile even when the centers are nominal (see third_octave_band_edges)
             band_lower, band_upper = third_octave_band_edges(band_centers)
             for ib, (f_lower, f_upper) in enumerate(zip(band_lower, band_upper)):
                 band_mask = np.logical_and(f_sel >= f_lower, f_sel < f_upper)
@@ -2247,7 +2247,7 @@ def write_aam_hemisphere_netcdf(
 # row per THETAOBSAC, the row starting with its theta and then one level per
 # band.
 
-#: Nominal one-third octave band centres of every NORAH2 hemisphere, 10 Hz to 10 kHz.
+#: Nominal one-third octave band centers of every NORAH2 hemisphere, 10 Hz to 10 kHz.
 NORAH2_BAND_CENTERS_HZ = np.array([
     10.0, 12.5, 16.0, 20.0, 25.0, 31.5, 40.0, 50.0, 63.0, 80.0,
     100.0, 125.0, 160.0, 200.0, 250.0, 315.0, 400.0, 500.0, 630.0, 800.0,
@@ -2304,7 +2304,7 @@ def _norah2_band_index(frequency_hz):
     """Index into ``frequency_hz`` of each NORAH2 band, -1 where it has none.
 
     Matches within a twelfth of an octave, so exact (base-10) and nominal band
-    centres both find their band.
+    centers both find their band.
     """
     frequency_hz = np.asarray(frequency_hz, dtype=float)
     index = np.full(NORAH2_BAND_CENTERS_HZ.size, -1, dtype=int)
@@ -2415,12 +2415,12 @@ def write_norah2_hemisphere(
 
     offset_db = 20.0 * np.log10(r_ref_m / NORAH2_REFERENCE_DISTANCE_M)
     if meta.get('apply_absorption_deprop', True):
-        # Use the bands' own centres for the measured absorption, the nominal
+        # Use the bands' own centers for the measured absorption, the nominal
         # ones for NORAH2's: those are what NORAH2 will remove it at.
-        measured_centres = np.where(present, np.asarray(frequency_hz, dtype=float)[band_index],
+        measured_centers = np.where(present, np.asarray(frequency_hz, dtype=float)[band_index],
                                     NORAH2_BAND_CENTERS_HZ)
         offset_db = (offset_db
-                     + measurement_atmosphere.attenuation_coefficient(measured_centres) * r_ref_m
+                     + measurement_atmosphere.attenuation_coefficient(measured_centers) * r_ref_m
                      - reference_atmosphere.attenuation_coefficient(NORAH2_BAND_CENTERS_HZ)
                      * NORAH2_REFERENCE_DISTANCE_M)
     else:
@@ -2574,7 +2574,7 @@ def write_norah2_triangulation(filename, hemispheres, *, corrections=NORAH2_DEFA
     NORAH2 interpolates between an aircraft's hemispheres over (airspeed, flight
     path angle) by triangles listed in this file.  They are the Delaunay
     triangulation of the raw (knots, degrees) conditions: that reproduces every
-    triangulation file NORAH2 V2.0.74 ships, where the min-max normalised
+    triangulation file NORAH2 V2.0.74 ships, where the min-max normalized
     conditions the method report (D1.5d A.3) describes do not.
 
     Args:
@@ -2635,7 +2635,7 @@ def power_to_db(power):
     Zero power comes back as -inf (no energy) and NaN stays NaN (no data), with
     none of numpy's divide-by-zero warnings.  Neither becomes a finite floor:
     the -3076 dB that ``np.maximum(power, np.finfo(float).tiny)`` gives reads as
-    a level, pulling plot colour scales and statistics down with it.
+    a level, pulling plot color scales and statistics down with it.
     """
     with np.errstate(divide='ignore', invalid='ignore'):
         return 10.0 * np.log10(np.asarray(power, dtype=float))
@@ -3006,7 +3006,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
 
     load_factors scales thrust: each source condition is written once per load
     factor, with the sphere level offset by 20*log10(load_factor) and the
-    thrust coefficient scaled to match.  Maneuver modelling needs this to span
+    thrust coefficient scaled to match.  Maneuver modeling needs this to span
     well beyond 1 g -- the shipped databases use
     [0, 1.0, 1.1, 1.2, 1.5, 2.0, 3.0, 5.0], finely spaced near 1 g and reaching
     a 5 g pull-up, rather than the uniform default here.
@@ -3082,7 +3082,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     ncdatabase['database_version'][:] = DATABASE_FORMAT_VERSION
 
     # Root vehicle data, as carried by every shipped database (S-76D_M3.nod,
-    # AW139_M1.nod, Be407_spectral.nod).  NICE-OPS reads them to redimensionalise
+    # AW139_M1.nod, Be407_spectral.nod).  NICE-OPS reads them to redimensionalize
     # the sphere conditions and, for --export_aam, in preference to anything it
     # would otherwise infer, so leaving them out quietly changes what it does.
     # main_rotor_radius_meters restates each group's rotor_scale; tip speed and
@@ -3373,7 +3373,7 @@ def project_sphere(filename, altitude, elv_cutoff, infreqs=None,
     ground_range = np.sqrt(slant_range ** 2 - altitude ** 2)
     # Plan view from above, as lambert_lon draws hemispheres: the flight
     # direction (azimuth 180) is +y and starboard (azimuth 90) is +x.  This was
-    # -sin(azi) until 2026-09, which with art2umapr's old phi sign cancelled out;
+    # -sin(azi) until 2026-09, which with art2umapr's old phi sign canceled out;
     # once art2umapr put phi > 0 to starboard it mirrored every footprint.
     x = ground_range * np.sin(azi)
     y = -ground_range * np.cos(azi)
@@ -3768,7 +3768,7 @@ def plot_projection(filename, altitude=500, cutoff=30, infreqs=None, units='m'):
     yi = np.linspace(np.min(y), np.max(y), 100)
     # Directions with no level (no energy) stay in the triangulation as NaN,
     # so the triangles touching them are left blank instead of interpolated
-    # across, and they do not set the colour scale.
+    # across, and they do not set the color scale.
     LA = np.where(np.isfinite(LA), LA, np.nan)
     triangles = tri.Triangulation(x, y)
     interpolator = tri.LinearTriInterpolator(triangles, LA)
@@ -3977,7 +3977,7 @@ def nice_levels(vmin, vmax, target=9, step=None,
 
     Picks the smallest allowed step giving <= `target` intervals, then snaps
     the ends outward to multiples of it, so both the contour bands and the
-    colourbar ticks land on values a reader can name. Pass `step` to force
+    colorbar ticks land on values a reader can name. Pass `step` to force
     one (e.g. step=5 for even 5 dB bands).
     """
     vmin, vmax = float(vmin), float(vmax)
@@ -4048,7 +4048,7 @@ def plot_lambert_ea(azi,elv,SPL,SPL_range=None,weight=None,grid_convention='umap
         minSPL = SPL_range[0]
         maxSPL = SPL_range[1]
     SPL[np.isnan(SPL)] = 0.0
-    # Contour bands on round dB values so the colourbar ticks are readable
+    # Contour bands on round dB values so the colorbar ticks are readable
     # (see `nice_levels`); pass `levels` or `level_step` to override.
     if levels is None:
         levels = nice_levels(minSPL, maxSPL, step=level_step)
@@ -4566,7 +4566,7 @@ def shepIDW(ielv, iazi, felv, fazi, f, rmax):
     fi_flat = np.empty_like(ielv_flat, dtype=float)
     for i in range(ielv_flat.size):
         wi = IDWweights(ielv_flat[i], iazi_flat[i], felv, fazi, rmax)
-        # Only the neighbours: 0 * NaN is NaN, so one bad sample anywhere
+        # Only the neighbors: 0 * NaN is NaN, so one bad sample anywhere
         # would otherwise poison every node, however far away.
         near = wi > 0.0
         fi_flat[i] = np.sum(fvals[near] * wi[near]) if near.any() else np.nan
@@ -4675,7 +4675,7 @@ def spherical_reflection_coefficient(cos_grazing, image_range, f, a, flores,
     complex coefficient itself (impedance discontinuities, ground planes) use the
     same one.
 
-    ``admittance``, when given, is the normalised surface admittance beta
+    ``admittance``, when given, is the normalized surface admittance beta
     (same shape as, or broadcastable to, ``f``) and replaces the
     Delany-Bazley one from ``flores`` -- for other impedance models.
     """

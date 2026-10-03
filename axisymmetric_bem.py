@@ -68,22 +68,22 @@ def _dgdn(xr, xz, yr, yz, phi, nr, nz, k, beta, tab, skip_direct):
 
 
 @njit(cache=True)
-def _graded_edges(centre, scale, lo, hi, n_uniform, ratio):
-    """Breakpoints on [lo, hi]: geometric from ``centre`` (step ``scale`` x ratio^j), plus uniform ones."""
+def _graded_edges(center, scale, lo, hi, n_uniform, ratio):
+    """Breakpoints on [lo, hi]: geometric from ``center`` (step ``scale`` x ratio^j), plus uniform ones."""
     edges = [lo, hi]
     for i in range(1, n_uniform):
         edges.append(lo + (hi - lo) * i / n_uniform)
     step = scale
     while step < (hi - lo):
-        a = centre - step
-        b = centre + step
+        a = center - step
+        b = center + step
         if lo < a < hi:
             edges.append(a)
         if lo < b < hi:
             edges.append(b)
         step *= ratio
-    if lo < centre < hi:
-        edges.append(centre)
+    if lo < center < hi:
+        edges.append(center)
     arr = np.array(edges)
     arr.sort()
     return arr
@@ -173,7 +173,7 @@ def _assemble(targets, segs, flat_top, m_max, k, beta, tab, gx, gw, n_phi_unifor
 def plate_generator(radius=gp.PLATE_RADIUS_FT, thickness=gp.PLATE_THICKNESS_FT,
                     edge_thickness=gp.PLATE_EDGE_THICKNESS_FT, taper_length=gp.PLATE_TAPER_LENGTH_FT,
                     segment=0.02, edge_grading=4):
-    """Segments (r0, z0, r1, z1) of the plate's generating curve, centre outward and down.
+    """Segments (r0, z0, r1, z1) of the plate's generating curve, center outward and down.
 
     Normals (-dz, dr)/|.| point into the air.  Segments are about ``segment``
     long, and the ones meeting at each corner are graded ``edge_grading`` times
@@ -190,12 +190,12 @@ def plate_generator(radius=gp.PLATE_RADIUS_FT, thickness=gp.PLATE_THICKNESS_FT,
         length = np.hypot(r1 - r0, z1 - z0)
         n = max(2, int(np.ceil(length / segment)))
         u = np.linspace(0.0, 1.0, n + 1)
-        # grade toward both ends (corners), keeping the centre of the top coarse
+        # grade toward both ends (corners), keeping the center of the top coarse
         if n >= 4:
             fine = min(edge_grading, n // 2)
             u = np.concatenate((np.linspace(0, 1 / n, fine + 1)[:-1], np.linspace(1 / n, 1 - 1 / n, n - 1)[:-1],
                                 np.linspace(1 - 1 / n, 1, fine + 1)))
-            if is_top:            # the centre r = 0 is not a corner
+            if is_top:            # the center r = 0 is not a corner
                 u = np.concatenate((np.linspace(0, 1 - 1 / n, n)[:-1], np.linspace(1 - 1 / n, 1, fine + 1)))
         for a, b in zip(u[:-1], u[1:]):
             segs.append((r0 + a * (r1 - r0), z0 + a * (z1 - z0), r0 + b * (r1 - r0), z0 + b * (z1 - z0)))
@@ -219,7 +219,7 @@ def scattering(frequencies, elevations, azimuths, sound_speed, flow_resistance=g
     generating curve -- any body of revolution resting on the ground, with
     segments ordered so that (-dz, dr) points into the air -- and ``mic_rz``
     places the microphone at (r, z) on it (it must be at a smooth point of the
-    discretised surface, e.g. a segment midpoint); ``mic`` then gives only its
+    discretized surface, e.g. a segment midpoint); ``mic`` then gives only its
     azimuth.  ``radius`` and ``thickness`` in ``geometry`` still size the
     modes and the Green's function table.
 
@@ -227,7 +227,7 @@ def scattering(frequencies, elevations, azimuths, sound_speed, flow_resistance=g
     the air: an inverted microphone over a board (SAE ARP 4055's 7 mm gap,
     :data:`ground_plane.INVERTED_MIC_HEIGHT_FT`).  Off the surface the field is
     p_inc + K p, not the surface value 2 (p_inc + K p).  The microphone's own
-    body is not modelled.
+    body is not modeled.
     """
     frequencies = np.atleast_1d(np.asarray(frequencies, float))
     el = np.radians(np.atleast_1d(np.asarray(elevations, float)))
@@ -442,7 +442,7 @@ def write_netcdf(path, table, description=''):
     """Write a :func:`table` for NICE-OPS's ground-plane receiver (--plate_table).
 
     Dimensions band x sub x elevation x azimuth; P_d and P_r as real and
-    imaginary parts.  Lengths in metres and the sound speed in m/s (NICE-OPS
+    imaginary parts.  Lengths in meters and the sound speed in m/s (NICE-OPS
     is metric inside).  Azimuth is that of the horizontal propagation
     direction, degrees from +x toward +y, in the plate's frame, where the
     microphone is offset along +y; elevation is the source's, above the ground.
@@ -460,7 +460,7 @@ def write_netcdf(path, table, description=''):
         nc.createDimension('sub', n_sub)
         nc.createDimension('elevation', table['elevations'].size)
         nc.createDimension('azimuth', table['azimuths'].size)
-        nc.createVariable('band_centre', 'f8', ('band',))[:] = bands
+        nc.createVariable('band_center', 'f8', ('band',))[:] = bands
         nc.createVariable('frequency', 'f8', ('band', 'sub'))[:] = table['frequencies'].reshape(bands.size, n_sub)
         nc.createVariable('elevation', 'f8', ('elevation',))[:] = table['elevations']
         nc.createVariable('azimuth', 'f8', ('azimuth',))[:] = table['azimuths']

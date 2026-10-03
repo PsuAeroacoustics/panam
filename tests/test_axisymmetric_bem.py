@@ -22,7 +22,7 @@ def test_thin_plate_on_rigid_ground_doubles_pressure():
     assert np.allclose(np.abs(pd + pr), 2.0, atol=0.02)
 
 
-def test_centre_microphone_is_independent_of_azimuth():
+def test_center_microphone_is_independent_of_azimuth():
     pd, pr = ab.scattering([1500.0], [20.0], [0.0, 77.0, 200.0], C, mic=(0.0, 0.0))
     q = 0.3 - 0.2j
     p = np.abs(pd[0, 0] + q * pr[0, 0])
@@ -54,7 +54,7 @@ def test_converges_with_the_generator_mesh():
 
 
 def test_netcdf_export_round_trips(tmp_path):
-    # The NICE-OPS --plate_table format: metres, the ground named, P_d and P_r
+    # The NICE-OPS --plate_table format: meters, the ground named, P_d and P_r
     # laid out band x sub x elevation x azimuth.
     from netCDF4 import Dataset
     ground = dict(model='variable_porosity', sigma_e=200.0, alpha_e=0.0)

@@ -189,7 +189,7 @@ def main():
         _, _, _, f_ref, _, _, _ = fa.load_nc_sphere(ref_file)
         f_ref = np.asarray(f_ref, dtype=float)
         if f_ref.size >= 2 and np.all(np.isfinite(f_ref)):
-            # The FFT range must reach the outer bands' edges, not their centres,
+            # The FFT range must reach the outer bands' edges, not their centers,
             # or the lowest and highest bands lose half their width (-3 dB).
             band_lower, band_upper = fa.third_octave_band_edges(f_ref)
             export_freq_range_hz = (float(np.min(band_lower)), float(np.max(band_upper)))

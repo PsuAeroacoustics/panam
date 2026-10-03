@@ -236,11 +236,11 @@ def test_constant_receiver_response_matches_the_flat_scale(method):
 
     flat = _run(dict(scenario, pressure=0.5 * scenario['pressure']), ambient_pressure=0.5 * ambient,
                 third_octave_method=method)
-    modelled = _run(scenario, ambient_pressure=ambient, receiver_response_db=response,
+    modeled = _run(scenario, ambient_pressure=ambient, receiver_response_db=response,
                     third_octave_method=method)
     assert {im for im, _ in calls} == {0, 1, 2} and all(shape[1] == 3 for _, shape in calls)
-    np.testing.assert_allclose(modelled['oaspl_db'], flat['oaspl_db'], atol=1e-9)
-    np.testing.assert_allclose(modelled['third_octave']['bands_db'], flat['third_octave']['bands_db'],
+    np.testing.assert_allclose(modeled['oaspl_db'], flat['oaspl_db'], atol=1e-9)
+    np.testing.assert_allclose(modeled['third_octave']['bands_db'], flat['third_octave']['bands_db'],
                                atol=1e-9)
 
 
@@ -256,10 +256,10 @@ def test_receiver_response_is_applied_per_band():
         return gain
 
     plain = _run(scenario)
-    modelled = _run(scenario, receiver_response_db=response)
+    modeled = _run(scenario, receiver_response_db=response)
     bands = np.asarray(plain['third_octave']['band_centers_hz'])
     grids_plain = plain['third_octave']['bands_db']
-    grids_model = modelled['third_octave']['bands_db']
+    grids_model = modeled['third_octave']['bands_db']
     for i, fc in enumerate(bands):
         a, b = np.asarray(grids_plain[i]), np.asarray(grids_model[i])
         finite = np.isfinite(a) & np.isfinite(b) & (a > -200.0)   # not the empty-cell floor
@@ -267,10 +267,10 @@ def test_receiver_response_is_applied_per_band():
         np.testing.assert_allclose(b[finite] - a[finite], expected, atol=1e-9)
 
 
-def test_receiver_response_follows_the_band_sums_edges_for_nominal_centres():
+def test_receiver_response_follows_the_band_sums_edges_for_nominal_centers():
     """Each bin is divided by the response of the band it is summed into.
 
-    Nominal centres take their IEC base-10 edges in the band sums, so the 800
+    Nominal centers take their IEC base-10 edges in the band sums, so the 800
     Hz band ends at 891.25 Hz, not at 800 * 2**(1/6) = 897.97 Hz.  The 894.53
     Hz bin (fs 4000 Hz, 1024-point frames) lies between the two: summed into
     the 1000 Hz band, it has to be divided by that band's response.
@@ -289,9 +289,9 @@ def test_receiver_response_follows_the_band_sums_edges_for_nominal_centres():
     options = dict(freq_range=(0.0, 1200.0), window_time=0.25, third_octave_fmin=630.0,
                    third_octave_band_centers_hz=centers)
     plain = _run(scenario, **options)
-    modelled = _run(scenario, receiver_response_db=response, **options)
+    modeled = _run(scenario, receiver_response_db=response, **options)
     np.testing.assert_array_equal(plain['third_octave']['band_centers_hz'], centers)
-    for fc, a, b in zip(centers, plain['third_octave']['bands_db'], modelled['third_octave']['bands_db']):
+    for fc, a, b in zip(centers, plain['third_octave']['bands_db'], modeled['third_octave']['bands_db']):
         finite = np.isfinite(a)
         assert finite.any()
         np.testing.assert_allclose(b[finite] - a[finite], -gains_db[fc], atol=1e-9)

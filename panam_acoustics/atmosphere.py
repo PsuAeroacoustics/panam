@@ -10,7 +10,7 @@ from .iso_9613_1_1993 import (
     REFERENCE_TEMPERATURE,
     TRIPLE_TEMPERATURE,
     attenuation_coefficient,
-    molar_concentration_water_vapour,
+    molar_concentration_water_vapor,
     relaxation_frequency_nitrogen,
     relaxation_frequency_oxygen,
     saturation_pressure,
@@ -50,8 +50,8 @@ class Atmosphere:
         )
 
     @property
-    def molar_concentration_water_vapour(self):
-        return molar_concentration_water_vapour(
+    def molar_concentration_water_vapor(self):
+        return molar_concentration_water_vapor(
             self.relative_humidity,
             self.saturation_pressure,
             self.pressure,
@@ -62,7 +62,7 @@ class Atmosphere:
         return relaxation_frequency_nitrogen(
             self.pressure,
             self.temperature,
-            self.molar_concentration_water_vapour,
+            self.molar_concentration_water_vapor,
             self.reference_pressure,
             self.reference_temperature,
         )
@@ -71,7 +71,7 @@ class Atmosphere:
     def relaxation_frequency_oxygen(self):
         return relaxation_frequency_oxygen(
             self.pressure,
-            self.molar_concentration_water_vapour,
+            self.molar_concentration_water_vapor,
             self.reference_pressure,
         )
 

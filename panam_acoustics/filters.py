@@ -58,9 +58,9 @@ def third_octave_filter_bank(signal, fs, band_centers, frame_centers, frame_leng
     """Mean-square output of a one-third octave filter bank, frame by frame.
 
     Each band is an order-``order`` Butterworth band-pass between
-    ``fc * 2**(-1/6)`` and ``fc * 2**(1/6)``, the usual realisation of an
-    IEC 61260-1 class 1 filter and what analysers implement.  It is applied
-    causally, as an analyser does, and each band's output is then advanced by
+    ``fc * 2**(-1/6)`` and ``fc * 2**(1/6)``, the usual realization of an
+    IEC 61260-1 class 1 filter and what analyzers implement.  It is applied
+    causally, as an analyzer does, and each band's output is then advanced by
     its group delay at ``fc`` so that energy stays attached to the time it
     arrived; that delay is about 0.14 s at 20 Hz and 0.3 s at 10 Hz, which would
     otherwise shift low-band energy onto the wrong emission angles.
@@ -72,14 +72,14 @@ def third_octave_filter_bank(signal, fs, band_centers, frame_centers, frame_leng
 
     The squared output is averaged with the same Hann-squared weighting a
     Hann-windowed PSD frame applies, so for a frame of ``frame_length``
-    samples centred at ``frame_centers`` the result is directly comparable
+    samples centerd at ``frame_centers`` the result is directly comparable
     with a PSD summed over the band: only the filter shape differs.
 
     Args:
         signal: 1-D pressure signal.
         fs: Sampling rate (Hz).
-        band_centers: Band centre frequencies (Hz).
-        frame_centers: Frame centre times (s) from the start of ``signal``.
+        band_centers: Band center frequencies (Hz).
+        frame_centers: Frame center times (s) from the start of ``signal``.
         frame_length: Frame length (samples at ``fs``).
         order: Butterworth order of each band-pass.
 

@@ -23,7 +23,7 @@ from scipy.special import comb
 _AA_CACHE = {}
 _BU_INDEX_CACHE = {}
 
-#: The regularised normal equations  (I + AA' R^2 AA) a = C^H x  have a
+#: The regularized normal equations  (I + AA' R^2 AA) a = C^H x  have a
 #: condition number of about 1 + r**2 * 4**p.  Up to this value they are solved
 #: as they are; beyond it rounding erodes their accuracy (by 1e16 the identity
 #: is lost next to the r**2 terms and the result is garbage), so the equivalent
@@ -165,7 +165,7 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None, solver="auto", use_cou
     **Choosing the bandwidth**
 
     The bandwidth trades rejection against tracking speed.  A narrower band
-    passes less noise and less of any neighbouring component; a wider one
+    passes less noise and less of any neighboring component; a wider one
     follows changes in the order's amplitude sooner.  After a step in
     amplitude the envelope takes about 0.7 / bandwidth seconds to rise from
     10 % to 90 % of the change (130 ms at 5 Hz), with 3-6 % overshoot at
@@ -175,7 +175,7 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None, solver="auto", use_cou
     - Sweeps: given an accurate frequency track, the phasor follows the
       frequency, so the band does not need to widen with it.  A bandwidth
       proportional to frequency, e.g. ``bandwidth = 0.10 * freq``, suits
-      run-ups whose neighbouring components are other orders of the same
+      run-ups whose neighboring components are other orders of the same
       shaft: their spacing grows with shaft speed, so they stay the same
       number of bandwidths away throughout.  A fixed bandwidth narrow enough
       for the closest spacing works as well; it rejects more, but follows
@@ -238,10 +238,10 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None, solver="auto", use_cou
 
     # Smoothness operator: the p-th difference of each order's envelope, n_x - p
     # rows per order.  Every row is a whole stencil, so it sums to zero and
-    # penalises only changes in the envelope, never its level, and the record
+    # penalizes only changes in the envelope, never its level, and the record
     # ends are left free.  It used to be padded out to n_x rows per order with
     # truncated (single order, p >= 2) or misaligned (several orders) boundary
-    # rows; those penalised the level itself and drove the envelope to zero at
+    # rows; those penalized the level itself and drove the envelope to zero at
     # the ends of the record.  It was also built through dense n_x x n_x
     # arrays, so memory grew as n_x**2.
     aa_cache_key = (n_x, n_ord, p_p)
@@ -299,7 +299,7 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None, solver="auto", use_cou
                                          n_ord > 1 and use_coupling, solver_choice)
         return 2.0 * y_R.reshape((n_x, n_ord), order="F"), phasor, cost_mat
 
-    # Compute B0 = AA' * R^2 * AA + I, the regularised least-squares matrix.
+    # Compute B0 = AA' * R^2 * AA + I, the regularized least-squares matrix.
     RR_squared = spdiags([row_weight ** 2], [0], n_rows, n_rows, format='csr')
     B0 = AA_sparse.T @ RR_squared @ AA_sparse + speye(n_tot, format='csr')
     
@@ -406,7 +406,7 @@ def _solve_sparse(A, b, solver_choice):
 def _solve_augmented(x, phasor, AA, row_weight, coupled, solver_choice):
     """Solve the Vold-Kalman least-squares problem through its augmented system.
 
-    With M = [C; R AA] and y = [x; 0] the envelopes a minimise |y - M a|**2.
+    With M = [C; R AA] and y = [x; 0] the envelopes a minimize |y - M a|**2.
     The normal equations M^H M a = M^H y add the identity to entries of order
     r**2, which rounding swamps for narrow bands at high sample rates.  The
     augmented system

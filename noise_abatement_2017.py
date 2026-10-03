@@ -86,7 +86,7 @@ SITE_GROUND = dict(model='variable_porosity', sigma_e=200.0, alpha_e=0.0)
 #: dataset's ``invgb7`` label ("inverted over a ground board with a 7 mm gap")
 #: included, per the test team.  A true inverted layout (``axisymmetric_bem``'s
 #: ``mic_height``, plus the microphone body over the gap, which is not yet
-#: modelled) is for other tests.
+#: modeled) is for other tests.
 BOARD_MIC_HEIGHT_FT = {'gdbdfl': 0.0, 'invgb7': 0.0}
 
 #: Plate tables are computed at the run's sound speed rounded to this
@@ -99,7 +99,7 @@ DEFAULT_R_REF_FT = 100.0
 #: Threads used to warm the cloud-storage cache ahead of each run.
 PREFETCH_WORKERS = 24
 
-#: Third-octave band centres carried by the legacy spheres.
+#: Third-octave band centers carried by the legacy spheres.
 LEGACY_BAND_CENTERS_HZ = np.array([
     10.0, 12.5, 16.0, 20.0, 25.0, 31.5, 40.0, 50.0, 63.0, 80.0,
     100.0, 125.0, 160.0, 200.0, 250.0, 315.0, 400.0, 500.0, 630.0, 800.0,
@@ -321,7 +321,7 @@ def vz_sign(track):
     The files do not agree: ``z`` is positive up throughout, and ``vz`` is
     positive DOWN in every file (agreement with ``d/dt`` of ``z`` around -0.99)
     except EC130B4 test day 298, whose 49 files have it positive UP (+1.000).
-    Assuming down everywhere labelled those days' descents climbs.
+    Assuming down everywhere labeled those days' descents climbs.
 
     A track with too little vertical motion to judge -- level passes and hovers,
     about 40 files across the dataset, all leaning negative -- falls back to
@@ -329,7 +329,7 @@ def vz_sign(track):
     """
     dz = np.gradient(track['z'], track['time'])
     vz = track['vz']
-    # Uncentred, so a steady descent -- constant dz/dt, no variance to
+    # Uncenterd, so a steady descent -- constant dz/dt, no variance to
     # correlate -- still decides: vz . dz/dt is +|dz|^2 when they agree.
     rms = lambda x: np.sqrt(np.mean(np.square(x)))
     if rms(vz) < 0.5 or rms(dz) < 0.5:                 # ft/s
@@ -351,7 +351,7 @@ def load_track(path):
     :func:`vz_sign`.  :func:`flight_acoustics.hemigen` only takes heading from
     the horizontal components, so the sign does not corrupt the hemisphere
     geometry, but it does set the flight path angle -- which is how a descent
-    gets labelled as a climb.
+    gets labeled as a climb.
     """
     data = np.genfromtxt(path, delimiter=',', names=True)
     if data.size < 2:
@@ -374,7 +374,7 @@ def _close_short_gaps(ok, time, max_gap_s):
     while still rejecting a real turn, which lasts seconds rather than
     hundredths.
 
-    2.0 s (not the 0.5 s this was first tuned to) is what generalises: tuned
+    2.0 s (not the 0.5 s this was first tuned to) is what generalizes: tuned
     against Be407 alone, 0.5 s recovered every Be407 run but left every other
     aircraft with a 17-50% "steady segment too short" failure rate, because a
     lighter, twitchier airframe's gust response is a wider, longer-lived
@@ -649,7 +649,7 @@ def run_atmosphere(test, run, fallback=None):
     the high-frequency bands get multiplied by.  Assuming a dry standard day
     when the test day was humid would inflate them: at 20 C absorption at
     3.15 kHz is about 49 dB/km at 20 % relative humidity but roughly a third of
-    that at 70 %, and that difference is applied over kilometres of slant range.
+    that at 70 %, and that difference is applied over kilometers of slant range.
 
     The stations report ``airtemp`` in degrees Fahrenheit, pressure in kPa and
     humidity in percent.  The file does not say so; the balloon sondes, which
@@ -762,7 +762,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     """Depropagate one run into an AAM-style source sphere.
 
     ``board_correction`` removes the ground board's effect: ``'plate_bem'``
-    (default) divides each band by the plate's modelled response for that
+    (default) divides each band by the plate's modeled response for that
     frame's geometry -- the axisymmetric BEM of the plate on the site's
     ``ground`` (default :data:`SITE_GROUND`), per instrument type
     (:data:`BOARD_MIC_HEIGHT_FT`), microphone outboard of the track -- and
@@ -774,7 +774,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     ``norah2_directory``, if given, also writes the same hemisphere there as a
     NORAH2 ``.hem`` file named by :func:`norah2_file_name` (see
     :func:`flight_acoustics.write_norah2_hemisphere`).  Its ACSPEED is the
-    ground speed the AAM sphere is labelled with; the tracking data carries no
+    ground speed the AAM sphere is labeled with; the tracking data carries no
     airspeed.
 
     Returns a dict describing what was processed, so a batch caller can log and
@@ -1107,11 +1107,11 @@ def main(argv=None):
                         help='also write each sphere as a NORAH2 .hem file here, with the '
                              'triangulation file NORAH2 needs to interpolate between them')
     parser.add_argument('--board-correction', choices=('plate_bem', 'flat'), default='plate_bem',
-                        help="'plate_bem' (default) divides out the ground plate's modelled "
+                        help="'plate_bem' (default) divides out the ground plate's modeled "
                              "response per band and frame; 'flat' is the old constant -6 dB")
     parser.add_argument('--third-octave-method', choices=('fft', 'filter_bank'), default='fft',
                         help="'filter_bank' forms bands with a true one-third octave filter "
-                             "bank, as an analyser does; it differs from the default FFT band "
+                             "bank, as an analyzer does; it differs from the default FFT band "
                              "sum only below ~100 Hz, between strong rotor tones")
     parser.add_argument('--band-snr-gate-db', type=float, default=10.0)
     parser.add_argument('--max-absorption-correction-db', type=float, default=30.0,
@@ -1139,7 +1139,7 @@ def main(argv=None):
     parser.add_argument('--no-prefetch', action='store_true',
                         help='do not warm the cloud-storage cache ahead of each run')
     parser.add_argument('--no-ambient-gate', action='store_true',
-                        help='reproduce the uncorrected legacy behaviour')
+                        help='reproduce the uncorrected legacy behavior')
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')

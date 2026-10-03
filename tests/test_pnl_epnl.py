@@ -1,7 +1,7 @@
 """Tests for the PNL / PNLT / EPNL implementation (14 CFR 36 Appendix A36.4).
 
 Anchor values verified against the CFR text (Table A36-3 constants, Table
-A36-2 tone factors) and chosen so failures localise the broken step.
+A36-2 tone factors) and chosen so failures localize the broken step.
 """
 
 import numpy as np

@@ -27,7 +27,7 @@ def saturation_pressure(
     )
 
 
-def molar_concentration_water_vapour(relative_humidity, saturation_pressure, pressure):
+def molar_concentration_water_vapor(relative_humidity, saturation_pressure, pressure):
     return relative_humidity * saturation_pressure / pressure
 
 

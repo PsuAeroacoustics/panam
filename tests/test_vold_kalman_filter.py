@@ -2,7 +2,7 @@
 
 The smoothness operator used to be padded to n_x rows per order with
 truncated (one order, p >= 2) or misaligned (several orders) rows that did not
-sum to zero.  Weighted by r**2 they penalised the envelope's *level* rather
+sum to zero.  Weighted by r**2 they penalized the envelope's *level* rather
 than its changes, and drove it to zero over the last ~1.5 time constants of
 the record (and, for several orders at p >= 2, the first).  It was also
 assembled through dense n_x x n_x arrays, so a 10 s record at 2 kHz needed

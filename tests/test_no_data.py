@@ -2,7 +2,7 @@
 
 Two things used to come out as a finite -3076 dB (10 log10 of the smallest
 float): hemisphere cells with no sample within rmax, and cells whose samples
-carry no power.  Read as levels they set plot colour scales to -3500..500 dB and
+carry no power.  Read as levels they set plot color scales to -3500..500 dB and
 entered residual statistics.  No data is now NaN and no energy -inf.  Sphere
 files, for their part, came back from load_nc_sphere as masked arrays, whose
 masked cells reached safe_log10 as masked scalars and whose masks were all that

@@ -60,9 +60,9 @@ def test_fresnel_strip_weight_grows_toward_grazing_and_low_frequency():
 
 def test_fresnel_ellipse_matches_sampling():
     for hs, d2, hr, excess in ((40.0, 120.0, 4.0, 3.0), (500.0, 10.0, 0.026, 0.0375)):
-        centre, ax, ay = gp.fresnel_ellipse(hs, d2, hr, excess)
+        center, ax, ay = gp.fresnel_ellipse(hs, d2, hr, excess)
         # Brute force: ground points within the path-length limit.
-        x = centre + np.linspace(-1.2, 1.2, 1201) * ax
+        x = center + np.linspace(-1.2, 1.2, 1201) * ax
         y = np.linspace(-1.2, 1.2, 1201) * ay
         X, Y = np.meshgrid(x, y)
         inside = (np.sqrt((X + d2) ** 2 + Y ** 2 + hs ** 2) + np.sqrt(X ** 2 + Y ** 2 + hr ** 2)
@@ -70,7 +70,7 @@ def test_fresnel_ellipse_matches_sampling():
         sampled = inside.sum() * (x[1] - x[0]) * (y[1] - y[0])
         assert np.pi * ax * ay == pytest.approx(sampled, rel=0.01)
         # And it is an ellipse: every point inside the fitted one is in the zone.
-        fitted = ((X - centre) / ax) ** 2 + (Y / ay) ** 2 <= 1.0
+        fitted = ((X - center) / ax) ** 2 + (Y / ay) ** 2 <= 1.0
         assert np.mean(fitted == inside) > 0.999
 
 
@@ -139,8 +139,8 @@ def test_disc_mesh_covers_the_disc():
     assert np.all(np.hypot(x, y) < gp.PLATE_RADIUS_FT)
 
 
-def test_inverse_distance_integral_of_a_disc_about_its_centre():
-    # int dA / rho over a disc of radius a about its centre = 2 pi a.
+def test_inverse_distance_integral_of_a_disc_about_its_center():
+    # int dA / rho over a disc of radius a about its center = 2 pi a.
     assert gp._inverse_distance_integral(0.0, 0.0, (0.0, 0.3, 0.0, 2 * np.pi)) == pytest.approx(
         2 * np.pi * 0.3, rel=1e-6)
 
@@ -196,7 +196,7 @@ def test_raised_thin_plate_on_rigid_ground_doubles_pressure():
     assert abs(pd[0, 0, 0] + pr[0, 0, 0]) == pytest.approx(2.0, rel=0.03)
 
 
-def test_raised_plate_centre_microphone_is_axisymmetric():
+def test_raised_plate_center_microphone_is_axisymmetric():
     pd, pr = gp.raised_plate_scattering([1000.0], [30.0], [0.0, 90.0], C, mic=(0.0, 0.0),
                                         cells_per_wavelength=4, min_cells_across=10)
     q = gp.fa.spherical_reflection_coefficient(0.5, 1000.0, 1000.0, C, gp.FLOW_RESISTANCE)

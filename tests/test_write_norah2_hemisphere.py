@@ -23,7 +23,7 @@ def synthetic_hemisphere(level_db=70.0, band_centers_hz=None, starboard_boost_db
     azi_grid_deg = np.arange(0.0, 360.0 + 1e-9, 5.0)
     elv_grid_deg = np.arange(-5.0, 90.0 + 1e-9, 5.0)
     if band_centers_hz is None:
-        # Exact base-10 centres, 12.6 Hz .. 5 kHz: tests the nominal-band match
+        # Exact base-10 centers, 12.6 Hz .. 5 kHz: tests the nominal-band match
         # and leaves 10 Hz and 6.3-10 kHz for the writer to mark missing.
         band_centers_hz = 1000.0 * 10.0 ** (np.arange(-19, 8) / 10.0)
     AZI = np.broadcast_to(azi_grid_deg, (elv_grid_deg.size, azi_grid_deg.size))

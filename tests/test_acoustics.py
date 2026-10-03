@@ -197,7 +197,7 @@ def test_geodetic_local_roundtrip():
 
 
 
-def test_array2geodetic_in_metres_leaves_its_input_alone():
+def test_array2geodetic_in_meters_leaves_its_input_alone():
     """units='m' used to rewrite the caller's coordinates into feet in place,
     so converting the same array twice put the microphones 3.28x too far out."""
     reference = np.array([40.0, -77.0, 300.0])

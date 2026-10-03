@@ -20,7 +20,7 @@ softer ground, so the boundary seen by the microphone is **mixed impedance**:
   reflection shrinks onto the plate and the flat -6 dB is close to right;
 - at low frequency, and especially at **grazing incidence**, the zone spreads far
   beyond the plate onto the soft ground. The sound reaching the plate has then
-  travelled over, and interacted with, that soft ground, and the plate edge
+  traveled over, and interacted with, that soft ground, and the plate edge
   diffracts.
 
 Evidence that this is not negligible here: comparing NICE-OPS against the 2017
@@ -36,7 +36,7 @@ at exactly those angles.
 NICE-OPS's own ground model (`--ground_effect`: Chien-Soroka reflection over a
 uniform Delany-Bazley ground) cannot represent this. It assumes a single
 impedance everywhere, and its flush-receiver case gave a -3 to -4 dB offset
-against the data, which says the ground-plane receiver is being mis-modelled
+against the data, which says the ground-plane receiver is being mis-modeled
 rather than that the ground effect is small.
 
 ## The 2017 NASA hardware
@@ -91,10 +91,10 @@ Findings:
 
 - **The pole's comb filter collapses in f sin(elevation)** for all three pairs.
   - The first notch is near 55-60 Hz, with about 130 Hz between notches.
-  - At high frequency the centreline pole sits about +3 dB above the board,
+  - At high frequency the centerline pole sits about +3 dB above the board,
     which is the incoherent direct-plus-reflected sum.
   - The sideline poles trend toward 0 to -3 dB there at low elevation. That is
-    the behaviour to separate into pole ground reflection and board deviation.
+    the behavior to separate into pole ground reflection and board deviation.
 - **Pole height, fitted:**
   - Method: fit pure-tone Chien-Soroka (`flight_acoustics.ega`) to dL over 40
     Hz-2.5 kHz, on frames above 20 deg elevation, with the board taken as an
@@ -102,25 +102,25 @@ Findings:
   - Result, from 7 level runs: h = 4.0 ft (1.22 m) for poles 50 and 51, and
     4.1-4.3 ft for pole 52. So the poles are the 1.2 m certification height.
 - **Effective flow resistance:** 120-180 kPa s/m^2 at the sideline pairs and
-  about 60 at the centreline pair.
+  about 60 at the centerline pair.
   - The mean narrowband residual is 3.4-4.1 dB at the sideline pairs and about
-    5.6 dB at the centreline pair.
-  - The centreline difference may be real ground variation, or a sign that its
+    5.6 dB at the centerline pair.
+  - The centerline difference may be real ground variation, or a sign that its
     board is not ideal even at 20-60 deg. That is to be resolved with band-level
     fits.
 
 ### Fixed flow resistance (2026-09-25)
 
 Per-pair fits let the flow resistance absorb whatever else differs between the
-centreline and the sidelines, so it is held at one site value.
+centerline and the sidelines, so it is held at one site value.
 - **The joint fit** (one shared flow resistance, a height per pole) is flat from
   60 to 225 kPa s/m^2, within about 0.08 dB of mean residual, with its minimum
   near 100. So `ground_plane.FLOW_RESISTANCE = 100`.
 - **Heights at that value:** 3.96, 4.07 and 4.12 ft for poles 50, 51 and 52
   (`POLE_HEIGHT_FT`).
-- **The centreline pair's residual stays the worst** at any flow resistance:
+- **The centerline pair's residual stays the worst** at any flow resistance:
   about 5.7 dB, against 3.6-4.2 dB at the sidelines. That is consistent with
-  something other than ground impedance at the centreline.
+  something other than ground impedance at the centerline.
 
 ### Implementation
 
@@ -136,7 +136,7 @@ centreline and the sidelines, so it is held at one site value.
   - `board_uniform`: the flush diaphragm on an ideal rigid plate (exact +6.02
     dB), or 8 mm (the plate's thickness) above the site ground with no plate.
   - `board_soft_ground`: no plate at all.
-  - `board_fresnel_strip`: Hothersall & Harriott, generalised to the plate's two
+  - `board_fresnel_strip`: Hothersall & Harriott, generalized to the plate's two
     edges. r is the share of the zone off the plate chord, which reduces to
     their r = (D - D1)/(D2 - D1) for a half-plane. The second edge matters
     because near grazing the zone runs well past the microphone.
@@ -151,7 +151,7 @@ centreline and the sidelines, so it is held at one site value.
 
 Data: 771 runs on B407, AS350B3, B206L3 and EC130B4, three pairs each, giving
 261,374 band frames (0.5 s, 50 Hz-10 kHz, SNR gate 10 dB). The pole's ground
-reflection is modelled at flow resistance 100 with the fitted heights.
+reflection is modeled at flow resistance 100 with the fitted heights.
 
 Median of measured T_board minus model, in dB, pooled over all bands, with the
 median |residual| in brackets. The pooled figures hide band-by-band errors;
@@ -188,7 +188,7 @@ What is solid:
     angle than a lambda/3 Fresnel zone allows. That zone never fits on a
     400 mm plate near grazing. This is the regime a diffraction model (De Jong)
     or a smaller effective zone must explain.
-  - One caveat: the pole's modelled ground reflection at grazing and high
+  - One caveat: the pole's modeled ground reflection at grazing and high
     frequency enters the measured T directly.
 
 Not yet trustworthy (figures: `ground_plane_measured.png` and `ground_plane_model_errors.png`
@@ -237,7 +237,7 @@ in the session scratchpad):
     a constant error of several dB (their Fig. 8b).
   - **Checked numerically here: nMID does not reduce to the soft-ground result
     as the plate shrinks to nothing when the receiver is low.** The two edges'
-    direct-path terms add instead of cancelling. With Q_soft = -0.3+0.4i at
+    direct-path terms add instead of canceling. With Q_soft = -0.3+0.4i at
     1 kHz, a vanishing strip gives |p/p1| = 1.41 against 1.38 (correct) at
     1.5 m, 0.96 against 0.51 at 0.1 m, and 0.99 against 0.81 for a flush
     receiver. The flush limit is exactly 1 + 2 Q_soft - Q_plate. A flush
@@ -272,10 +272,10 @@ Implications:
 3. The first-principles route that handles a flush receiver, both edges, the
    circular shape and grazing incidence is the tailored-Green's-function
    boundary integral on the disc (Kingan et al. 2023): the soft half-space
-   Green's function, with only the plate discretised. It can be tabulated over
+   Green's function, with only the plate discretized. It can be tabulated over
    frequency and elevation once, and it is also the reference for everything
    else.
-4. At grazing the measured transfer function rests on the pole's modelled
+4. At grazing the measured transfer function rests on the pole's modeled
    ground reflection (-10 to -14 dB at 125-500 Hz below 2 deg). So the pole
    model deserves the same care: impedance model, turbulence coherence, and a
    fit with uncertainty.
@@ -322,7 +322,7 @@ Formulation:
   Green's second identity with the uniform soft ground's own Green's function
   gives, on the plane, p(r) = p_inc(r) - i k beta_soft integral over the disc
   of G(x, r) p(x) dS. This is the tailored-Green's-function approach of Kingan
-  et al. 2023: only the rigid disc is discretised.
+  et al. 2023: only the rigid disc is discretized.
 - G between surface points is e^{ik rho}/(4 pi rho) (1 + Q(rho)), with Q from
   `spherical_reflection_coefficient` at cos = 0.
 - The incident field from a distant source is (1 + Q_soft) times a plane wave.
@@ -359,11 +359,11 @@ oscillation. Still open:
   - the plate's 8 mm thickness, i.e. the diaphragm 8 mm above the soft ground
     (a raised edge, as Kingan et al. and Blandeau et al. found matters);
   - the soft ground's impedance model (Delany-Bazley is poor for grassland);
-  - the pole reference, whose modelled reflection is largest exactly here.
+  - the pole reference, whose modeled reflection is largest exactly here.
 - **Steep angles (20-90 deg).** It is slightly worse than the Fresnel models,
-  with +1 to +2 dB ripple at 1.5-2.5 kHz. A microphone at the exact centre of
+  with +1 to +2 dB ripple at 1.5-2.5 kHz. A microphone at the exact center of
   a circular plate receives edge diffraction from the whole rim in phase. The
-  67AX microphone sits deliberately off-centre "to attain a more uniform
+  67AX microphone sits deliberately off-center "to attain a more uniform
   frequency response", so the model should put it where the 67AX does. The
   offset is not yet known.
 
@@ -377,10 +377,10 @@ Confirmed from the ARP 4055 figure (reproduced in the AERSP511 lecture notes,
   intended flight track**.
 
 The ICAO configuration quoted in arXiv:2409.10957 gives the same: a 40 cm
-plate, a 7 mm inverted gap, and the microphone axis 0.15 m from the centre. It
+plate, a 7 mm inverted gap, and the microphone axis 0.15 m from the center. It
 states the 6 dB correction is valid up to 10 kHz and for incidence under 60
 deg from the normal, i.e. elevations above 30 deg. NASA's WAMS II (ERF48, 2022)
-put a GRAS 67AX in a 381 mm (15 in) board, offset from the centre "based on"
+put a GRAS 67AX in a 381 mm (15 in) board, offset from the center "based on"
 ARP 4055. **Whether the 2017 boards were 400 or 381 mm, and embedded flush or
 laid on the ground, is not known.**
 
@@ -398,23 +398,23 @@ Model changes:
 (y = +500 ft) fits best with the microphone on +y, and pair 52/38 (-500 ft) on
 -y. That means **outboard**, on the half of the plate away from the flight
 track, so sound crosses the plate before reaching the microphone. For the
-centreline pair the two sides are equivalent.
+centerline pair the two sides are equivalent.
 
 | | 0-2 | 2-5 | 5-10 | 10-20 | 20-40 | 40-90 deg |
 |---|---|---|---|---|---|---|
-| boundary integral, mic at centre | 5.67 | 3.66 | 2.34 | 1.18 | 0.73 | 1.15 |
+| boundary integral, mic at center | 5.67 | 3.66 | 2.34 | 1.18 | 0.73 | 1.15 |
 | boundary integral, 3/4 R outboard (ARP 4055) | 5.83 | 3.92 | 2.59 | 1.33 | 0.66 | 0.95 |
 
-The ARP 4055 position removes the centred microphone's rim-focusing ripple.
+The ARP 4055 position removes the centerd microphone's rim-focusing ripple.
 It is the best model of all above 20 deg (0.43 dB at 20-40 deg for the +y
-table pooled), and 0.15-0.26 dB worse than the centred one below 20 deg,
-mostly at the centreline pair. The low-angle mismatch is the next target:
+table pooled), and 0.15-0.26 dB worse than the centerd one below 20 deg,
+mostly at the centerline pair. The low-angle mismatch is the next target:
 - the plate's thickness, if it lay on the ground rather than flush;
 - the ground impedance model;
 - the pole reference (path 4).
 
-The centred result below 20 deg is probably a compensating error, not
-evidence for a centred microphone.
+The centerd result below 20 deg is probably a compensating error, not
+evidence for a centerd microphone.
 
 ### The 2017 plates (2026-09-25)
 
@@ -423,7 +423,7 @@ and lay on top of the ground, so part of the rounded edge is exposed. The GRAS
 67AX data sheet's cutaway drawing (page 4) gives:
 - 8.00 mm thickness;
 - the top surface tapering to 2.50 mm at the rim;
-- the microphone flush, 150 mm from the centre, which is exactly 3/4 R.
+- the microphone flush, 150 mm from the center, which is exactly 3/4 R.
 
 So the ARP 4055 position is also the 67AX's.
 
@@ -518,7 +518,7 @@ data folder), section 5.1:
   4 foot tripods to emulate certification placement at -45, 0, and 45 deg under
   the aircraft and perpendicular to the flight path."
 - The primary microphone is the 67AX, "flush mounted in a **15 inch** ground
-  board", offset from the centre, "based on ... ARP4055, but adapted from
+  board", offset from the center, "based on ... ARP4055, but adapted from
   inverted microphones to flush mounted".
 - Section 8.1: `gdbdfl` is "flush mounted in a ground board with the diaphragm
   pointed up", `elevtd` is "elevated 4 feet on a tripod", and `invgb7` is
@@ -540,7 +540,7 @@ The 46AE is a free-field microphone (40AE capsule).
   ground-reflected angles on a microphone axis; `certification_axis`, normal
   to the plane of the flight line and the pole; and `pole_level(...,
   response_direct, response_reflected)`.
-- On the centreline both paths arrive at 90 deg. At the sideline poles the
+- On the centerline both paths arrive at 90 deg. At the sideline poles the
   reflected path arrives at about 23 or 157 deg, depending on which way the
   diaphragm faces. The two signs fit identically.
 
@@ -549,7 +549,7 @@ The 46AE is a free-field microphone (40AE capsule).
   angles by up to about 3 dB at 8-10 kHz, in the right direction.
 - **About +2 dB of excess remains at 2-5 kHz.** At 40-90 deg the measurement is
   7.6-8.4 dB where the plate model gives 6.2-6.4, which a flush plate cannot
-  exceed. Still-unmodelled candidates:
+  exceed. Still-unmodeled candidates:
   - rough-ground scattering weakening the coherent reflection, which would put
     too much reflected energy in the pole model;
   - the pole's windscreen or tripod;
@@ -570,7 +570,7 @@ The 46AE is a free-field microphone (40AE capsule).
   direct path.
 - **Windscreen.** The 46AEs had a standard spherical foam windscreen, size not
   recorded (typically about 90 mm). Its insertion effect is a few tenths of a
-  dB below about 5 kHz. It is not modelled, because no curve is to hand, and
+  dB below about 5 kHz. It is not modeled, because no curve is to hand, and
   it is too small to be the 2 dB residual.
 - **Roughness.** `pole_level(..., roughness=)` applies the Kirchhoff (Ament)
   coherent-reflection factor exp(-2 (k sigma_h cos theta)^2), which vanishes
@@ -610,13 +610,13 @@ Held-out-run RMS error in dB (50 Hz-2.5 kHz):
   every other elevation, so it conflicts with them. Those frames are the
   lowest and longest-range: the aircraft far away and near the horizon.
   - Near grazing, atmospheric refraction bends the direct and reflected rays
-    differently at a 1.2 m pole and a flush board. That is not modelled, and
+    differently at a 1.2 m pole and a flush board. That is not modeled, and
     a harder "effective" ground is how a refraction-free model would try to
     imitate it.
   - A ground that changes along the path is the other candidate.
   - The test recorded temperature profiles (the balloon's temperature string,
     every 10 ft) and LIDAR winds to 900 ft (Watts et al. section 5.2), so
-    refraction can be modelled rather than fitted around.
+    refraction can be modeled rather than fitted around.
 
 ### Plate thickness: the raised-plate model (2026-09-25)
 
@@ -639,8 +639,8 @@ The user confirmed the boards are the GRAS GR1425, 400 mm (the report's
   geometry-driven adaptive quadrature (`_adaptive_points`).
 
 **Checks.**
-- Axisymmetric for a centred microphone. A bug that put the central panel's
-  collocation point off-centre was found by this test and fixed.
+- Axisymmetric for a centerd microphone. A bug that put the central panel's
+  collocation point off-center was found by this test and fixed.
 - A thin plate on rigid ground gives 2.00-2.09, against an exact 2.
 - In the thin limit it matches the thin-disc model to 0.2-0.4 dB at 500 Hz
   and at 10 deg and 2 kHz.
@@ -649,7 +649,7 @@ The user confirmed the boards are the GRAS GR1425, 400 mm (the report's
   1.82.
   - Both models use the Weyl-van der Pol (Chien-Soroka) coefficient for the
     ground's Green's function, a long-range approximation used here at
-    centimetre ranges (kR about 1).
+    centimeter ranges (kR about 1).
   - The thin-disc model uses only its values, through the exact
     dG/dz = -i k beta G. The raised model needs its normal derivative, which
     is the least reliable part of the approximation.
@@ -662,7 +662,7 @@ The user confirmed the boards are the GRAS GR1425, 400 mm (the report's
 **Thickness effect** (`thickness.py`). This is the increment from the real
 plate over a 0.3 mm plate, within the same model, so most of the kernel's
 approximation cancels. Ground: variable porosity sigma_e 200. Values in dB,
-for sound travelling toward / away from the microphone's side of the plate
+for sound traveling toward / away from the microphone's side of the plate
 (20 mm taper):
 
 | elevation | 250 Hz | 500 Hz | 1 kHz | 2 kHz | 3.15 kHz | 5 kHz |
@@ -712,7 +712,7 @@ old kernel).
 - In the thin limit they agree to 0.04 dB at 500 Hz (0.2 before).
 - At 2 kHz the gap shrinks with mesh refinement: at 10 deg 0.94, 0.96 and
   0.58 dB, and at 45 deg 0.52, 0.57 and 0.41 dB, for 24, 36 and 48 cells
-  across. That is discretisation error, not a formulation error.
+  across. That is discretization error, not a formulation error.
 - **Correction to an earlier claim:** below about 2.5 kHz the mesh is set by
   the cells-across floor, not by cells per wavelength, so the earlier
   thin-disc convergence check (which varied the latter) did not test it. At
@@ -741,7 +741,7 @@ with the same exact Green's function, by azimuthal modes.
   e^{i m phi}, each solved on the generating curve (top, taper, rim): about 60
   segments, instead of about 2000 surface panels.
 - A plane wave splits by Jacobi-Anger into i^m J_m(kappa r) e^{i m (phi - az)}.
-  One solve per mode and elevation serves every azimuth. An off-centre
+  One solve per mode and elevation serves every azimuth. An off-center
   microphone is a sum over modes of that mode's on-surface representation;
   only the geometry and Green's function must be axisymmetric.
 - Modes |m| <= k a + 10.
@@ -761,7 +761,7 @@ hour.
 
 **Checks** (`tests/test_axisymmetric_bem.py`):
 - A thin plate on rigid ground gives 2 to 0.3-0.8%.
-- A centred microphone is independent of azimuth (1e-6).
+- A centerd microphone is independent of azimuth (1e-6).
 - There is mirror symmetry in x for the +y microphone.
 - It agrees with the 3-D surface model to 0.02-0.12 dB.
 - Refining the generator mesh fourfold changes results in the third digit.
@@ -769,7 +769,7 @@ hour.
 **The real plate on rigid ground is not exactly 2.** That is a converged,
 physical O(kt) effect of the 8 mm step and taper 30 mm from the microphone:
 -0.35/+0.2 dB at 500 Hz and about +/-1.2 dB at 2 kHz, with opposite signs for
-sound travelling up and down the step.
+sound traveling up and down the step.
 
 **The ground profile redone with the real plate** (`PLATE=raised
 profile_ground.py`). Held-out-run RMS error in dB:
@@ -829,14 +829,14 @@ path with `--ground_effect`:
   factor. NICE-OPS's tests check them against 15 `pole_level` cases to
   1e-6 dB.
 - **The plate.** `axisymmetric_bem.write_netcdf` exports a `table()` as
-  netCDF: band x sub x elevation x azimuth, in metres, with the ground named.
+  netCDF: band x sub x elevation x azimuth, in meters, with the ground named.
   NICE-OPS reads it with `--plate_table` and applies |P_d + Q P_r|^2,
   band-averaged, with Q from its own ground model, and refuses a table built
   for a different ground. NICE-OPS ships two tables at the databases' 31
   bands (10 Hz-10 kHz): Delany-Bazley 225 and variable porosity σe 200.
   - The exact form matches `board_level` to 1e-6 dB.
   - The run path takes Q as quadratic in log f through each band's edges and
-    centre. That is 63 reflection coefficients per evaluation instead of
+    center. That is 63 reflection coefficients per evaluation instead of
     155, within 0.07 dB wherever the level is above -15 dB.
   - A linear Q was tried and rejected. It was off by up to 0.8 dB above
     -15 dB (2.9 dB in the grazing nulls), because P_d - P_r nearly cancels
@@ -935,7 +935,7 @@ than lambda/3, the two are blended geometrically:
     |p/pf| = |A1|^r |A2|^(1-r),   with r = (D - D1)/(D2 - D1)
 
 - This is what Mikkelsen & Nickerson use, with hard Q2 and soft Q1.
-- Nord2000 and Harmonoise generalise it to a Fresnel ellipse on the ground.
+- Nord2000 and Harmonoise generalize it to a Fresnel ellipse on the ground.
   Each surface is weighted by the fraction of the ellipse it covers, which for
   a circular plate is an ellipse-circle overlap.
 - It handles grazing better than its use by Mikkelsen & Nickerson shows. At low
@@ -944,7 +944,7 @@ than lambda/3, the two are blended geometrically:
 - Limitations:
   - the lambda/3 criterion is empirical;
   - it has no diffraction ripple from the plate edge;
-  - its surface-wave behaviour is only what the soft side's Q carries.
+  - its surface-wave behavior is only what the soft side's Q carries.
 
 ### De Jong, Moerkerken & van der Toorn (1983)
 
@@ -1040,7 +1040,7 @@ Only worth it if atmospheric refraction joins the problem.
   <https://forcetechnology.com/-/media/force-technology-media/pdf-files/projects/nord2000/nord2000-nordtestproposal-rev4.pdf>
 - D. van Maercke & J. Defrance, Harmonoise propagation model, Acta Acustica
   united with Acustica 93:201-212, 2007.
-- M. J. Kingan, S. T. Go, R. Piscoya & M. Ochmann, "On the modelling of
+- M. J. Kingan, S. T. Go, R. Piscoya & M. Ochmann, "On the modeling of
   ground-board mounted microphones for outdoor noise measurements", JSV, 2023.
   <https://www.sciencedirect.com/science/article/pii/S0022460X23003437>
 - S. T. Go, M. J. Kingan, G. Schmid & A. Hall, "On the use of ground-board
@@ -1052,7 +1052,7 @@ Only worth it if atmospheric refraction joins the problem.
   Flyover-Noise Ground Plane Microphones", AIAA 2020-2612.
   <https://doi.org/10.2514/6.2020-2612>
 - V. P. Blandeau et al., AIAA 2018-3295, 2021-2141 and 2023-4165 (ground plates,
-  infinite impedance plane modelling, propagation around and under plate edges).
+  infinite impedance plane modeling, propagation around and under plate edges).
 - M. Albert, P. Bousquet & D. Lizarazu, "Ground Effects For Aircraft Noise
   Certification", AIAA 2017-3845.
 - B. N. Shivashankara & G. W. Stubbs, "Ground plane microphone for measurement of

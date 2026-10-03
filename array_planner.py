@@ -245,7 +245,7 @@ def _load_depropagated_hemisphere_npz(path: str, *, field: str, fc_hz: Optional[
 		)
 	# Files saved before 2026-09-26 hold -3076.5 dB (10 log10 of the smallest
 	# float) where there was no data or no energy.  Read as a level it set the
-	# colour scale to -3500..500 dB and drew the overlay as one blob.
+	# color scale to -3500..500 dB and drew the overlay as one blob.
 	spl = np.where(spl > _OLD_NO_DATA_FLOOR_DB, spl, np.nan)
 	return HemisphereGrid(azi_grid_deg=azi_grid_deg, elv_grid_deg=elv_grid_deg, spl_db=spl, label=label)
 

@@ -22,7 +22,7 @@ residuals favour no flip, which is now the demo's setting.
 Run:  PYTHONPATH=. python as350_flip_check.py
 
 The demo data are found through the ``as350_demo`` entry of local_paths
-(``AS350_DEMO_PATH`` is still honoured and takes precedence).
+(``AS350_DEMO_PATH`` is still honored and takes precedence).
 """
 
 from __future__ import annotations
