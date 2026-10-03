@@ -12,6 +12,7 @@ about 10 GB.
 import numpy as np
 import pytest
 
+import vold_kalman_filter as vk
 from vold_kalman_filter import _compute_weighting_factor, vold_kalman_filter
 
 FS = 1000.0
@@ -151,3 +152,38 @@ def test_invalid_bandwidth_is_rejected(bandwidth):
     x = np.cos(2 * np.pi * 100.0 * np.arange(n) / 1000.0)
     with pytest.raises(ValueError, match='bandwidth'):
         vold_kalman_filter(x, freq, 1000.0, bandwidth, 1)
+
+
+@pytest.mark.skipif(vk._HAVE_UMFPACK, reason='scikits.umfpack is installed')
+def test_umfpack_without_scikits_umfpack_is_an_error():
+    """SciPy quietly solves with SuperLU when asked for UMFPACK it does not have."""
+    freq = np.full(200, 120.0)
+    with pytest.raises(RuntimeError, match='umfpack'):
+        vold_kalman_filter(np.cos(2 * np.pi * np.cumsum(freq) / FS), freq, FS, 4.0, 1, solver='umfpack')
+
+
+def test_pardiso_is_never_handed_a_complex_system(monkeypatch):
+    """pypardiso solves only real systems and these are complex: "auto" used to
+    try it first anyway, and "pardiso" passed it the complex matrix."""
+    calls = []
+    monkeypatch.setattr(vk, '_HAVE_PARDISO', True)
+    monkeypatch.setattr(vk, '_pardiso_spsolve', lambda A, b: calls.append(A), raising=False)
+    x = _signal()[:1000]
+    freq = np.column_stack([F1, F2])[:1000]
+    expected, _, _ = vold_kalman_filter(x, freq, FS, 4.0, 2, solver='superlu')
+    y, _, _ = vold_kalman_filter(x, freq, FS, 4.0, 2, solver='auto')
+    np.testing.assert_allclose(y, expected, rtol=0, atol=1e-9)
+    with pytest.raises(TypeError, match='only real'):
+        vold_kalman_filter(x, freq, FS, 4.0, 2, solver='pardiso')
+    assert calls == []
+
+
+def test_the_size_caches_are_bounded():
+    """One entry per record length, ~24 MB each at 1e5 samples, used to
+    accumulate without limit."""
+    for n in range(300, 1300, 100):
+        freq = np.column_stack([np.full(n, 100.0), np.full(n, 160.0)])
+        vold_kalman_filter(np.cos(2 * np.pi * 100.0 * np.arange(n) / FS), freq, FS, 4.0, 1,
+                           solver='superlu')
+    for cached in (vk._smoothness_operator, vk._get_bu_index_cache):
+        assert 0 < cached.cache_info().currsize <= vk._CACHE_SIZES

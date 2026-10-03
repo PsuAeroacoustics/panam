@@ -12,6 +12,7 @@ vold_kalman_filter(x, freq, fs, bandwidth, p, r=None)
     Extract complex envelopes and phasors from acoustic signal using Vold-Kalman filtering.
 """
 
+import functools
 import warnings
 
 import numpy as np
@@ -19,9 +20,11 @@ from scipy.sparse import bmat, csr_matrix, diags, kron, spdiags, vstack, eye as 
 from scipy.sparse.linalg import spsolve
 from scipy.special import comb
 
-# Cache for expensive, size-dependent matrices/indices
-_AA_CACHE = {}
-_BU_INDEX_CACHE = {}
+#: Size-dependent matrices and indices are cached for this many distinct
+#: sizes: a segmented record reuses one or two, and each entry at 1e5
+#: samples holds tens of MB, so an unbounded cache grew without limit over a
+#: batch of records of different lengths.
+_CACHE_SIZES = 4
 
 #: The regularized normal equations  (I + AA' R^2 AA) a = C^H x  have a
 #: condition number of about 1 + r**2 * 4**p.  Up to this value they are solved
@@ -55,13 +58,22 @@ except Exception:  # pragma: no cover - optional dependency
     _HAVE_UMFPACK = False
 
 
+def _difference_coefficients(order):
+    """Binomial finite-difference coefficients with alternating sign."""
+    return np.array([((-1) ** k) * comb(order, k) for k in range(order + 1)], dtype=float)
+
+
+@functools.lru_cache(maxsize=_CACHE_SIZES)
+def _smoothness_operator(n_x, n_ord, p_p):
+    """The p-th difference of each order's envelope, n_x - p rows per order (CSR)."""
+    D = diags([np.full(n_x - p_p, c) for c in _difference_coefficients(p_p)], list(range(p_p + 1)),
+              shape=(n_x - p_p, n_x), format='csr')
+    return kron(speye(n_ord, format='csr'), D, format='csr')
+
+
+@functools.lru_cache(maxsize=_CACHE_SIZES)
 def _get_bu_index_cache(n_x, n_ord):
     """Precompute and cache row/col indices and pair indices for B_U."""
-    key = (n_x, n_ord)
-    cached = _BU_INDEX_CACHE.get(key)
-    if cached is not None:
-        return cached
-
     n_pairs = n_ord * (n_ord - 1) // 2
     total_nnz = n_x * n_pairs
 
@@ -83,7 +95,6 @@ def _get_bu_index_cache(n_x, n_ord):
             pair_idx += 1
             idx += n_x
 
-    _BU_INDEX_CACHE[key] = (row_indices, col_indices, pair_i, pair_j)
     return row_indices, col_indices, pair_i, pair_j
 
 
@@ -135,8 +146,10 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None, solver="auto", use_cou
         Weighting factor for the filter, used instead of bandwidth when given;
         same shapes as bandwidth.  Default is None (compute from bandwidth).
     solver : {"auto", "pardiso", "umfpack", "superlu"}, optional
-        Sparse solver backend. "auto" prefers Pardiso (if installed), then UMFPACK,
-        and falls back to SuperLU. Default is "auto".
+        Sparse solver backend. "auto" uses UMFPACK if scikits.umfpack is
+        installed and SuperLU otherwise; "umfpack" without it is an error.
+        Pardiso solves only real systems and these are complex, so "auto"
+        never picks it and "pardiso" raises a TypeError. Default is "auto".
     use_coupling : bool, optional
         Whether to include cross-order coupling (B_U) terms. Default True.
         Setting False can speed up solves but changes results.
@@ -229,13 +242,6 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None, solver="auto", use_cou
     if p_p < 1 or n_x <= p_p:
         raise ValueError("p must be at least 1 and smaller than the signal length")
 
-    def _diff_coeff(order: int) -> np.ndarray:
-        """Binomial finite-difference coefficients with alternating sign."""
-        return np.array([((-1) ** k) * comb(order, k) for k in range(order + 1)], dtype=float)
-
-    # Main difference coefficients for order p_p
-    diff_main = _diff_coeff(p_p)
-
     # Smoothness operator: the p-th difference of each order's envelope, n_x - p
     # rows per order.  Every row is a whole stencil, so it sums to zero and
     # penalizes only changes in the envelope, never its level, and the record
@@ -244,15 +250,8 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None, solver="auto", use_cou
     # rows; those penalized the level itself and drove the envelope to zero at
     # the ends of the record.  It was also built through dense n_x x n_x
     # arrays, so memory grew as n_x**2.
-    aa_cache_key = (n_x, n_ord, p_p)
-    AA_sparse = _AA_CACHE.get(aa_cache_key)
-    if AA_sparse is None:
-        D = diags([np.full(n_x - p_p, c) for c in diff_main], list(range(p_p + 1)),
-                  shape=(n_x - p_p, n_x), format='csr')
-        AA_sparse = kron(speye(n_ord, format='csr'), D, format='csr')
-        _AA_CACHE[aa_cache_key] = AA_sparse
+    AA_sparse = _smoothness_operator(n_x, n_ord, p_p)
 
-    # DEBUG: Verify AA boundaries
     # Weighting factor r for every sample and order, given or from the bandwidth
     if use_weight_factor:
         bw = _per_sample_and_order(bandwidth, n_x, n_ord, 'bandwidth')
@@ -272,6 +271,9 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None, solver="auto", use_cou
         raise ValueError(f"Unknown solver '{solver}'")
     if solver_choice == "pardiso" and not _HAVE_PARDISO:
         raise RuntimeError("pypardiso is not installed")
+    if solver_choice == "umfpack" and not _HAVE_UMFPACK:
+        # SciPy would quietly use SuperLU instead.
+        raise RuntimeError("scikits.umfpack is not installed")
 
     # sqrt(1 + r**2 * 4**p), the augmented system's condition number, computed
     # without overflow; r itself is inf for a band far too narrow to resolve.
@@ -365,19 +367,26 @@ def _per_sample_and_order(value, n_x, n_ord, name):
 
 
 def _solve_sparse(A, b, solver_choice):
-    """Solve A z = b with the selected sparse backend (A in CSC)."""
+    """Solve A z = b with the selected sparse backend (A in CSC).
+
+    pypardiso solves only real systems.  The Vold-Kalman systems are complex,
+    so "auto" never hands them to it, and "pardiso" refuses them rather than
+    risk a silent cast to real.
+    """
+    complex_system = np.iscomplexobj(A) or np.iscomplexobj(b)
+    if solver_choice == "pardiso" and complex_system:
+        raise TypeError("pypardiso solves only real systems, and this one is complex; "
+                        "use solver='auto', 'umfpack' or 'superlu'")
+    use_pardiso = _HAVE_PARDISO and solver_choice in ("auto", "pardiso") and not complex_system
+    use_umfpack = _HAVE_UMFPACK and solver_choice in ("auto", "umfpack")
     try:
-        if solver_choice in ("auto", "pardiso") and _HAVE_PARDISO:
+        if use_pardiso:
             return _pardiso_spsolve(A, b)
-        try:
-            return spsolve(A, b, use_umfpack=_HAVE_UMFPACK and solver_choice != "superlu")
-        except TypeError:
-            return spsolve(A, b)
+        return spsolve(A, b, use_umfpack=use_umfpack)
     except Exception:
-        if solver_choice != "auto":
+        if solver_choice != "auto" or not (use_pardiso or use_umfpack):
             raise
-        # pypardiso rejects complex matrices, and these systems are complex:
-        # fall back to SuperLU, never to a dense solve (n_tot**2 memory).
+        # Fall back to SuperLU, never to a dense solve (n_tot**2 memory).
         return spsolve(A, b, use_umfpack=False)
 
 
