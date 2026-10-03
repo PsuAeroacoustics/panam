@@ -4,14 +4,15 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 
+from cli import colon_pair
 from flight_acoustics import atmosorb
 
 
 def main():
     parser = argparse.ArgumentParser(description='Generate atmospheric absorption map')
-    parser.add_argument('-t', '--temperature', type=str, default='0:40',
+    parser.add_argument('-t', '--temperature', type=colon_pair, default='0:40',
                         help='Temperature range in °C as "min:max" (default: 0:40)')
-    parser.add_argument('-p', '--pressure', type=str, default='1:30',
+    parser.add_argument('-p', '--pressure', type=colon_pair, default='1:30',
                         help='Pressure range in atm as "min:max" (default: 1:30)')
     parser.add_argument('-f', '--frequency', type=float, default=10000.0,
                         help='Frequency in Hz (default: 10000.0)')
@@ -22,17 +23,8 @@ def main():
     
     args = parser.parse_args()
     
-    # Parse temperature range
-    temp_values = args.temperature.split(':')
-    if len(temp_values) != 2:
-        raise ValueError('Temperature range must be in format "min:max"')
-    temp_min, temp_max = map(float, temp_values)
-    
-    # Parse pressure range
-    press_values = args.pressure.split(':')
-    if len(press_values) != 2:
-        raise ValueError('Pressure range must be in format "min:max"')
-    press_min, press_max = map(float, press_values)
+    temp_min, temp_max = args.temperature
+    press_min, press_max = args.pressure
     
     # Parameters
     pressures_atm = np.linspace(press_min, press_max, 1000)  # atm
