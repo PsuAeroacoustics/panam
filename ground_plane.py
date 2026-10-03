@@ -155,12 +155,15 @@ def band_levels_from_psd(frequency, psd, bands):
     """One-third octave band levels (dB re 20 uPa) from a one-sided PSD, brick-wall bands.
 
     ``psd`` is (frequency, frame) in Pa^2/Hz.  The same rectangular integration
-    as :func:`flight_acoustics.third_octave_band_levels`.
+    as :func:`flight_acoustics.third_octave_band_levels`, on the gap-free edges
+    of :func:`flight_acoustics.third_octave_band_edges` (nominal centers' own
+    ``center * 2**(+-1/6)`` would drop 1403-1425 Hz and count 891-898 Hz twice).
     """
     df = frequency[1] - frequency[0]
+    lower, upper = fa.third_octave_band_edges(bands)
     levels = np.empty((len(bands), psd.shape[1]))
-    for i, center in enumerate(bands):
-        inside = (frequency >= center / 2 ** (1 / 6)) & (frequency < center * 2 ** (1 / 6))
+    for i in range(len(bands)):
+        inside = (frequency >= lower[i]) & (frequency < upper[i])
         levels[i] = 10.0 * np.log10(np.maximum(psd[inside].sum(axis=0) * df, 1e-30) / 4e-10)
     return levels
 

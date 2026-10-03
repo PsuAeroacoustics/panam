@@ -20,6 +20,28 @@ def test_emission_geometry_straight_pass():
     assert np.isnan(g['elevation'][1])               # before anything could arrive
 
 
+def test_band_levels_from_psd_count_every_bin_once():
+    # Nominal centers' own c * 2**(+-1/6) edges leave 1403-1425 Hz in no band
+    # and 891-898 Hz in two; the bands must tile, so the band powers add up to
+    # the PSD's total over them.
+    frequency = np.arange(0.0, 12000.0, 1.0)
+    psd = np.zeros((frequency.size, 3))
+    psd[1410, 0] = 4e-10                            # a tone in the old gap
+    psd[895, 1] = 4e-10                             # and one in the old overlap
+    psd[:, 2] = 4e-10                               # white
+    bands = gp.fa.PNL_BAND_FREQUENCIES
+    levels = gp.band_levels_from_psd(frequency, psd, bands)
+    power = 10.0 ** (levels / 10.0) * 4e-10
+    for tone in (0, 1):
+        assert np.sum(power[:, tone] > 1e-20) == 1
+        assert power[:, tone].max() == pytest.approx(4e-10, rel=1e-12)
+    lower, upper = gp.fa.third_octave_band_edges(bands)
+    covered = (frequency >= lower[0]) & (frequency < upper[-1])
+    assert power[:, 2].sum() == pytest.approx(psd[covered, 2].sum(), rel=1e-12)
+    # 1410 Hz falls in the 1250 Hz band, whose base-10 upper edge is 1412.5 Hz.
+    assert levels[list(bands).index(1250.0), 0] == pytest.approx(0.0, abs=1e-9)
+
+
 def test_flat_is_pressure_doubling():
     assert np.allclose(gp.board_rigid_plane(BANDS, [100.0, 50.0], [10.0, 2000.0]), 6.0206, atol=1e-3)
 
