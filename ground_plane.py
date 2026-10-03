@@ -1616,6 +1616,19 @@ def table_sub_bands(table, sub_bands=None):
     return stored
 
 
+def table_rows(frequencies, wanted, rtol=1e-6):
+    """Row of each ``wanted`` frequency in a table's ``frequencies``, -1 where the table has none.
+
+    A table holds only its own bands' sub-frequencies; any other frequency
+    (a band below, between or above its bands) has no row, rather than
+    borrowing the nearest one's.
+    """
+    frequencies = np.asarray(frequencies, dtype=float)
+    wanted = np.asarray(wanted, dtype=float)
+    row = np.argmin(np.abs(frequencies[None, :] - wanted[:, None]), axis=1)
+    return np.where(np.abs(frequencies[row] - wanted) <= rtol * wanted, row, -1)
+
+
 def board_disc_bem(bands, source_height, ground_distance, sound_speed,
                    flow_resistance=FLOW_RESISTANCE, sub_bands=None, table=None,
                    source_dx=None, source_dy=None, mirror_y=False):
@@ -1628,8 +1641,8 @@ def board_disc_bem(bands, source_height, ground_distance, sound_speed,
     source toward the microphone, from ``source_dx``, ``source_dy`` (the
     source's offset from the microphone); without them the source is taken to
     be along -x.  ``mirror_y`` puts the microphone on the plate's other side
-    (the -y offset), by reflecting the azimuth.  Bands above the table's range
-    are NaN.  ``sub_bands`` is the table's own; a different count would pick
+    (the -y offset), by reflecting the azimuth.  Bands the table was not
+    computed for are NaN.  ``sub_bands`` is the table's own; a different count would pick
     frequencies the table does not hold.
     """
     from scipy.interpolate import RegularGridInterpolator
@@ -1637,8 +1650,10 @@ def board_disc_bem(bands, source_height, ground_distance, sound_speed,
     sub_bands = table_sub_bands(table, sub_bands)
     f, hs, d2 = _broadcast(bands, source_height, ground_distance)
     elevation = np.degrees(np.arctan2(hs, d2))
-    image_range = np.hypot(d2, hs)
-    cos_theta = hs / image_range
+    height = table['mic_height']
+    # Q at the microphone's own height, like the phase e^{2ikh sin(el)} below.
+    image_range = np.hypot(d2, hs + height)
+    cos_theta = (hs + height) / image_range
     if source_dx is None:
         azimuth = np.zeros_like(hs)
     else:
@@ -1647,9 +1662,7 @@ def board_disc_bem(bands, source_height, ground_distance, sound_speed,
     if mirror_y:
         azimuth = np.mod(-azimuth, 360.0)
     t_az = np.concatenate((table['azimuths'], [table['azimuths'][0] + 360.0]))
-    height = table['mic_height']
     offsets = sub_band_factors(sub_bands)
-    top = table['frequencies'].max() * (1.0 + 1e-9)
     energy = np.zeros(f.shape)
     for factor in offsets:
         fj = f * factor
@@ -1657,10 +1670,10 @@ def board_disc_bem(bands, source_height, ground_distance, sound_speed,
             cos_theta, image_range, fj, sound_speed, flow_resistance,
             admittance=_ground_admittance(fj, sound_speed, flow_resistance, table.get('ground')))
         s_frame = np.full(f.shape, np.nan, dtype=complex)
-        for b in range(f.shape[0]):
-            if fj[b, 0] > top:
+        rows = table_rows(table['frequencies'], fj[:, 0])
+        for b, row in enumerate(rows):
+            if row < 0:
                 continue
-            row = np.argmin(np.abs(table['frequencies'] - fj[b, 0]))
             grid = table['S'][row]
             grid = np.concatenate((grid, grid[:, :1]), axis=1)          # periodic in azimuth
             points = np.column_stack((np.clip(elevation[b], table['elevations'][0],

@@ -125,3 +125,17 @@ def test_field_inside_the_plate_is_nan_and_far_field_tends_to_the_bare_ground():
     # 30 ft up, the plate's scattered wave is small next to the unit plane waves
     assert abs(Pd[1] - np.exp(-1j * k * np.sin(np.radians(el)) * z)) < 0.05
     assert abs(Pr[1] - np.exp(1j * k * np.sin(np.radians(el)) * z)) < 0.05
+
+
+def test_board_level_is_nan_for_bands_the_table_does_not_hold():
+    # A table for 500 and 1000 Hz: 400 (below), 630 and 800 (between) and
+    # 1250 Hz (above) have no rows, and must not borrow the nearest one's.
+    bands = np.array([500.0, 1000.0])
+    frequencies = np.sort((bands[:, None] * gp.sub_band_factors(2)[None, :]).ravel())
+    p_d = np.ones((frequencies.size, 2, 2), dtype=complex)
+    table = dict(frequencies=frequencies, elevations=np.array([0.0, 90.0]), azimuths=np.array([0.0, 180.0]),
+                 P_d=p_d, P_r=np.zeros_like(p_d), thickness=gp.PLATE_THICKNESS_FT,
+                 flow_resistance=gp.FLOW_RESISTANCE, ground=None, sub_bands=2)
+    level = ab.board_level([400.0, 500.0, 630.0, 800.0, 1000.0, 1250.0], [100.0], [200.0], C, table)[:, 0]
+    np.testing.assert_allclose(level[[1, 4]], 0.0, atol=1e-12)
+    assert np.all(np.isnan(level[[0, 2, 3, 5]]))

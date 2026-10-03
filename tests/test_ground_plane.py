@@ -375,3 +375,30 @@ def test_reflection_phase_is_zero_over_rigid_ground_and_small_over_stiff():
     assert np.allclose(rigid, 0.0, atol=1e-6)
     stiff = gp.reflection_phase(2000.0, 100.0, 300.0, 4.0, C, flow_resistance=2e4)
     assert 0.0 < abs(float(stiff)) < 0.2
+
+
+def _disc_table(bands, mic_height=0.0, sub_bands=2):
+    """A disc_bem_table stand-in with no scattering (S = 0)."""
+    frequencies = np.sort((np.asarray(bands)[:, None] * gp.sub_band_factors(sub_bands)[None, :]).ravel())
+    return dict(frequencies=frequencies, elevations=np.array([0.0, 90.0]), azimuths=np.array([0.0, 180.0]),
+                S=np.zeros((frequencies.size, 2, 2), dtype=complex), mic_height=mic_height, ground=None,
+                flow_resistance=gp.FLOW_RESISTANCE, sub_bands=sub_bands)
+
+
+def test_board_disc_bem_is_nan_for_bands_the_table_does_not_hold():
+    table = _disc_table(np.array([500.0, 1000.0]))
+    level = gp.board_disc_bem([400.0, 500.0, 630.0, 1000.0, 1250.0], [100.0], [200.0], C, table=table)[:, 0]
+    assert np.all(np.isfinite(level[[1, 3]])) and np.all(np.isnan(level[[0, 2, 4]]))
+
+
+def test_board_disc_bem_takes_q_at_the_microphone_height():
+    # With S = 0 an inverted microphone h above the ground reads the two-path
+    # field 1 + Q e^{2ikh sin(el)}, Q at the image geometry of a receiver at h.
+    h, hs, d2, band = gp.INVERTED_MIC_HEIGHT_FT, 0.5, 20.0, 2000.0
+    level = gp.board_disc_bem([band], [hs], [d2], C, table=_disc_table(np.array([band]), mic_height=h))[0, 0]
+    r2 = np.hypot(d2, hs + h)
+    energy = 0.0
+    for f in band * gp.sub_band_factors(2):
+        q = gp.fa.spherical_reflection_coefficient((hs + h) / r2, r2, f, C, gp.FLOW_RESISTANCE)
+        energy += abs(1 + q * np.exp(2j * 2 * np.pi * f / C * h * np.sin(np.arctan2(hs, d2)))) ** 2
+    assert level == pytest.approx(10 * np.log10(energy / 2), abs=1e-9)

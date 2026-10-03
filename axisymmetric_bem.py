@@ -397,7 +397,7 @@ def board_level(bands, source_height, ground_distance, sound_speed, table, sub_b
     |P_d + Q P_r|^2 averaged over the band's sub-frequencies, with P_d, P_r
     interpolated (real and imaginary parts, bilinear in elevation and azimuth)
     from ``table`` and Q from each frame's geometry, at the plate's top.
-    Azimuth, ``mirror_y`` and NaN above the table as in
+    Azimuth, ``mirror_y`` and NaN for bands not in the table as in
     :func:`ground_plane.board_disc_bem`.  ``sub_bands`` is the table's own; a
     different count would pick frequencies the table does not hold.
     """
@@ -417,7 +417,6 @@ def board_level(bands, source_height, ground_distance, sound_speed, table, sub_b
         azimuth = np.mod(-azimuth, 360.0)
     t_az = np.concatenate((table['azimuths'], [table['azimuths'][0] + 360.0]))
     offsets = gp.sub_band_factors(sub_bands)
-    top = table['frequencies'].max() * (1.0 + 1e-9)
     energy = np.zeros(f.shape)
     for factor in offsets:
         fj = f * factor
@@ -425,10 +424,10 @@ def board_level(bands, source_height, ground_distance, sound_speed, table, sub_b
             cos_theta, image_range, fj, sound_speed, table['flow_resistance'],
             admittance=gp._ground_admittance(fj, sound_speed, table['flow_resistance'], table.get('ground')))
         p = np.full(f.shape, np.nan, dtype=complex)
-        for b in range(f.shape[0]):
-            if fj[b, 0] > top:
+        rows = gp.table_rows(table['frequencies'], fj[:, 0])
+        for b, row in enumerate(rows):
+            if row < 0:
                 continue
-            row = np.argmin(np.abs(table['frequencies'] - fj[b, 0]))
             points = np.column_stack((np.clip(elevation[b], table['elevations'][0], table['elevations'][-1]),
                                       azimuth[b]))
             vals = []
