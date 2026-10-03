@@ -1230,7 +1230,10 @@ def disc_bem_scattered(frequencies, elevations, azimuths, sound_speed,
         rho = np.hypot(x[:, None] - x[None, :], y[:, None] - y[None, :])
         np.fill_diagonal(rho, 1.0)
         kernel = surface_green(rho) * area[None, :]
-        for obs, src in np.argwhere(rho < near * cell):
+        # The diagonal's placeholder distance is not a cell's distance to
+        # itself: take the self terms explicitly, so their 1/R singularity is
+        # integrated rather than left as surface_green(1 ft) * area.
+        for obs, src in np.argwhere((rho < near * cell) | np.eye(x.size, dtype=bool)):
             kernel[obs, src] = _cell_integral_near(bounds[src], x[obs], y[obs], 0.0, surface_green,
                                                    sub, singular=(obs == src))
         system = np.eye(x.size) + 1j * k * beta * kernel
