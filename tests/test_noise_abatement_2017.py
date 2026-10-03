@@ -151,6 +151,12 @@ def test_is_steady_flight_card_rejects_ambient_and_hover():
     assert not na.is_steady_flight_card(_row(test_cond='H3'))
 
 
+def test_is_steady_flight_card_rejects_approaches_even_with_explicit_zeros():
+    # The B206L3's approach cards read bank 0 and acceleration 0.
+    assert not na.is_steady_flight_card(_row(test_cond='A7'))
+    assert na.is_steady_flight_card(_row(test_cond='L7'))
+
+
 def test_is_steady_flight_card_treats_blank_as_maneuvering():
     """Blank is not the same as zero: the B407 'A' family leaves accel_rate
     blank on decelerating approaches, not on runs that just forgot to log 0."""

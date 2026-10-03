@@ -130,9 +130,14 @@ def is_steady_flight_card(row):
     exactly (no omissions), and additionally admits 6 runs at repeated
     conditions (extra L4/L9/D4 passes, one flagged as an aborted approach in
     its comments) that the legacy build happened to skip.
+
+    The approach family is refused by name as well, whatever its fields say.
+    Not every aircraft's cards leave them blank: all 23 of the B206L3's and 2
+    of the R66's carry an explicit zero bank and acceleration, which let
+    them through as steady and built validation runs into those spheres.
     """
     condition = (row.get('test_cond') or '').strip()
-    if condition == 'AMB' or re.match(r'^H\d', condition):
+    if condition == 'AMB' or re.match(r'^[AH]\d', condition):
         return False
 
     def explicit_zero(value):
