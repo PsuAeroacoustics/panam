@@ -988,6 +988,20 @@ def _prefetch(paths, workers=PREFETCH_WORKERS):
         list(pool.map(touch, paths))
 
 
+def _prefetch_run(test, run):
+    """:func:`_prefetch` one run's files, off the main thread.
+
+    A run whose files can't be listed (an unknown run number, say) is skipped
+    here: :func:`build_sphere` meets the same error and reports the run as failed.
+    """
+    try:
+        paths = _run_file_paths(test, run)
+    except Exception as error:                          # noqa: BLE001
+        logging.debug('prefetch skipped run %s (%s)', run, error)
+        return
+    _prefetch(paths)
+
+
 def build_all(aircraft, output_directory, *, root=None, runs=None,
               steady_only=True, reference_directory=None, sphere_prefix=None,
               manifest_path=None, prefetch=True, norah2_directory=None, **kwargs):
@@ -1020,11 +1034,11 @@ def build_all(aircraft, output_directory, *, root=None, runs=None,
 
     records, failures = [], []
     pool = ThreadPoolExecutor(max_workers=1) if prefetch and runs else None
-    pending = pool.submit(_prefetch, _run_file_paths(test, runs[0])) if pool else None
+    pending = pool.submit(_prefetch_run, test, runs[0]) if pool else None
     for number, run in enumerate(runs, start=1):
         if pending is not None:
             pending.result()
-            pending = (pool.submit(_prefetch, _run_file_paths(test, runs[number]))
+            pending = (pool.submit(_prefetch_run, test, runs[number])
                        if number < len(runs) else None)
         row = test.by_run.get(run, {})
         name = '{}{}.nc'.format(prefix, row.get('run_num', run))

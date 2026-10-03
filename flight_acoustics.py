@@ -16,7 +16,7 @@ import simplekml
 # Colormap helper will import palettable lazily
 import matplotlib
 from matplotlib import tri
-from matplotlib.pyplot import plot, subplots, colorbar, style, contourf, show
+from matplotlib.pyplot import subplots, colorbar, style, contourf, show
 from netCDF4 import Dataset
 from pyuff import UFF
 from pymap3d import geodetic2enu, enu2geodetic
@@ -882,19 +882,11 @@ def hemigen(time, source, velocity, observers, speed_of_sound):
     t_observer are the observer times associated with each emission time
     mach_r is the Mach number of the source in the propagation direction
     """
-    number_of_mics = observers.shape[0]
-    number_of_times = time.shape[0]
-    # Expand data into number_of_times x number_of_mics arrays
-    t = (time * np.ones((number_of_mics, number_of_times))).transpose()
-    sx = (source[:, 0] * np.ones((number_of_mics, number_of_times))).transpose()
-    sy = (source[:, 1] * np.ones((number_of_mics, number_of_times))).transpose()
-    sz = (source[:, 2] * np.ones((number_of_mics, number_of_times))).transpose()
-    vx = (velocity[:, 0] * np.ones((number_of_mics, number_of_times))).transpose()
-    vy = (velocity[:, 1] * np.ones((number_of_mics, number_of_times))).transpose()
-    vz = (velocity[:, 2] * np.ones((number_of_mics, number_of_times))).transpose()
-    ox = observers[:, 0] * np.ones((number_of_times, number_of_mics))
-    oy = observers[:, 1] * np.ones((number_of_times, number_of_mics))
-    oz = observers[:, 2] * np.ones((number_of_times, number_of_mics))
+    # Rows are emission times, columns microphones
+    t = time[:, None]
+    sx, sy, sz = (source[:, i, None] for i in range(3))
+    vx, vy, vz = (velocity[:, i, None] for i in range(3))
+    ox, oy, oz = (observers[None, :, i] for i in range(3))
     # Propagation vectors
     rx = ox - sx
     ry = oy - sy
@@ -904,7 +896,8 @@ def hemigen(time, source, velocity, observers, speed_of_sound):
     t_observer = t + r / speed_of_sound
     # Mach number along the radiation direction
     mach_r = (vx * rx / r + vy * ry / r + vz * rz / r) / speed_of_sound
-    # Compute elevation relative to horizon
+    # Compute elevation relative to horizon; ground_range >= 0 keeps it in
+    # [-90, 90], so it never runs over the pole
     ground_range = np.sqrt(rx ** 2 + ry ** 2)
     height = -rz
     elevation = np.degrees(np.arctan2(height, ground_range))
@@ -912,15 +905,6 @@ def hemigen(time, source, velocity, observers, speed_of_sound):
     bearing = np.degrees(np.arctan2(ry, rx))
     heading = np.degrees(np.arctan2(vy, vx))
     azimuth = np.remainder(bearing - (heading + 180), 360)
-    # If the elevation exceeds 90 degrees, it should be flipped over to the other
-    # side of the sphere
-    flip = elevation > 90
-    elevation[flip] = 180 - elevation[flip]
-    # Then correct azimuths for these points
-    right_side = np.logical_and(flip, azimuth <= 180)
-    left_side = np.logical_and(flip, azimuth > 180)
-    azimuth[right_side] = azimuth[right_side] + 180
-    azimuth[left_side] = azimuth[left_side] - 180
     return azimuth, elevation, r, t_observer, mach_r
 
 
@@ -1343,7 +1327,7 @@ def depropagate_hemisphere(
 
         df = float(f_sel[1] - f_sel[0])
 
-        Aweight_db = np.array([dBAw(fi) for fi in f_sel], dtype=float)
+        Aweight_db = dBAw(f_sel)
         Aweight_lin = 10.0 ** (Aweight_db / 10.0)
 
         alpha_db_per_m = None
@@ -1498,16 +1482,18 @@ def depropagate_hemisphere(
     fazi_ext = np.concatenate((fazi_pts, fazi_pts + 360.0, fazi_pts - 360.0))
     felv_ext = np.concatenate((felv_pts, felv_pts, felv_pts))
     P_oaspl_ext = np.concatenate((P_oaspl_pts, P_oaspl_pts, P_oaspl_pts))
+    # Every field is sampled at the same points, so the weights are shared
+    idw_weights = shepIDW_weights(ELV_GRID, AZI_GRID, felv_ext, fazi_ext, rmax=float(rmax))
 
     # Cells with no sample within rmax come out NaN (no data) and cells whose
     # samples carry no energy -inf, never a finite floor; see power_to_db.
-    P_oaspl_grid = shepIDW(ELV_GRID, AZI_GRID, felv_ext, fazi_ext, P_oaspl_ext, rmax=float(rmax))
+    P_oaspl_grid = shepIDW_apply(idw_weights, P_oaspl_ext)
     oaspl_db = power_to_db(P_oaspl_grid)
     if oaspl_db.shape[1] > 1:
         oaspl_db[:, -1] = oaspl_db[:, 0]
 
     P_spl_a_ext = np.concatenate((P_spl_a_pts, P_spl_a_pts, P_spl_a_pts))
-    P_spl_a_grid = shepIDW(ELV_GRID, AZI_GRID, felv_ext, fazi_ext, P_spl_a_ext, rmax=float(rmax))
+    P_spl_a_grid = shepIDW_apply(idw_weights, P_spl_a_ext)
     spl_a_db = power_to_db(P_spl_a_grid)
     if spl_a_db.shape[1] > 1:
         spl_a_db[:, -1] = spl_a_db[:, 0]
@@ -1563,7 +1549,7 @@ def depropagate_hemisphere(
             if P_band_pts.size != fazi_pts.size:
                 raise ValueError('Internal error: third-octave sample count does not match scattered angle count')
             P_band_ext = np.concatenate((P_band_pts, P_band_pts, P_band_pts))
-            P_band_grid = shepIDW(ELV_GRID, AZI_GRID, felv_ext, fazi_ext, P_band_ext, rmax=float(rmax))
+            P_band_grid = shepIDW_apply(idw_weights, P_band_ext)
             band_grids_db[ib, :, :] = power_to_db(P_band_grid)
             band_grids_db[ib, :, -1] = band_grids_db[ib, :, 0]
 
@@ -1603,7 +1589,7 @@ def depropagate_hemisphere(
         for i_f, fi in enumerate(range(0, f_sel_master.size, narrowband_stride)):
             P_f_pts = psd_power_pts[fi, :]
             P_f_ext = np.concatenate((P_f_pts, P_f_pts, P_f_pts))
-            P_f_grid = shepIDW(ELV_GRID, AZI_GRID, felv_ext, fazi_ext, P_f_ext, rmax=float(rmax))
+            P_f_grid = shepIDW_apply(idw_weights, P_f_ext)
             psd_grid_db[i_f, :, :] = power_to_db(P_f_grid)
             psd_grid_db[i_f, :, -1] = psd_grid_db[i_f, :, 0]
 
@@ -2698,14 +2684,13 @@ def load_nc_signal(filename):
     time is an array of sampled times
     location is an array of the x,y,z location of the microphone
     """
-    file_handle = Dataset(filename, mode='r')
-    pressure = file_handle.variables['pressure'][:].astype(float).flatten()
-    x = file_handle.X
-    y = file_handle.Y
-    z = file_handle.Z
-    sample_rate = file_handle.sample_rate
-    start_time = file_handle.start_time
-    file_handle.close()
+    with Dataset(filename, mode='r') as file_handle:
+        pressure = file_handle.variables['pressure'][:].astype(float).flatten()
+        x = file_handle.X
+        y = file_handle.Y
+        z = file_handle.Z
+        sample_rate = file_handle.sample_rate
+        start_time = file_handle.start_time
     # Not np.arange(start, stop, 1/fs): a float step can yield one sample too many.
     time = start_time + np.arange(pressure.size) / sample_rate
     location = np.array([x, y, z])
@@ -3443,6 +3428,8 @@ def read_vehicle_data(directory_name, runs=None, speeds=None, flight_path_angles
         i_start = 'W2'
         i_end = 'W' + str(i_max + 1)
         dimensional_conditions = np.array([[i.value for i in j] for j in ws[i_start:i_end]]).squeeze()
+        # A read-only workbook holds its file open until closed
+        wb.close()
         speeds = []
         for r in runs:
             index = run_numbers.index(r)
@@ -3677,19 +3664,11 @@ def extract_SPL(filename, infreqs=None, distance=1000,
         amplitude = amplitude[:, :, frequency_index]
         frequency = frequency[frequency_index]
     SPLO = np.apply_along_axis(OASPL, 2, amplitude)
-    Aweight = np.array([dBAw(f) for f in frequency])
-    SPLA = np.apply_along_axis(OASPL, 2, amplitude + Aweight)
+    # A-weighted OASPL and excess atmospheric attenuation
+    SPLA, EAA = spla_and_eaa_from_spectrum(amplitude, frequency, distance, atmosphere)
     # Convert from ART to UMAPR coordinates
-    T, P = np.meshgrid(theta, phi)
+    _, P = np.meshgrid(theta, phi)
     azi, elv = art2umapr(np.pi * P / 180.0, np.pi * theta / 180.0)
-    # Compute excess atmospheric attenuation
-    alpha = atmosphere.attenuation_coefficient(frequency)
-    SPLAa = np.apply_along_axis(OASPL, 2, amplitude + Aweight - distance * alpha)
-    # SPLs may contain -inf, which is expected, so suppress numpy warning
-    np_error_settings = np.seterr()
-    np.seterr(invalid='ignore')
-    EAA = SPLA - SPLAa
-    np.seterr(**np_error_settings)
     # frequency/amplitude are returned so callers can recompute band-based
     # quantities (e.g. EAA) after modifying the spectrum.
     return azi, elv, phi, theta, radius, SPLO, SPLA, EAA, speed, flight_path_angle, frequency, amplitude
@@ -4416,33 +4395,17 @@ def atmosorb(freq, temp, humid, pstat):
         alpha_db_per_m = atm.attenuation_coefficient(f)
         return alpha_db_per_m
 
-    # Broadcast atmospheric inputs to common grid
+    # Broadcast atmospheric inputs to common grid.  The ISO 9613-1 formulas
+    # are elementwise, so one Atmosphere covers it, with trailing axes for
+    # frequency: the result is grid_shape + f.shape.
     tempK_b, pres_kpa_b, rh_b = np.broadcast_arrays(tempK, pres_kpa, rh_pct)
-
-    if f.ndim == 0:
-        out = np.empty_like(tempK_b, dtype=float)
-        it = np.nditer(tempK_b, flags=['multi_index'])
-        while not it.finished:
-            idx = it.multi_index
-            atm = Atmosphere(
-                temperature=float(tempK_b[idx]),
-                pressure=float(pres_kpa_b[idx]),
-                relative_humidity=float(rh_b[idx]),
-            )
-            out[idx] = float(atm.attenuation_coefficient(float(f)))
-            it.iternext()
-        return out
-    else:
-        # Frequency array: return array with shape (grid_shape + f.shape)
-        out = np.empty(tempK_b.shape + f.shape, dtype=float)
-        for idx in np.ndindex(tempK_b.shape):
-            atm = Atmosphere(
-                temperature=float(tempK_b[idx]),
-                pressure=float(pres_kpa_b[idx]),
-                relative_humidity=float(rh_b[idx]),
-            )
-            out[idx] = atm.attenuation_coefficient(f)
-        return out
+    expand = (Ellipsis,) + (None,) * f.ndim
+    atm = Atmosphere(
+        temperature=tempK_b[expand],
+        pressure=pres_kpa_b[expand],
+        relative_humidity=rh_b[expand],
+    )
+    return atm.attenuation_coefficient(f)
 
 def geodist(elv1, azi1, elv2, azi2):
     """
@@ -4548,33 +4511,68 @@ def shepIDW(ielv, iazi, felv, fazi, f, rmax):
         (The MATLAB original gives 0, which reads as a measured zero -- zero
         energy, once the values are powers.)
     """
-    # Ensure numpy arrays and broadcasting for data fields
+    felv, fazi, fvals = np.broadcast_arrays(np.asarray(felv, dtype=float), np.asarray(fazi, dtype=float),
+                                            np.asarray(f, dtype=float))
+    return shepIDW_apply(shepIDW_weights(ielv, iazi, felv, fazi, rmax), fvals)
+
+
+def shepIDW_weights(ielv, iazi, felv, fazi, rmax):
+    """
+    The neighbors and weights :func:`shepIDW` uses at each interpolant.
+
+    They depend only on the geometry, so a caller interpolating several fields
+    sampled at the same points computes them once and hands them to
+    :func:`shepIDW_apply` for each field.
+
+    Args:
+        ielv, iazi, felv, fazi, rmax: as for :func:`shepIDW`.
+
+    Returns:
+        (shape, neighbors): the interpolant shape, and for each interpolant
+        (flattened) a pair (flat indices into felv/fazi, their weights), both
+        empty where no data point lies within ``rmax``.
+    """
     felv = np.asarray(felv, dtype=float)
     fazi = np.asarray(fazi, dtype=float)
-    fvals = np.asarray(f, dtype=float)
-    felv, fazi, fvals = np.broadcast_arrays(felv, fazi, fvals)
+    felv, fazi = np.broadcast_arrays(felv, fazi)
 
     # Prepare interpolant inputs and preserve original shape
     ielv_arr = np.asarray(ielv, dtype=float)
     iazi_arr = np.asarray(iazi, dtype=float)
     if ielv_arr.shape != iazi_arr.shape:
         ielv_arr, iazi_arr = np.broadcast_arrays(ielv_arr, iazi_arr)
-    orig_shape = ielv_arr.shape
     ielv_flat = ielv_arr.ravel()
     iazi_flat = iazi_arr.ravel()
 
-    fi_flat = np.empty_like(ielv_flat, dtype=float)
+    neighbors = []
     for i in range(ielv_flat.size):
-        wi = IDWweights(ielv_flat[i], iazi_flat[i], felv, fazi, rmax)
+        wi = IDWweights(ielv_flat[i], iazi_flat[i], felv, fazi, rmax).ravel()
         # Only the neighbors: 0 * NaN is NaN, so one bad sample anywhere
         # would otherwise poison every node, however far away.
-        near = wi > 0.0
-        fi_flat[i] = np.sum(fvals[near] * wi[near]) if near.any() else np.nan
+        near = np.flatnonzero(wi > 0.0)
+        neighbors.append((near, wi[near]))
+    return ielv_arr.shape, neighbors
 
-    fi = fi_flat.reshape(orig_shape)
+
+def shepIDW_apply(weights, f):
+    """
+    :func:`shepIDW` of the field ``f`` with weights from :func:`shepIDW_weights`.
+
+    Args:
+        weights: what :func:`shepIDW_weights` returned.
+        f: data values, the shape of felv/fazi given to :func:`shepIDW_weights`.
+
+    Returns:
+        as for :func:`shepIDW`.
+    """
+    shape, neighbors = weights
+    fvals = np.asarray(f, dtype=float).ravel()
+    fi = np.array([np.sum(fvals[near] * w) if near.size else np.nan for near, w in neighbors],
+                  dtype=float).reshape(shape)
     if fi.ndim == 0:
         return float(fi)
     return fi
+
 
 def load_NASA_track(trackfile):
     """
@@ -4811,16 +4809,21 @@ def ega(hs, hr, d2, f, a, flores, pt=True, cturb=0.0, boundary_loss_correction=T
         
         attn = 1.0 + normalized_image_mag_sq + 2.0 * normalized_image_mag * cosine_factor
         mask_positive_delay = path_delay > 0.0
-        attn = np.where(
-            mask_positive_delay,
-            1.0 + normalized_image_mag_sq + 2.0 * normalized_image_mag * np.sin(spherical_phase_term) * cosine_factor / spherical_phase_term,
-            attn
-        )
+        # np.where evaluates both branches, so sin(x)/x is also taken at the
+        # zero delays (flush receivers) it then discards: silence that 0/0.
+        with np.errstate(divide='ignore', invalid='ignore'):
+            attn = np.where(
+                mask_positive_delay,
+                1.0 + normalized_image_mag_sq + 2.0 * normalized_image_mag * np.sin(spherical_phase_term) * cosine_factor / spherical_phase_term,
+                attn
+            )
         
         # Phase has no meaning for broadband, so set to NaN
         phase = np.full_like(attn, np.nan)
     
     # Convert magnitude to dB
+    if not np.all(np.isfinite(attn)):
+        raise ValueError('Error in EGA: non-finite attenuation magnitude encountered (check for f = 0)')
     if np.all(attn > 0.0):
         attenuation_db = 10.0 * np.log10(attn)
     else:

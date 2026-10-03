@@ -253,11 +253,6 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None, solver="auto", use_cou
         _AA_CACHE[aa_cache_key] = AA_sparse
 
     # DEBUG: Verify AA boundaries
-    if False:  # Set to True for debugging
-        AA_check = AA_sparse.toarray()
-        print(f"AA[0, :10] = {AA_check[0, :10]}")
-        print(f"AA[-1, -10:] = {AA_check[-1, -10:]}")
-
     # Weighting factor r for every sample and order, given or from the bandwidth
     if use_weight_factor:
         bw = _per_sample_and_order(bandwidth, n_x, n_ord, 'bandwidth')
@@ -331,29 +326,12 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None, solver="auto", use_cou
     # Avoid creating large tiled vectors by using broadcasting
     cH_x = (conj_phasor * x[:, None]).ravel(order="F")
 
-    # DEBUG: Print solve inputs
-    if False:  # Set to True for debugging
-        print(f"B_mat[0,0] = {B_mat[0,0]:.4f}")
-        print(f"B_mat is symmetric: {np.allclose(B_mat, B_mat.conj().T)}")
-        print(f"cH_x[0:5] = {cH_x[0:5]}")
-
     # Solve the linear equations using sparse solver
     B_mat = B_mat.tocsc()
     y_R = _solve_sparse(B_mat, cH_x, solver_choice)
 
-    # DEBUG: Check residual
-    if False:  # Enable for debugging
-        residual = B_mat @ y_R - cH_x
-        print(f"Residual norm: {np.linalg.norm(residual):.6e}")
-        print(f"Relative residual: {np.linalg.norm(residual) / np.linalg.norm(cH_x):.6e}")
-
-    # Get cost matrix (residual) - keep sparse if B_mat is sparse
-    if hasattr(B_mat, 'dot'):
-        # B_mat is sparse, use sparse multiplication
-        cost_mat = cH_x - B_mat.dot(y_R)
-    else:
-        # B_mat is dense
-        cost_mat = cH_x - B_mat @ y_R
+    # Get cost matrix (residual)
+    cost_mat = cH_x - B_mat.dot(y_R)
 
 
     # Reorder the complex envelope from a column vector to a

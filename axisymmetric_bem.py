@@ -156,13 +156,16 @@ def _assemble(targets, segs, flat_top, m_max, k, beta, tab, gx, gw, n_phi_unifor
     n_t = targets.shape[0]
     n_s = segs.shape[0]
     out = np.zeros((m_max + 1, n_t, n_s), dtype=np.complex128)
-    for i in prange(n_t):
-        for j in range(n_s):
-            same_plane = flat_top[j] and abs(targets[i, 1] - segs[j, 1]) < 1e-12 and flat_top[j]
-            vals = _modal_integral(targets[i, 0], targets[i, 1], segs[j], m_max, k, beta, tab, gx, gw,
-                                   n_phi_uniform, same_plane)
-            for m in range(m_max + 1):
-                out[m, i, j] = vals[m]
+    # Over (target, segment) pairs, so a single target (the microphone) is
+    # parallel too
+    for p in prange(n_t * n_s):
+        i = p // n_s
+        j = p - i * n_s
+        same_plane = flat_top[j] and abs(targets[i, 1] - segs[j, 1]) < 1e-12
+        vals = _modal_integral(targets[i, 0], targets[i, 1], segs[j], m_max, k, beta, tab, gx, gw,
+                               n_phi_uniform, same_plane)
+        for m in range(m_max + 1):
+            out[m, i, j] = vals[m]
     return out
 
 
@@ -371,7 +374,7 @@ def table(bands, sound_speed, flow_resistance=gp.FLOW_RESISTANCE, ground=None, s
           elevations=gp.BEM_ELEVATIONS, azimuths=gp.BEM_AZIMUTHS, **options):
     """(P_d, P_r) over each band's sub-frequencies, elevations and azimuths, for :func:`board_level`."""
     bands = np.asarray(bands, dtype=float)
-    offsets = 2.0 ** ((np.arange(sub_bands) + 0.5) / sub_bands / 3.0 - 1.0 / 6.0)
+    offsets = gp.sub_band_factors(sub_bands)
     frequencies = np.sort((bands[:, None] * offsets[None, :]).ravel())
     p_d, p_r = scattering(frequencies, elevations, azimuths, sound_speed, flow_resistance, ground,
                           **options)
@@ -413,7 +416,7 @@ def board_level(bands, source_height, ground_distance, sound_speed, table, sub_b
     if mirror_y:
         azimuth = np.mod(-azimuth, 360.0)
     t_az = np.concatenate((table['azimuths'], [table['azimuths'][0] + 360.0]))
-    offsets = 2.0 ** ((np.arange(sub_bands) + 0.5) / sub_bands / 3.0 - 1.0 / 6.0)
+    offsets = gp.sub_band_factors(sub_bands)
     top = table['frequencies'].max() * (1.0 + 1e-9)
     energy = np.zeros(f.shape)
     for factor in offsets:

@@ -526,16 +526,12 @@ def fresnel_strip_weight(bands, source_height, ground_distance, sound_speed,
     specular = np.hypot(d2, hs + mic_height)
     target = specular + zone_fraction * sound_speed / f
 
+    def path(x):
+        return _path_via(x, hs, d2, mic_height)
+
     def solve(lo, hi):
         # Path length is monotonic either side of the specular point.
-        increasing = _path_via(hi, hs, d2, mic_height) > _path_via(lo, hs, d2, mic_height)
-        for _ in range(iterations):
-            mid = 0.5 * (lo + hi)
-            beyond = _path_via(mid, hs, d2, mic_height) > target
-            move_hi = beyond == increasing
-            hi = np.where(move_hi, mid, hi)
-            lo = np.where(move_hi, lo, mid)
-        return 0.5 * (lo + hi)
+        return _bisect(path, target, lo, hi, path(hi) > path(lo), iterations)
 
     far = np.maximum(d2, 1.0) * 1e4 + target
     d1 = solve(-far, specular_x)           # source side of the specular point
@@ -586,6 +582,14 @@ def board_fresnel_strip(bands, source_height, ground_distance, sound_speed,
     plate, soft = _plate_and_soft(bands, source_height, ground_distance, sound_speed,
                                   flow_resistance, zone)
     return _blend(1.0 - r, plate, soft, blend)
+
+
+def sub_band_factors(sub_bands):
+    """Frequencies, as fractions of the band center, splitting a third-octave band
+    into ``sub_bands`` equal log-width parts at their centers.  Plate tables are
+    built and read on these, so both sides take them from here.
+    """
+    return 2.0 ** ((np.arange(sub_bands) + 0.5) / sub_bands / 3.0 - 1.0 / 6.0)
 
 
 def _bisect(path, limit, lo, hi, increasing, iterations=60):
@@ -749,7 +753,7 @@ def board_nmid(bands, source_height, ground_distance, sound_speed,
     interference the way a band measurement does.
     """
     f, hs, d2 = _broadcast(bands, source_height, ground_distance)
-    offsets = 2.0 ** ((np.arange(sub_bands) + 0.5) / sub_bands / 3.0 - 1.0 / 6.0)
+    offsets = sub_band_factors(sub_bands)
     energy = np.zeros(f.shape)
     for factor in offsets:
         energy += np.abs(nmid_pressure_ratio(f * factor, hs, d2, sound_speed, flow_resistance,
@@ -1583,7 +1587,7 @@ def disc_bem_table(bands, sound_speed, flow_resistance=FLOW_RESISTANCE, sub_band
     the microphone height used (``options`` go to :func:`disc_bem_scattered`).
     """
     bands = np.asarray(bands, dtype=float)
-    offsets = 2.0 ** ((np.arange(sub_bands) + 0.5) / sub_bands / 3.0 - 1.0 / 6.0)
+    offsets = sub_band_factors(sub_bands)
     frequencies = np.sort((bands[:, None] * offsets[None, :]).ravel())
     scattered = disc_bem_scattered(frequencies, elevations, azimuths, sound_speed, flow_resistance,
                                    **options)
@@ -1638,7 +1642,7 @@ def board_disc_bem(bands, source_height, ground_distance, sound_speed,
         azimuth = np.mod(-azimuth, 360.0)
     t_az = np.concatenate((table['azimuths'], [table['azimuths'][0] + 360.0]))
     height = table['mic_height']
-    offsets = 2.0 ** ((np.arange(sub_bands) + 0.5) / sub_bands / 3.0 - 1.0 / 6.0)
+    offsets = sub_band_factors(sub_bands)
     top = table['frequencies'].max() * (1.0 + 1e-9)
     energy = np.zeros(f.shape)
     for factor in offsets:
