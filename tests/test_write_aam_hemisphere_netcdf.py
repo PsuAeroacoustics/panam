@@ -185,7 +185,7 @@ def test_database_carries_the_root_vehicle_fields_niceops_reads(tmp_path):
         assert 'same_grid' in db.variables
         assert float(db['main_rotor_radius_meters'][0]) == 5.334
         assert float(db['main_rotor_tip_speed_meters_per_sec'][0]) == 230.7
-        assert float(db['vehicle_weight_newtons'][0]) == 9.82 * 2250
+        assert float(db['vehicle_weight_newtons'][0]) == fa.STANDARD_GRAVITY * 2250
 
 
 def _sphere_dir_with_two_conditions(tmp_path):
