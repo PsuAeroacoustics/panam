@@ -13,6 +13,8 @@ numerics are compiled with Numba and run in parallel.
 
 Units follow ground_plane: lengths in feet, speeds in ft/s.
 """
+from types import SimpleNamespace
+
 import numpy as np
 from numba import njit, prange
 from scipy.special import jv
@@ -206,6 +208,55 @@ def plate_generator(radius=gp.PLATE_RADIUS_FT, thickness=gp.PLATE_THICKNESS_FT,
     return np.array(segs), np.array(flat)
 
 
+def _surface_modes(f, sound_speed, flow_resistance, ground, geometry, segments_per_wavelength, max_segment,
+                   extra_modes, n_phi_uniform, gx, gw, extent, generator=None):
+    """What :func:`scattering` and :func:`field` share at one frequency: the generating curve,
+    the mode count, the ground, the Green's function table and the surface's modal kernels.
+
+    ``extent(segment)`` gives the table's (rho_max, z_max), which depend on each caller's
+    targets.  Returns a namespace of k, segs, flat, m_max, n_phi, beta, tab, mids and kern.
+    """
+    radius = geometry.get('radius', gp.PLATE_RADIUS_FT)
+    k = 2 * np.pi * f / sound_speed
+    segment = min(max_segment, sound_speed / f / segments_per_wavelength)
+    if generator is None:
+        segs, flat = plate_generator(segment=segment, **geometry)
+    else:
+        segs, flat = np.asarray(generator[0], float), np.asarray(generator[1], bool)
+    m_max = int(np.ceil(k * radius)) + extra_modes
+    n_phi = n_phi_uniform or max(16, 2 * m_max)
+    beta = gp._ground_admittance(f, sound_speed, flow_resistance, ground)
+    table = gp.ImageIntegralTable(k, beta, *extent(segment))
+    tab = (table.u[0], table.u[1] - table.u[0], table.u.size, table.v[0], table.v[1] - table.v[0],
+           table.v.size, table.offset, np.ascontiguousarray(table.i_red), np.ascontiguousarray(table.j_red))
+    mids = np.column_stack((0.5 * (segs[:, 0] + segs[:, 2]), 0.5 * (segs[:, 1] + segs[:, 3])))
+    kern = _assemble(mids, segs, flat, m_max, k, complex(beta), tab, gx, gw, n_phi)
+    return SimpleNamespace(k=k, segs=segs, flat=flat, m_max=m_max, n_phi=n_phi, beta=beta, tab=tab, mids=mids,
+                           kern=kern)
+
+
+def _solve_modes(modes, el):
+    """Surface pressure per mode for direct and ground-reflected plane waves from elevations ``el``
+    (radians): (m, segment, 2 n_el), the direct waves' columns first.
+
+    The modal incident fields (Jacobi-Anger) exclude the e^{-i m az} factor.
+    """
+    kappa = modes.k * np.cos(el)                                  # (n_el,)
+    kz = modes.k * np.sin(el)
+    m = np.arange(modes.m_max + 1)
+    mids = modes.mids
+    jm = jv(m[:, None, None], kappa[None, None, :] * mids[None, :, 0:1])      # (m, n, el)
+    im = (1j ** m)[:, None, None]
+    inc_d = im * jm * np.exp(-1j * kz[None, None, :] * mids[None, :, 1:2])
+    inc_r = im * jm * np.exp(+1j * kz[None, None, :] * mids[None, :, 1:2])
+    n = modes.segs.shape[0]
+    sols = np.empty((modes.m_max + 1, n, 2 * el.size), dtype=complex)
+    for mm in range(modes.m_max + 1):
+        system = 0.5 * np.eye(n) - modes.kern[mm]
+        sols[mm] = np.linalg.solve(system, np.hstack((inc_d[mm], inc_r[mm])))
+    return sols
+
+
 def scattering(frequencies, elevations, azimuths, sound_speed, flow_resistance=gp.FLOW_RESISTANCE,
                ground=None, mic=(0.0, gp.PLATE_MIC_OFFSET_FT), segments_per_wavelength=10,
                max_segment=0.02, extra_modes=10, gauss=6, n_phi_uniform=None, generator=None,
@@ -248,46 +299,30 @@ def scattering(frequencies, elevations, azimuths, sound_speed, flow_resistance=g
     gx, gw = 0.5 * (gx + 1.0), 0.5 * gw
     pd_out = np.empty((frequencies.size, el.size, az.size), dtype=complex)
     pr_out = np.empty_like(pd_out)
+    # Vertical reach: source on the plate plus target, up to a raised microphone.
+    z_reach = max(2.0 * thickness, thickness + z_mic)
+    extent = lambda segment: (2.0 * radius * 1.02 + 2 * segment, z_reach * 1.05)
     for fi, f in enumerate(frequencies):
-        k = 2 * np.pi * f / sound_speed
-        segment = min(max_segment, sound_speed / f / segments_per_wavelength)
-        if generator is None:
-            segs, flat = plate_generator(segment=segment, **geometry)
-        else:
-            segs, flat = np.asarray(generator[0], float), np.asarray(generator[1], bool)
-        m_max = int(np.ceil(k * radius)) + extra_modes
-        n_phi = n_phi_uniform or max(16, 2 * m_max)
-        beta = gp._ground_admittance(f, sound_speed, flow_resistance, ground)
-        # Vertical reach: source on the plate plus target, up to a raised microphone.
-        z_reach = max(2.0 * thickness, thickness + z_mic)
-        table = gp.ImageIntegralTable(k, beta, 2.0 * radius * 1.02 + 2 * segment, z_reach * 1.05)
-        tab = (table.u[0], table.u[1] - table.u[0], table.u.size, table.v[0], table.v[1] - table.v[0],
-               table.v.size, table.offset, np.ascontiguousarray(table.i_red), np.ascontiguousarray(table.j_red))
-        mids = np.column_stack((0.5 * (segs[:, 0] + segs[:, 2]), 0.5 * (segs[:, 1] + segs[:, 3])))
-        kern = _assemble(mids, segs, flat, m_max, k, complex(beta), tab, gx, gw, n_phi)
+        modes = _surface_modes(f, sound_speed, flow_resistance, ground, geometry, segments_per_wavelength,
+                               max_segment, extra_modes, n_phi_uniform, gx, gw, extent, generator)
+        k, m_max, n_phi = modes.k, modes.m_max, modes.n_phi
         target = np.array([[r_mic, z_mic]])
         # Off the surface the ring kernel peaks within ~ the height of the ring
         # below, so resolve that in azimuth (a few points per height).
         n_phi_mic = max(n_phi, 64)
         if not surface:
             n_phi_mic = max(n_phi_mic, int(np.ceil(2 * np.pi * r_mic / (float(mic_height) / 4.0))))
-        kmic = _assemble(target, segs, flat, m_max, k, complex(beta), tab, gx, gw, n_phi_mic)[:, 0, :]
-        n = segs.shape[0]
+        kmic = _assemble(target, modes.segs, modes.flat, m_max, k, complex(modes.beta), modes.tab, gx, gw,
+                         n_phi_mic)[:, 0, :]
         kappa = k * np.cos(el)                                  # (n_el,)
         kz = k * np.sin(el)
         m = np.arange(m_max + 1)
-        # Modal incident fields (per mode m, excluding the e^{-i m az} factor).
-        jm = jv(m[:, None, None], kappa[None, None, :] * mids[None, :, 0:1])      # (m, n, el)
-        im = (1j ** m)[:, None, None]
-        inc_d = im * jm * np.exp(-1j * kz[None, None, :] * mids[None, :, 1:2])
-        inc_r = im * jm * np.exp(+1j * kz[None, None, :] * mids[None, :, 1:2])
+        sols = _solve_modes(modes, el)
         c_d = np.empty((m_max + 1, el.size), dtype=complex)
         c_r = np.empty_like(c_d)
         for mm in range(m_max + 1):
-            system = 0.5 * np.eye(n) - kern[mm]
-            sol = np.linalg.solve(system, np.hstack((inc_d[mm], inc_r[mm])))
-            c_d[mm] = kmic[mm] @ sol[:, :el.size]
-            c_r[mm] = kmic[mm] @ sol[:, el.size:]
+            c_d[mm] = kmic[mm] @ sols[mm][:, :el.size]
+            c_r[mm] = kmic[mm] @ sols[mm][:, el.size:]
         # Sum modes -M..M at the microphone: coefficients for +-m are equal.
         weights = np.where(m == 0, 1.0, 2.0)
         phase = np.cos(m[:, None] * (phi_mic - az[None, :]))    # (m, az)
@@ -319,12 +354,6 @@ def field(frequency, elevation, azimuth, sound_speed, points, flow_resistance=gp
     thickness = geometry.get('thickness', gp.PLATE_THICKNESS_FT)
     f = float(frequency)
     el, az = np.radians(float(elevation)), np.radians(float(azimuth))
-    k = 2 * np.pi * f / sound_speed
-    segment = min(max_segment, sound_speed / f / segments_per_wavelength)
-    segs, flat = plate_generator(segment=segment, **geometry)
-    m_max = int(np.ceil(k * radius)) + extra_modes
-    n_phi = n_phi_uniform or max(16, 2 * m_max)
-    beta = gp._ground_admittance(f, sound_speed, flow_resistance, ground)
     r_t = np.hypot(pts[:, 0], pts[:, 1])
     phi_t = np.arctan2(pts[:, 1], pts[:, 0])
     z_t = pts[:, 2]
@@ -335,31 +364,21 @@ def field(frequency, elevation, azimuth, sound_speed, points, flow_resistance=gp
     top = (np.interp(r_t, [radius - taper_length, radius], [thickness, edge_thickness])
            if taper_length > 0.0 else thickness)
     inside = (r_t < radius) & (z_t < top)
-    rho_max = max(2.0 * radius, float(r_t.max()) + radius) * 1.02 + 2 * segment
-    z_max = max(2.0 * thickness, float(z_t.max()) + thickness) * 1.05
-    tbl = gp.ImageIntegralTable(k, beta, rho_max, z_max)
-    tab = (tbl.u[0], tbl.u[1] - tbl.u[0], tbl.u.size, tbl.v[0], tbl.v[1] - tbl.v[0], tbl.v.size, tbl.offset,
-           np.ascontiguousarray(tbl.i_red), np.ascontiguousarray(tbl.j_red))
+    extent = lambda segment: (max(2.0 * radius, float(r_t.max()) + radius) * 1.02 + 2 * segment,
+                              max(2.0 * thickness, float(z_t.max()) + thickness) * 1.05)
     gx, gw = np.polynomial.legendre.leggauss(gauss)
     gx, gw = 0.5 * (gx + 1.0), 0.5 * gw
-    mids = np.column_stack((0.5 * (segs[:, 0] + segs[:, 2]), 0.5 * (segs[:, 1] + segs[:, 3])))
-    kern = _assemble(mids, segs, flat, m_max, k, complex(beta), tab, gx, gw, n_phi)
+    modes = _surface_modes(f, sound_speed, flow_resistance, ground, geometry, segments_per_wavelength,
+                           max_segment, extra_modes, n_phi_uniform, gx, gw, extent)
+    k, m_max = modes.k, modes.m_max
     kappa, kz = k * np.cos(el), k * np.sin(el)
     m = np.arange(m_max + 1)
-    jm = jv(m[:, None], kappa * mids[None, :, 0])
-    im = (1j ** m)[:, None]
-    inc_d = im * jm * np.exp(-1j * kz * mids[None, :, 1])
-    inc_r = im * jm * np.exp(+1j * kz * mids[None, :, 1])
-    n = segs.shape[0]
-    sol_d = np.empty((m_max + 1, n), dtype=complex)
-    sol_r = np.empty_like(sol_d)
-    for mm in range(m_max + 1):
-        system = 0.5 * np.eye(n) - kern[mm]
-        sol = np.linalg.solve(system, np.column_stack((inc_d[mm], inc_r[mm])))
-        sol_d[mm], sol_r[mm] = sol[:, 0], sol[:, 1]
+    sols = _solve_modes(modes, np.array([el]))
+    sol_d, sol_r = np.ascontiguousarray(sols[:, :, 0]), np.ascontiguousarray(sols[:, :, 1])
     ok = ~inside
     targets = np.column_stack((r_t[ok], z_t[ok]))
-    ktar = _assemble(targets, segs, flat, m_max, k, complex(beta), tab, gx, gw, n_phi)   # (m, t, s)
+    ktar = _assemble(targets, modes.segs, modes.flat, m_max, k, complex(modes.beta), modes.tab, gx, gw,
+                     modes.n_phi)                                                         # (m, t, s)
     weights = np.where(m == 0, 1.0, 2.0)
     phase = weights[:, None] * np.cos(m[:, None] * (phi_t[ok][None, :] - az))            # (m, t)
     scat_d = np.einsum('mt,mts,ms->t', phase, ktar, sol_d)
