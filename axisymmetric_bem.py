@@ -224,7 +224,11 @@ def _surface_modes(f, sound_speed, flow_resistance, ground, geometry, segments_p
     else:
         segs, flat = np.asarray(generator[0], float), np.asarray(generator[1], bool)
     m_max = int(np.ceil(k * radius)) + extra_modes
-    n_phi = n_phi_uniform or max(16, 2 * m_max)
+    # Uniform azimuth panels (``gauss`` points each) over the half turn: one
+    # per mode.  Against 4 per mode it is within 3e-5 dB at realistic levels
+    # (100 Hz and 10 kHz bands), like the 2 per mode used before, and it
+    # moves the production tables' band levels by at most 6e-5 dB.
+    n_phi = n_phi_uniform or max(16, m_max)
     beta = gp._ground_admittance(f, sound_speed, flow_resistance, ground)
     table = gp.ImageIntegralTable(k, beta, *extent(segment))
     tab = (table.u[0], table.u[1] - table.u[0], table.u.size, table.v[0], table.v[1] - table.v[0],
