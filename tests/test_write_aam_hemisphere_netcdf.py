@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 import flight_acoustics as fa
+from sphere_helpers import VEHICLE_CFG, minimal_hemisphere
 from netCDF4 import Dataset
 
 
@@ -107,19 +108,10 @@ AAM_REQUIRED_UNITS = {
 }
 
 
-def _minimal_hemisphere():
-    band_centers = np.array([100.0, 125.0, 160.0])
-    elv = np.arange(0.0, 90.0 + 1e-9, 30.0)
-    azi = np.arange(0.0, 360.0 + 1e-9, 60.0)
-    bands = np.full((band_centers.size, elv.size, azi.size), 80.0)
-    return dict(azi_grid_deg=azi, elv_grid_deg=elv,
-                third_octave=dict(band_centers_hz=band_centers, bands_db=bands))
-
-
 def test_written_sphere_carries_every_field_aam_reads(tmp_path):
     path = tmp_path / 'sphere.nc'
     fa.write_aam_hemisphere_netcdf(
-        str(path), _minimal_hemisphere(), mode='third_octave',
+        str(path), minimal_hemisphere(), mode='third_octave',
         phi_deg=np.arange(-90.0, 90.0 + 1e-9, 10.0),
         theta_deg=np.arange(0.0, 180.0 + 1e-9, 5.0),
         radius_ft=100.0, speed_knots=70.0, flight_path_angle_deg=-6.0,
@@ -142,7 +134,7 @@ def test_written_sphere_carries_every_field_aam_reads(tmp_path):
 
 def test_missing_bands_are_written_as_the_aam_sentinel(tmp_path):
     """Ambient gating leaves bands with no data; they must read back as no energy."""
-    hemisphere = _minimal_hemisphere()
+    hemisphere = minimal_hemisphere()
     hemisphere['third_octave']['bands_db'][0, :, :] = -np.inf
 
     path = tmp_path / 'gapped.nc'
@@ -165,14 +157,10 @@ def test_database_carries_the_root_vehicle_fields_niceops_reads(tmp_path):
 
     sphere_dir = tmp_path / 'spheres'
     sphere_dir.mkdir()
-    (sphere_dir / 'vehicle.cfg').write_text(
-        '[Main Rotor]\nradius = 5.334\ntip speed = 230.7\nblades = 4\n'
-        '[Tail Rotor]\nradius = 0.8255\ntip speed = 216.1\nblades = 2\n'
-        '[Atmosphere]\ndensity = 1.070\ntemperature = 280.37\n'
-        '[Vehicle]\nweight = 2250\ndrag = 0.8175\n')
+    (sphere_dir / 'vehicle.cfg').write_text(VEHICLE_CFG)
 
     fa_mod.write_aam_hemisphere_netcdf(
-        str(sphere_dir / 'X100.nc'), _minimal_hemisphere(), mode='third_octave',
+        str(sphere_dir / 'X100.nc'), minimal_hemisphere(), mode='third_octave',
         phi_deg=np.arange(-90.0, 90.0 + 1e-9, 10.0),
         theta_deg=np.arange(0.0, 180.0 + 1e-9, 10.0),
         radius_ft=100.0, speed_knots=70.0, flight_path_angle_deg=0.0, title='t')
@@ -191,14 +179,10 @@ def test_database_carries_the_root_vehicle_fields_niceops_reads(tmp_path):
 def _sphere_dir_with_two_conditions(tmp_path):
     sphere_dir = tmp_path / 'spheres'
     sphere_dir.mkdir()
-    (sphere_dir / 'vehicle.cfg').write_text(
-        '[Main Rotor]\nradius = 5.334\ntip speed = 230.7\nblades = 4\n'
-        '[Tail Rotor]\nradius = 0.8255\ntip speed = 216.1\nblades = 2\n'
-        '[Atmosphere]\ndensity = 1.070\ntemperature = 280.37\n'
-        '[Vehicle]\nweight = 2250\ndrag = 0.8175\n')
+    (sphere_dir / 'vehicle.cfg').write_text(VEHICLE_CFG)
     for name, speed, fpa in [('A100.nc', 70.0, 0.0), ('A101.nc', 90.0, -6.0)]:
         fa.write_aam_hemisphere_netcdf(
-            str(sphere_dir / name), _minimal_hemisphere(), mode='third_octave',
+            str(sphere_dir / name), minimal_hemisphere(), mode='third_octave',
             phi_deg=np.arange(-90.0, 90.0 + 1e-9, 10.0),
             theta_deg=np.arange(0.0, 180.0 + 1e-9, 10.0),
             radius_ft=100.0, speed_knots=speed, flight_path_angle_deg=fpa, title='t')
@@ -250,7 +234,7 @@ def test_denormal_band_power_is_written_as_missing_not_as_minus_3000_db(tmp_path
     Without a floor those become finite levels near -3000 dB, which read back as
     real data: a Be407 descent sphere had 68% of its directions at -3064 dBA.
     """
-    hemisphere = _minimal_hemisphere()
+    hemisphere = minimal_hemisphere()
     # One band left with essentially no energy anywhere, as gating produces.
     hemisphere['third_octave']['bands_db'][0, :, :] = -3000.0
 
@@ -286,13 +270,9 @@ def test_empty_directions_leave_a_usable_eaa(tmp_path):
 
     sphere_dir = tmp_path / 'spheres'
     sphere_dir.mkdir()
-    (sphere_dir / 'vehicle.cfg').write_text(
-        '[Main Rotor]\nradius = 5.334\ntip speed = 230.7\nblades = 4\n'
-        '[Tail Rotor]\nradius = 0.8255\ntip speed = 216.1\nblades = 2\n'
-        '[Atmosphere]\ndensity = 1.070\ntemperature = 280.37\n'
-        '[Vehicle]\nweight = 2250\ndrag = 0.8175\n')
+    (sphere_dir / 'vehicle.cfg').write_text(VEHICLE_CFG)
 
-    hemisphere = _minimal_hemisphere()
+    hemisphere = minimal_hemisphere()
     hemisphere['third_octave']['bands_db'][:, 0, :] = -np.inf   # a whole elevation ring gated out
     fa_mod.write_aam_hemisphere_netcdf(
         str(sphere_dir / 'X100.nc'), hemisphere, mode='third_octave',
@@ -338,18 +318,14 @@ def _sphere_dir_with_mismatched_grids(tmp_path):
     """
     sphere_dir = tmp_path / 'spheres_mismatched'
     sphere_dir.mkdir()
-    (sphere_dir / 'vehicle.cfg').write_text(
-        '[Main Rotor]\nradius = 5.334\ntip speed = 230.7\nblades = 4\n'
-        '[Tail Rotor]\nradius = 0.8255\ntip speed = 216.1\nblades = 2\n'
-        '[Atmosphere]\ndensity = 1.070\ntemperature = 280.37\n'
-        '[Vehicle]\nweight = 2250\ndrag = 0.8175\n')
+    (sphere_dir / 'vehicle.cfg').write_text(VEHICLE_CFG)
     conditions = [
         ('A100.nc', 70.0, 0.0, np.arange(0.0, 180.0 + 1e-9, 10.0)),
         ('A101.nc', 90.0, -6.0, np.arange(0.0, 180.0 + 1e-9, 15.0)),
     ]
     for name, speed, fpa, theta_deg in conditions:
         fa.write_aam_hemisphere_netcdf(
-            str(sphere_dir / name), _minimal_hemisphere(), mode='third_octave',
+            str(sphere_dir / name), minimal_hemisphere(), mode='third_octave',
             phi_deg=np.arange(-90.0, 90.0 + 1e-9, 10.0), theta_deg=theta_deg,
             radius_ft=100.0, speed_knots=speed, flight_path_angle_deg=fpa, title='t')
     return sphere_dir
