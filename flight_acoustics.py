@@ -5333,17 +5333,26 @@ def spherical_reflection_coefficient(cos_grazing, image_range, f, a, flores,
     if not boundary_loss_correction:
         return plane_wave_coeff
 
-    # Compute numerical distance (simplified: 0.5*k1 = π*f/a)
+    # Compute numerical distance (simplified: 0.5*k1 = π*f/a).  This is the
+    # root z of the numerical distance w = z^2.
     ground_effect_param = np.sqrt(
         1j * np.pi * f * image_range / a / (1.0 + impedance_ratio * cos_grazing)
     ) * (cos_grazing + impedance_ratio)
-    w = ground_effect_param ** 2  # Numerical distance parameter
 
     # Boundary loss factor F = 1 + i sqrt(pi w) exp(-w) erfc(-i sqrt(w)), with
     # exp(-z^2) erfc(-i z) as the Faddeeva function: accurate at any |w|, where
     # exp(-w) and erfc evaluated apart overflow, which once forced a cutoff at
     # |w| = 500 that stepped Q by up to 2e-3.
-    boundary_loss = 1 + 1j * np.sqrt(np.pi * w) * wofz(np.sqrt(w))
+    #
+    # sqrt(w) is the parameter itself, not the principal root of its square.
+    # The two agree wherever its real part is positive, which is every passive
+    # ground but a mass-like one (Im beta > 0, as a thin hard-backed layer
+    # gives in some bands).  There the parameter is in the second quadrant and
+    # the principal root is its negative, whose wofz carries a surface wave
+    # growing as exp(|Re w|) with range: |Q| of 1e7 at |w| = 50, an overflow
+    # by |w| ~ 1e3.  Such a surface has no surface wave, and the parameter
+    # gives none.
+    boundary_loss = 1 + 1j * np.sqrt(np.pi) * ground_effect_param * wofz(ground_effect_param)
 
     # Combined reflection + boundary loss
     return plane_wave_coeff + boundary_loss * (1.0 - plane_wave_coeff)
