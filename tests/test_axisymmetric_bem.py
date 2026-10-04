@@ -125,3 +125,66 @@ def test_field_inside_the_plate_is_nan_and_far_field_tends_to_the_bare_ground():
     # 30 ft up, the plate's scattered wave is small next to the unit plane waves
     assert abs(Pd[1] - np.exp(-1j * k * np.sin(np.radians(el)) * z)) < 0.05
     assert abs(Pr[1] - np.exp(1j * k * np.sin(np.radians(el)) * z)) < 0.05
+
+
+def test_board_level_is_nan_for_bands_the_table_does_not_hold():
+    # A table for 500 and 1000 Hz: 400 (below), 630 and 800 (between) and
+    # 1250 Hz (above) have no rows, and must not borrow the nearest one's.
+    bands = np.array([500.0, 1000.0])
+    frequencies = np.sort((bands[:, None] * gp.sub_band_factors(2)[None, :]).ravel())
+    p_d = np.ones((frequencies.size, 2, 2), dtype=complex)
+    table = dict(frequencies=frequencies, elevations=np.array([0.0, 90.0]), azimuths=np.array([0.0, 180.0]),
+                 P_d=p_d, P_r=np.zeros_like(p_d), thickness=gp.PLATE_THICKNESS_FT,
+                 flow_resistance=gp.FLOW_RESISTANCE, ground=None, sub_bands=2)
+    level = ab.board_level([400.0, 500.0, 630.0, 800.0, 1000.0, 1250.0], [100.0], [200.0], C, table)[:, 0]
+    np.testing.assert_allclose(level[[1, 4]], 0.0, atol=1e-12)
+    assert np.all(np.isnan(level[[0, 2, 3, 5]]))
+
+
+def test_netcdf_export_orders_the_bands(tmp_path):
+    # Bands given high to low: each band_center must still head its own
+    # sub-frequencies and their P_d, P_r.
+    from netCDF4 import Dataset
+    table = ab.table(np.array([1000.0, 500.0]), C, sub_bands=2, elevations=np.array([5.0, 30.0]),
+                     azimuths=np.array([0.0, 180.0]))
+    path = tmp_path / 'plate.nc'
+    ab.write_netcdf(str(path), table)
+    with Dataset(path) as nc:
+        centers, frequency = nc['band_center'][:], nc['frequency'][:]
+        p_d = nc['P_d_real'][:] + 1j * nc['P_d_imag'][:]
+    np.testing.assert_array_equal(centers, [500.0, 1000.0])
+    np.testing.assert_allclose(frequency, centers[:, None] * gp.sub_band_factors(2)[None, :], rtol=1e-12)
+    for i in range(2):
+        for j in range(2):
+            row = np.argmin(np.abs(table['frequencies'] - frequency[i, j]))
+            np.testing.assert_array_equal(p_d[i, j], table['P_d'][row])
+    table['bands'] = np.array([500.0, 900.0])
+    with pytest.raises(ValueError, match="sub-frequencies"):
+        ab.write_netcdf(str(tmp_path / 'bad.nc'), table)
+
+
+def test_field_over_the_taper_is_air():
+    # Halfway along the taper the surface is midway between the 8 mm top and
+    # the 2.5 mm rim: a point 1 mm above it is in the air, 1 mm below it inside.
+    r = gp.PLATE_RADIUS_FT - 0.5 * gp.PLATE_TAPER_LENGTH_FT
+    surface = 0.5 * (gp.PLATE_THICKNESS_FT + gp.PLATE_EDGE_THICKNESS_FT)
+    mm = 0.001 / 0.3048
+    Pd, Pr = ab.field(2000.0, 30.0, 0.0, C, [[r, 0.0, surface + mm], [r, 0.0, surface - mm],
+                                            [gp.PLATE_RADIUS_FT + mm, 0.0, gp.PLATE_THICKNESS_FT - mm]])
+    assert np.isfinite(Pd[0]) and np.isfinite(Pr[0])
+    assert np.isnan(Pd[1]) and np.isnan(Pr[1])
+    assert np.isfinite(Pd[2])                        # beside the rim
+    # Near-surface pressure over a rigid plate on soft ground: of order the doubled wave.
+    assert 0.5 < abs(Pd[0]) < 3.0
+
+
+def test_bessel_orders_match_scipy():
+    # Miller's recurrence against scipy's jv over the incident fields' range
+    # (orders to k a + 10 at 11 kHz, arguments to k a), tiny arguments included.
+    from scipy.special import j0, j1, jv
+    x = np.concatenate(([0.0, 1e-300, 1e-31, 1e-29, 1e-12], np.linspace(1e-3, 40.0, 4001)))
+    ours = ab._bessel_j_orders(50, x, j0(x), j1(x))
+    exact = jv(np.arange(51)[:, None], x[None, :])
+    assert np.all(np.isfinite(ours))
+    np.testing.assert_allclose(ours, exact, rtol=0.0, atol=5e-15)
+    assert ours[2, 2] == pytest.approx(1e-31 ** 2 / 8.0, rel=1e-12)   # the series branch: J_2 = x^2/8

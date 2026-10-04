@@ -74,20 +74,14 @@ def test_ground_footprint_puts_starboard_on_the_right(tmp_path):
     used x = -ground_range*sin(azimuth), which mirrored every footprint once
     art2umapr put ART phi > 0 to starboard (the AAM manual's sign).
     """
-    from netCDF4 import Dataset
+    from sphere_helpers import write_raw_sphere
     path = tmp_path / 'starboard_loud.nc'
     phi = np.arange(-90.0, 91.0, 10.0)
     theta = np.arange(0.0, 181.0, 5.0)
     frequency = np.array([100.0, 1000.0])
     amplitude = np.full((phi.size, theta.size, frequency.size), 80.0)
     amplitude[phi > 0] = 100.0                       # ART phi > 0 is starboard
-    with Dataset(str(path), 'w', format='NETCDF3_CLASSIC') as ds:
-        for name, values in (('PHI', phi), ('THETA', theta), ('FREQUENCY', frequency)):
-            ds.createDimension(name, values.size)
-            ds.createVariable(name, 'f4', (name,))[:] = values
-        ds.createVariable('AMPLITUDE', 'f4', ('PHI', 'THETA', 'FREQUENCY'))[:] = amplitude
-        for name, value in (('RADIUS', 100.0), ('SPEED', 60.0), ('FLIGHT_PATH_ANGLE', 0.0)):
-            ds.createVariable(name, 'f4').assignValue(value)
+    write_raw_sphere(path, phi, theta, frequency, amplitude, RADIUS=100.0, SPEED=60.0, FLIGHT_PATH_ANGLE=0.0)
 
     x, y, level_a, _, _ = fa.project_sphere(str(path), 150.0, 20.0)
     assert level_a[x > 1.0].mean() > level_a[x < -1.0].mean() + 10.0

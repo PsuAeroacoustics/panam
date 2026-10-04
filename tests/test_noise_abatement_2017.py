@@ -1,5 +1,7 @@
 """Dataset-independent pieces of the 2017 Noise Abatement sphere rebuild."""
 
+import os
+
 import numpy as np
 import pytest
 
@@ -335,3 +337,102 @@ def test_the_plate_correction_runs_through_the_sphere_build(monkeypatch, tmp_pat
     clear = (flat > -90.0) | (plate > -90.0 + expected)
     assert clear.sum() > 1000
     np.testing.assert_allclose(plate[clear] - flat[clear], expected, atol=1e-4)
+
+
+@pytest.mark.parametrize('edge', ['start', 'end'])
+def test_steady_window_leaves_an_unsteady_edge_out(edge):
+    """A brief excursion is closed only between two steady stretches.
+
+    An unsteady second at either end of the record bridges nothing; it used
+    to be filled in like an interior gap, so the window began (or ended) in
+    the turn-in it was meant to exclude.
+    """
+    track = _track()
+    n = track['time'].size
+    unsteady = slice(0, 50) if edge == 'start' else slice(n - 50, n)    # 1 s, under max_gap_s
+    track['roll'][unsteady] = 25.0
+    start, stop = na.steady_window(track)
+    assert (start, stop) == ((50, n) if edge == 'start' else (0, n - 50))
+
+
+def test_steady_window_takes_the_first_of_equally_long_segments():
+    track = _track(duration=30.0)
+    n = track['time'].size
+    track['roll'][n // 2 - 150: n // 2 + 150] = 25.0         # 6 s turn in the middle
+    start, stop = na.steady_window(track)
+    assert (start, stop) == (0, n // 2 - 150)
+
+
+def test_the_sphere_build_opens_each_channel_once(monkeypatch, tmp_path):
+    """It used to open every run channel once just for its location, and
+    every ambient channel once just for its start time."""
+    from collections import Counter
+    from netCDF4 import Dataset
+    _archive(tmp_path)
+    opened = Counter()
+
+    def counting(path, *args, **kwargs):
+        opened[os.path.basename(str(path))] += 1
+        return Dataset(path, *args, **kwargs)
+    monkeypatch.setattr(na, 'Dataset', counting)
+    records, failures = na.build_all('AS350B3', str(tmp_path / 'out'), root=str(tmp_path),
+                                     prefetch=False, board_correction='flat')
+    assert failures == [] and records[0]['mics'] == 3
+    channels = {name: count for name, count in opened.items() if name.endswith('_pascal.nc')}
+    assert channels == {'{}_{}_pascal.nc'.format(run, mic): 1
+                        for run in ('289108', '289101') for mic in (1, 2, 3)}
+
+
+@pytest.mark.parametrize('gate_ambient', [True, False])
+def test_the_prefetch_pulls_ambient_only_when_it_is_used(monkeypatch, tmp_path, gate_ambient):
+    """With gate_ambient=False build_sphere reads no ambient recording, so the
+    prefetch must not pull the ambient run's files either.  A run id with no
+    data must not stop the batch."""
+    _archive(tmp_path)
+    fetched = []
+    monkeypatch.setattr(na, '_prefetch', lambda paths, workers=None: fetched.extend(paths))
+    records, failures = na.build_all('AS350B3', str(tmp_path / 'out'), root=str(tmp_path),
+                                     runs=['289108', '999999'], board_correction='flat',
+                                     gate_ambient=gate_ambient)
+    assert [r['run'] for r in records] == ['289108'] and [f['run'] for f in failures] == ['999999']
+    names = sorted(os.path.basename(path) for path in fetched)
+    run_files = ['289108_{}_pascal.nc'.format(mic) for mic in (1, 2, 3, 4)]
+    ambient_files = ['289101_{}_pascal.nc'.format(mic) for mic in (1, 2, 3)]
+    assert names == sorted(run_files + (ambient_files if gate_ambient else []))
+
+
+def test_the_prefetch_pulls_each_file_once_per_batch(monkeypatch, tmp_path):
+    """An ambient run serves every run on its layout and day."""
+    _archive(tmp_path)
+    fetched = []
+    monkeypatch.setattr(na, '_prefetch', lambda paths, workers=None: fetched.extend(paths))
+    test = na.NoiseAbatementTest('AS350B3', root=str(tmp_path))
+    done = set()
+    na._prefetch_run(test, '289108', done=done)
+    na._prefetch_run(test, '289108', done=done)
+    assert len(fetched) == 7 and set(fetched) == done
+
+
+def test_the_prefetch_pool_is_shut_down_when_the_batch_is_interrupted(monkeypatch, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    _archive(tmp_path)
+    pools = []
+
+    class Recording(ThreadPoolExecutor):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.closed = False
+            pools.append(self)
+
+        def shutdown(self, *args, **kwargs):
+            self.closed = True
+            super().shutdown(*args, **kwargs)
+
+    def interrupt(*args, **kwargs):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(na, 'ThreadPoolExecutor', Recording)
+    monkeypatch.setattr(na, '_prefetch', lambda paths, workers=None: None)
+    monkeypatch.setattr(na, 'build_sphere', interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        na.build_all('AS350B3', str(tmp_path / 'out'), root=str(tmp_path))
+    assert len(pools) == 1 and pools[0].closed

@@ -5,9 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-import numpy as np
-
-import flight_acoustics as fa
+from sphere_helpers import minimal_hemisphere, write_sphere_directory
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -20,20 +18,12 @@ def _run(script, *args, cwd):
 
 def test_fried_egg_plot_runs(tmp_path):
     """It passed threshhold= (sic) to fried_egg_plot and so failed on every run."""
-    from test_write_aam_hemisphere_netcdf import _minimal_hemisphere
-    spheres = tmp_path / 'spheres'
-    spheres.mkdir()
-    (spheres / 'vehicle.cfg').write_text(
-        '[Main Rotor]\nradius = 5.334\ntip speed = 230.7\nblades = 4\n'
-        '[Tail Rotor]\nradius = 0.8255\ntip speed = 216.1\nblades = 2\n'
-        '[Atmosphere]\ndensity = 1.070\ntemperature = 280.37\n'
-        '[Vehicle]\nweight = 2250\ndrag = 0.8175\n')
+    hemispheres = []
     for i, (speed, angle) in enumerate([(40, -6), (60, -3), (80, 0), (100, -6), (60, 3), (80, -9)]):
-        hemisphere = _minimal_hemisphere()
+        hemisphere = minimal_hemisphere()
         hemisphere['third_octave']['bands_db'] += 3.0 * i
-        fa.write_aam_hemisphere_netcdf(str(spheres / f'X{101 + i:03d}.nc'), hemisphere,
-                                       mode='third_octave', radius_ft=100.0, speed_knots=float(speed),
-                                       flight_path_angle_deg=float(angle), title='t')
+        hemispheres.append((hemisphere, speed, angle))
+    write_sphere_directory(tmp_path / 'spheres', hemispheres)
     result = _run('fried_egg_plot.py', 'spheres', '-o', 'eggs.png', '-x', '30:110', '-y=-10:5', cwd=tmp_path)
     assert result.returncode == 0, result.stderr
     assert (tmp_path / 'eggs.png').stat().st_size > 0

@@ -50,32 +50,46 @@ def level_re_free_field(frequency, elevation, x_m, z_m, sound_speed=1125.0, flow
 
 
 def plot(frequency, elevation, flow_resistance, output, x_range=(-0.4, 0.4), z_top=0.2, grid=(201, 101),
-         mic_height_m=gp.PLATE_MIC_HEIGHT_FT * FT, sound_speed=1125.0, levels=(-15.0, 10.0)):
+         mic_height_m=gp.PLATE_MIC_HEIGHT_FT * FT, sound_speed=1125.0, levels=(-15.0, 10.0), ground=None,
+         **geometry):
+    """Draw the map and the level at the microphone's height to ``output``.
+
+    ``ground`` (a :func:`ground_plane.surface_admittance` model dict) replaces
+    Delany-Bazley at ``flow_resistance``; ``geometry`` goes to
+    :func:`axisymmetric_bem.field` (radius, thickness, edge_thickness,
+    taper_length, in feet as there).
+    """
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
-    radius = gp.PLATE_RADIUS_FT * FT
-    thickness = gp.PLATE_THICKNESS_FT * FT
-    geometry = {}
+    radius = geometry.get('radius', gp.PLATE_RADIUS_FT) * FT
+    thickness = geometry.get('thickness', gp.PLATE_THICKNESS_FT) * FT
+    edge_thickness = geometry.get('edge_thickness', gp.PLATE_EDGE_THICKNESS_FT) * FT
+    taper_length = geometry.get('taper_length', gp.PLATE_TAPER_LENGTH_FT) * FT
     x = np.linspace(*x_range, grid[0])
     z = np.linspace(5e-4, z_top, grid[1])
     X, Z = np.meshgrid(x, z)
-    L, _ = level_re_free_field(frequency, elevation, X, Z, sound_speed, flow_resistance, **geometry)
+    L, _ = level_re_free_field(frequency, elevation, X, Z, sound_speed, flow_resistance, ground, **geometry)
     zm = thickness + mic_height_m + 1e-4           # just clear of the plate's top
     xl = np.linspace(*x_range, 4 * grid[0])
     Ll, Ll0 = level_re_free_field(frequency, elevation, xl, np.full_like(xl, zm), sound_speed, flow_resistance,
-                                  **geometry)
+                                  ground, **geometry)
     fig, (ax, bx) = plt.subplots(2, 1, figsize=(12.5, 5.6), sharex=True, height_ratios=(2.2, 1.4),
                                  layout='constrained')
     im = ax.pcolormesh(x, z * 100, np.clip(L, *levels), cmap='magma', vmin=levels[0], vmax=levels[1],
                        shading='auto', rasterized=True)
-    ax.fill_between([-radius, radius], 0, thickness * 100, color='0.8', lw=0)
-    rm = gp.PLATE_MIC_OFFSET_FT * FT
+    # The plate's section: flat top, taper, rim.
+    r_taper = radius - taper_length
+    ax.fill_between([-radius, -r_taper, r_taper, radius],
+                    0, np.array([edge_thickness, thickness, thickness, edge_thickness]) * 100, color='0.8', lw=0)
+    rm = gp.PLATE_MIC_OFFSET_FT / gp.PLATE_RADIUS_FT * radius      # ARP 4055: 3/4 of the radius
     ax.plot([-rm, rm], [zm * 100] * 2, 'o', ms=7, mfc='white', mec='k', mew=1.5)
     ax.set_ylim(0, z_top * 100)
     ax.set_ylabel('Height (cm)')
+    ground_label = (f'{flow_resistance:g} kPa s/m²' if ground is None else
+                    ' '.join(f'{k}={v:g}' if k != 'model' else v for k, v in ground.items()))
     ax.set_title(f'{frequency:.0f} Hz, plane wave from {elevation:.0f}° elevation, ground '
-                 f'{flow_resistance:g} kPa s/m²', loc='left')
+                 f'{ground_label}', loc='left')
     fig.colorbar(im, ax=ax, pad=0.01, aspect=12).set_label('Level re free field (dB)')
     bx.axvspan(-radius, radius, color='0.92', lw=0)
     bx.plot(xl, Ll0, color='0.45', lw=2, ls='--', label='Ground alone')

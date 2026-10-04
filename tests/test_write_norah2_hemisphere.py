@@ -172,6 +172,7 @@ def test_triangulation_file(tmp_path):
         fa.write_norah2_triangulation(str(tmp_path / 'dup.int'), hemispheres + [('F.hem', 80.0, 0.0)])
 
 
+@pytest.mark.data
 @needs_norah2
 def test_reads_every_shipped_flight_condition_hemisphere():
     files = [f for f in glob.glob(os.path.join(NORAH2_HEMISPHERES, '*.hem'))
@@ -186,6 +187,7 @@ def test_reads_every_shipped_flight_condition_hemisphere():
         assert hem['constants']['POLDIST'] == 60.0
 
 
+@pytest.mark.data
 @needs_norah2
 @pytest.mark.parametrize('path', sorted(glob.glob(os.path.join(NORAH2_HEMISPHERES, '*_[Tt]riangulation.int'))))
 def test_reproduces_shipped_triangulations(tmp_path, path):

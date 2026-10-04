@@ -19,6 +19,14 @@ def _butter_sos(order: int, cutoff: float, fs: float, btype: str):
     return butter(order, cutoff / nyq, btype=btype, output="sos")
 
 
+def _butter_filter(signal, cutoff, fs, order, zero_phase, btype):
+    sos = _butter_sos(order, cutoff, fs, btype=btype)
+    x = np.asarray(signal)
+    if zero_phase:
+        return sosfiltfilt(sos, x)
+    return sosfilt(sos, x)
+
+
 def lowpass(signal, cutoff, fs, order: int = 4, zero_phase: bool = False):
     """Filter signal with a low-pass Butterworth filter.
 
@@ -29,11 +37,7 @@ def lowpass(signal, cutoff, fs, order: int = 4, zero_phase: bool = False):
         order: Filter order.
         zero_phase: If True, use forward-backward filtering.
     """
-    sos = _butter_sos(order, cutoff, fs, btype="low")
-    x = np.asarray(signal)
-    if zero_phase:
-        return sosfiltfilt(sos, x)
-    return sosfilt(sos, x)
+    return _butter_filter(signal, cutoff, fs, order, zero_phase, btype="low")
 
 
 def highpass(signal, cutoff, fs, order: int = 4, zero_phase: bool = False):
@@ -46,11 +50,7 @@ def highpass(signal, cutoff, fs, order: int = 4, zero_phase: bool = False):
         order: Filter order.
         zero_phase: If True, use forward-backward filtering.
     """
-    sos = _butter_sos(order, cutoff, fs, btype="high")
-    x = np.asarray(signal)
-    if zero_phase:
-        return sosfiltfilt(sos, x)
-    return sosfilt(sos, x)
+    return _butter_filter(signal, cutoff, fs, order, zero_phase, btype="high")
 
 
 def third_octave_filter_bank(signal, fs, band_centers, frame_centers, frame_length,

@@ -12,16 +12,11 @@ kept NaN out of the footprint reductions.
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
-from netCDF4 import Dataset
 
 import flight_acoustics as fa
-from test_write_aam_hemisphere_netcdf import _minimal_hemisphere
+from sphere_helpers import minimal_hemisphere, write_raw_sphere, write_sphere_directory
 
 P_REF = 2.0e-5
-VEHICLE_CFG = ('[Main Rotor]\nradius = 5.334\ntip speed = 230.7\nblades = 4\n'
-               '[Tail Rotor]\nradius = 0.8255\ntip speed = 216.1\nblades = 2\n'
-               '[Atmosphere]\ndensity = 1.070\ntemperature = 280.37\n'
-               '[Vehicle]\nweight = 2250\ndrag = 0.8175\n')
 
 
 @pytest.fixture(scope='module')
@@ -92,18 +87,10 @@ def test_the_lambert_plot_scales_to_the_measured_levels(flyby):
 
 def test_load_nc_sphere_returns_plain_arrays_with_masked_cells_as_nan(tmp_path):
     path = tmp_path / 'filled.nc'
-    with Dataset(str(path), 'w', format='NETCDF3_CLASSIC') as sphere:
-        for name, size in (('PHI', 2), ('THETA', 3), ('FREQUENCY', 2)):
-            sphere.createDimension(name, size)
-        sphere.createVariable('PHI', 'f4', ('PHI',))[:] = [-10.0, 10.0]
-        sphere.createVariable('THETA', 'f4', ('THETA',))[:] = [0.0, 90.0, 180.0]
-        sphere.createVariable('FREQUENCY', 'f4', ('FREQUENCY',))[:] = [100.0, 125.0]
-        amplitude = sphere.createVariable('AMPLITUDE', 'f4', ('PHI', 'THETA', 'FREQUENCY'), fill_value=-12345.0)
-        values = np.full((2, 3, 2), 70.0, dtype=np.float32)
-        values[0, 1, :] = -12345.0
-        amplitude[:] = values
-        for name in ('RADIUS', 'SPEED', 'FLIGHT_PATH_ANGLE'):
-            sphere.createVariable(name, 'f4').assignValue(np.float32(1.0))
+    values = np.full((2, 3, 2), 70.0, dtype=np.float32)
+    values[0, 1, :] = -12345.0
+    write_raw_sphere(path, phi=[-10.0, 10.0], theta=[0.0, 90.0, 180.0], frequency=[100.0, 125.0],
+                     amplitude=values, fill_value=-12345.0, RADIUS=1.0, SPEED=1.0, FLIGHT_PATH_ANGLE=1.0)
     loaded = fa.load_nc_sphere(str(path))
     assert not any(isinstance(value, np.ma.MaskedArray) for value in loaded)
     assert np.all(np.isnan(loaded[0][0, 1, :]))
@@ -113,9 +100,7 @@ def test_load_nc_sphere_returns_plain_arrays_with_masked_cells_as_nan(tmp_path):
 
 def test_a_failed_read_leaves_numpy_error_handling_as_it_was(tmp_path):
     path = tmp_path / 'incomplete.nc'
-    with Dataset(str(path), 'w', format='NETCDF3_CLASSIC') as sphere:
-        sphere.createDimension('PHI', 1)
-        sphere.createVariable('PHI', 'f4', ('PHI',))[:] = [0.0]
+    write_raw_sphere(path, phi=[0.0])
     before = np.geterr()
     with pytest.raises(KeyError):
         fa.load_nc_sphere(str(path))
@@ -123,21 +108,15 @@ def test_a_failed_read_leaves_numpy_error_handling_as_it_was(tmp_path):
 
 
 def _sphere_directory(tmp_path, hemispheres):
-    directory = tmp_path / 'spheres'
-    directory.mkdir()
-    (directory / 'vehicle.cfg').write_text(VEHICLE_CFG)
-    for i, (hemisphere, speed, angle) in enumerate(hemispheres):
-        fa.write_aam_hemisphere_netcdf(str(directory / f'X{101 + i:03d}.nc'), hemisphere, mode='third_octave',
-                                       phi_deg=np.arange(-90.0, 90.0 + 1e-9, 10.0),
-                                       theta_deg=np.arange(0.0, 180.0 + 1e-9, 10.0), radius_ft=100.0,
-                                       speed_knots=float(speed), flight_path_angle_deg=float(angle), title='t')
-    return directory
+    return write_sphere_directory(tmp_path / 'spheres', hemispheres,
+                                  phi_deg=np.arange(-90.0, 90.0 + 1e-9, 10.0),
+                                  theta_deg=np.arange(0.0, 180.0 + 1e-9, 10.0))
 
 
 def _gated_hemisphere(offset_db):
     """80 dB (plus offset), with everything within 30 degrees of straight down
     gated out: measured, and left with no energy."""
-    hemisphere = _minimal_hemisphere()
+    hemisphere = minimal_hemisphere()
     hemisphere['third_octave']['bands_db'] = hemisphere['third_octave']['bands_db'] + offset_db
     steep = hemisphere['elv_grid_deg'] >= 60.0
     hemisphere['third_octave']['bands_db'][:, steep, :] = -np.inf
@@ -169,7 +148,7 @@ def test_footprint_levels_leave_out_directions_with_no_energy(tmp_path):
 
 
 def test_a_sphere_with_no_level_below_the_aircraft_is_skipped(tmp_path):
-    empty = _minimal_hemisphere()
+    empty = minimal_hemisphere()
     empty['third_octave']['bands_db'][:] = -np.inf
     directory = _sphere_directory(tmp_path, [(_gated_hemisphere(0.0), 60, -3), (empty, 80, 0),
                                              (_gated_hemisphere(3.0), 100, -6)])

@@ -128,8 +128,12 @@ def test_axisymmetric_bem_matches_the_rigid_sphere(ka, el, az):
 THIN = dict(thickness=0.0003 / 0.3048, edge_thickness=0.0003 / 0.3048, taper_length=0.0)
 
 
-@pytest.mark.parametrize('f', [250.0, 500.0, 1000.0])
-def test_three_plate_formulations_agree_in_the_thin_limit(f):
+@pytest.mark.parametrize('f, tolerance', [(250.0, 0.1), (500.0, 0.1), (1000.0, 0.1), (2000.0, 0.1),
+                                          (4000.0, 0.5)])
+def test_three_plate_formulations_agree_in_the_thin_limit(f, tolerance):
+    # Measured: 0.05 dB at 1 kHz, 0.05 at 2 kHz and 0.43 at 4 kHz.  With the
+    # disc's self terms left unintegrated (surface_green(1 ft) * area) the gap
+    # was 0.23, 0.98 and 4.2 dB.
     els, azs = [5.0, 30.0, 70.0], [90.0, 270.0]
     thin_disc = gp.disc_bem_scattered([f], els, azs, C, min_cells_across=36)
     axi = ab.scattering([f], els, azs, C, **THIN)
@@ -137,7 +141,7 @@ def test_three_plate_formulations_agree_in_the_thin_limit(f):
         q = gp.fa.spherical_reflection_coefficient(np.sin(np.radians(e)), 1500.0, f, C, gp.FLOW_RESISTANCE)
         a = 20 * np.log10(np.abs((1 + q) * (1 + thin_disc[0, i])))
         b = 20 * np.log10(np.abs(axi[0][0, i] + q * axi[1][0, i]))
-        assert np.all(np.abs(a - b) < 0.25), (f, e, a, b)
+        assert np.all(np.abs(a - b) < tolerance), (f, e, a, b)
 
 
 def test_axisymmetric_and_3d_raised_plate_agree():

@@ -38,3 +38,13 @@ def test_integer_input_matches_float_input(convert, from_units, to_units):
 def test_scalars_stay_scalars():
     assert isinstance(uc.len_conv(1.0, from_units='m', to_units='ft'), float)
     assert uc.len_conv(0.3048, from_units='m', to_units='ft') == pytest.approx(1.0)
+
+
+def test_pounds_and_kilograms_convert_through_one_exact_constant():
+    """lb -> kg used 0.453592 and kg -> lb 2.204622622, which are not
+    reciprocals: lb -> lb came back 3.7e-8 low."""
+    weights = np.array([1.0, 2250.0, 1e6])
+    np.testing.assert_allclose(uc.wt_conv(weights, from_units='lb', to_units='lb'), weights, rtol=1e-15)
+    assert uc.wt_conv(1.0, from_units='lb', to_units='kg') == 0.45359237
+    np.testing.assert_allclose(uc.wt_conv(uc.wt_conv(weights, from_units='kg', to_units='lb'),
+                                          from_units='lb', to_units='kg'), weights, rtol=1e-15)
