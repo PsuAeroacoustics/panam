@@ -1131,14 +1131,19 @@ def disc_mesh(radius, cell):
 
 
 def _cell_subpoints(bound, n):
-    """n x n area-weighted quadrature points (midpoint in r^2 and phi) of an annular sector."""
-    r_in, r_out, lo, hi = bound
+    """n x n area-weighted quadrature points (midpoint in r^2 and phi) of an annular sector.
+
+    ``bound`` is (r_in, r_out, phi_lo, phi_hi), or a stack of them (..., 4):
+    the points and weights are then (..., n * n).
+    """
+    r_in, r_out, lo, hi = (np.asarray(bound, dtype=float)[..., i, None] for i in range(4))
     u = (np.arange(n) + 0.5) / n
     r = np.sqrt(r_in ** 2 + u * (r_out ** 2 - r_in ** 2))
     phi = lo + u * (hi - lo)
-    R, P = np.meshgrid(r, phi, indexing='ij')
-    weight = np.full(R.size, 0.5 * (r_out ** 2 - r_in ** 2) * (hi - lo) / n ** 2)
-    return (R * np.cos(P)).ravel(), (R * np.sin(P)).ravel(), weight
+    R, P = np.broadcast_arrays(r[..., :, None], phi[..., None, :])
+    flat = R.shape[:-2] + (n * n,)
+    weight = np.broadcast_to(0.5 * (r_out ** 2 - r_in ** 2) * (hi - lo) / n ** 2, flat)
+    return (R * np.cos(P)).reshape(flat), (R * np.sin(P)).reshape(flat), weight
 
 
 def _inverse_distance_integral(px, py, bound, n_angles=256):
@@ -1146,8 +1151,10 @@ def _inverse_distance_integral(px, py, bound, n_angles=256):
 
     In polar coordinates about p the integrand's 1/rho cancels the area
     element's rho, leaving the distance to the cell boundary along each ray.
+    Vectorized over a stack of points and cells (``bound`` (..., 4)).
     """
-    r_in, r_out, lo, hi = bound
+    r_in, r_out, lo, hi = (np.asarray(bound, dtype=float)[..., i, None] for i in range(4))
+    px, py = np.asarray(px, dtype=float)[..., None], np.asarray(py, dtype=float)[..., None]
     phis = (np.arange(n_angles) + 0.5) * 2.0 * np.pi / n_angles
     dx, dy = np.cos(phis), np.sin(phis)
 
@@ -1158,13 +1165,14 @@ def _inverse_distance_integral(px, py, bound, n_angles=256):
         full = (hi - lo) >= 2.0 * np.pi - 1e-12
         return (r >= r_in) & (r <= r_out) & (full | (a <= hi - lo))
 
-    lo_t, hi_t = np.zeros(n_angles), np.full(n_angles, 2.0 * r_out + 1.0)
+    shape = np.broadcast_shapes(px.shape, r_out.shape)[:-1] + (n_angles,)
+    lo_t, hi_t = np.zeros(shape), np.broadcast_to(2.0 * r_out + 1.0, shape)
     for _ in range(50):              # the cells are star-shaped about points in them
         mid = 0.5 * (lo_t + hi_t)
         ok = inside(mid)
         lo_t = np.where(ok, mid, lo_t)
         hi_t = np.where(ok, hi_t, mid)
-    return np.sum(0.5 * (lo_t + hi_t)) * 2.0 * np.pi / n_angles
+    return np.sum(0.5 * (lo_t + hi_t), axis=-1) * 2.0 * np.pi / n_angles
 
 
 def _cell_integral_near(bounds, px, py, height, green, sub, singular):
@@ -1172,14 +1180,17 @@ def _cell_integral_near(bounds, px, py, height, green, sub, singular):
 
     ``singular`` (height 0 and the point in the cell): the 1/R singularity is
     integrated exactly by rays and the smooth remainder on sub-points.
+    Vectorized over a stack of cells and points (``bounds`` (..., 4)).
     """
     sx, sy, w = _cell_subpoints(bounds, sub)
+    px, py = np.asarray(px, dtype=float)[..., None], np.asarray(py, dtype=float)[..., None]
     r = np.sqrt((sx - px) ** 2 + (sy - py) ** 2 + height ** 2)
     if not singular:
-        return np.sum(green(r) * w)
+        return np.sum(green(r) * w, axis=-1)
     g0 = green.limit_numerator
     smooth = (green.numerator(r) - g0) / (4.0 * np.pi * r)
-    return g0 / (4.0 * np.pi) * _inverse_distance_integral(px, py, bounds) + np.sum(smooth * w)
+    return (g0 / (4.0 * np.pi) * _inverse_distance_integral(px[..., 0], py[..., 0], bounds)
+            + np.sum(smooth * w, axis=-1))
 
 
 def _cell_containing(px, py, bounds):
@@ -1269,12 +1280,16 @@ def disc_bem_scattered(frequencies, elevations, azimuths, sound_speed,
         rho = np.hypot(x[:, None] - x[None, :], y[:, None] - y[None, :])
         np.fill_diagonal(rho, 1.0)
         kernel = surface_green(rho) * area[None, :]
-        # The diagonal's placeholder distance is not a cell's distance to
-        # itself: take the self terms explicitly, so their 1/R singularity is
-        # integrated rather than left as surface_green(1 ft) * area.
-        for obs, src in np.argwhere((rho < near * cell) | np.eye(x.size, dtype=bool)):
-            kernel[obs, src] = _cell_integral_near(bounds[src], x[obs], y[obs], 0.0, surface_green,
-                                                   sub, singular=(obs == src))
+        # Close pairs on sub-cells, all at once.  The diagonal's placeholder
+        # distance is not a cell's distance to itself: the self terms are
+        # taken explicitly, so their 1/R singularity is integrated rather than
+        # left as surface_green(1 ft) * area.
+        obs, src = np.nonzero((rho < near * cell) & ~np.eye(x.size, dtype=bool))
+        kernel[obs, src] = _cell_integral_near(bounds[src], x[obs], y[obs], 0.0, surface_green, sub,
+                                               singular=False)
+        self_terms = np.arange(x.size)
+        kernel[self_terms, self_terms] = _cell_integral_near(bounds, x, y, 0.0, surface_green, sub,
+                                                             singular=True)
         system = np.eye(x.size) + 1j * k * beta * kernel
 
         # Unit plane waves: horizontal wavenumber k cos(el) along each azimuth.
