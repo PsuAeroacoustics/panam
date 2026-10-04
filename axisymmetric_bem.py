@@ -27,8 +27,8 @@ import ground_plane as gp
 # --------------------------------------------------------------------------
 
 @njit(cache=True, fastmath=False)
-def _table_lookup(rho, z, u0, du, nu, v0, dv, nv, offset, k, i_red, j_red):
-    """Bilinear lookup of the exact image integrals I, J (see gp.ImageIntegralTable)."""
+def _table_bilinear(rho, z, u0, du, nu, v0, dv, nv, offset, i_red, j_red):
+    """Bilinear lookup of the reduced image integrals (see gp.ImageIntegralTable)."""
     u = np.log(rho + offset)
     v = np.log(z + offset)
     fu = (min(max(u, u0), u0 + du * (nu - 1)) - u0) / du
@@ -40,6 +40,13 @@ def _table_lookup(rho, z, u0, du, nu, v0, dv, nv, offset, k, i_red, j_red):
     w00 = (1 - tu) * (1 - tv); w10 = tu * (1 - tv); w01 = (1 - tu) * tv; w11 = tu * tv
     ir = w00 * i_red[i0, j0] + w10 * i_red[i0 + 1, j0] + w01 * i_red[i0, j0 + 1] + w11 * i_red[i0 + 1, j0 + 1]
     jr = w00 * j_red[i0, j0] + w10 * j_red[i0 + 1, j0] + w01 * j_red[i0, j0 + 1] + w11 * j_red[i0 + 1, j0 + 1]
+    return ir, jr
+
+
+@njit(cache=True, fastmath=False)
+def _table_lookup(rho, z, u0, du, nu, v0, dv, nv, offset, k, i_red, j_red):
+    """Bilinear lookup of the exact image integrals I, J (see gp.ImageIntegralTable)."""
+    ir, jr = _table_bilinear(rho, z, u0, du, nu, v0, dv, nv, offset, i_red, j_red)
     r2 = max(np.sqrt(rho * rho + z * z), offset)
     ph = np.exp(1j * k * r2)
     return ir * ph / (4 * np.pi * r2), jr * ph / (4 * np.pi * r2 * r2)
@@ -48,10 +55,15 @@ def _table_lookup(rho, z, u0, du, nu, v0, dv, nv, offset, k, i_red, j_red):
 @njit(cache=True)
 def _dgdn(xr, xz, yr, yz, phi, nr, nz, k, beta, tab, skip_direct):
     """dG/dn_y for target x = (xr, 0, xz) and source y = (yr cos phi, yr sin phi, yz), normal (nr, nz) at y."""
+    return _dgdn_cs(xr, xz, yr, yz, np.cos(phi), np.sin(phi), nr, nz, k, beta, tab, skip_direct)
+
+
+@njit(cache=True)
+def _dgdn_cs(xr, xz, yr, yz, c, s, nr, nz, k, beta, tab, skip_direct):
+    """:func:`_dgdn` given c = cos(phi) and s = sin(phi)."""
     u0, du, nu, v0, dv, nv, offset, i_red, j_red = tab
-    c = np.cos(phi)
     dx = yr * c - xr
-    dy = yr * np.sin(phi)
+    dy = yr * s
     dz = yz - xz
     n_dot_h = nr * (yr - xr * c)                 # n_h . d_h
     out = 0.0 + 0.0j
@@ -62,8 +74,13 @@ def _dgdn(xr, xz, yr, yz, phi, nr, nz, k, beta, tab, skip_direct):
     rho = np.sqrt(dx * dx + dy * dy)
     zs = yz + xz
     r2 = np.sqrt(rho * rho + zs * zs)
-    g2 = np.exp(1j * k * r2) / (4 * np.pi * r2)
-    big_i, big_j = _table_lookup(rho, zs, u0, du, nu, v0, dv, nv, offset, k, i_red, j_red)
+    e2 = np.exp(1j * k * r2)
+    g2 = e2 / (4 * np.pi * r2)
+    # I and J (_table_lookup), sharing e^{ikR2} unless R2 is below the table's offset.
+    ir, jr = _table_bilinear(rho, zs, u0, du, nu, v0, dv, nv, offset, i_red, j_red)
+    r2c = max(r2, offset)
+    ph = e2 if r2c == r2 else np.exp(1j * k * r2c)
+    big_i, big_j = ir * ph / (4 * np.pi * r2c), jr * ph / (4 * np.pi * r2c * r2c)
     dimg_z = g2 * (1j * k - 1.0 / r2) * zs / r2 - 2j * k * beta * g2 + 2j * k * k * beta * beta * big_i
     dimg_h = g2 * (1j * k - 1.0 / r2) / r2 - 2 * k * beta * big_j
     return out + nz * dimg_z + n_dot_h * dimg_h
