@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 import numpy as np
 from numba import njit, prange
-from scipy.special import jv
+from scipy.special import j0, j1
 
 import ground_plane as gp
 
@@ -171,6 +171,41 @@ def _assemble(targets, segs, flat_top, m_max, k, beta, tab, gx, gw, n_phi_unifor
     return out
 
 
+@njit(parallel=True, cache=True)
+def _bessel_j_orders(m_max, x, j0x, j1x):
+    """J_m(x), m = 0..m_max, for each x >= 0: (m_max + 1, x.size).
+
+    Miller's downward recurrence J_{m-1} = (2m/x) J_m - J_{m+1}, started well
+    above both m_max and x (stable downward for J), rescaled before it
+    overflows, and normalized to whichever of J_0 = ``j0x`` and J_1 = ``j1x``
+    is the larger.  All orders cost about what scipy's jv takes for two.
+    """
+    out = np.zeros((m_max + 1, x.size))
+    for p in prange(x.size):
+        xv = x[p]
+        if xv < 1e-30:
+            # Leading-order series, exact to (x/2)^2 / (m + 1) (2 m / x would overflow).
+            out[0, p] = j0x[p]
+            for mm in range(1, m_max + 1):
+                out[mm, p] = j1x[p] if mm == 1 else out[mm - 1, p] * xv / (2.0 * mm)
+            continue
+        top = max(m_max, int(np.ceil(xv)))
+        b_next, b = 0.0, 1.0                    # unnormalized J_{j+1}, J_j
+        for j in range(top + 30 + int(np.sqrt(160.0 * top)), 0, -1):
+            b_next, b = b, 2.0 * j / xv * b - b_next
+            if j - 1 <= m_max:
+                out[j - 1, p] = b
+            if abs(b) > 1e200:
+                b *= 1e-200
+                b_next *= 1e-200
+                for mm in range(j - 1, m_max + 1):
+                    out[mm, p] *= 1e-200
+        scale = j0x[p] / b if abs(j0x[p]) >= abs(j1x[p]) else j1x[p] / b_next
+        for mm in range(m_max + 1):
+            out[mm, p] *= scale
+    return out
+
+
 # --------------------------------------------------------------------------
 # Geometry and driver
 # --------------------------------------------------------------------------
@@ -249,7 +284,8 @@ def _solve_modes(modes, el):
     kz = modes.k * np.sin(el)
     m = np.arange(modes.m_max + 1)
     mids = modes.mids
-    jm = jv(m[:, None, None], kappa[None, None, :] * mids[None, :, 0:1])      # (m, n, el)
+    x = (kappa[None, :] * mids[:, 0:1]).ravel()
+    jm = _bessel_j_orders(modes.m_max, x, j0(x), j1(x)).reshape(m.size, mids.shape[0], el.size)   # (m, n, el)
     im = (1j ** m)[:, None, None]
     inc_d = im * jm * np.exp(-1j * kz[None, None, :] * mids[None, :, 1:2])
     inc_r = im * jm * np.exp(+1j * kz[None, None, :] * mids[None, :, 1:2])

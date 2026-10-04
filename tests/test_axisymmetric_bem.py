@@ -176,3 +176,15 @@ def test_field_over_the_taper_is_air():
     assert np.isfinite(Pd[2])                        # beside the rim
     # Near-surface pressure over a rigid plate on soft ground: of order the doubled wave.
     assert 0.5 < abs(Pd[0]) < 3.0
+
+
+def test_bessel_orders_match_scipy():
+    # Miller's recurrence against scipy's jv over the incident fields' range
+    # (orders to k a + 10 at 11 kHz, arguments to k a), tiny arguments included.
+    from scipy.special import j0, j1, jv
+    x = np.concatenate(([0.0, 1e-300, 1e-31, 1e-29, 1e-12], np.linspace(1e-3, 40.0, 4001)))
+    ours = ab._bessel_j_orders(50, x, j0(x), j1(x))
+    exact = jv(np.arange(51)[:, None], x[None, :])
+    assert np.all(np.isfinite(ours))
+    np.testing.assert_allclose(ours, exact, rtol=0.0, atol=5e-15)
+    assert ours[2, 2] == pytest.approx(1e-31 ** 2 / 8.0, rel=1e-12)   # the series branch: J_2 = x^2/8
