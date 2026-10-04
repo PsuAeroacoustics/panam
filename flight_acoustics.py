@@ -965,6 +965,7 @@ def depropagate_hemisphere(
         ray_model=None,
         interpolation=None,
         rim_range=None,
+        remove_doppler=False,
 ):
     """Generate an acoustic hemisphere from microphone time series and vehicle tracking data.
 
@@ -1135,6 +1136,17 @@ def depropagate_hemisphere(
         flip_y_for_geometry: if True, apply Y -> -Y to track_position/track_velocity/mic_locations.
         third_octave: if True, also compute third-octave band level hemispheres.
         third_octave_fmin: minimum band center (Hz) when third_octave=True.
+        remove_doppler: if True, file each sample's third-octave band power at the frequency it
+            was emitted at, not received at.  A sample's Doppler factor is
+            D = 1 / (1 - v.u / c), v the source velocity at emission and u the unit vector
+            from the source to the microphone (straight line), so a band emitted over
+            [f_lower, f_upper] arrives over [D f_lower, D f_upper]; the narrowband spectrum is
+            integrated over those edges (its running integral interpolated linearly, so a
+            tone moves bands whole).  Levels are left as received.  It matters where a tone
+            sits near a band edge: at 46 kt the main rotor's 55 Hz harmonic is received at
+            58-60 Hz ahead, in the 63 Hz band, and 50-52 Hz behind.  Only the FFT method
+            supports it.  Use it for a sphere a hover is synthesised from; a flight sphere
+            NICE-OPS reads must keep received frequencies, since NICE-OPS applies no shift.
         third_octave_method: how band levels are formed when third_octave=True.
             'fft' (default) sums the PSD bins between each band's edges, a
             brick-wall band.  'filter_bank' uses a true one-third octave
@@ -1209,6 +1221,8 @@ def depropagate_hemisphere(
         raise ValueError('Give only one ambient source, not both of: ' + ', '.join(ambient_sources))
     if ambient_percentile is not None and not 0.0 < float(ambient_percentile) < 100.0:
         raise ValueError('ambient_percentile must lie strictly between 0 and 100')
+    if remove_doppler and third_octave_method != 'fft':
+        raise ValueError('remove_doppler needs third_octave_method=\'fft\'')
     if third_octave_method not in ('fft', 'filter_bank'):
         raise ValueError("third_octave_method must be 'fft' or 'filter_bank'")
     use_filter_bank = bool(third_octave) and third_octave_method == 'filter_bank'
@@ -1250,6 +1264,12 @@ def depropagate_hemisphere(
 
     # Emission-time geometry
     az_deg, el_deg, r_geom, t_obs, _ = hemigen(track_time, pos_geom, vel_geom, mic_geom, speed_of_sound)
+    doppler_geom = None
+    if remove_doppler:
+        toward = np.asarray(mic_geom, dtype=float)[None, :, :] - np.asarray(pos_geom, dtype=float)[:, None, :]
+        toward = toward / np.linalg.norm(toward, axis=2, keepdims=True)
+        mach_toward = np.sum(np.asarray(vel_geom, dtype=float)[:, None, :] * toward, axis=2) / float(speed_of_sound)
+        doppler_geom = 1.0 / (1.0 - mach_toward)
 
     # Subsample emission-time points
     point_stride = int(point_stride)
@@ -1584,15 +1604,31 @@ def depropagate_hemisphere(
             # Integrate to third-octave bands in linear power, on edges that
             # tile even when the centres are nominal (see third_octave_band_edges)
             band_lower, band_upper = third_octave_band_edges(band_centers)
-            for ib, (f_lower, f_upper) in enumerate(zip(band_lower, band_upper)):
-                band_mask = np.logical_and(f_sel >= f_lower, f_sel < f_upper)
-                if np.any(band_mask):
-                    band_power = np.sum(psd_v_lin[band_mask, :] * df, axis=0)
-                else:
-                    # Keep shape/point counts consistent even if a band is empty at the
-                    # selected frequency resolution/range. This band will evaluate to -inf dB.
-                    band_power = np.zeros(tobs_v.size, dtype=float)
-                band_power_lists[ib].append(band_power)
+            if doppler_geom is not None:
+                # Running integral of the spectrum at the bins' edges, read at each sample's
+                # Doppler-scaled band edges.
+                d_v = doppler_geom[tidx, im][valid]
+                running = np.vstack((np.zeros((1, tobs_v.size)), np.cumsum(psd_v_lin * df, axis=0)))
+                edge0 = f_sel[0] - 0.5 * df
+
+                def _running_at(freq):
+                    x = np.clip((freq - edge0) / df, 0.0, running.shape[0] - 1.0)
+                    k = np.minimum(np.floor(x).astype(int), running.shape[0] - 2)
+                    cols = np.arange(tobs_v.size)
+                    return running[k, cols] + (x - k) * (running[k + 1, cols] - running[k, cols])
+
+                for ib, (f_lower, f_upper) in enumerate(zip(band_lower, band_upper)):
+                    band_power_lists[ib].append(np.maximum(_running_at(f_upper * d_v) - _running_at(f_lower * d_v), 0.0))
+            else:
+                for ib, (f_lower, f_upper) in enumerate(zip(band_lower, band_upper)):
+                    band_mask = np.logical_and(f_sel >= f_lower, f_sel < f_upper)
+                    if np.any(band_mask):
+                        band_power = np.sum(psd_v_lin[band_mask, :] * df, axis=0)
+                    else:
+                        # Keep shape/point counts consistent even if a band is empty at the
+                        # selected frequency resolution/range. This band will evaluate to -inf dB.
+                        band_power = np.zeros(tobs_v.size, dtype=float)
+                    band_power_lists[ib].append(band_power)
 
     if len(oaspl_power_list) == 0:
         raise ValueError('No valid hemisphere samples were generated (check time alignment and inputs)')
@@ -3143,7 +3179,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                              extended_flight_path_angles=None,
                              level_flight_tolerance=LEVEL_FLIGHT_TOLERANCE,
                              store_spectrum=True, clamp_empty_directions=True,
-                             hover_correction=None):
+                             hover_correction=None, hover_source=None):
     """Build a NICE-OPS sphere database from a directory of sphere files.
 
     load_factors scales thrust: each source condition is written once per load
@@ -3177,6 +3213,12 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     these angles at its own airspeed, on the assumption that directivity at a
     given airspeed carries over to a steeper flight path.  The shipped
     databases use (-24.0, 35.0).
+
+    hover_source, when given, is the sphere file the hover is synthesised from in place of
+    the slowest near-level one in the directory -- typically that same run rebuilt with
+    ``build_sphere(remove_doppler=True)``, so that the fore-to-aft average combines
+    spectra at their emitted frequencies.  The flight spheres in the directory keep
+    their received ones.
 
     hover_correction, when given, is added to the synthesised hover sphere's band levels
     after the fore-to-aft average: a callable taking phi and theta (degrees, arrays shaped
@@ -3244,6 +3286,8 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
         ncdatabase['main_rotor_tip_speed_meters_per_sec'][:] = float(main_rotor_tip_speed)
     if hover_correction is not None:
         ncdatabase.hover_correction = str(getattr(hover_correction, 'description', 'applied'))
+    if hover_source is not None:
+        ncdatabase.hover_source = os.path.basename(str(hover_source))
     vehicle_weight_newtons = read_vehicle_weight_newtons(directory_name)
     if vehicle_weight_newtons is not None:
         ncdatabase.createVariable("vehicle_weight_newtons", 'f8')
@@ -3310,6 +3354,8 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                       'slowest available at {:.1f} knots.'.format(level_flight_tolerance, slowest_speed))
         min_speed_file = slowest_file
 
+    if hover_source is not None:
+        min_speed_file = os.path.abspath(os.path.expanduser(hover_source))
     # Now, adapt the lowest speed sphere to a hover sphere by averaging from fore to aft
     (_, _, phi_list, theta_list, radius, _, _, _, _, _,
      frequency, amplitude) = extract_SPL(min_speed_file, infreqs, distance, atmosphere)

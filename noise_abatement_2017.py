@@ -764,8 +764,24 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
                  apply_absorption_deprop=True, overwrite=True, norah2_directory=None,
                  third_octave_method='fft', board_correction='plate_bem', ground=None,
                  plate_table_directory=None, ray_model=None, interpolation=None,
-                 rim_elevation_deg=None, max_rim_range_ft=None):
+                 rim_elevation_deg=None, max_rim_range_ft=None, remove_doppler=False,
+                 nose_from_heading=False, samples_path=None):
     """Depropagate one run into an AAM-style source sphere.
+
+    ``remove_doppler`` files band power at the emitted frequency, not the received one
+    (:func:`flight_acoustics.depropagate_hemisphere`), and sets the sphere's
+    DOPPLER_SHIFT_REMOVED.  For a sphere a hover is synthesised from
+    (``build_empirical_database(hover_source=)``), never for one NICE-OPS reads as flight.
+
+    ``nose_from_heading`` orients the sphere by the tracked heading instead of the velocity:
+    for a hover, whose velocity is a few tenths of a knot of drift in any direction.  The
+    velocity handed to depropagation is then the heading's unit vector at 1e-3 ft/s, which
+    sets the azimuth reference and leaves no Doppler or convective term.
+
+    ``samples_path``, if given, also saves the scattered samples (before gridding) to that
+    .npz: azimuth and elevation (deg, panam's convention: 180 ahead, elevation positive
+    below the horizon), band centres, band levels (dB at ``r_ref_ft``, bands x samples),
+    microphone, slant range and source height (ft).
 
     ``ray_model`` (see :mod:`refracted_rays`) depropagates along refracted rays
     through the run's atmosphere instead of straight lines in uniform air: the
@@ -804,14 +820,24 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     """
     row = test.by_run[run]
     track = load_track(test.track_path(run))
-    index_start, index_stop = steady_window(track, max_array_range=max_array_range_ft,
-                                            min_duration_s=min_steady_duration_s)
+    if nose_from_heading:
+        # A hover's flight path angle is the direction of its drift, erratic at a few tenths
+        # of a knot, so the steady-flight window would reject it: take the whole record.
+        index_start, index_stop = 0, int(track['time'].size)
+    else:
+        index_start, index_stop = steady_window(track, max_array_range=max_array_range_ft,
+                                                min_duration_s=min_steady_duration_s)
     speed_knots, fpa_deg = flight_condition(track, index_start, index_stop)
 
     segment = {key: value[index_start:index_stop] for key, value in track.items()
                if isinstance(value, np.ndarray) and value.size == track['time'].size}
     position = np.column_stack((segment['x'], segment['y'], segment['z']))
     velocity = np.column_stack((segment['vx'], segment['vy'], segment['vz_up']))
+    if nose_from_heading:
+        # Compass heading to the track frame (+x along true bearing 270, +y south):
+        # east = -x, north = -y.
+        heading = np.radians(np.asarray(segment['heading'], dtype=float))
+        velocity = 1e-3 * np.column_stack((-np.sin(heading), -np.cos(heading), np.zeros_like(heading)))
 
     if atmosphere is None:
         atmosphere = run_atmosphere(test, run, fallback=fa.Atmosphere(
@@ -928,7 +954,16 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
         interpolation=interpolation,
         rim_range=(None if max_rim_range_ft is None else
                    (14.0 if rim_elevation_deg is None else rim_elevation_deg, max_rim_range_ft)),
+        remove_doppler=remove_doppler,
+        return_scattered=samples_path is not None,
     )
+    if samples_path is not None:
+        scattered = hemisphere['scattered']
+        os.makedirs(os.path.dirname(os.path.abspath(samples_path)) or '.', exist_ok=True)
+        np.savez(samples_path, azimuth_deg=scattered['azi_deg'], elevation_deg=scattered['elv_deg'],
+                 band_centers_hz=scattered['third_octave']['band_centers_hz'],
+                 bands_db=scattered['third_octave']['bands_db'], mic=scattered['mic'],
+                 range_ft=scattered['range'], source_height_ft=scattered['source_height'], run=str(run))
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)) or '.', exist_ok=True)
     fa.write_aam_hemisphere_netcdf(
@@ -943,6 +978,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
         title=sphere_title(AIRCRAFT_SPHERE_PREFIX.get(test.aircraft, test.aircraft),
                            row.get('run_num', run), run[:3]),
         overwrite=overwrite,
+        doppler_shift_removed=1.0 if remove_doppler else 0.0,
     )
     norah2_output_path = None
     if norah2_directory is not None:
