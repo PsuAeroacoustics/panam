@@ -36,8 +36,8 @@ VKF_P = 1
 VKF_MIN_BW = 3
 VKF_MAX_BW = 9
 VKF_BW_PERCENT = 0.05
-VKF_SOLVER = "auto"
-VKF_USE_COUPLING = True
+VKF_SOLVER = "auto"  # UMFPACK if scikits.umfpack is installed, else SuperLU
+VKF_USE_COUPLING = True  # False is faster but less accurate
 VKF_N_JOBS = None  # defaults to CPU count
 
 # Plot settings
@@ -198,51 +198,20 @@ def process_segment_serial(seg_idx, spacing, cutoff, xo, to, rpmo, orders, no_bl
     start_idx = spacing[seg_idx] - cutoff
     end_idx = spacing[seg_idx + 1] + cutoff
 
-    x_src = xo[start_idx:end_idx, :]
-    x = x_src.copy()
-    t = to[start_idx:end_idx]
-    rpm = rpmo[start_idx:end_idx, :]
+    orders = tuple(orders)
+    print(f"  Processing {len(orders)} orders (all 6 rotors per call)...")
 
-    seg_size = len(x) - 2*cutoff
-    n_mics = x.shape[1]
-
-    tmp_P_ordLoop = np.zeros((seg_size, 6, n_mics))
-
-    print(f"  Processing {len(list(orders))} orders (all 6 rotors per call)...")
-
-    for order in orders:
-        freq_all_rotors = rpm * order * no_blade / (2 * np.pi)
-        bandwidth_all = np.clip(freq_all_rotors * bw_percent, min_bw, max_bw)
-
-        for mic in range(n_mics):
-            y, ph, _ = vold_kalman_filter(
-                x[:, mic],
-                freq_all_rotors,
-                fs,
-                bandwidth_all,
-                p,
-                solver=solver,
-                use_coupling=use_coupling,
-            )
-
-            components_full = np.real(y * ph)
-            for rotor_idx in range(6):
-                tmp_P_ordLoop[:, rotor_idx, mic] += components_full[cutoff:-cutoff, rotor_idx]
-            x[:, mic] -= np.sum(components_full, axis=1)
+    _, tmp_P_ordLoop, t_center, rpm_center, orig_center = _process_segment(
+        seg_idx, xo[start_idx:end_idx, :], to[start_idx:end_idx], rpmo[start_idx:end_idx, :],
+        orders, no_blade, fs, bw_percent, min_bw, max_bw, p, solver, use_coupling, cutoff)
 
     seg_time = time.time() - seg_start
     elapsed = time.time() - total_start
     avg_time = elapsed / (seg_idx + 1)
     remaining = avg_time * (total_spacing - 1 - seg_idx)
     print(f"  Segment time: {seg_time:.1f}s, Est. remaining: {remaining:.0f}s")
-    
-    return (
-        tmp_P_ordLoop,
-        t[cutoff:-cutoff],
-        rpm[cutoff:-cutoff, :],
-        x_src[cutoff:-cutoff, :],
-        seg_size
-    )
+
+    return tmp_P_ordLoop, t_center, rpm_center, orig_center, tmp_P_ordLoop.shape[0]
 
 
 def _process_segment(
@@ -359,6 +328,8 @@ def separate_hexacopter_acoustics(mat_file_path, mic_range=16,
         - 'original': original signal before separation
         - 'fs': sampling frequency
     """
+    orders = tuple(orders)  # iterated once per segment, so not a one-shot generator
+
     # Load and preprocess data
     data = load_hexacopter_data(mat_file_path, downsample_factor=downsample_factor)
     acoustics_T = data['acoustics_T']
@@ -424,7 +395,7 @@ def separate_hexacopter_acoustics(mat_file_path, mic_range=16,
                         x_src,
                         t,
                         rpm,
-                        tuple(orders),
+                        orders,
                         no_blade,
                         fs,
                         bw_percent,
@@ -597,11 +568,7 @@ if __name__ == "__main__":
     print("Using Vold-Kalman Filter")
     print("="*70)
     
-    # Perform separation    
-    solver = "auto"  # prefers Pardiso/UMFPACK if available
-    use_coupling = True  # set False for faster but less accurate results
-    n_jobs = None  # defaults to CPU count
-
+    # Perform separation with the settings at the top of this file
     separated = separate_hexacopter_acoustics(
         mat_file,
         mic_range=MIC_RANGE,
@@ -610,9 +577,9 @@ if __name__ == "__main__":
         min_bw=VKF_MIN_BW,
         max_bw=VKF_MAX_BW,
         bw_percent=VKF_BW_PERCENT,
-        solver=solver,
-        use_coupling=use_coupling,
-        n_jobs=n_jobs,
+        solver=VKF_SOLVER,
+        use_coupling=VKF_USE_COUPLING,
+        n_jobs=VKF_N_JOBS,
         downsample_factor=DOWNSAMPLE_FACTOR,
         highpass_cutoff=HIGHPASS_CUTOFF_HZ,
     )

@@ -57,7 +57,7 @@ def test_no_holes_where_a_fixed_radius_leaves_them_and_gaps_are_reported():
     w, radius, gap = adaptive_idw_weights(ielv, iazi, felv, fazi, mic, res, max_radius_deg=60.0)
     # Far fewer gaps than the fixed radius has holes, and each one a node that cannot be
     # bracketed by three microphones within the cap: steep to the side, where only the
-    # centreline microphone sees the aircraft.
+    # centerline microphone sees the aircraft.
     assert gap.sum() < 0.05 * np.isnan(fixed).sum()
     kappa, cap = 1.3, 60.0
     for node in np.flatnonzero(gap):

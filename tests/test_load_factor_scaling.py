@@ -12,9 +12,6 @@ such a sphere.  That is not hypothetical: it made NICE-OPS's self test fail on
 all 1,726,272 samples of a database built with the maneuver load factors.
 """
 
-import os
-import tempfile
-
 import numpy as np
 import pytest
 
@@ -28,7 +25,7 @@ BASE_LEVEL = 90.0
 
 
 @pytest.fixture
-def written_spheres():
+def written_spheres(tmp_path):
     """Write one sphere per load factor and read the stored dBA back."""
     phi = np.zeros((N_PHI, N_THETA))
     theta = np.zeros((N_PHI, N_THETA))
@@ -36,7 +33,7 @@ def written_spheres():
     eaa = np.zeros((N_PHI, N_THETA))
     load_factors = [0.0, 1.0, 1.1, 2.0, 5.0]
 
-    path = os.path.join(tempfile.mkdtemp(), 'spheres.nc')
+    path = str(tmp_path / 'spheres.nc')
     out = {}
     with Dataset(path, 'w') as db:
         for i, lf in enumerate(load_factors):
@@ -48,7 +45,6 @@ def written_spheres():
         for i, lf in enumerate(load_factors):
             g = db[f'sphere{i}']
             out[lf] = (np.array(g['dBA'][:]), float(np.array(g['thrust_coefficient'][:])[0]))
-    os.remove(path)
     return out
 
 

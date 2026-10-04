@@ -20,6 +20,28 @@ def test_emission_geometry_straight_pass():
     assert np.isnan(g['elevation'][1])               # before anything could arrive
 
 
+def test_band_levels_from_psd_count_every_bin_once():
+    # Nominal centers' own c * 2**(+-1/6) edges leave 1403-1425 Hz in no band
+    # and 891-898 Hz in two; the bands must tile, so the band powers add up to
+    # the PSD's total over them.
+    frequency = np.arange(0.0, 12000.0, 1.0)
+    psd = np.zeros((frequency.size, 3))
+    psd[1410, 0] = 4e-10                            # a tone in the old gap
+    psd[895, 1] = 4e-10                             # and one in the old overlap
+    psd[:, 2] = 4e-10                               # white
+    bands = gp.fa.PNL_BAND_FREQUENCIES
+    levels = gp.band_levels_from_psd(frequency, psd, bands)
+    power = 10.0 ** (levels / 10.0) * 4e-10
+    for tone in (0, 1):
+        assert np.sum(power[:, tone] > 1e-20) == 1
+        assert power[:, tone].max() == pytest.approx(4e-10, rel=1e-12)
+    lower, upper = gp.fa.third_octave_band_edges(bands)
+    covered = (frequency >= lower[0]) & (frequency < upper[-1])
+    assert power[:, 2].sum() == pytest.approx(psd[covered, 2].sum(), rel=1e-12)
+    # 1410 Hz falls in the 1250 Hz band, whose base-10 upper edge is 1412.5 Hz.
+    assert levels[list(bands).index(1250.0), 0] == pytest.approx(0.0, abs=1e-9)
+
+
 def test_flat_is_pressure_doubling():
     assert np.allclose(gp.board_rigid_plane(BANDS, [100.0, 50.0], [10.0, 2000.0]), 6.0206, atol=1e-3)
 
@@ -60,9 +82,9 @@ def test_fresnel_strip_weight_grows_toward_grazing_and_low_frequency():
 
 def test_fresnel_ellipse_matches_sampling():
     for hs, d2, hr, excess in ((40.0, 120.0, 4.0, 3.0), (500.0, 10.0, 0.026, 0.0375)):
-        centre, ax, ay = gp.fresnel_ellipse(hs, d2, hr, excess)
+        center, ax, ay = gp.fresnel_ellipse(hs, d2, hr, excess)
         # Brute force: ground points within the path-length limit.
-        x = centre + np.linspace(-1.2, 1.2, 1201) * ax
+        x = center + np.linspace(-1.2, 1.2, 1201) * ax
         y = np.linspace(-1.2, 1.2, 1201) * ay
         X, Y = np.meshgrid(x, y)
         inside = (np.sqrt((X + d2) ** 2 + Y ** 2 + hs ** 2) + np.sqrt(X ** 2 + Y ** 2 + hr ** 2)
@@ -70,7 +92,7 @@ def test_fresnel_ellipse_matches_sampling():
         sampled = inside.sum() * (x[1] - x[0]) * (y[1] - y[0])
         assert np.pi * ax * ay == pytest.approx(sampled, rel=0.01)
         # And it is an ellipse: every point inside the fitted one is in the zone.
-        fitted = ((X - centre) / ax) ** 2 + (Y / ay) ** 2 <= 1.0
+        fitted = ((X - center) / ax) ** 2 + (Y / ay) ** 2 <= 1.0
         assert np.mean(fitted == inside) > 0.999
 
 
@@ -139,8 +161,8 @@ def test_disc_mesh_covers_the_disc():
     assert np.all(np.hypot(x, y) < gp.PLATE_RADIUS_FT)
 
 
-def test_inverse_distance_integral_of_a_disc_about_its_centre():
-    # int dA / rho over a disc of radius a about its centre = 2 pi a.
+def test_inverse_distance_integral_of_a_disc_about_its_center():
+    # int dA / rho over a disc of radius a about its center = 2 pi a.
     assert gp._inverse_distance_integral(0.0, 0.0, (0.0, 0.3, 0.0, 2 * np.pi)) == pytest.approx(
         2 * np.pi * 0.3, rel=1e-6)
 
@@ -196,7 +218,7 @@ def test_raised_thin_plate_on_rigid_ground_doubles_pressure():
     assert abs(pd[0, 0, 0] + pr[0, 0, 0]) == pytest.approx(2.0, rel=0.03)
 
 
-def test_raised_plate_centre_microphone_is_axisymmetric():
+def test_raised_plate_center_microphone_is_axisymmetric():
     pd, pr = gp.raised_plate_scattering([1000.0], [30.0], [0.0, 90.0], C, mic=(0.0, 0.0),
                                         cells_per_wavelength=4, min_cells_across=10)
     q = gp.fa.spherical_reflection_coefficient(0.5, 1000.0, 1000.0, C, gp.FLOW_RESISTANCE)
@@ -270,3 +292,137 @@ def test_disc_bem_table_is_read_at_its_own_sub_frequencies():
     np.testing.assert_allclose(level, 20 * np.log10(2.0), atol=0.01)
     with pytest.raises(ValueError, match='2 sub-frequencies per band, not 5'):
         gp.board_disc_bem([500.0], [100.0], [10.0], C, flow_resistance=1e9, sub_bands=5, table=table)
+
+
+# ---------------------------------------------------------------- emission times
+
+def _line(t0=-2000.0, v=150.0, h=500.0):
+    return lambda t: np.column_stack((t0 + v * np.asarray(t), np.zeros_like(t), np.full_like(t, h)))
+
+
+def test_emission_times_match_the_closed_form_for_a_straight_pass():
+    # x(t) = x0 + v t at height h, receiver at the origin: (t_r - t_e) c = |x(t_e)|
+    x0, v, h = -2000.0, 150.0, 500.0
+    t_r = np.linspace(2.0, 30.0, 15)
+    t_e, x = gp.emission_times(_line(x0, v, h), t_r, [0.0, 0.0, 0.0], C)
+    # (c^2 - v^2) t_e^2 - 2 (c^2 t_r + x0 v) t_e + c^2 t_r^2 - x0^2 - h^2 = 0, smaller root
+    a = C ** 2 - v ** 2
+    b = -2 * (C ** 2 * t_r + x0 * v)
+    c = C ** 2 * t_r ** 2 - x0 ** 2 - h ** 2
+    exact = (-b - np.sqrt(b ** 2 - 4 * a * c)) / (2 * a)
+    assert np.allclose(t_e, exact, atol=1e-8)
+    assert np.allclose(np.linalg.norm(x, axis=1), C * (t_r - t_e), rtol=1e-9)
+
+
+def test_emission_times_agree_with_emission_geometry():
+    t = np.linspace(0.0, 40.0, 40001)
+    xyz = _line()(t)
+    track = {'time': t, 'x': xyz[:, 0], 'y': xyz[:, 1], 'z': xyz[:, 2]}
+    mic = np.array([300.0, 200.0, 0.0])
+    t_r = np.linspace(5.0, 30.0, 11)
+    g = gp.emission_geometry(track, mic, t_r, C)
+    _, x = gp.emission_times(_line(), t_r, mic, C)
+    assert np.allclose(x[:, 2] - mic[2], g['source_height'], atol=1e-6)
+    assert np.allclose(x[:, 0] - mic[0], g['source_dx'], atol=1e-3)
+
+
+def test_one_pass_emission_time_is_short_by_about_m2_r():
+    # the error a single pass leaves: the source placed ~M^2 R cos(phi) toward the mic
+    t_r = np.array([3.0])
+    t_1 = t_r - np.linalg.norm(_line()(t_r), axis=1) / C          # one pass from t_e = t_r
+    t_e, _ = gp.emission_times(_line(), t_r, [0.0, 0.0, 0.0], C)
+    assert abs(t_1[0] - t_e[0]) > 1e-3
+
+
+def test_emission_times_refuse_a_supersonic_approach():
+    with pytest.raises(RuntimeError):
+        gp.emission_times(_line(v=2 * C), np.array([1.0]), [0.0, 0.0, 0.0], C, max_iter=20)
+
+
+# ---------------------------------------------------------------- pole interference nulls
+
+def test_path_difference_and_its_inverse():
+    hr, d2 = 4.0, np.array([50.0, 150.0, 400.0])
+    hs = np.array([30.0, 60.0, 90.0])
+    dR = gp.path_difference(hs, d2, hr)
+    assert np.allclose(dR, 2 * hr * hs / np.hypot(d2, hs), rtol=0.01)       # far field: 2 hr sin(el)
+    assert np.allclose(gp.height_from_path_difference(dR, d2, hr), hs, rtol=1e-9)
+    assert np.all(np.isnan(gp.height_from_path_difference([0.0, 8.0], [100.0, 100.0], hr)))
+
+
+def test_null_frequencies():
+    f = gp.null_frequencies(0.5, C, 0.0, 3)
+    assert np.allclose(f, [C / 1.0, 3 * C / 1.0, 5 * C / 1.0])
+    assert gp.null_frequencies(0.5, C, 0.2, 1)[0] < f[0]          # a positive phase lowers the nulls
+
+
+def test_fit_two_path_recovers_the_path_difference():
+    rng = np.random.default_rng(0)
+    f = np.arange(50.0, 6000.0, 4.0)
+    true = dict(offset_db=-5.0, amplitude=0.85, amplitude_rolloff=4000.0, dR=0.62, phase=0.05)
+    y = gp.two_path_db(f, true['offset_db'], true['amplitude'], true['amplitude_rolloff'], true['dR'],
+                       true['phase'], C) + rng.normal(0.0, 0.8, f.size)
+    fit = gp.fit_two_path(f, y, dR_guess=0.45, sound_speed=C, receiver_height=4.0)
+    assert fit['dR'] == pytest.approx(true['dR'], rel=0.01)
+    assert fit['phase'] == pytest.approx(true['phase'], abs=0.1)
+    assert fit['f1'] == pytest.approx(gp.null_frequencies(true['dR'], C, true['phase'], 1)[0], rel=0.02)
+    held = gp.fit_two_path(f, y, dR_guess=0.45, sound_speed=C, receiver_height=4.0, fix_phase=true['phase'])
+    assert held['dR'] == pytest.approx(true['dR'], rel=0.01) and held['phase_se'] == 0.0
+
+
+def test_reflection_phase_is_zero_over_rigid_ground_and_small_over_stiff():
+    rigid = gp.reflection_phase([500.0, 2000.0], 100.0, 300.0, 4.0, C, flow_resistance=gp.RIGID_FLOW_RESISTANCE)
+    assert np.allclose(rigid, 0.0, atol=1e-6)
+    stiff = gp.reflection_phase(2000.0, 100.0, 300.0, 4.0, C, flow_resistance=2e4)
+    assert 0.0 < abs(float(stiff)) < 0.2
+
+
+def _disc_table(bands, mic_height=0.0, sub_bands=2):
+    """A disc_bem_table stand-in with no scattering (S = 0)."""
+    frequencies = np.sort((np.asarray(bands)[:, None] * gp.sub_band_factors(sub_bands)[None, :]).ravel())
+    return dict(frequencies=frequencies, elevations=np.array([0.0, 90.0]), azimuths=np.array([0.0, 180.0]),
+                S=np.zeros((frequencies.size, 2, 2), dtype=complex), mic_height=mic_height, ground=None,
+                flow_resistance=gp.FLOW_RESISTANCE, sub_bands=sub_bands)
+
+
+def test_board_disc_bem_is_nan_for_bands_the_table_does_not_hold():
+    table = _disc_table(np.array([500.0, 1000.0]))
+    level = gp.board_disc_bem([400.0, 500.0, 630.0, 1000.0, 1250.0], [100.0], [200.0], C, table=table)[:, 0]
+    assert np.all(np.isfinite(level[[1, 3]])) and np.all(np.isnan(level[[0, 2, 4]]))
+
+
+def test_board_disc_bem_takes_q_at_the_microphone_height():
+    # With S = 0 an inverted microphone h above the ground reads the two-path
+    # field 1 + Q e^{2ikh sin(el)}, Q at the image geometry of a receiver at h.
+    h, hs, d2, band = gp.INVERTED_MIC_HEIGHT_FT, 0.5, 20.0, 2000.0
+    level = gp.board_disc_bem([band], [hs], [d2], C, table=_disc_table(np.array([band]), mic_height=h))[0, 0]
+    r2 = np.hypot(d2, hs + h)
+    energy = 0.0
+    for f in band * gp.sub_band_factors(2):
+        q = gp.fa.spherical_reflection_coefficient((hs + h) / r2, r2, f, C, gp.FLOW_RESISTANCE)
+        energy += abs(1 + q * np.exp(2j * 2 * np.pi * f / C * h * np.sin(np.arctan2(hs, d2)))) ** 2
+    assert level == pytest.approx(10 * np.log10(energy / 2), abs=1e-9)
+
+
+
+def test_table_frames_interpolate_bilinearly_and_wrap_in_azimuth():
+    # Values linear in elevation and, near 0 deg, in azimuth (350 deg -> 350,
+    # 0 deg -> 360): the bilinear lookup is exact, across 350 -> 360 = 0 too.
+    table = _disc_table(np.array([1000.0]))
+    table['elevations'] = np.array([0.0, 10.0, 90.0])
+    table['azimuths'] = np.arange(0.0, 360.0, 10.0)
+    el, az = np.meshgrid(table['elevations'], table['azimuths'], indexing='ij')
+    wrapped = np.where(az == 0.0, 360.0, np.where(az > 300.0, az, 0.0))
+    table['S'] = np.broadcast_to(el + 1j * wrapped, (2,) + el.shape)
+    hs, d2 = np.tan(np.radians(5.0)) * 100.0, 100.0
+    toward = np.radians([355.0, 15.0, 5.0])                 # propagation azimuths
+    f, _, _, elevation, offsets, values = gp.table_frames(
+        table, ('S',), [1000.0, 2000.0], [hs] * 3, [d2] * 3, source_dx=-np.cos(toward),
+        source_dy=-np.sin(toward))
+    assert values.shape == (2, 1, 2, 3) and np.allclose(elevation, 5.0)
+    np.testing.assert_allclose(values[:, 0, 0], np.broadcast_to(5.0 + 1j * np.array([355.0, 0.0, 180.0]),
+                                                                (2, 3)), atol=1e-9)
+    assert np.all(np.isnan(values[:, 0, 1]))               # no 2 kHz rows
+    mirrored = gp.table_frames(table, ('S',), [1000.0], [hs] * 3, [d2] * 3, source_dx=-np.cos(toward),
+                               source_dy=-np.sin(toward), mirror_y=True)[-1]
+    np.testing.assert_allclose(mirrored[0, 0, 0].imag, [180.0, 345.0, 355.0], atol=1e-9)

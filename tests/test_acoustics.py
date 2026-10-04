@@ -197,7 +197,7 @@ def test_geodetic_local_roundtrip():
 
 
 
-def test_array2geodetic_in_metres_leaves_its_input_alone():
+def test_array2geodetic_in_meters_leaves_its_input_alone():
     """units='m' used to rewrite the caller's coordinates into feet in place,
     so converting the same array twice put the microphones 3.28x too far out."""
     reference = np.array([40.0, -77.0, 300.0])
@@ -227,3 +227,42 @@ def test_atmosorb_matches_iso_9613_2_table():
     frequencies = 1000.0 * 10.0 ** (0.3 * np.arange(-4, 4))
     alpha_db_per_km = 1000.0 * atmosorb(frequencies, 20.0, 70.0, 1013.25)
     np.testing.assert_array_equal(np.round(alpha_db_per_km, 1), table)
+
+
+def test_welch_single_bin_passband_retains_correct_bin_width():
+    x = np.sin(2 * np.pi * 100 * np.arange(4096) / 1024)
+    frequency, _, level, _ = psd_welch(x, 1024, passband=(100, 100))
+    assert frequency.tolist() == [100]
+    assert np.isfinite(level)
+
+
+def test_welch_empty_passband_reports_input_error():
+    with pytest.raises(ValueError, match='no frequency bins'):
+        psd_welch(np.ones(4096), 1024, passband=(100.1, 100.2))
+
+
+def test_plot_style_is_restored():
+    import matplotlib
+    from flight_acoustics import plot_spectrogram
+    before = {key: matplotlib.rcParams[key] for key in ('axes.facecolor', 'mathtext.fontset', 'figure.autolayout')}
+    fig, *_ = plot_spectrogram(np.ones(4096), 1024)
+    plt.close(fig)
+    assert before == {key: matplotlib.rcParams[key] for key in before}
+
+
+def test_import_preserves_global_plot_defaults():
+    import os
+    import subprocess
+    import sys
+    result = subprocess.run([sys.executable, '-c', '''
+import matplotlib
+matplotlib.use('Agg')
+matplotlib.rcParams['axes.facecolor'] = 'pink'
+matplotlib.rcParams['figure.autolayout'] = False
+matplotlib.rcParams['mathtext.fontset'] = 'cm'
+import flight_acoustics
+assert matplotlib.rcParams['axes.facecolor'] == 'pink'
+assert matplotlib.rcParams['figure.autolayout'] is False
+assert matplotlib.rcParams['mathtext.fontset'] == 'cm'
+'''], capture_output=True, text=True, env=dict(os.environ, MPLBACKEND='Agg'))
+    assert result.returncode == 0, result.stderr

@@ -31,6 +31,7 @@ spheres (see :func:`steady_window`):
   reproduces them, so the segment need not match the legacy one exactly.
 """
 
+import contextlib
 import os
 import csv
 import glob
@@ -86,7 +87,7 @@ SITE_GROUND = dict(model='variable_porosity', sigma_e=200.0, alpha_e=0.0)
 #: dataset's ``invgb7`` label ("inverted over a ground board with a 7 mm gap")
 #: included, per the test team.  A true inverted layout (``axisymmetric_bem``'s
 #: ``mic_height``, plus the microphone body over the gap, which is not yet
-#: modelled) is for other tests.
+#: modeled) is for other tests.
 BOARD_MIC_HEIGHT_FT = {'gdbdfl': 0.0, 'invgb7': 0.0}
 
 #: Plate tables are computed at the run's sound speed rounded to this
@@ -99,7 +100,7 @@ DEFAULT_R_REF_FT = 100.0
 #: Threads used to warm the cloud-storage cache ahead of each run.
 PREFETCH_WORKERS = 24
 
-#: Third-octave band centres carried by the legacy spheres.
+#: Third-octave band centers carried by the legacy spheres.
 LEGACY_BAND_CENTERS_HZ = np.array([
     10.0, 12.5, 16.0, 20.0, 25.0, 31.5, 40.0, 50.0, 63.0, 80.0,
     100.0, 125.0, 160.0, 200.0, 250.0, 315.0, 400.0, 500.0, 630.0, 800.0,
@@ -326,7 +327,7 @@ def vz_sign(track):
     The files do not agree: ``z`` is positive up throughout, and ``vz`` is
     positive DOWN in every file (agreement with ``d/dt`` of ``z`` around -0.99)
     except EC130B4 test day 298, whose 49 files have it positive UP (+1.000).
-    Assuming down everywhere labelled those days' descents climbs.
+    Assuming down everywhere labeled those days' descents climbs.
 
     A track with too little vertical motion to judge -- level passes and hovers,
     about 40 files across the dataset, all leaning negative -- falls back to
@@ -334,7 +335,7 @@ def vz_sign(track):
     """
     dz = np.gradient(track['z'], track['time'])
     vz = track['vz']
-    # Uncentred, so a steady descent -- constant dz/dt, no variance to
+    # Uncenterd, so a steady descent -- constant dz/dt, no variance to
     # correlate -- still decides: vz . dz/dt is +|dz|^2 when they agree.
     rms = lambda x: np.sqrt(np.mean(np.square(x)))
     if rms(vz) < 0.5 or rms(dz) < 0.5:                 # ft/s
@@ -356,7 +357,7 @@ def load_track(path):
     :func:`vz_sign`.  :func:`flight_acoustics.hemigen` only takes heading from
     the horizontal components, so the sign does not corrupt the hemisphere
     geometry, but it does set the flight path angle -- which is how a descent
-    gets labelled as a climb.
+    gets labeled as a climb.
     """
     data = np.genfromtxt(path, delimiter=',', names=True)
     if data.size < 2:
@@ -370,8 +371,14 @@ def load_track(path):
     return track
 
 
+def _true_runs(mask):
+    """Half-open ``(starts, stops)`` index arrays of the runs of True in ``mask``."""
+    edges = np.flatnonzero(np.diff(np.concatenate(([False], mask, [False]))))
+    return edges[::2], edges[1::2]
+
+
 def _close_short_gaps(ok, time, max_gap_s):
-    """Fill runs of False shorter than ``max_gap_s``.
+    """Fill interior runs of False shorter than ``max_gap_s``.
 
     Steadiness is judged sample by sample at 50 Hz, so one gust-induced roll
     spike marks a single sample unsteady and splits an otherwise good 40 s
@@ -379,7 +386,7 @@ def _close_short_gaps(ok, time, max_gap_s):
     while still rejecting a real turn, which lasts seconds rather than
     hundredths.
 
-    2.0 s (not the 0.5 s this was first tuned to) is what generalises: tuned
+    2.0 s (not the 0.5 s this was first tuned to) is what generalizes: tuned
     against Be407 alone, 0.5 s recovered every Be407 run but left every other
     aircraft with a 17-50% "steady segment too short" failure rate, because a
     lighter, twitchier airframe's gust response is a wider, longer-lived
@@ -394,13 +401,16 @@ def _close_short_gaps(ok, time, max_gap_s):
     gust. The steadiness bounds themselves (roll, turn rate, speed, FPA) are
     untouched by this -- only how long a brief excursion can be before it
     counts as a real break.
+
+    Only a gap with steady flight on both sides is a gap: an unsteady stretch
+    at the start or end of the record bridges nothing, so it is left alone,
+    however short.
     """
     ok = np.asarray(ok, dtype=bool).copy()
     if max_gap_s <= 0.0:
         return ok
-    edges = np.flatnonzero(np.diff(np.concatenate(([True], ok, [True]))))
-    for start, stop in zip(edges[::2], edges[1::2]):
-        if time[min(stop, time.size - 1)] - time[start] <= max_gap_s:
+    for start, stop in zip(*_true_runs(~ok)):
+        if start > 0 and stop < ok.size and time[stop] - time[start] <= max_gap_s:
             ok[start:stop] = True
     return ok
 
@@ -466,17 +476,10 @@ def steady_window(track, speed_tolerance_knots=4.0, fpa_tolerance_deg=2.0,
     if not np.any(ok):
         raise ValueError('No steady flight segment found')
 
-    # Longest run of True
-    best_start = best_stop = start = None
-    for index, value in enumerate(ok):
-        if value and start is None:
-            start = index
-        elif not value and start is not None:
-            if best_start is None or index - start > best_stop - best_start:
-                best_start, best_stop = start, index
-            start = None
-    if start is not None and (best_start is None or ok.size - start > best_stop - best_start):
-        best_start, best_stop = start, ok.size
+    # Longest run of True; argmax takes the first of equally long ones.
+    starts, stops = _true_runs(ok)
+    longest = int(np.argmax(stops - starts))
+    best_start, best_stop = int(starts[longest]), int(stops[longest])
 
     duration = track['time'][best_stop - 1] - track['time'][best_start]
     if duration < min_duration_s:
@@ -496,23 +499,32 @@ def flight_condition(track, index_start, index_stop):
 # Acoustic loading
 # --------------------------------------------------------------------------
 
+def _signal_header(handle):
+    """``(sample_rate, start_time, location)`` of one open channel."""
+    return (float(handle.sample_rate), float(handle.start_time),
+            np.array([float(handle.X), float(handle.Y), float(handle.Z)]))
+
+
+def _read_window(handle, time_range=None, scale=1.0):
+    """Read an open channel, optionally trimming to an absolute time range."""
+    sample_rate, start_time, location = _signal_header(handle)
+    n_samples = handle.variables['pressure'].shape[0]
+    if time_range is None:
+        first, last = 0, n_samples
+    else:
+        first = int(np.floor((float(time_range[0]) - start_time) * sample_rate))
+        last = int(np.ceil((float(time_range[1]) - start_time) * sample_rate)) + 1
+        first = max(first, 0)
+        last = min(max(last, first + 2), n_samples)
+    pressure = handle.variables['pressure'][first:last].astype(float).ravel()
+    time = start_time + (first + np.arange(pressure.size, dtype=float)) / sample_rate
+    return pressure * float(scale), time, location, sample_rate
+
+
 def _read_signal(path, time_range=None, scale=1.0):
     """Read one channel, optionally trimming to an absolute time range."""
     with Dataset(path, mode='r') as handle:
-        sample_rate = float(handle.sample_rate)
-        start_time = float(handle.start_time)
-        location = np.array([float(handle.X), float(handle.Y), float(handle.Z)])
-        n_samples = handle.variables['pressure'].shape[0]
-        if time_range is None:
-            first, last = 0, n_samples
-        else:
-            first = int(np.floor((float(time_range[0]) - start_time) * sample_rate))
-            last = int(np.ceil((float(time_range[1]) - start_time) * sample_rate)) + 1
-            first = max(first, 0)
-            last = min(max(last, first + 2), n_samples)
-        pressure = handle.variables['pressure'][first:last].astype(float).ravel()
-    time = start_time + (first + np.arange(pressure.size, dtype=float)) / sample_rate
-    return pressure * float(scale), time, location, sample_rate
+        return _read_window(handle, time_range, scale)
 
 
 def load_run_channels(test, run, mics, time_range=None, ground_board_scale=0.5):
@@ -520,22 +532,42 @@ def load_run_channels(test, run, mics, time_range=None, ground_board_scale=0.5):
 
     ``ground_board_scale`` accounts for pressure doubling at the ground board;
     the demo scripts apply the same 0.5 factor.
+
+    ``time_range`` may also be a function of the channels' locations (an
+    (n, 3) array, in ``mics`` order, of those that could be opened) returning
+    the range, for a range that depends on where the microphones are: each
+    file is then still opened only once.
     """
-    locations, pressures, times, kept = [], [], [], []
-    for mic_number in mics:
-        path = test.acoustic_files[run][mic_number]
-        try:
-            pressure, time, location, _ = _read_signal(path, time_range, ground_board_scale)
-        except Exception as error:                      # noqa: BLE001 - one bad channel must not kill the run
-            warnings.warn('Run {}: could not read mic {} ({}); skipping it'
-                          .format(run, mic_number, error))
-            continue
-        if pressure.size < 2:
-            continue
-        locations.append(location)
-        pressures.append(pressure)
-        times.append(time)
-        kept.append(mic_number)
+    with contextlib.ExitStack() as stack:
+        opened = []
+        for mic_number in mics:
+            path = test.acoustic_files[run][mic_number]
+            try:
+                handle = stack.enter_context(Dataset(path, mode='r'))
+                location = _signal_header(handle)[2]
+            except Exception as error:                  # noqa: BLE001 - one bad channel must not kill the run
+                warnings.warn('Run {}: could not read mic {} ({}); skipping it'
+                              .format(run, mic_number, error))
+                continue
+            opened.append((mic_number, handle, location))
+        if callable(time_range):
+            time_range = (time_range(np.array([location for _, _, location in opened]))
+                          if opened else None)
+
+        locations, pressures, times, kept = [], [], [], []
+        for mic_number, handle, location in opened:
+            try:
+                pressure, time, _, _ = _read_window(handle, time_range, ground_board_scale)
+            except Exception as error:                  # noqa: BLE001 - one bad channel must not kill the run
+                warnings.warn('Run {}: could not read mic {} ({}); skipping it'
+                              .format(run, mic_number, error))
+                continue
+            if pressure.size < 2:
+                continue
+            locations.append(location)
+            pressures.append(pressure)
+            times.append(time)
+            kept.append(mic_number)
     if not kept:
         raise ValueError('Run {}: no usable microphone channels'.format(run))
     return np.array(locations), pressures, times, kept
@@ -561,11 +593,10 @@ def load_ambient_channels(test, ambient_run, mics, max_duration_s=30.0,
                          .format(ambient_run, missing))
     pressures, times = [], []
     for mic_number in mics:
-        path = available[mic_number]
-        with Dataset(path, mode='r') as handle:
-            start_time = float(handle.start_time)
-        pressure, time, _, _ = _read_signal(
-            path, (start_time, start_time + float(max_duration_s)), ground_board_scale)
+        with Dataset(available[mic_number], mode='r') as handle:
+            start_time = _signal_header(handle)[1]
+            pressure, time, _, _ = _read_window(
+                handle, (start_time, start_time + float(max_duration_s)), ground_board_scale)
         pressures.append(pressure)
         times.append(time)
     return pressures, times, list(mics)
@@ -647,6 +678,11 @@ def plate_response(tables, mirror, sound_speed_ft_s):
 # Atmosphere
 # --------------------------------------------------------------------------
 
+def sound_speed_ft_s(atmosphere):
+    """``atmosphere``'s speed of sound in ft/s, the dataset's length unit."""
+    return float(fa.unit_conversion.len_conv(atmosphere.soundspeed, from_units='m', to_units='ft'))
+
+
 def run_atmosphere(test, run, fallback=None):
     """Atmosphere measured by the ground weather stations at the time of ``run``.
 
@@ -654,7 +690,7 @@ def run_atmosphere(test, run, fallback=None):
     the high-frequency bands get multiplied by.  Assuming a dry standard day
     when the test day was humid would inflate them: at 20 C absorption at
     3.15 kHz is about 49 dB/km at 20 % relative humidity but roughly a third of
-    that at 70 %, and that difference is applied over kilometres of slant range.
+    that at 70 %, and that difference is applied over kilometers of slant range.
 
     The stations report ``airtemp`` in degrees Fahrenheit, pressure in kPa and
     humidity in percent.  The file does not say so; the balloon sondes, which
@@ -770,7 +806,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
 
     ``remove_doppler`` files band power at the emitted frequency, not the received one
     (:func:`flight_acoustics.depropagate_hemisphere`), and sets the sphere's
-    DOPPLER_SHIFT_REMOVED.  For a sphere a hover is synthesised from
+    DOPPLER_SHIFT_REMOVED.  For a sphere a hover is synthesized from
     (``build_empirical_database(hover_source=)``), never for one NICE-OPS reads as flight.
 
     ``nose_from_heading`` orients the sphere by the tracked heading instead of the velocity:
@@ -783,7 +819,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
 
     ``samples_path``, if given, also saves the scattered samples (before gridding) to that
     .npz: azimuth and elevation (deg, panam's convention: 180 ahead, elevation positive
-    below the horizon), band centres, band levels (dB at ``r_ref_ft``, bands x samples),
+    below the horizon), band centers, band levels (dB at ``r_ref_ft``, bands x samples),
     microphone, slant range and source height (ft).
 
     ``ray_model`` (see :mod:`refracted_rays`) depropagates along refracted rays
@@ -803,7 +839,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     or settings to override them.  Default None: the fixed ``rmax``.
 
     ``board_correction`` removes the ground board's effect: ``'plate_bem'``
-    (default) divides each band by the plate's modelled response for that
+    (default) divides each band by the plate's modeled response for that
     frame's geometry -- the axisymmetric BEM of the plate on the site's
     ``ground`` (default :data:`SITE_GROUND`), per instrument type
     (:data:`BOARD_MIC_HEIGHT_FT`), microphone outboard of the track -- and
@@ -815,7 +851,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     ``norah2_directory``, if given, also writes the same hemisphere there as a
     NORAH2 ``.hem`` file named by :func:`norah2_file_name` (see
     :func:`flight_acoustics.write_norah2_hemisphere`).  Its ACSPEED is the
-    ground speed the AAM sphere is labelled with; the tracking data carries no
+    ground speed the AAM sphere is labeled with; the tracking data carries no
     airspeed.
 
     Returns a dict describing what was processed, so a batch caller can log and
@@ -846,8 +882,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
         atmosphere = run_atmosphere(test, run, fallback=fa.Atmosphere(
             temperature=293.15, pressure=101.325, relative_humidity=20.0))
     if speed_of_sound_ft_s is None:
-        speed_of_sound_ft_s = float(fa.unit_conversion.len_conv(
-            atmosphere.soundspeed, from_units='m', to_units='ft'))
+        speed_of_sound_ft_s = sound_speed_ft_s(atmosphere)
 
     mics = test.ground_board_mics(run)
     if not mics:
@@ -876,14 +911,13 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     # Trim the recordings to the observer times that the steady segment can
     # reach.  A full run is ~50 channels x 90 s x 25 kHz; loading only what is
     # used keeps a run inside a few hundred MB instead of a couple of GB.
-    locations = np.array([_read_signal(test.acoustic_files[run][m], (0.0, 0.0))[2]
-                          for m in mics])
-    geometry_locations = locations.copy()
-    if flip_y_for_geometry:
-        geometry_locations[:, 1] *= -1.0
-    ranges = np.sqrt(((position[:, None, :] - geometry_locations[None, :, :]) ** 2).sum(axis=2))
-    time_range = (float(segment['time'][0]),
-                  float(segment['time'][-1] + ranges.max() / speed_of_sound_ft_s + 2.0 * window_time))
+    def time_range(locations):
+        geometry_locations = locations.copy()
+        if flip_y_for_geometry:
+            geometry_locations[:, 1] *= -1.0
+        ranges = np.sqrt(((position[:, None, :] - geometry_locations[None, :, :]) ** 2).sum(axis=2))
+        return (float(segment['time'][0]),
+                float(segment['time'][-1] + ranges.max() / speed_of_sound_ft_s + 2.0 * window_time))
 
     if board_correction not in ('plate_bem', 'flat'):
         raise ValueError("board_correction must be 'plate_bem' or 'flat'")
@@ -1030,11 +1064,12 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
 # Batch
 # --------------------------------------------------------------------------
 
-def _run_file_paths(test, run):
-    """Every acoustic file one run needs, its ambient recording included."""
+def _run_file_paths(test, run, gate_ambient=True):
+    """Every acoustic file one run needs, its ambient recording included
+    unless ``gate_ambient`` is False (:func:`build_sphere` then reads none)."""
     mics = test.ground_board_mics(run)
     paths = [test.acoustic_files[run][m] for m in mics if m in test.acoustic_files.get(run, {})]
-    ambient = test.ambient_run(run)
+    ambient = test.ambient_run(run) if gate_ambient else None
     if ambient:
         paths += [path for mic, path in test.acoustic_files.get(ambient, {}).items()
                   if mic in mics]
@@ -1060,6 +1095,26 @@ def _prefetch(paths, workers=PREFETCH_WORKERS):
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         list(pool.map(touch, paths))
+
+
+def _prefetch_run(test, run, gate_ambient=True, done=None):
+    """:func:`_prefetch` one run's files, off the main thread.
+
+    A run whose files can't be listed (an unknown run number, say) is skipped
+    here: :func:`build_sphere` meets the same error and reports the run as failed.
+    Paths in the set ``done`` are skipped, and the rest added to it: an
+    ambient run serves every run on its layout and day, and need be pulled
+    only once.
+    """
+    try:
+        paths = _run_file_paths(test, run, gate_ambient)
+    except Exception as error:                          # noqa: BLE001
+        logging.debug('prefetch skipped run %s (%s)', run, error)
+        return
+    if done is not None:
+        paths = [path for path in paths if path not in done]
+        done.update(paths)
+    _prefetch(paths)
 
 
 def build_all(aircraft, output_directory, *, root=None, runs=None,
@@ -1099,37 +1154,44 @@ def build_all(aircraft, output_directory, *, root=None, runs=None,
 
     records, failures = [], []
     pool = ThreadPoolExecutor(max_workers=1) if prefetch and runs else None
-    pending = pool.submit(_prefetch, _run_file_paths(test, runs[0])) if pool else None
-    for number, run in enumerate(runs, start=1):
-        if pending is not None:
-            pending.result()
-            pending = (pool.submit(_prefetch, _run_file_paths(test, runs[number]))
-                       if number < len(runs) else None)
-        row = test.by_run.get(run, {})
-        name = '{}{}.nc'.format(prefix, row.get('run_num', run))
-        reference = None
-        if reference_directory:
-            candidate = os.path.join(os.path.expanduser(reference_directory), name)
-            reference = candidate if os.path.exists(candidate) else None
-        try:
-            record = build_sphere(test, run, os.path.join(output_directory, name),
-                                  reference_sphere=reference, norah2_directory=norah2_directory,
-                                  ray_model=ray_models(run) if ray_models is not None else None,
-                                  **kwargs)
-        except Exception as error:                      # noqa: BLE001
-            logging.warning('[%d/%d] %s failed: %s', number, len(runs), run, error)
-            failures.append(dict(run=run, error=str(error),
-                                 condition=row.get('test_cond'),
-                                 layout=row.get('layout')))
-            continue
-        records.append(record)
-        logging.info('[%d/%d] %s -> %s  %.1f kt  %+.1f deg  %d mics  ambient %s',
-                     number, len(runs), run, name, record['speed_knots'],
-                     record['flight_path_angle_deg'], record['mics'],
-                     record['ambient_run'])
+    gate_ambient = kwargs.get('gate_ambient', True)
+    prefetched = set()
 
-    if pool is not None:
-        pool.shutdown()
+    def prefetch_next(index):
+        return (pool.submit(_prefetch_run, test, runs[index], gate_ambient, prefetched)
+                if index < len(runs) else None)
+
+    try:
+        pending = prefetch_next(0) if pool else None
+        for number, run in enumerate(runs, start=1):
+            if pending is not None:
+                pending.result()
+                pending = prefetch_next(number)
+            row = test.by_run.get(run, {})
+            name = '{}{}.nc'.format(prefix, row.get('run_num', run))
+            reference = None
+            if reference_directory:
+                candidate = os.path.join(os.path.expanduser(reference_directory), name)
+                reference = candidate if os.path.exists(candidate) else None
+            try:
+                record = build_sphere(test, run, os.path.join(output_directory, name),
+                                      reference_sphere=reference, norah2_directory=norah2_directory,
+                                      ray_model=ray_models(run) if ray_models is not None else None,
+                                      **kwargs)
+            except Exception as error:                  # noqa: BLE001
+                logging.warning('[%d/%d] %s failed: %s', number, len(runs), run, error)
+                failures.append(dict(run=run, error=str(error),
+                                     condition=row.get('test_cond'),
+                                     layout=row.get('layout')))
+                continue
+            records.append(record)
+            logging.info('[%d/%d] %s -> %s  %.1f kt  %+.1f deg  %d mics  ambient %s',
+                         number, len(runs), run, name, record['speed_knots'],
+                         record['flight_path_angle_deg'], record['mics'],
+                         record['ambient_run'])
+    finally:
+        if pool is not None:
+            pool.shutdown(cancel_futures=True)
     if norah2_directory is not None and len(records) >= 3:
         triangulation = os.path.join(os.path.abspath(os.path.expanduser(norah2_directory)),
                                      '{}_Triangulation.int'.format(prefix))
@@ -1187,11 +1249,11 @@ def main(argv=None):
                         help='also write each sphere as a NORAH2 .hem file here, with the '
                              'triangulation file NORAH2 needs to interpolate between them')
     parser.add_argument('--board-correction', choices=('plate_bem', 'flat'), default='plate_bem',
-                        help="'plate_bem' (default) divides out the ground plate's modelled "
+                        help="'plate_bem' (default) divides out the ground plate's modeled "
                              "response per band and frame; 'flat' is the old constant -6 dB")
     parser.add_argument('--third-octave-method', choices=('fft', 'filter_bank'), default='fft',
                         help="'filter_bank' forms bands with a true one-third octave filter "
-                             "bank, as an analyser does; it differs from the default FFT band "
+                             "bank, as an analyzer does; it differs from the default FFT band "
                              "sum only below ~100 Hz, between strong rotor tones")
     parser.add_argument('--band-snr-gate-db', type=float, default=10.0)
     parser.add_argument('--max-absorption-correction-db', type=float, default=30.0,
@@ -1219,7 +1281,7 @@ def main(argv=None):
     parser.add_argument('--no-prefetch', action='store_true',
                         help='do not warm the cloud-storage cache ahead of each run')
     parser.add_argument('--no-ambient-gate', action='store_true',
-                        help='reproduce the uncorrected legacy behaviour')
+                        help='reproduce the uncorrected legacy behavior')
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')

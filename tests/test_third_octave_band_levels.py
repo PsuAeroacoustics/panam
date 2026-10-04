@@ -56,7 +56,7 @@ def test_third_octave_band_levels_1khz_calibrator_level():
 def test_third_octave_band_levels_nominal_limits_keep_their_bands():
     """The default 20 Hz..20 kHz limits give all 31 bands from 20 Hz to 20 kHz.
 
-    The exact centres of those two bands are 19.69 and 20159 Hz, so comparing
+    The exact centers of those two bands are 19.69 and 20159 Hz, so comparing
     them directly against the nominal limits dropped both end bands.
     """
     fs = 48000

@@ -17,12 +17,12 @@ fact compensating for :func:`flight_acoustics.art2umapr`, which until
 sec. 2.4.1) puts it to starboard, and the shipped AAM spheres agree: every
 counter-clockwise rotor in them is louder at phi > 0 in descent, the
 clockwise EC130 and Mi-8 at phi < 0.  With the sign corrected the same
-residuals favour no flip, which is now the demo's setting.
+residuals favor no flip, which is now the demo's setting.
 
 Run:  PYTHONPATH=. python as350_flip_check.py
 
 The demo data are found through the ``as350_demo`` entry of local_paths
-(``AS350_DEMO_PATH`` is still honoured and takes precedence).
+(``AS350_DEMO_PATH`` is still honored and takes precedence).
 """
 
 from __future__ import annotations
@@ -75,22 +75,18 @@ def measured(flip):
     miclocs, pressures, times = demo.load_microphones(files)
     miclocs, pressures, times = demo.filter_microphones(
         files, miclocs, pressures, times)
-    track = fa.load_NASA_track(os.path.join(BASE, "Tracking", "289108AC.csv"))
-    ft = fa.filter_track(track, xlims=(-4000, 0), zlims=(50, 1500),
-                         decimate=10)
-    src = np.array([ft["x"], ft["y"], ft["z"]]).T
-    vel = np.array([ft["vx"], ft["vy"], ft["vz"]]).T
+    _, ft = demo.load_track(BASE)
+    src, vel = demo.track_kinematics(ft)
+    atmosphere, speed_of_sound_ft_s = demo.demo_atmosphere()
     return fa.depropagate_hemisphere(
         mic_locations=miclocs,
         pressure=[np.asarray(p, dtype=float) * 0.5 for p in pressures],
         time=times, track_time=ft["time"], track_position=src,
-        track_velocity=vel, speed_of_sound=1135.0, length_units="ft",
+        track_velocity=vel, speed_of_sound=speed_of_sound_ft_s, length_units="ft",
         r_ref=R_REF_FT, freq_range=FREQS, window_time=0.5,
         window_overlap=0.5, point_stride=1, azi_step=AZI_STEP,
         elv_step=ELV_STEP, rmax=RMAX, apply_absorption_deprop=True,
-        atmosphere=fa.Atmosphere(temperature=293.15, pressure=101.325,
-                                 relative_humidity=20.0),
-        flip_y_for_geometry=flip)
+        atmosphere=atmosphere, flip_y_for_geometry=flip)
 
 
 def main():

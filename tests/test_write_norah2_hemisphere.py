@@ -23,7 +23,7 @@ def synthetic_hemisphere(level_db=70.0, band_centers_hz=None, starboard_boost_db
     azi_grid_deg = np.arange(0.0, 360.0 + 1e-9, 5.0)
     elv_grid_deg = np.arange(-5.0, 90.0 + 1e-9, 5.0)
     if band_centers_hz is None:
-        # Exact base-10 centres, 12.6 Hz .. 5 kHz: tests the nominal-band match
+        # Exact base-10 centers, 12.6 Hz .. 5 kHz: tests the nominal-band match
         # and leaves 10 Hz and 6.3-10 kHz for the writer to mark missing.
         band_centers_hz = 1000.0 * 10.0 ** (np.arange(-19, 8) / 10.0)
     AZI = np.broadcast_to(azi_grid_deg, (elv_grid_deg.size, azi_grid_deg.size))
@@ -172,6 +172,7 @@ def test_triangulation_file(tmp_path):
         fa.write_norah2_triangulation(str(tmp_path / 'dup.int'), hemispheres + [('F.hem', 80.0, 0.0)])
 
 
+@pytest.mark.data
 @needs_norah2
 def test_reads_every_shipped_flight_condition_hemisphere():
     files = [f for f in glob.glob(os.path.join(NORAH2_HEMISPHERES, '*.hem'))
@@ -186,6 +187,7 @@ def test_reads_every_shipped_flight_condition_hemisphere():
         assert hem['constants']['POLDIST'] == 60.0
 
 
+@pytest.mark.data
 @needs_norah2
 @pytest.mark.parametrize('path', sorted(glob.glob(os.path.join(NORAH2_HEMISPHERES, '*_[Tt]riangulation.int'))))
 def test_reproduces_shipped_triangulations(tmp_path, path):

@@ -82,7 +82,7 @@ def test_broadband_levels_are_unbiased_between_frames():
     """White noise heard at exactly r_ref must depropagate to its own band levels.
 
     Emission times fall between spectrogram frames.  Interpolating each PSD
-    bin in dB there (the pre-2026-09-24 behaviour) took a geometric mean of
+    bin in dB there (the pre-2026-09-24 behavior) took a geometric mean of
     fluctuating periodogram bins and read about 0.7 dB low.
     """
     import pytest

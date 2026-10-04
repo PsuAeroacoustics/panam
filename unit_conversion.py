@@ -87,7 +87,7 @@ def area_conv(A, from_units=default_area_units,
     >>> area_conv(288, from_units = 'in**2')
     2.0
 
-    Convert 10 square metres to square inches:
+    Convert 10 square meters to square inches:
     >>> area_conv(1000, from_units = 'm**2', to_units = 'in**2')
     1550003.1000061999
     """
@@ -138,7 +138,7 @@ def density_conv(D, from_units, to_units):
     
     Example:
     
-    Convert 1.225 kg per metre cubed to lb per foot cubed:
+    Convert 1.225 kg per meter cubed to lb per foot cubed:
     >>> density_conv(1.225, from_units = 'kg/m**3', to_units = 'lb/ft**3')
     0.076474253491112101
 
@@ -213,7 +213,7 @@ def len_conv(L, from_units=default_length_units,
     >>> len_conv(1, from_units = 'nm')
     6076.1154855643044
 
-    Convert 1000 metres to kilometres:
+    Convert 1000 meters to kilometers:
     >>> len_conv(1000, from_units = 'm', to_units = 'km')
     0.99999999999999989
     """
@@ -465,7 +465,7 @@ def temp_conv(T, from_units=default_temp_units,
 def vol_conv(V, from_units=default_vol_units,
              to_units=default_vol_units):
     """ 
-    Convert volume values between USG, ImpGal (Imperial gallons), l (litres), ft**3, in**3, m**3, km**3, sm**3 and nm**3.
+    Convert volume values between USG, ImpGal (Imperial gallons), l (liters), ft**3, in**3, m**3, km**3, sm**3 and nm**3.
 
     The incoming value is first converted to ft**3, then it is converted to
     desired return value.
@@ -485,7 +485,7 @@ def vol_conv(V, from_units=default_vol_units,
     >>> vol_conv(1, from_units = 'ImpGal')
     0.16054365323600001
 
-    Convert 10 US gallon to litres:
+    Convert 10 US gallon to liters:
     >>> vol_conv(10, from_units = 'USG', to_units = 'l')
     37.854117840125852
     """
@@ -556,14 +556,14 @@ def wt_conv(W, from_units=default_weight_units,
     if from_units == 'kg':
         pass
     elif from_units == 'lb':
-        W *= 0.453592
+        W *= 0.45359237  # kg per lb, exact by definition
     else:
         raise ValueError('from_units must be one of "lb" or "kg".')
 
     if to_units == 'kg':
         pass
     elif to_units == 'lb':
-        W *= 2.204622622
+        W /= 0.45359237
     else:
         raise ValueError('to_units must be one of "lb" or "kg".')
 
@@ -580,7 +580,7 @@ def avgas_conv(
 ):
     """
     Convert aviation gasoline between units of lb, US Gallon (USG), 
-    Imperial Gallon (Imp Gal), litres (l) and kg, assuming nominal
+    Imperial Gallon (Imp Gal), liters (l) and kg, assuming nominal
     density for aviation gasoline of 6.01 lb per USG.
 
     The units default to those specified in default_units.py
@@ -620,7 +620,7 @@ def avgas_conv(
     
     The available aviation gasoline specifications do not appear to define an 
     allowable density range.  They do define allowable ranges for various 
-    parametres of the distillation process - the density of the final product 
+    parameters of the distillation process - the density of the final product 
     will vary depending on where in the allowable range the refinery is run.
     Thus there will be some variation in density from refinery to refinery.
     

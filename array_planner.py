@@ -22,6 +22,7 @@ from typing import Optional
 import numpy as np
 
 import flight_acoustics as fa
+from cli import colon_pair, save_or_show
 
 
 def _set_window_title(fig, title: Optional[str]) -> None:
@@ -155,16 +156,6 @@ def _plot_coverage_points(
 		ax.legend(loc='lower center', ncol=min(5, len(coverage)), frameon=False)
 
 
-def _parse_two_floats(value: str) -> tuple[float, float]:
-	parts = value.strip().strip('"').strip("'").split(':')
-	if len(parts) != 2:
-		raise argparse.ArgumentTypeError('Expected format "low:high"')
-	try:
-		return float(parts[0]), float(parts[1])
-	except ValueError as e:
-		raise argparse.ArgumentTypeError(str(e))
-
-
 def _parse_csv_floats(value: str) -> np.ndarray:
 	parts = [p.strip() for p in value.split(',') if p.strip()]
 	if not parts:
@@ -245,7 +236,7 @@ def _load_depropagated_hemisphere_npz(path: str, *, field: str, fc_hz: Optional[
 		)
 	# Files saved before 2026-09-26 hold -3076.5 dB (10 log10 of the smallest
 	# float) where there was no data or no energy.  Read as a level it set the
-	# colour scale to -3500..500 dB and drew the overlay as one blob.
+	# color scale to -3500..500 dB and drew the overlay as one blob.
 	spl = np.where(spl > _OLD_NO_DATA_FLOOR_DB, spl, np.nan)
 	return HemisphereGrid(azi_grid_deg=azi_grid_deg, elv_grid_deg=elv_grid_deg, spl_db=spl, label=label)
 
@@ -275,17 +266,6 @@ def _build_local_mic_coords(ymics: np.ndarray, x_offsets: np.ndarray, mic_height
 	local[:, 1] = np.tile(ymics, n_arrays)
 	local[:, 2] = float(mic_height)
 	return local
-
-
-def _maybe_save_or_show(fig, args: argparse.Namespace) -> None:
-	import matplotlib.pyplot as plt
-
-	if args.output:
-		fig.savefig(args.output, bbox_inches='tight', facecolor='none', dpi=args.dpi)
-		if args.plot:
-			plt.show(block=True)
-	else:
-		plt.show(block=True)
 
 
 def cmd_design(args: argparse.Namespace) -> int:
@@ -344,7 +324,7 @@ def cmd_coverage(args: argparse.Namespace) -> int:
 		label_offsets=len(coverage) > 1,
 	)
 	_set_window_title(fig, args.title)
-	_maybe_save_or_show(fig, args)
+	save_or_show(fig, args.output, args.plot, bbox_inches='tight', facecolor='none', dpi=args.dpi)
 	return 0
 
 
@@ -389,7 +369,7 @@ def cmd_overlay(args: argparse.Namespace) -> int:
 
 	_set_window_title(fig, args.title)
 
-	_maybe_save_or_show(fig, args)
+	save_or_show(fig, args.output, args.plot, bbox_inches='tight', facecolor='none', dpi=args.dpi)
 	return 0
 
 
@@ -490,7 +470,7 @@ def build_parser() -> argparse.ArgumentParser:
 		help='Hemisphere field to plot. Default: oaspl_fullband.',
 	)
 	p_ov.add_argument('--fc', type=float, default=None, help='Third-octave center frequency (Hz) when --field third_octave.')
-	p_ov.add_argument('--spl-range', type=_parse_two_floats, default=None, help='Color range as "min:max" (dB).')
+	p_ov.add_argument('--spl-range', type=colon_pair, default=None, help='Color range as "min:max" (dB).')
 	p_ov.add_argument('--marker-size', type=float, default=2.0, help='Overlay marker size. Default: 2.')
 	p_ov.add_argument('--marker-alpha', type=float, default=0.4, help='Overlay marker alpha. Default: 0.4.')
 	p_ov.set_defaults(func=cmd_overlay)

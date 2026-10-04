@@ -9,7 +9,7 @@ plate.  See ``docs/ground_plane_corrections.md`` for the review this follows.
 
 The 2017 NASA array has elevated (pole) microphones at the same surveyed points
 as three of its ground-plane microphones (:data:`COLOCATED_PAIRS`).  With the
-pole's own ground reflection modelled, a pair measures the ground plane's
+pole's own ground reflection modeled, a pair measures the ground plane's
 transfer function directly::
 
     L_pole  = L_free + G_pole       (pole_ground_effect)
@@ -24,6 +24,7 @@ rest of the 2017 pipeline; flow resistance is in kPa s/m^2, as in
 """
 import numpy as np
 import scipy.signal as sig
+from numba import njit, prange
 
 import flight_acoustics as fa
 
@@ -35,7 +36,7 @@ COLOCATED_PAIRS = ((50, 34), (51, 36), (52, 38))
 #: of the three poles' interference patterns (B407, 7 level runs, frames above
 #: 20 deg) is flat from 60 to 225 with its minimum near 100.  It is held fixed
 #: rather than fitted per pair: per-pair fits wandered from about 60 on the
-#: centreline to 180 on the sidelines, which is more likely something else
+#: centerline to 180 on the sidelines, which is more likely something else
 #: (the ground plane itself, for one) being absorbed into the impedance.
 FLOW_RESISTANCE = 100.0
 
@@ -47,7 +48,7 @@ POLE_HEIGHT_FT = {50: 3.96, 51: 4.07, 52: 4.12}
 #: GRAS 67AX: a flush-mounted 1/2" microphone (47AX) in a 400 mm diameter plate
 #: (GR1425).  From the GRAS drawing (67AX data sheet, cutaway A-A): the plate is
 #: 8.00 mm thick, its top surface tapering to 2.50 mm at the rim, and the
-#: microphone sits flush in it 150 mm from the centre -- 3/4 of the radius, the
+#: microphone sits flush in it 150 mm from the center -- 3/4 of the radius, the
 #: ARP 4055 position.  The diaphragm is in the plate's top surface, 0 above the
 #: reflecting plate.  In the 2017 test the plates lay on top of the ground, so
 #: that top surface stands 8 mm above the soft ground and the tapered edge is
@@ -57,7 +58,7 @@ POLE_HEIGHT_FT = {50: 3.96, 51: 4.07, 52: 4.12}
 PLATE_RADIUS_FT = 0.2 / 0.3048
 PLATE_MIC_HEIGHT_FT = 0.0
 #: Microphone position on the plate, per SAE ARP 4055 (and ICAO Annex 16 /
-#: ETM, 0.15 m on a 0.4 m plate): 3/4 of the radius from the centre, on a line
+#: ETM, 0.15 m on a 0.4 m plate): 3/4 of the radius from the center, on a line
 #: normal to the intended flight track, for both the inverted and the flush
 #: types.  Here the offset is along +y of the test axes (x along the track); the
 #: side (+y or -y) is not recorded for the 2017 array.
@@ -108,11 +109,43 @@ def emission_geometry(track, location, reception_times, sound_speed):
         'source_height': source[:, 2],
         'ground_distance': ground_distance,
         # Horizontal source offset from the microphone, in the test's x (along
-        # track) and y axes: the incidence azimuth on an off-centre microphone.
+        # track) and y axes: the incidence azimuth on an off-center microphone.
         'source_dx': source[:, 0],
         'source_dy': source[:, 1],
     }
     return {key: np.where(inside, value, np.nan) for key, value in out.items()}
+
+
+def emission_times(position, reception_times, receiver, sound_speed, tol=1e-9, max_iter=50):
+    """Emission times of the sound reaching ``receiver`` at ``reception_times``, for a
+    source whose position is a function of time.
+
+    Solves t_e = t - |x(t_e) - receiver| / c by fixed-point iteration from t_e = t.  Each
+    pass shrinks the error by about the source's Mach number toward the receiver, so a
+    single pass leaves the source about M^2 R cos(phi) short along its path (several
+    meters at a few hundred meters' range and M ~ 0.15); the iteration runs to ``tol``
+    (s).  Unlike :func:`emission_geometry`, which inverts a sampled track's arrival
+    times, ``position`` can be any callable -- an interpolated, smoothed or shifted track
+    -- and the receiver may move: ``receiver`` is (3,) or (n, 3), one row per reception
+    time.
+
+    ``position(t)`` takes an (n,) array of times and returns (n, 3) positions; lengths
+    and ``sound_speed`` in matching units.  Returns (t_e, x(t_e)).  Raises
+    RuntimeError if the iteration has not converged after ``max_iter`` passes (a
+    supersonic approach has no unique solution).
+    """
+    t = np.asarray(reception_times, dtype=float)
+    rec = np.asarray(receiver, dtype=float)
+    t_e = t.copy()
+    for _ in range(max_iter):
+        x = np.asarray(position(t_e), dtype=float)
+        new = t - np.linalg.norm(x - rec, axis=-1) / sound_speed
+        step = np.nanmax(np.abs(new - t_e), initial=0.0)
+        t_e = new
+        if step < tol:
+            return t_e, np.asarray(position(t_e), dtype=float)
+    raise RuntimeError(f'emission_times did not converge in {max_iter} passes (last step {step:.3g} s)')
+
 
 
 # --------------------------------------------------------------------------
@@ -123,12 +156,15 @@ def band_levels_from_psd(frequency, psd, bands):
     """One-third octave band levels (dB re 20 uPa) from a one-sided PSD, brick-wall bands.
 
     ``psd`` is (frequency, frame) in Pa^2/Hz.  The same rectangular integration
-    as :func:`flight_acoustics.third_octave_band_levels`.
+    as :func:`flight_acoustics.third_octave_band_levels`, on the gap-free edges
+    of :func:`flight_acoustics.third_octave_band_edges` (nominal centers' own
+    ``center * 2**(+-1/6)`` would drop 1403-1425 Hz and count 891-898 Hz twice).
     """
     df = frequency[1] - frequency[0]
+    lower, upper = fa.third_octave_band_edges(bands)
     levels = np.empty((len(bands), psd.shape[1]))
-    for i, centre in enumerate(bands):
-        inside = (frequency >= centre / 2 ** (1 / 6)) & (frequency < centre * 2 ** (1 / 6))
+    for i in range(len(bands)):
+        inside = (frequency >= lower[i]) & (frequency < upper[i])
         levels[i] = 10.0 * np.log10(np.maximum(psd[inside].sum(axis=0) * df, 1e-30) / 4e-10)
     return levels
 
@@ -172,7 +208,7 @@ def measured_board_transfer(test, run, pole, board, frame_s=0.5, snr_db=10.0,
                             flow_resistance=FLOW_RESISTANCE, pole_height=None):
     """The ground plane's transfer function measured against its co-located pole, (band, frame) dB.
 
-    T_board = L_board - L_pole + G_pole, with G_pole the pole's modelled
+    T_board = L_board - L_pole + G_pole, with G_pole the pole's modeled
     ground reflection at the site's flow resistance and fitted height.  Band
     frames are kept only where both channels are ``snr_db`` above that band's
     noise floor, taken as the 10th percentile of the run's frames (the quiet
@@ -223,7 +259,7 @@ GAMMA = 1.4
 
 
 def surface_admittance(frequency, model='delany_bazley', **params):
-    """Normalised surface admittance beta = 1/Z of a locally reacting ground (e^{-i omega t}).
+    """Normalized surface admittance beta = 1/Z of a locally reacting ground (e^{-i omega t}).
 
     Models (Attenborough & Taherzadeh 2026, section 1.3, and references there):
 
@@ -377,7 +413,7 @@ def turbulence_coherence(frequency, source_height, receiver_height, distance, ga
     """HARMONOISE coherence of the direct and reflected paths, exp(-3/8 B k^2 gamma_p^(5/3) R gamma_T).
 
     gamma_p = h_s h_r / (h_s + h_r); ``gamma_t`` = C_T^2/T0^2 + 22 C_v^2/(3 c0^2),
-    about 1e-6 for moderate turbulence (up to ~1e-5).  Lengths in metres.  Near
+    about 1e-6 for moderate turbulence (up to ~1e-5).  Lengths in meters.  Near
     1 for the flush ground plane (h_r ~ 0), not for a 1.2 m pole.
     """
     k = 2.0 * np.pi * np.asarray(frequency, float) / sound_speed
@@ -406,7 +442,7 @@ def pole_level(bands, source_height, ground_distance, pole_height, sound_speed,
     part of the reflection out of the specular direction; the coherent part's
     amplitude falls by the Kirchhoff (Ament) factor exp(-2 (k sigma_h cos
     theta)^2), and the scattered part is taken as lost to the microphone.  It
-    matters at a few kHz for centimetre roughness near normal incidence and
+    matters at a few kHz for centimeter roughness near normal incidence and
     vanishes toward grazing (cos theta -> 0).
     """
     f, hs, d2 = _broadcast(bands, source_height, ground_distance)
@@ -494,16 +530,12 @@ def fresnel_strip_weight(bands, source_height, ground_distance, sound_speed,
     specular = np.hypot(d2, hs + mic_height)
     target = specular + zone_fraction * sound_speed / f
 
+    def path(x):
+        return _path_via(x, hs, d2, mic_height)
+
     def solve(lo, hi):
         # Path length is monotonic either side of the specular point.
-        increasing = _path_via(hi, hs, d2, mic_height) > _path_via(lo, hs, d2, mic_height)
-        for _ in range(iterations):
-            mid = 0.5 * (lo + hi)
-            beyond = _path_via(mid, hs, d2, mic_height) > target
-            move_hi = beyond == increasing
-            hi = np.where(move_hi, mid, hi)
-            lo = np.where(move_hi, lo, mid)
-        return 0.5 * (lo + hi)
+        return _bisect(path, target, lo, hi, path(hi) > path(lo), iterations)
 
     far = np.maximum(d2, 1.0) * 1e4 + target
     d1 = solve(-far, specular_x)           # source side of the specular point
@@ -556,6 +588,14 @@ def board_fresnel_strip(bands, source_height, ground_distance, sound_speed,
     return _blend(1.0 - r, plate, soft, blend)
 
 
+def sub_band_factors(sub_bands):
+    """Frequencies, as fractions of the band center, splitting a third-octave band
+    into ``sub_bands`` equal log-width parts at their centers.  Plate tables are
+    built and read on these, so both sides take them from here.
+    """
+    return 2.0 ** ((np.arange(sub_bands) + 0.5) / sub_bands / 3.0 - 1.0 / 6.0)
+
+
 def _bisect(path, limit, lo, hi, increasing, iterations=60):
     """Where a path length monotonic on [lo, hi] reaches ``limit``, elementwise."""
     for _ in range(iterations):
@@ -567,7 +607,7 @@ def _bisect(path, limit, lo, hi, increasing, iterations=60):
 
 
 def fresnel_ellipse(source_height, ground_distance, mic_height, excess):
-    """The Fresnel ellipse on the ground: centre x and semi-axes (along, across the line).
+    """The Fresnel ellipse on the ground: center x and semi-axes (along, across the line).
 
     It is the ground section of the ellipsoid with foci at the source and the
     microphone's image, and the specular path plus ``excess`` as its major
@@ -575,8 +615,8 @@ def fresnel_ellipse(source_height, ground_distance, mic_height, excess):
     of the specular one.  Coordinates are from the point below the microphone,
     negative toward the source.  The section of an ellipsoid by a plane is an
     ellipse, and this one is symmetric about the source-microphone line, so
-    its two crossings of that line give the centre and one semi-axis, and the
-    crossing of the perpendicular through the centre the other.  (The closed
+    its two crossings of that line give the center and one semi-axis, and the
+    crossing of the perpendicular through the center the other.  (The closed
     form for a plane section cancels catastrophically when the source is far
     above so small a zone.)
     """
@@ -588,10 +628,10 @@ def fresnel_ellipse(source_height, ground_distance, mic_height, excess):
     along = lambda x: np.hypot(x + d2, hs) + np.hypot(x, mic_height)
     x_lo = _bisect(along, limit, specular - span, specular, False)
     x_hi = _bisect(along, limit, specular, specular + span, True)
-    centre = 0.5 * (x_lo + x_hi)
-    across = lambda y: np.hypot(np.hypot(centre + d2, y), hs) + np.sqrt(centre ** 2 + y ** 2 + mic_height ** 2)
+    center = 0.5 * (x_lo + x_hi)
+    across = lambda y: np.hypot(np.hypot(center + d2, y), hs) + np.sqrt(center ** 2 + y ** 2 + mic_height ** 2)
     semi_y = _bisect(across, limit, np.zeros_like(span), span, True)
-    return centre, 0.5 * (x_hi - x_lo), semi_y
+    return center, 0.5 * (x_hi - x_lo), semi_y
 
 
 def fresnel_disc_weight(bands, source_height, ground_distance, sound_speed,
@@ -599,11 +639,11 @@ def fresnel_disc_weight(bands, source_height, ground_distance, sound_speed,
                         zone_fraction=FRESNEL_ZONE_FRACTION, samples=(32, 64)):
     """Plate weight: the fraction of the Fresnel ellipse covered by the circular plate, (band, frame).
 
-    The Nord2000 / Harmonoise generalisation of Hothersall & Harriott: each
+    The Nord2000 / Harmonoise generalization of Hothersall & Harriott: each
     surface counts in proportion to the share of the Fresnel ellipse it covers.
     The ellipse is the ground section of the zone where the path via the
     ground exceeds the specular path by less than ``zone_fraction`` of a
-    wavelength; the plate is a disc of ``radius`` centred under the
+    wavelength; the plate is a disc of ``radius`` centerd under the
     microphone.
 
     The overlap is integrated on an area-uniform polar grid (``samples`` =
@@ -615,7 +655,7 @@ def fresnel_disc_weight(bands, source_height, ground_distance, sound_speed,
     f, hs, d2 = _broadcast(bands, source_height, ground_distance)
     excess = zone_fraction * sound_speed / f
     limit = np.hypot(d2, hs + mic_height) + excess
-    centre, semi_x, semi_y = fresnel_ellipse(hs, d2, mic_height, excess)
+    center, semi_x, semi_y = fresnel_ellipse(hs, d2, mic_height, excess)
     total = np.pi * semi_x * semi_y
     disc_area = np.pi * radius ** 2
 
@@ -625,22 +665,35 @@ def fresnel_disc_weight(bands, source_height, ground_distance, sound_speed,
     unit_x = (rho[:, None] * np.cos(phi)[None, :]).ravel()
     unit_y = (rho[:, None] * np.sin(phi)[None, :]).ravel()
 
-    weight = np.empty(f.shape)
-    flat = weight.ravel()
-    fields = [a.ravel() for a in (hs, d2, limit, total, centre, semi_x, semi_y)]
-    for i, (h, d, lim, area, cx, ax, ay) in enumerate(zip(*fields)):
-        if area <= disc_area:
+    fields = [np.ascontiguousarray(a, dtype=float).ravel() for a in (hs, d2, limit, total, center, semi_x, semi_y)]
+    weight = _fresnel_disc_counts(*fields, unit_x, unit_y, radius, mic_height, disc_area)
+    return np.clip(weight.reshape(f.shape), 0.0, 1.0)
+
+
+@njit(parallel=True, cache=True)
+def _fresnel_disc_counts(h, d, lim, area, cx, ax, ay, unit_x, unit_y, radius, mic_height, disc_area):
+    """The sampled overlap of :func:`fresnel_disc_weight`, parallel over the (band, frame) points."""
+    n = unit_x.size
+    out = np.empty(h.size)
+    for i in prange(h.size):
+        count = 0
+        if area[i] <= disc_area:
             # Sample the ellipse; count what lies on the plate.
-            x = cx + ax * unit_x
-            y = ay * unit_y
-            flat[i] = np.mean(x ** 2 + y ** 2 <= radius ** 2)
+            for j in range(n):
+                x = cx[i] + ax[i] * unit_x[j]
+                y = ay[i] * unit_y[j]
+                if x ** 2 + y ** 2 <= radius ** 2:
+                    count += 1
+            out[i] = count / n
         else:
             # Sample the plate; count what lies in the ellipse.
-            x = radius * unit_x
-            y = radius * unit_y
-            inside = np.hypot(np.hypot(x + d, y), h) + np.sqrt(x ** 2 + y ** 2 + mic_height ** 2) <= lim
-            flat[i] = np.mean(inside) * disc_area / area
-    return np.clip(weight, 0.0, 1.0)
+            for j in range(n):
+                x = radius * unit_x[j]
+                y = radius * unit_y[j]
+                if np.hypot(np.hypot(x + d[i], y), h[i]) + np.sqrt(x ** 2 + y ** 2 + mic_height ** 2) <= lim[i]:
+                    count += 1
+            out[i] = count / n * disc_area / area[i]
+    return out
 
 
 def board_fresnel_disc(bands, source_height, ground_distance, sound_speed,
@@ -717,7 +770,7 @@ def board_nmid(bands, source_height, ground_distance, sound_speed,
     interference the way a band measurement does.
     """
     f, hs, d2 = _broadcast(bands, source_height, ground_distance)
-    offsets = 2.0 ** ((np.arange(sub_bands) + 0.5) / sub_bands / 3.0 - 1.0 / 6.0)
+    offsets = sub_band_factors(sub_bands)
     energy = np.zeros(f.shape)
     for factor in offsets:
         energy += np.abs(nmid_pressure_ratio(f * factor, hs, d2, sound_speed, flow_resistance,
@@ -732,6 +785,151 @@ def _ground_admittance(frequency, sound_speed, flow_resistance, ground):
     params = {k: v for k, v in ground.items() if k != 'model'}
     return surface_admittance(frequency, ground['model'], sound_speed_mps=sound_speed * 0.3048,
                               **params)
+
+
+
+# --------------------------------------------------------------------------
+# Pole interference nulls (a phase-free check of the geometry)
+# --------------------------------------------------------------------------
+#
+# A pole (elevated) microphone hears the direct and the ground-reflected path of the
+# SAME emission, so the interference nulls in its spectrum -- or in its level difference
+# from a co-located ground-plane microphone, where the source spectrum cancels -- depend
+# only on the path difference dR and the reflection phase, not on the source's phase.
+# Fitting the null pattern gives dR, and with the known pole height the arrival elevation
+# or source height.  Lengths are in feet and speeds in ft/s as elsewhere here; the purely
+# geometric functions work in any consistent unit.
+
+def path_difference(source_height, ground_distance, receiver_height):
+    """Image minus direct path length for a receiver ``receiver_height`` above the plane."""
+    hs = np.asarray(source_height, dtype=float)
+    d2 = np.asarray(ground_distance, dtype=float)
+    return np.hypot(d2, hs + receiver_height) - np.hypot(d2, hs - receiver_height)
+
+
+def height_from_path_difference(dR, ground_distance, receiver_height, iterations=40):
+    """Source height giving path difference ``dR`` at ``ground_distance`` (inverse of
+    :func:`path_difference`), vectorized.
+
+    Newton's method from the small-angle guess h = dR d2 / (2 hr): dR(h) rises
+    monotonically and concavely from 0 to 2 hr, so the iterates climb to the root.
+    NaN where dR is outside (0, 2 hr).
+    """
+    hr = float(receiver_height)
+    dR, d2 = np.broadcast_arrays(np.asarray(dR, float), np.asarray(ground_distance, float))
+    ok = np.isfinite(dR) & np.isfinite(d2) & (dR > 0.0) & (dR < 2 * hr * 0.9999)
+    h = np.where(ok, np.maximum(dR * d2 / (2 * hr), 1e-9), np.nan)
+    for _ in range(iterations):
+        up, dn = np.hypot(d2, h + hr), np.hypot(d2, h - hr)
+        step = (up - dn - dR) / ((h + hr) / up - (h - hr) / dn)
+        h = np.maximum(h - step, 1e-9)
+        if np.nanmax(np.abs(step), initial=0.0) < 1e-12 * max(1.0, hr):
+            break
+    return np.where(ok, h, np.nan)
+
+
+def null_frequencies(dR, sound_speed, phase=0.0, n=2):
+    """The first ``n`` interference null frequencies, 2 pi f dR / c + phase = (2k - 1) pi.
+
+    ``phase`` (rad) is arg Q of the ground reflection (0 for a rigid ground, small and
+    positive for a stiff one).  Returns (..., n) for an array ``dR``.
+    """
+    k = np.arange(1, n + 1)
+    return ((2 * k - 1) * np.pi - phase) * sound_speed / (2 * np.pi * np.asarray(dR, float)[..., None])
+
+
+def two_path_db(frequency, offset_db, amplitude, amplitude_rolloff, dR, phase, sound_speed):
+    """Two-path level re an arbitrary reference, dB: C + 10 log10 |1 + A e^{i(k dR + phase)}|^2.
+
+    A = ``amplitude`` exp(-f / ``amplitude_rolloff``): the reflected path's relative
+    amplitude, falling with frequency as coherence and reflection loss grow.  The pole
+    minus ground-plane level difference has this form with C absorbing the plate's
+    pressure doubling and any calibration offset.
+    """
+    f = np.asarray(frequency, dtype=float)
+    a = amplitude * np.exp(-f / amplitude_rolloff)
+    arg = 2 * np.pi * f * dR / sound_speed + phase
+    return offset_db + 10 * np.log10(np.maximum(1 + a ** 2 + 2 * a * np.cos(arg), 1e-12))
+
+
+def fit_two_path(frequency, level_db, dR_guess, sound_speed, receiver_height, fix_phase=None,
+                 fmin=None, fmax=None, phase_bound=0.6):
+    """Fit :func:`two_path_db` to a measured pole spectrum or pole-minus-board difference.
+
+    The window runs from ``fmin`` (default 0.2 c / dR_guess) to ``fmax`` (default
+    2.2 c / dR_guess, just below the guess's third null), so the first two nulls lie
+    inside.  A grid over dR (0.4-2.2 times the guess, zero phase) finds the basin; a
+    robust (soft-L1) least-squares fit then frees C, A, the roll-off, dR and the phase
+    (bounded by +-``phase_bound`` rad, or held at ``fix_phase``).  Use narrowband data
+    (a few Hz) averaged over frames at nearly the same geometry: third-octave bands smear
+    the nulls.
+
+    Returns dict(dR, phase, offset_db, amplitude, amplitude_rolloff, dR_se, phase_se,
+    f1, f2, rms, n, fmin, fmax, at_bound).  ``dR_se`` and ``phase_se`` are the
+    least-squares standard errors, which ignore correlation between frequency bins:
+    use them for ranking, and the scatter over independent groups (runs) for
+    intervals.
+    """
+    from scipy.optimize import least_squares
+    f = np.asarray(frequency, dtype=float)
+    y = np.asarray(level_db, dtype=float)
+    hr = float(receiver_height)
+    fmin = 0.2 * sound_speed / dR_guess if fmin is None else fmin
+    fmax = min(2.2 * sound_speed / dR_guess, f.max()) if fmax is None else fmax
+    sel = (f >= fmin) & (f <= fmax) & np.isfinite(y)
+    f, y = f[sel], y[sel]
+    grid = np.linspace(0.4, 2.2, 361) * dR_guess
+    grid = grid[grid < 2 * hr]
+    best = None
+    for a0 in (0.6, 0.8, 0.92):
+        shapes = np.array([two_path_db(f, 0.0, a0, 1e5, r, 0.0, sound_speed) for r in grid])
+        offset = np.median(y[None, :] - shapes, axis=1)
+        cost = np.mean(np.abs(y[None, :] - shapes - offset[:, None]), axis=1)
+        k = int(np.argmin(cost))
+        if best is None or cost[k] < best[0]:
+            best = (cost[k], grid[k], a0, offset[k])
+    _, r0, a00, c0 = best
+    if fix_phase is None:
+        p0 = [c0, a00, 3000.0, r0, 0.0]
+        lo, hi = [-40, 0.05, 100.0, 0.02 * r0, -phase_bound], [40, 0.999, 1e6, 2 * hr, phase_bound]
+        fun = lambda p: two_path_db(f, *p, sound_speed) - y
+    else:
+        p0 = [c0, a00, 3000.0, r0]
+        lo, hi = [-40, 0.05, 100.0, 0.02 * r0], [40, 0.999, 1e6, 2 * hr]
+        fun = lambda p: two_path_db(f, *p, fix_phase, sound_speed) - y
+    res = least_squares(fun, p0, bounds=(lo, hi), loss='soft_l1', f_scale=2.0)
+    p = res.x
+    dof = max(1, f.size - p.size)
+    s2 = float(np.sum(res.fun ** 2) / dof)
+    try:
+        se = np.sqrt(np.clip(np.diag(np.linalg.pinv(res.jac.T @ res.jac) * s2), 0.0, None))
+    except np.linalg.LinAlgError:
+        se = np.full(p.size, np.nan)
+    phase = float(p[4]) if fix_phase is None else float(fix_phase)
+    f12 = null_frequencies(p[3], sound_speed, phase, 2)
+    return dict(dR=float(p[3]), phase=phase, offset_db=float(p[0]), amplitude=float(p[1]),
+                amplitude_rolloff=float(p[2]), dR_se=float(se[3]),
+                phase_se=float(se[4]) if fix_phase is None else 0.0, f1=float(f12[0]), f2=float(f12[1]),
+                rms=float(np.sqrt(np.mean(res.fun ** 2))), n=int(f.size), fmin=float(fmin), fmax=float(fmax),
+                at_bound=bool(fix_phase is None and abs(phase) > 0.98 * phase_bound))
+
+
+def reflection_phase(frequency, source_height, ground_distance, receiver_height, sound_speed,
+                     flow_resistance=FLOW_RESISTANCE, ground=None):
+    """arg Q (rad) of the spherical-wave reflection coefficient at a pole microphone.
+
+    The phase shifts the nulls (:func:`null_frequencies`); over a stiff ground it is
+    small, so fitting it freely or holding it at this value are both reasonable.
+    ``ground`` is a ground-model dict (:func:`surface_admittance`); without it,
+    Delany-Bazley at ``flow_resistance``.
+    """
+    f, hs, d2 = np.broadcast_arrays(np.asarray(frequency, float), np.asarray(source_height, float),
+                                    np.asarray(ground_distance, float))
+    image = np.hypot(d2, hs + receiver_height)
+    cos_theta = (hs + receiver_height) / image
+    beta = _ground_admittance(f, sound_speed, flow_resistance, ground)
+    q = fa.spherical_reflection_coefficient(cos_theta, image, f, sound_speed, flow_resistance, admittance=beta)
+    return np.angle(q)
 
 
 # --------------------------------------------------------------------------
@@ -759,7 +957,7 @@ def image_integrals(k, beta, rho, z_sum, n=10):
     substitutions q = rho sin(phi) below rho and q = rho cosh(psi) above it take
     out (exactly, for Z = 0), with Gauss-Legendre segments graded toward the
     peak on a width sqrt(2 Z / rho).  Above rho, e^{ikR_q} decays like e^{-k q},
-    so the upper limit is rho + 40/k.  Vectorised over ``rho`` and ``z_sum``.
+    so the upper limit is rho + 40/k.  Vectorized over ``rho`` and ``z_sum``.
 
     Needs a passive ground, Re(beta) > 0: otherwise e^{-k beta q} grows and the
     integral diverges.  Delany-Bazley-based layers are not passive at low
@@ -775,49 +973,71 @@ def image_integrals(k, beta, rho, z_sum, n=10):
     # Z < 0 (even by rounding) would put the root on the growing branch.
     z = np.maximum(np.broadcast_to(np.asarray(z_sum, dtype=float), rho.shape).ravel(), 0.0)
     rho = np.maximum(rho, 0.0)
-    m = rho.size
-    rho_s = np.maximum(rho, 1e-12)
-    w = np.clip(np.sqrt(2.0 * np.maximum(z, 0.0) / rho_s), 1e-6, 0.25)
+    x, w = np.polynomial.legendre.leggauss(n)
+    return _image_integral_nodes(float(k), complex(beta), rho, z, x, w)
+
+
+@njit(parallel=True, cache=True)
+def _image_integral_nodes(k, beta, rho, z, x, w):
+    """The quadrature of :func:`image_integrals`, compiled and parallel over the points."""
     half = 0.5 * np.pi
     # Breakpoints on the decay scale of e^{-k beta q} too: far from the plate
     # the integral is carried by q << rho.
     decay_q = np.array([0.3, 1.0, 3.0, 10.0, 30.0]) / (k * max(abs(beta), 1e-6))
-    # Below rho: phi in [0, pi/2], q = rho sin(phi), rho^2 - q^2 = rho^2 cos^2(phi).
-    ea = np.concatenate((np.zeros((m, 1)),
-                         np.arcsin(np.minimum(decay_q[None, :] / rho_s[:, None], 1.0)),
-                         np.stack((half - 4 * w, half - w, half - 0.25 * w, half * np.ones(m)), axis=1)),
-                        axis=1)
-    ea = np.sort(np.clip(ea, 0.0, half), axis=1)
-    phi, wphi = _gauss_segments(ea, n)
-    qa = rho[:, None] * np.sin(phi)
-    ja = rho[:, None] * np.cos(phi) * wphi
-    arg_a = (rho[:, None] * np.cos(phi)) ** 2 + z[:, None] ** 2 + 2j * z[:, None] * qa
-    # Above rho: psi in [0, psi_max], q = rho cosh(psi), rho^2 - q^2 = -rho^2 sinh^2(psi).
     q_top = 40.0 / k
-    psi_max = np.arccosh(1.0 + q_top / rho_s)
-    eb = np.concatenate((np.zeros((m, 1)),
-                         np.stack((0.25 * w, w, 4 * w), axis=1),
-                         np.arccosh(1.0 + decay_q[None, :] / rho_s[:, None]),
-                         psi_max[:, None]), axis=1)
-    eb = np.sort(np.minimum(eb, psi_max[:, None]), axis=1)
-    psi, wpsi = _gauss_segments(eb, n)
-    qb = rho[:, None] * np.cosh(psi)
-    jb = rho[:, None] * np.sinh(psi) * wpsi
-    arg_b = -(rho[:, None] * np.sinh(psi)) ** 2 + z[:, None] ** 2 + 2j * z[:, None] * qb
-    q = np.concatenate((qa, qb), axis=1)
-    jac = np.concatenate((ja, jb), axis=1)
-    arg = np.concatenate((arg_a, arg_b), axis=1)
-    # On the branch cut (Z = 0, q > rho) take the +i root: e^{ikR} must decay.
-    with np.errstate(invalid='ignore'):
-        r = np.where((arg.imag == 0.0) & (arg.real < 0.0), 1j * np.sqrt(np.abs(arg.real)), np.sqrt(arg))
-    decay = np.exp(-k * beta * q)
-    # Zero-width segments (breakpoints that coincide) put nodes on the
-    # singular point with zero weight; drop them rather than form 0 * inf.
-    live = (jac != 0.0) & (np.abs(r) > 0.0)
-    r = np.where(live, r, 1.0)
-    g = np.where(live, np.exp(1j * k * r) / (4.0 * np.pi * r), 0.0)
-    big_i = np.sum(decay * g * jac, axis=1)
-    big_j = np.sum(decay * g * (1j * k - 1.0 / r) / r * jac, axis=1)
+    big_i = np.empty(rho.size, dtype=np.complex128)
+    big_j = np.empty(rho.size, dtype=np.complex128)
+    for p in prange(rho.size):
+        r0, z0 = rho[p], z[p]
+        rho_s = max(r0, 1e-12)
+        width = min(max(np.sqrt(2.0 * max(z0, 0.0) / rho_s), 1e-6), 0.25)
+        # Below rho: phi in [0, pi/2], q = rho sin(phi), rho^2 - q^2 = rho^2 cos^2(phi).
+        ea = np.empty(10)
+        ea[0] = 0.0
+        for i in range(5):
+            ea[1 + i] = np.arcsin(min(decay_q[i] / rho_s, 1.0))
+        ea[6], ea[7], ea[8], ea[9] = half - 4 * width, half - width, half - 0.25 * width, half
+        ea = np.sort(np.minimum(np.maximum(ea, 0.0), half))
+        # Above rho: psi in [0, psi_max], q = rho cosh(psi), rho^2 - q^2 = -rho^2 sinh^2(psi).
+        psi_max = np.arccosh(1.0 + q_top / rho_s)
+        eb = np.empty(10)
+        eb[0], eb[1], eb[2], eb[3] = 0.0, 0.25 * width, width, 4 * width
+        for i in range(5):
+            eb[4 + i] = np.arccosh(1.0 + decay_q[i] / rho_s)
+        eb[9] = psi_max
+        eb = np.sort(np.minimum(eb, psi_max))
+        acc_i = 0.0 + 0.0j
+        acc_j = 0.0 + 0.0j
+        for below in (True, False):
+            edges = ea if below else eb
+            for s in range(edges.size - 1):
+                a, b = edges[s], edges[s + 1]
+                for g in range(x.size):
+                    t = 0.5 * (b - a) * x[g] + 0.5 * (a + b)
+                    wt = 0.5 * (b - a) * w[g]
+                    if below:
+                        q = r0 * np.sin(t)
+                        jac = r0 * np.cos(t) * wt
+                        arg = (r0 * np.cos(t)) ** 2 + z0 ** 2 + 2j * z0 * q
+                    else:
+                        q = r0 * np.cosh(t)
+                        jac = r0 * np.sinh(t) * wt
+                        arg = -(r0 * np.sinh(t)) ** 2 + z0 ** 2 + 2j * z0 * q
+                    # On the branch cut (Z = 0, q > rho) take the +i root: e^{ikR} must decay.
+                    if arg.imag == 0.0 and arg.real < 0.0:
+                        r = 1j * np.sqrt(abs(arg.real))
+                    else:
+                        r = np.sqrt(arg)
+                    # Zero-width segments (breakpoints that coincide) put nodes on the
+                    # singular point with zero weight; drop them rather than form 0 * inf.
+                    if jac == 0.0 or abs(r) == 0.0:
+                        continue
+                    decay = np.exp(-k * beta * q)
+                    green = np.exp(1j * k * r) / (4.0 * np.pi * r)
+                    acc_i += decay * green * jac
+                    acc_j += decay * green * (1j * k - 1.0 / r) / r * jac
+        big_i[p] = acc_i
+        big_j[p] = acc_j
     return big_i, big_j
 
 
@@ -884,18 +1104,18 @@ class ImageIntegralTable:
 
 
 def disc_mesh(radius, cell):
-    """Polar mesh of a disc: centroids, areas and cell bounds, the first cell centred at the origin.
+    """Polar mesh of a disc: centroids, areas and cell bounds, the first cell centerd at the origin.
 
     A central disc of diameter ``cell`` holds the microphone; rings of width
     about ``cell`` are split into annular sectors about ``cell`` long.  Returns
     (x, y, area, bounds) with bounds[:, :] = (r_in, r_out, phi_lo, phi_hi) per
     cell.  Areas sum to the disc's exactly.
     """
-    r_centre = min(0.5 * cell, radius)
-    xs, ys, areas = [0.0], [0.0], [np.pi * r_centre ** 2]
-    bounds = [(0.0, r_centre, 0.0, 2.0 * np.pi)]
-    n_rings = max(1, int(np.ceil((radius - r_centre) / cell)))
-    edges = np.linspace(r_centre, radius, n_rings + 1)
+    r_center = min(0.5 * cell, radius)
+    xs, ys, areas = [0.0], [0.0], [np.pi * r_center ** 2]
+    bounds = [(0.0, r_center, 0.0, 2.0 * np.pi)]
+    n_rings = max(1, int(np.ceil((radius - r_center) / cell)))
+    edges = np.linspace(r_center, radius, n_rings + 1)
     for inner, outer in zip(edges[:-1], edges[1:]):
         mid = 0.5 * (inner + outer)
         n_cells = max(6, int(np.ceil(2.0 * np.pi * mid / cell)))
@@ -911,14 +1131,19 @@ def disc_mesh(radius, cell):
 
 
 def _cell_subpoints(bound, n):
-    """n x n area-weighted quadrature points (midpoint in r^2 and phi) of an annular sector."""
-    r_in, r_out, lo, hi = bound
+    """n x n area-weighted quadrature points (midpoint in r^2 and phi) of an annular sector.
+
+    ``bound`` is (r_in, r_out, phi_lo, phi_hi), or a stack of them (..., 4):
+    the points and weights are then (..., n * n).
+    """
+    r_in, r_out, lo, hi = (np.asarray(bound, dtype=float)[..., i, None] for i in range(4))
     u = (np.arange(n) + 0.5) / n
     r = np.sqrt(r_in ** 2 + u * (r_out ** 2 - r_in ** 2))
     phi = lo + u * (hi - lo)
-    R, P = np.meshgrid(r, phi, indexing='ij')
-    weight = np.full(R.size, 0.5 * (r_out ** 2 - r_in ** 2) * (hi - lo) / n ** 2)
-    return (R * np.cos(P)).ravel(), (R * np.sin(P)).ravel(), weight
+    R, P = np.broadcast_arrays(r[..., :, None], phi[..., None, :])
+    flat = R.shape[:-2] + (n * n,)
+    weight = np.broadcast_to(0.5 * (r_out ** 2 - r_in ** 2) * (hi - lo) / n ** 2, flat)
+    return (R * np.cos(P)).reshape(flat), (R * np.sin(P)).reshape(flat), weight
 
 
 def _inverse_distance_integral(px, py, bound, n_angles=256):
@@ -926,8 +1151,10 @@ def _inverse_distance_integral(px, py, bound, n_angles=256):
 
     In polar coordinates about p the integrand's 1/rho cancels the area
     element's rho, leaving the distance to the cell boundary along each ray.
+    Vectorized over a stack of points and cells (``bound`` (..., 4)).
     """
-    r_in, r_out, lo, hi = bound
+    r_in, r_out, lo, hi = (np.asarray(bound, dtype=float)[..., i, None] for i in range(4))
+    px, py = np.asarray(px, dtype=float)[..., None], np.asarray(py, dtype=float)[..., None]
     phis = (np.arange(n_angles) + 0.5) * 2.0 * np.pi / n_angles
     dx, dy = np.cos(phis), np.sin(phis)
 
@@ -938,13 +1165,14 @@ def _inverse_distance_integral(px, py, bound, n_angles=256):
         full = (hi - lo) >= 2.0 * np.pi - 1e-12
         return (r >= r_in) & (r <= r_out) & (full | (a <= hi - lo))
 
-    lo_t, hi_t = np.zeros(n_angles), np.full(n_angles, 2.0 * r_out + 1.0)
+    shape = np.broadcast_shapes(px.shape, r_out.shape)[:-1] + (n_angles,)
+    lo_t, hi_t = np.zeros(shape), np.broadcast_to(2.0 * r_out + 1.0, shape)
     for _ in range(50):              # the cells are star-shaped about points in them
         mid = 0.5 * (lo_t + hi_t)
         ok = inside(mid)
         lo_t = np.where(ok, mid, lo_t)
         hi_t = np.where(ok, hi_t, mid)
-    return np.sum(0.5 * (lo_t + hi_t)) * 2.0 * np.pi / n_angles
+    return np.sum(0.5 * (lo_t + hi_t), axis=-1) * 2.0 * np.pi / n_angles
 
 
 def _cell_integral_near(bounds, px, py, height, green, sub, singular):
@@ -952,14 +1180,17 @@ def _cell_integral_near(bounds, px, py, height, green, sub, singular):
 
     ``singular`` (height 0 and the point in the cell): the 1/R singularity is
     integrated exactly by rays and the smooth remainder on sub-points.
+    Vectorized over a stack of cells and points (``bounds`` (..., 4)).
     """
     sx, sy, w = _cell_subpoints(bounds, sub)
+    px, py = np.asarray(px, dtype=float)[..., None], np.asarray(py, dtype=float)[..., None]
     r = np.sqrt((sx - px) ** 2 + (sy - py) ** 2 + height ** 2)
     if not singular:
-        return np.sum(green(r) * w)
+        return np.sum(green(r) * w, axis=-1)
     g0 = green.limit_numerator
     smooth = (green.numerator(r) - g0) / (4.0 * np.pi * r)
-    return g0 / (4.0 * np.pi) * _inverse_distance_integral(px, py, bounds) + np.sum(smooth * w)
+    return (g0 / (4.0 * np.pi) * _inverse_distance_integral(px[..., 0], py[..., 0], bounds)
+            + np.sum(smooth * w, axis=-1))
 
 
 def _cell_containing(px, py, bounds):
@@ -980,7 +1211,7 @@ def disc_bem_scattered(frequencies, elevations, azimuths, sound_speed,
     """What a thin rigid disc in soft ground adds at a microphone on or above it, S(f, el, az).
 
     After Kingan et al. (2023): with the soft half-space's own Green's function
-    G, only the disc needs discretising.  For a locally reacting plane
+    G, only the disc needs discretizing.  For a locally reacting plane
     (dp/dz = -i k beta p, e^{-i omega t}), Green's second identity gives
 
         p(r) = p_inc(r) - i k beta_soft  integral over the disc of G(x, r) p(x) dS,
@@ -1005,11 +1236,11 @@ def disc_bem_scattered(frequencies, elevations, azimuths, sound_speed,
     ``ground``, when given, is a dict {'model': ..., **params} for
     :func:`surface_admittance`, replacing Delany-Bazley at ``flow_resistance``.
     ``green='exact'`` (default) uses the exact complex-image Green's function
-    (:func:`exact_half_space_green`) at the plate's centimetre ranges, where the
-    Weyl-van der Pol coefficient (``green='weyl'``, the earlier behaviour) is
+    (:func:`exact_half_space_green`) at the plate's centimeter ranges, where the
+    Weyl-van der Pol coefficient (``green='weyl'``, the earlier behavior) is
     outside its long-range validity.
 
-    ``mic`` is the microphone's (x, y) on the plate from its centre (default:
+    ``mic`` is the microphone's (x, y) on the plate from its center (default:
     ARP 4055's 3/4 radius, normal to the track); ``mic_height`` its height
     above the plate (0: flush; :data:`INVERTED_MIC_HEIGHT_FT`: inverted).
     Collocation at cell centroids of a :func:`disc_mesh`; close pairs use
@@ -1049,9 +1280,16 @@ def disc_bem_scattered(frequencies, elevations, azimuths, sound_speed,
         rho = np.hypot(x[:, None] - x[None, :], y[:, None] - y[None, :])
         np.fill_diagonal(rho, 1.0)
         kernel = surface_green(rho) * area[None, :]
-        for obs, src in np.argwhere(rho < near * cell):
-            kernel[obs, src] = _cell_integral_near(bounds[src], x[obs], y[obs], 0.0, surface_green,
-                                                   sub, singular=(obs == src))
+        # Close pairs on sub-cells, all at once.  The diagonal's placeholder
+        # distance is not a cell's distance to itself: the self terms are
+        # taken explicitly, so their 1/R singularity is integrated rather than
+        # left as surface_green(1 ft) * area.
+        obs, src = np.nonzero((rho < near * cell) & ~np.eye(x.size, dtype=bool))
+        kernel[obs, src] = _cell_integral_near(bounds[src], x[obs], y[obs], 0.0, surface_green, sub,
+                                               singular=False)
+        self_terms = np.arange(x.size)
+        kernel[self_terms, self_terms] = _cell_integral_near(bounds, x, y, 0.0, surface_green, sub,
+                                                             singular=True)
         system = np.eye(x.size) + 1j * k * beta * kernel
 
         # Unit plane waves: horizontal wavenumber k cos(el) along each azimuth.
@@ -1100,7 +1338,7 @@ def raised_plate_mesh(radius, thickness, edge_thickness, taper_length, cell):
 
     Each panel is a patch of a surface of revolution: a segment in (r, z) from
     (r0, z0) to (r1, z1) swept over [phi_lo, phi_hi].  Segments run from the
-    centre outward and down -- top (0, t) -> (a - L, t), taper -> (a, t_e), rim ->
+    center outward and down -- top (0, t) -> (a - L, t), taper -> (a, t_e), rim ->
     (a, 0) -- so the normal (-dz, dr)/|.| points into the air.  Returns an array
     (n, 6) of (r0, z0, r1, z1, phi_lo, phi_hi).
     """
@@ -1192,10 +1430,10 @@ def _adaptive_points(panel, targets, ratio=0.35, max_depth=9, exclude=None):
     while cells:
         u0, u1, t0, t1, depth = cells.pop()
         uc, tc = 0.5 * (u0 + u1), 0.5 * (t0 + t1)
-        centre, _, _ = _panel_geometry(panel, uc, lo + tc * (hi - lo))
+        center, _, _ = _panel_geometry(panel, uc, lo + tc * (hi - lo))
         r_mid = r0 + uc * (r1 - r0)
         size = max((u1 - u0) * length, (t1 - t0) * (hi - lo) * max(r_mid, 1e-12))
-        dist = np.min(np.linalg.norm(targets - centre, axis=1))
+        dist = np.min(np.linalg.norm(targets - center, axis=1))
         if depth < max_depth and size > ratio * dist:
             um, tm = uc, tc
             cells += [(u0, um, t0, tm, depth + 1), (um, u1, t0, tm, depth + 1),
@@ -1255,7 +1493,7 @@ def raised_plate_scattering(frequencies, elevations, azimuths, sound_speed,
     incident field is a direct plane wave plus Q times its ground reflection;
     by linearity the microphone's pressure is P = P_d + Q P_r, and this returns
     (P_d, P_r), each (len(frequencies), len(elevations), len(azimuths)),
-    normalised by the direct wave at the microphone.  A frame then applies its
+    normalized by the direct wave at the microphone.  A frame then applies its
     own Q (range-dependent near grazing).  The microphone is on the top at
     ``mic`` = (x, y); azimuths as in :func:`disc_bem_scattered`.
 
@@ -1304,25 +1542,25 @@ def raised_plate_scattering(frequencies, elevations, azimuths, sound_speed,
             return np.sum((direct + image) * weights)
 
         quad = [_panel_points(pn, 1, 1) for pn in panels]
-        centres = np.array([q[0][0] for q in quad])
-        centres[0] = (0.0, 0.0, thickness)            # the central disc's centroid is its centre
+        centers = np.array([q[0][0] for q in quad])
+        centers[0] = (0.0, 0.0, thickness)            # the central disc's centroid is its center
         normals = np.array([q[2][0] for q in quad])
         areas = np.array([q[1][0] for q in quad])
         n = panels.shape[0]
-        # Far pairs: one-point rule, vectorised over all pairs.
-        d = centres[None, :, :] - centres[:, None, :]                      # y - x, (obs, src, 3)
+        # Far pairs: one-point rule, vectorized over all pairs.
+        d = centers[None, :, :] - centers[:, None, :]                      # y - x, (obs, src, 3)
         r = np.linalg.norm(d, axis=2)
         np.fill_diagonal(r, 1.0)
         g = np.exp(1j * k * r) / (4 * np.pi * r)
         dgd = np.sum((g * (1j * k - 1.0 / r) / r)[:, :, None] * d * normals[None, :, :], axis=2)
-        img = centres[:, None, :] * np.array([1.0, 1.0, -1.0])
-        di = centres[None, :, :] - img
+        img = centers[:, None, :] * np.array([1.0, 1.0, -1.0])
+        di = centers[None, :, :] - img
         ri = np.linalg.norm(di, axis=2)
         gi = np.exp(1j * k * ri) / (4 * np.pi * ri)
         dgi = np.sum((gi * (1j * k - 1.0 / ri) / ri)[:, :, None] * di * normals[None, :, :], axis=2)
         delta = 1e-3 * cell
         if green == 'exact':
-            zsum = centres[None, :, 2] + centres[:, None, 2]
+            zsum = centers[None, :, 2] + centers[:, None, 2]
             rho = np.hypot(d[:, :, 0], d[:, :, 1])
             big_i, big_j = table(rho, zsum)
             dz = gi * (1j * k - 1.0 / ri) * zsum / ri - 2j * k * beta * gi + 2j * k ** 2 * beta ** 2 * big_i
@@ -1331,7 +1569,7 @@ def raised_plate_scattering(frequencies, elevations, azimuths, sound_speed,
                     + (normals[None, :, 0] * d[:, :, 0] + normals[None, :, 1] * d[:, :, 1]) * dh)
             kernel = (dgd + dimg) * areas[None, :]
         else:
-            zsum = centres[None, :, 2] + centres[:, None, 2]
+            zsum = centers[None, :, 2] + centers[:, None, 2]
             rho = np.hypot(d[:, :, 0], d[:, :, 1])
             r2 = np.hypot(rho, zsum)
             qq = fa.spherical_reflection_coefficient((zsum / r2).ravel(), np.maximum(r2, 1e-9).ravel(), f,
@@ -1353,7 +1591,7 @@ def raised_plate_scattering(frequencies, elevations, azimuths, sound_speed,
         # below it, so on a thin plate every close pair is near-singular.
         near_pairs = np.argwhere(np.minimum(r, ri) < near * cell)
         for obs, src in near_pairs:
-            x = centres[obs]
+            x = centers[obs]
             pts, w, nrm = _adaptive_points(panels[src], np.stack((x, x * [1, 1, -1])),
                                            exclude=x if obs == src else None)
             kernel[obs, src] = (dgdn_exact(pts, w, nrm, x) if green == 'exact' else
@@ -1363,15 +1601,15 @@ def raised_plate_scattering(frequencies, elevations, azimuths, sound_speed,
         kx = (k * np.cos(el)[:, None] * np.cos(az)[None, :]).ravel()
         ky = (k * np.cos(el)[:, None] * np.sin(az)[None, :]).ravel()
         kz = (k * np.sin(el)[:, None] * np.ones_like(az)[None, :]).ravel()
-        phase_h = np.outer(centres[:, 0], kx) + np.outer(centres[:, 1], ky)
-        rhs = np.hstack((np.exp(1j * (phase_h - np.outer(centres[:, 2], kz))),
-                         np.exp(1j * (phase_h + np.outer(centres[:, 2], kz)))))
+        phase_h = np.outer(centers[:, 0], kx) + np.outer(centers[:, 1], ky)
+        rhs = np.hstack((np.exp(1j * (phase_h - np.outer(centers[:, 2], kz))),
+                         np.exp(1j * (phase_h + np.outer(centers[:, 2], kz)))))
         surface = np.linalg.solve(system, rhs)
         # At the microphone: 1/2 p = p_inc + integral, on the flat top.
         weights = np.empty(n, dtype=complex)
         mic_image = target_mic * np.array([1.0, 1.0, -1.0])
-        dist = np.minimum(np.linalg.norm(centres - target_mic, axis=1),
-                          np.linalg.norm(centres - mic_image, axis=1))
+        dist = np.minimum(np.linalg.norm(centers - target_mic, axis=1),
+                          np.linalg.norm(centers - mic_image, axis=1))
         for src in range(n):
             if dist[src] < near * cell:
                 pts, w, nrm = _adaptive_points(panels[src], np.stack((target_mic, mic_image)),
@@ -1379,7 +1617,7 @@ def raised_plate_scattering(frequencies, elevations, azimuths, sound_speed,
                 weights[src] = (dgdn_exact(pts, w, nrm, target_mic) if green == 'exact' else
                                 _half_space_green_gradient_n(k, pts, w, nrm, target_mic, q_of, delta))
             else:
-                one = (centres[src:src + 1], areas[src:src + 1], normals[src:src + 1], target_mic)
+                one = (centers[src:src + 1], areas[src:src + 1], normals[src:src + 1], target_mic)
                 weights[src] = (dgdn_exact(*one) if green == 'exact' else
                                 _half_space_green_gradient_n(k, *one[:3], target_mic, q_of, delta))
         inc_mic_h = kx * mx + ky * my
@@ -1406,7 +1644,7 @@ def disc_bem_table(bands, sound_speed, flow_resistance=FLOW_RESISTANCE, sub_band
     the microphone height used (``options`` go to :func:`disc_bem_scattered`).
     """
     bands = np.asarray(bands, dtype=float)
-    offsets = 2.0 ** ((np.arange(sub_bands) + 0.5) / sub_bands / 3.0 - 1.0 / 6.0)
+    offsets = sub_band_factors(sub_bands)
     frequencies = np.sort((bands[:, None] * offsets[None, :]).ravel())
     scattered = disc_bem_scattered(frequencies, elevations, azimuths, sound_speed, flow_resistance,
                                    **options)
@@ -1429,6 +1667,72 @@ def table_sub_bands(table, sub_bands=None):
     return stored
 
 
+def table_rows(frequencies, wanted, rtol=1e-6):
+    """Row of each ``wanted`` frequency in a table's ``frequencies``, -1 where the table has none.
+
+    A table holds only its own bands' sub-frequencies; any other frequency
+    (a band below, between or above its bands) has no row, rather than
+    borrowing the nearest one's.
+    """
+    frequencies = np.asarray(frequencies, dtype=float)
+    wanted = np.asarray(wanted, dtype=float)
+    row = np.argmin(np.abs(frequencies[None, :] - wanted[:, None]), axis=1)
+    return np.where(np.abs(frequencies[row] - wanted) <= rtol * wanted, row, -1)
+
+
+def _grid_interval(grid, x):
+    """Interval index and fraction of ``x`` on an ascending ``grid``, ends extrapolated."""
+    i = np.clip(np.searchsorted(grid, x) - 1, 0, grid.size - 2)
+    return i, (x - grid[i]) / (grid[i + 1] - grid[i])
+
+
+def table_frames(table, keys, bands, source_height, ground_distance, source_dx=None, source_dy=None,
+                 mirror_y=False, sub_bands=None):
+    """A plate table's ``keys`` at each frame's direction and each band's sub-frequencies.
+
+    Shared by :func:`board_disc_bem` and :func:`axisymmetric_bem.board_level`.
+    The elevation is the source's above the ground.  The propagation azimuth
+    is from the source toward the microphone, from ``source_dx``,
+    ``source_dy`` (the source's offset from the microphone); without them
+    the source is taken to be along -x.  ``mirror_y`` puts the microphone on
+    the plate's other side (the -y offset), by reflecting the azimuth.
+    Values are bilinear in elevation (clipped to the table's) and azimuth
+    (periodic), with one set of weights for every band and sub-frequency:
+    the direction does not depend on frequency.
+
+    Returns (f, hs, d2, elevation, offsets, values): the (band, frame)
+    arrays of :func:`_broadcast`, the elevation in degrees, the sub-band
+    factors and ``values`` (sub, key, band, frame), complex, NaN for bands
+    the table does not hold (:func:`table_rows`).
+    """
+    sub_bands = table_sub_bands(table, sub_bands)
+    f, hs, d2 = _broadcast(bands, source_height, ground_distance)
+    elevation = np.degrees(np.arctan2(hs, d2))
+    if source_dx is None:
+        azimuth = np.zeros_like(hs)
+    else:
+        _, dx, dy = _broadcast(bands, source_dx, source_dy)
+        azimuth = np.mod(np.degrees(np.arctan2(-dy, -dx)), 360.0)
+    if mirror_y:
+        azimuth = np.mod(-azimuth, 360.0)
+    t_el = np.asarray(table['elevations'], dtype=float)
+    t_az = np.asarray(table['azimuths'], dtype=float)
+    i, ti = _grid_interval(t_el, np.clip(elevation[0], t_el[0], t_el[-1]))
+    j, tj = _grid_interval(np.append(t_az, t_az[0] + 360.0), t_az[0] + np.mod(azimuth[0] - t_az[0], 360.0))
+    j1 = (j + 1) % t_az.size
+    corners = (((1.0 - ti) * (1.0 - tj), i, j), (ti * (1.0 - tj), i + 1, j),
+               ((1.0 - ti) * tj, i, j1), (ti * tj, i + 1, j1))
+    offsets = sub_band_factors(sub_bands)
+    values = np.full((sub_bands, len(keys)) + f.shape, np.nan, dtype=complex)
+    for s, factor in enumerate(offsets):
+        rows = table_rows(table['frequencies'], f[:, 0] * factor)
+        have = rows >= 0
+        for k, key in enumerate(keys):
+            grid = np.asarray(table[key])[rows[have]]                  # (band, elevation, azimuth)
+            values[s, k, have] = sum(w * grid[:, ic, jc] for w, ic, jc in corners)
+    return f, hs, d2, elevation, offsets, values
+
+
 def board_disc_bem(bands, source_height, ground_distance, sound_speed,
                    flow_resistance=FLOW_RESISTANCE, sub_bands=None, table=None,
                    source_dx=None, source_dy=None, mirror_y=False):
@@ -1437,53 +1741,27 @@ def board_disc_bem(bands, source_height, ground_distance, sound_speed,
     |1 + Q e^{2ikh sin(el)} + (1 + Q) S|^2, averaged over ``sub_bands``
     frequencies per band, with S interpolated (real and imaginary parts,
     bilinearly in elevation and azimuth) from ``table`` (:func:`disc_bem_table`)
-    and Q from each frame's own geometry.  The propagation azimuth is from the
-    source toward the microphone, from ``source_dx``, ``source_dy`` (the
-    source's offset from the microphone); without them the source is taken to
-    be along -x.  ``mirror_y`` puts the microphone on the plate's other side
-    (the -y offset), by reflecting the azimuth.  Bands above the table's range
-    are NaN.  ``sub_bands`` is the table's own; a different count would pick
+    and Q from each frame's own geometry.  Azimuth (``source_dx``,
+    ``source_dy``) and ``mirror_y`` as in :func:`table_frames`.  Bands the
+    table was not computed for are NaN.  ``sub_bands`` is the table's own; a different count would pick
     frequencies the table does not hold.
     """
-    from scipy.interpolate import RegularGridInterpolator
-
-    sub_bands = table_sub_bands(table, sub_bands)
-    f, hs, d2 = _broadcast(bands, source_height, ground_distance)
-    elevation = np.degrees(np.arctan2(hs, d2))
-    image_range = np.hypot(d2, hs)
-    cos_theta = hs / image_range
-    if source_dx is None:
-        azimuth = np.zeros_like(hs)
-    else:
-        _, dx, dy = _broadcast(bands, source_dx, source_dy)
-        azimuth = np.mod(np.degrees(np.arctan2(-dy, -dx)), 360.0)
-    if mirror_y:
-        azimuth = np.mod(-azimuth, 360.0)
-    t_az = np.concatenate((table['azimuths'], [table['azimuths'][0] + 360.0]))
+    f, hs, d2, elevation, offsets, values = table_frames(
+        table, ('S',), bands, source_height, ground_distance, source_dx, source_dy, mirror_y, sub_bands)
     height = table['mic_height']
-    offsets = 2.0 ** ((np.arange(sub_bands) + 0.5) / sub_bands / 3.0 - 1.0 / 6.0)
-    top = table['frequencies'].max() * (1.0 + 1e-9)
+    # Q at the microphone's own height, like the phase e^{2ikh sin(el)} below.
+    image_range = np.hypot(d2, hs + height)
+    cos_theta = (hs + height) / image_range
     energy = np.zeros(f.shape)
-    for factor in offsets:
+    for factor, (s_frame,) in zip(offsets, values):
         fj = f * factor
         q = fa.spherical_reflection_coefficient(
             cos_theta, image_range, fj, sound_speed, flow_resistance,
             admittance=_ground_admittance(fj, sound_speed, flow_resistance, table.get('ground')))
-        s_frame = np.full(f.shape, np.nan, dtype=complex)
-        for b in range(f.shape[0]):
-            if fj[b, 0] > top:
-                continue
-            row = np.argmin(np.abs(table['frequencies'] - fj[b, 0]))
-            grid = table['S'][row]
-            grid = np.concatenate((grid, grid[:, :1]), axis=1)          # periodic in azimuth
-            points = np.column_stack((np.clip(elevation[b], table['elevations'][0],
-                                              table['elevations'][-1]), azimuth[b]))
-            s_frame[b] = (RegularGridInterpolator((table['elevations'], t_az), grid.real)(points)
-                          + 1j * RegularGridInterpolator((table['elevations'], t_az), grid.imag)(points))
         k = 2.0 * np.pi * fj / sound_speed
         ratio = 1.0 + q * np.exp(2j * k * height * np.sin(np.radians(elevation))) + (1.0 + q) * s_frame
         energy += np.abs(ratio) ** 2
-    return 10.0 * np.log10(energy / sub_bands)
+    return 10.0 * np.log10(energy / offsets.size)
 
 
 def board_soft_ground(bands, source_height, ground_distance, sound_speed,

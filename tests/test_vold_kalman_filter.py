@@ -2,7 +2,7 @@
 
 The smoothness operator used to be padded to n_x rows per order with
 truncated (one order, p >= 2) or misaligned (several orders) rows that did not
-sum to zero.  Weighted by r**2 they penalised the envelope's *level* rather
+sum to zero.  Weighted by r**2 they penalized the envelope's *level* rather
 than its changes, and drove it to zero over the last ~1.5 time constants of
 the record (and, for several orders at p >= 2, the first).  It was also
 assembled through dense n_x x n_x arrays, so a 10 s record at 2 kHz needed
@@ -12,6 +12,7 @@ about 10 GB.
 import numpy as np
 import pytest
 
+import vold_kalman_filter as vk
 from vold_kalman_filter import _compute_weighting_factor, vold_kalman_filter
 
 FS = 1000.0
@@ -151,3 +152,71 @@ def test_invalid_bandwidth_is_rejected(bandwidth):
     x = np.cos(2 * np.pi * 100.0 * np.arange(n) / 1000.0)
     with pytest.raises(ValueError, match='bandwidth'):
         vold_kalman_filter(x, freq, 1000.0, bandwidth, 1)
+
+
+@pytest.mark.skipif(vk._HAVE_UMFPACK, reason='scikits.umfpack is installed')
+def test_umfpack_without_scikits_umfpack_is_an_error():
+    """SciPy quietly solves with SuperLU when asked for UMFPACK it does not have."""
+    freq = np.full(200, 120.0)
+    with pytest.raises(RuntimeError, match='umfpack'):
+        vold_kalman_filter(np.cos(2 * np.pi * np.cumsum(freq) / FS), freq, FS, 4.0, 1, solver='umfpack')
+
+
+def test_pardiso_is_never_handed_a_complex_system(monkeypatch):
+    """pypardiso solves only real systems and these are complex: "auto" used to
+    try it first anyway, and "pardiso" passed it the complex matrix."""
+    calls = []
+    monkeypatch.setattr(vk, '_HAVE_PARDISO', True)
+    monkeypatch.setattr(vk, '_pardiso_spsolve', lambda A, b: calls.append(A), raising=False)
+    x = _signal()[:1000]
+    freq = np.column_stack([F1, F2])[:1000]
+    expected, _, _ = vold_kalman_filter(x, freq, FS, 4.0, 2, solver='superlu')
+    y, _, _ = vold_kalman_filter(x, freq, FS, 4.0, 2, solver='auto')
+    np.testing.assert_allclose(y, expected, rtol=0, atol=1e-7)     # banded Cholesky vs sparse LU
+    with pytest.raises(TypeError, match='only real'):
+        vold_kalman_filter(x, freq, FS, 4.0, 2, solver='pardiso')
+    assert calls == []
+
+
+@pytest.mark.parametrize('p,coupled,n_ord', [(1, True, 2), (2, True, 2), (3, True, 2), (1, False, 2),
+                                             (2, False, 1), (1, True, 6)])
+def test_the_banded_solve_matches_the_sparse_lu(monkeypatch, p, coupled, n_ord):
+    """"auto" solves the normal equations by a banded Cholesky factorization;
+    it must agree with the assembled sparse system to within its conditioning,
+    and its residual must be as small."""
+    calls = []
+    banded_solve = vk._solve_normal_banded
+    monkeypatch.setattr(vk, '_solve_normal_banded', lambda *args: calls.append(1) or banded_solve(*args))
+    x = _signal()[:1500]
+    freq = np.column_stack([F1 * (1.0 + 0.2 * i) for i in range(n_ord)])[:1500]
+    bandwidth = 4.0 if p < 3 else 20.0         # keeps p = 3 off the augmented formulation
+    banded, _, banded_residual = vold_kalman_filter(x, freq, FS, bandwidth, p, use_coupling=coupled)
+    assert calls == [1]
+    sparse, _, sparse_residual = vold_kalman_filter(x, freq, FS, bandwidth, p, use_coupling=coupled,
+                                                    solver='superlu')
+    # Both are off the exact solution by up to ~4e-7 of the peak at p = 3
+    # (checked against an iteratively refined solve), the banded one less.
+    np.testing.assert_allclose(banded, sparse, rtol=0, atol=1e-6 * np.abs(sparse).max())
+    assert np.linalg.norm(banded_residual) < 10.0 * np.linalg.norm(sparse_residual) + 1e-12
+
+
+def test_a_matrix_the_banded_solve_rejects_goes_to_the_sparse_lu(monkeypatch):
+    def not_positive_definite(*args, **kwargs):
+        raise np.linalg.LinAlgError('2th leading minor not positive definite')
+    x = _signal()[:1000]
+    freq = np.column_stack([F1, F2])[:1000]
+    expected, _, _ = vold_kalman_filter(x, freq, FS, 4.0, 1, solver='superlu')
+    monkeypatch.setattr(vk, 'solveh_banded', not_positive_definite)
+    y, _, _ = vold_kalman_filter(x, freq, FS, 4.0, 1)
+    np.testing.assert_array_equal(y, expected)
+
+
+def test_the_size_caches_are_bounded():
+    """One entry per record length, ~24 MB each at 1e5 samples, used to
+    accumulate without limit."""
+    for n in range(300, 1300, 100):
+        freq = np.column_stack([np.full(n, 100.0), np.full(n, 160.0)])
+        vold_kalman_filter(np.cos(2 * np.pi * 100.0 * np.arange(n) / FS), freq, FS, 4.0, 1,
+                           solver='superlu')
+    for cached in (vk._smoothness_operator, vk._get_bu_index_cache):
+        assert 0 < cached.cache_info().currsize <= vk._CACHE_SIZES

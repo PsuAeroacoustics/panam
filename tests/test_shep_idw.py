@@ -5,7 +5,7 @@ import numpy as np
 import flight_acoustics as fa
 
 
-def test_a_bad_sample_only_reaches_its_own_neighbourhood():
+def test_a_bad_sample_only_reaches_its_own_neighborhood():
     """0 * NaN is NaN: one bad sample used to turn every node NaN, however far away."""
     rng = np.random.default_rng(0)
     felv, fazi, values = rng.uniform(0, 90, 200), rng.uniform(0, 360, 200), rng.uniform(1, 2, 200)

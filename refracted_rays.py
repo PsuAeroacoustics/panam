@@ -3,7 +3,7 @@
 Depropagation along straight lines in uniform air files each sample at the straight
 line's depression angle and spreads it over the straight-line distance.  Through a
 stratified atmosphere the sound left the source at the ray's launch angle, spread
-over the ray tube, travelled the arc and met the microphone at the ray's arrival
+over the ray tube, traveled the arc and met the microphone at the ray's arrival
 angle.  ``depropagate_hemisphere(ray_model=...)`` takes those from a *ray model*:
 
     ray_model(source_positions, mic_locations) -> dict of arrays shaped (Npts, Nmics)

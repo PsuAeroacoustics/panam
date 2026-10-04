@@ -53,7 +53,7 @@ def test_completed_sphere_covers_the_full_circle_without_duplicates():
 
 def test_data_stays_aligned_with_its_azimuth():
     """The regression the three-part slicing introduced: every row of data must
-    still belong to the azimuth labelling it."""
+    still belong to the azimuth labeling it."""
     n_phi, n_theta = PHI_LIST.size, THETA_LIST.size
     # Tag each source row with its own azimuth so provenance is traceable.
     spla = np.repeat(PHI_LIST[:, None], n_theta, axis=1)
