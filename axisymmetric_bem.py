@@ -134,8 +134,13 @@ def _modal_integral(xr, xz, seg, m_max, k, beta, tab, gx, gw, n_phi_uniform, sam
     else:
         u_edges = np.array([0.0, 1.0])
         phi_edges = np.linspace(0.0, np.pi, n_phi_uniform + 1)
-    out = np.zeros(m_max + 1, dtype=np.complex128)
+    # The phi nodes are the same at every node along the segment: sum over
+    # the segment first, so the cos(m phi) recurrence runs once per phi node.
     ng = gx.size
+    yr_n = np.empty((u_edges.size - 1) * ng)
+    yz_n = np.empty_like(yr_n)
+    jac_n = np.empty_like(yr_n)
+    n_u = 0
     for a in range(u_edges.size - 1):
         u_lo, u_hi = u_edges[a], u_edges[a + 1]
         if u_hi <= u_lo:
@@ -143,29 +148,35 @@ def _modal_integral(xr, xz, seg, m_max, k, beta, tab, gx, gw, n_phi_uniform, sam
         for i in range(ng):
             u = u_lo + (u_hi - u_lo) * gx[i]
             wu = (u_hi - u_lo) * gw[i]
-            yr = ra + u * tr
-            yz = za + u * tz
-            jac = yr * length * wu
-            for b in range(phi_edges.size - 1):
-                p_lo, p_hi = phi_edges[b], phi_edges[b + 1]
-                if p_hi <= p_lo:
-                    continue
-                for j in range(ng):
-                    phi = p_lo + (p_hi - p_lo) * gx[j]
-                    wp = (p_hi - p_lo) * gw[j]
-                    val = _dgdn(xr, xz, yr, yz, phi, nr, nz, k, beta, tab, same_plane) * jac * wp * 2.0
-                    # cos(m phi) by recurrence
-                    c1 = np.cos(phi)
-                    cm_prev = 1.0
-                    cm = c1
-                    out[0] += val
-                    if m_max >= 1:
-                        out[1] += val * cm
-                    for m in range(2, m_max + 1):
-                        cm_next = 2.0 * c1 * cm - cm_prev
-                        cm_prev = cm
-                        cm = cm_next
-                        out[m] += val * cm
+            yr_n[n_u] = ra + u * tr
+            yz_n[n_u] = za + u * tz
+            jac_n[n_u] = yr_n[n_u] * length * wu
+            n_u += 1
+    out = np.zeros(m_max + 1, dtype=np.complex128)
+    for b in range(phi_edges.size - 1):
+        p_lo, p_hi = phi_edges[b], phi_edges[b + 1]
+        if p_hi <= p_lo:
+            continue
+        for j in range(ng):
+            phi = p_lo + (p_hi - p_lo) * gx[j]
+            wp = (p_hi - p_lo) * gw[j]
+            c1 = np.cos(phi)
+            s1 = np.sin(phi)
+            val = 0.0 + 0.0j
+            for i in range(n_u):
+                val += _dgdn_cs(xr, xz, yr_n[i], yz_n[i], c1, s1, nr, nz, k, beta, tab, same_plane) * jac_n[i]
+            val *= wp * 2.0
+            # cos(m phi) by recurrence
+            cm_prev = 1.0
+            cm = c1
+            out[0] += val
+            if m_max >= 1:
+                out[1] += val * cm
+            for m in range(2, m_max + 1):
+                cm_next = 2.0 * c1 * cm - cm_prev
+                cm_prev = cm
+                cm = cm_next
+                out[m] += val * cm
     return out
 
 
