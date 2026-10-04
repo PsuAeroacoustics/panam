@@ -16,6 +16,7 @@ import functools
 import warnings
 
 import numpy as np
+from scipy.linalg import solveh_banded
 from scipy.sparse import bmat, csr_matrix, diags, kron, spdiags, vstack, eye as speye
 from scipy.sparse.linalg import spsolve
 from scipy.special import comb
@@ -65,7 +66,16 @@ def _difference_coefficients(order):
 
 @functools.lru_cache(maxsize=_CACHE_SIZES)
 def _smoothness_operator(n_x, n_ord, p_p):
-    """The p-th difference of each order's envelope, n_x - p rows per order (CSR)."""
+    """The p-th difference of each order's envelope, n_x - p rows per order (CSR).
+
+    Every row is a whole stencil, so it sums to zero and penalizes only
+    changes in the envelope, never its level, and the record ends are left
+    free.  It used to be padded out to n_x rows per order with truncated
+    (single order, p >= 2) or misaligned (several orders) boundary rows; those
+    penalized the level itself and drove the envelope to zero at the ends of
+    the record.  It was also built through dense n_x x n_x arrays, so memory
+    grew as n_x**2.
+    """
     D = diags([np.full(n_x - p_p, c) for c in _difference_coefficients(p_p)], list(range(p_p + 1)),
               shape=(n_x - p_p, n_x), format='csr')
     return kron(speye(n_ord, format='csr'), D, format='csr')
@@ -146,8 +156,11 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None, solver="auto", use_cou
         Weighting factor for the filter, used instead of bandwidth when given;
         same shapes as bandwidth.  Default is None (compute from bandwidth).
     solver : {"auto", "pardiso", "umfpack", "superlu"}, optional
-        Sparse solver backend. "auto" uses UMFPACK if scikits.umfpack is
-        installed and SuperLU otherwise; "umfpack" without it is an error.
+        Sparse solver backend. "auto" solves the normal equations by a banded
+        Cholesky factorization, several times faster, and otherwise (the
+        better-conditioned formulation for narrow bands, or a matrix that is
+        not numerically positive definite) uses UMFPACK if scikits.umfpack is
+        installed and SuperLU if not; "umfpack" without it is an error.
         Pardiso solves only real systems and these are complex, so "auto"
         never picks it and "pardiso" raises a TypeError. Default is "auto".
     use_coupling : bool, optional
@@ -242,16 +255,6 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None, solver="auto", use_cou
     if p_p < 1 or n_x <= p_p:
         raise ValueError("p must be at least 1 and smaller than the signal length")
 
-    # Smoothness operator: the p-th difference of each order's envelope, n_x - p
-    # rows per order.  Every row is a whole stencil, so it sums to zero and
-    # penalizes only changes in the envelope, never its level, and the record
-    # ends are left free.  It used to be padded out to n_x rows per order with
-    # truncated (single order, p >= 2) or misaligned (several orders) boundary
-    # rows; those penalized the level itself and drove the envelope to zero at
-    # the ends of the record.  It was also built through dense n_x x n_x
-    # arrays, so memory grew as n_x**2.
-    AA_sparse = _smoothness_operator(n_x, n_ord, p_p)
-
     # Weighting factor r for every sample and order, given or from the bandwidth
     if use_weight_factor:
         bw = _per_sample_and_order(bandwidth, n_x, n_ord, 'bandwidth')
@@ -292,11 +295,19 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None, solver="auto", use_cou
                 '(condition number ~{:.0e}), so the envelopes may be inaccurate; decimate '
                 'the signal first, or use a lower p'
                 .format(p_p, root_condition), RuntimeWarning, stacklevel=2)
-        y_R, cost_mat = _solve_augmented(x, phasor, AA_sparse, row_weight,
+        y_R, cost_mat = _solve_augmented(x, phasor, _smoothness_operator(n_x, n_ord, p_p), row_weight,
                                          n_ord > 1 and use_coupling, solver_choice)
         return 2.0 * y_R.reshape((n_x, n_ord), order="F"), phasor, cost_mat
 
+    if solver_choice == "auto":
+        try:
+            y_R, cost_mat = _solve_normal_banded(x, phasor, weight, p_p, n_ord > 1 and use_coupling)
+            return 2.0 * y_R.reshape((n_x, n_ord), order="F"), phasor, cost_mat
+        except np.linalg.LinAlgError:
+            pass        # not numerically positive definite (r = 0, say): the sparse LU below
+
     # Compute B0 = AA' * R^2 * AA + I, the regularized least-squares matrix.
+    AA_sparse = _smoothness_operator(n_x, n_ord, p_p)
     RR_squared = spdiags([row_weight ** 2], [0], n_rows, n_rows, format='csr')
     B0 = AA_sparse.T @ RR_squared @ AA_sparse + speye(n_tot, format='csr')
     
@@ -388,6 +399,61 @@ def _solve_sparse(A, b, solver_choice):
             raise
         # Fall back to SuperLU, never to a dense solve (n_tot**2 memory).
         return spsolve(A, b, use_umfpack=False)
+
+
+def _solve_normal_banded(x, phasor, weight, p, coupled):
+    """Solve the normal equations by a banded Cholesky factorization.
+
+    B = I + AA' R^2 AA (+ B_U + B_U^H when coupled) is Hermitian positive
+    definite.  Each order's smoothness term couples a sample only to its p
+    neighbors and the coupling joins the orders only at the same sample, so
+    with the unknowns taken sample by sample, (k, i) -> k n_ord + i, B is
+    banded with (p + 1) n_ord - 1 superdiagonals; uncoupled orders are
+    independent and keep the order-major layout, with p.  The bands are
+    built directly, without assembling B, and for six coupled orders this
+    is about five times faster than the sparse LU of the assembled matrix.
+    Raises LinAlgError if B is not numerically positive definite.
+
+    Returns (a, C^H x - B a) in the order-major layout of the sparse path.
+    """
+    n_x, n_ord = phasor.shape
+    diff = _difference_coefficients(p)
+    w2 = weight[:n_x - p] ** 2
+    # (AA' R^2 AA)[k, k + d] = sum_s c_s c_{s+d} r[k - s]**2, per order
+    smooth = np.zeros((p + 1, n_x, n_ord))
+    for d in range(p + 1):
+        for s in range(p + 1 - d):
+            smooth[d, s:s + n_x - p] += diff[s] * diff[s + d] * w2
+    conj_phasor = np.conj(phasor)
+    rhs = conj_phasor * np.asarray(x)[:, None]
+    # Upper band storage: ab[u - o, q] = B[q - o, q].
+    if coupled:
+        u = (p + 1) * n_ord - 1
+        ab = np.zeros((u + 1, n_x, n_ord), dtype=complex)
+        for d in range(p + 1):
+            ab[u - d * n_ord, d:] = smooth[d, :n_x - d]
+        for o in range(1, n_ord):
+            ab[u - o, :, o:] = conj_phasor[:, :n_ord - o] * phasor[:, o:]
+        rhs = rhs.ravel()
+    else:
+        u = p
+        ab = np.zeros((u + 1, n_ord, n_x), dtype=complex)
+        for d in range(p + 1):
+            ab[u - d, :, d:] = smooth[d, :n_x - d].T
+        rhs = rhs.ravel(order="F")
+    ab = ab.reshape(u + 1, -1)
+    ab[u] += 1.0
+    z = solveh_banded(ab, rhs, lower=False, check_finite=False)
+    # The normal-equations residual, through the bands.
+    residual = rhs - ab[u] * z
+    for o in range(1, u + 1):
+        band = ab[u - o, o:]
+        residual[:-o] -= band * z[o:]
+        residual[o:] -= np.conj(band) * z[:-o]
+    if coupled:
+        z = z.reshape(n_x, n_ord).ravel(order="F")
+        residual = residual.reshape(n_x, n_ord).ravel(order="F")
+    return z, residual
 
 
 def _solve_augmented(x, phasor, AA, row_weight, coupled, solver_choice):

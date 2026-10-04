@@ -172,10 +172,43 @@ def test_pardiso_is_never_handed_a_complex_system(monkeypatch):
     freq = np.column_stack([F1, F2])[:1000]
     expected, _, _ = vold_kalman_filter(x, freq, FS, 4.0, 2, solver='superlu')
     y, _, _ = vold_kalman_filter(x, freq, FS, 4.0, 2, solver='auto')
-    np.testing.assert_allclose(y, expected, rtol=0, atol=1e-9)
+    np.testing.assert_allclose(y, expected, rtol=0, atol=1e-7)     # banded Cholesky vs sparse LU
     with pytest.raises(TypeError, match='only real'):
         vold_kalman_filter(x, freq, FS, 4.0, 2, solver='pardiso')
     assert calls == []
+
+
+@pytest.mark.parametrize('p,coupled,n_ord', [(1, True, 2), (2, True, 2), (3, True, 2), (1, False, 2),
+                                             (2, False, 1), (1, True, 6)])
+def test_the_banded_solve_matches_the_sparse_lu(monkeypatch, p, coupled, n_ord):
+    """"auto" solves the normal equations by a banded Cholesky factorization;
+    it must agree with the assembled sparse system to within its conditioning,
+    and its residual must be as small."""
+    calls = []
+    banded_solve = vk._solve_normal_banded
+    monkeypatch.setattr(vk, '_solve_normal_banded', lambda *args: calls.append(1) or banded_solve(*args))
+    x = _signal()[:1500]
+    freq = np.column_stack([F1 * (1.0 + 0.2 * i) for i in range(n_ord)])[:1500]
+    bandwidth = 4.0 if p < 3 else 20.0         # keeps p = 3 off the augmented formulation
+    banded, _, banded_residual = vold_kalman_filter(x, freq, FS, bandwidth, p, use_coupling=coupled)
+    assert calls == [1]
+    sparse, _, sparse_residual = vold_kalman_filter(x, freq, FS, bandwidth, p, use_coupling=coupled,
+                                                    solver='superlu')
+    # Both are off the exact solution by up to ~4e-7 of the peak at p = 3
+    # (checked against an iteratively refined solve), the banded one less.
+    np.testing.assert_allclose(banded, sparse, rtol=0, atol=1e-6 * np.abs(sparse).max())
+    assert np.linalg.norm(banded_residual) < 10.0 * np.linalg.norm(sparse_residual) + 1e-12
+
+
+def test_a_matrix_the_banded_solve_rejects_goes_to_the_sparse_lu(monkeypatch):
+    def not_positive_definite(*args, **kwargs):
+        raise np.linalg.LinAlgError('2th leading minor not positive definite')
+    x = _signal()[:1000]
+    freq = np.column_stack([F1, F2])[:1000]
+    expected, _, _ = vold_kalman_filter(x, freq, FS, 4.0, 1, solver='superlu')
+    monkeypatch.setattr(vk, 'solveh_banded', not_positive_definite)
+    y, _, _ = vold_kalman_filter(x, freq, FS, 4.0, 1)
+    np.testing.assert_array_equal(y, expected)
 
 
 def test_the_size_caches_are_bounded():
