@@ -37,3 +37,38 @@ def test_interval_chosen_on_one_history_can_integrate_another():
     out = fa.sound_exposure_level(la, dt=1.0, weighted_levels=lc)
     assert (out['k1'], out['k2']) == (1, 3)
     assert out['sel'] == pytest.approx(10 * np.log10(np.sum(10 ** (lc[1:4] / 10))))
+
+
+@pytest.mark.parametrize('dt', [0, -1, np.nan, np.inf])
+def test_sel_rejects_invalid_time_step(dt):
+    with pytest.raises(ValueError, match='dt'):
+        fa.sound_exposure_level([80, 90], dt)
+
+
+@pytest.mark.parametrize('weighted', [[80], [[80, 90]]])
+def test_sel_rejects_mismatched_weighted_history(weighted):
+    with pytest.raises(ValueError, match='same shape'):
+        fa.sound_exposure_level([80, 90], 1, weighted_levels=weighted)
+
+
+def test_sel_missing_samples_require_explicit_policy():
+    levels = [80., 90., 80.]
+    weighted = [80., np.nan, 80.]
+    with pytest.raises(ValueError, match='missing levels'):
+        fa.sound_exposure_level(levels, 1, weighted_levels=weighted)
+    result = fa.sound_exposure_level(levels, 1, weighted_levels=weighted, missing='omit')
+    assert result['sel'] == pytest.approx(83.0102999566)
+    assert result['missing_samples'] == 1
+    assert result['duration_s'] == 3
+
+
+def test_sel_negative_infinity_is_zero_energy():
+    result = fa.sound_exposure_level([-np.inf, 80, -np.inf], 1, down=np.inf)
+    assert result['sel'] == pytest.approx(80)
+    assert result['missing_samples'] == 0
+
+
+@pytest.mark.parametrize('down', [-1, np.nan, -np.inf])
+def test_sel_rejects_invalid_threshold(down):
+    with pytest.raises(ValueError, match='down'):
+        fa.sound_exposure_level([80, 90], 1, down=down)

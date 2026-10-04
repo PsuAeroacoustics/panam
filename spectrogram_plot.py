@@ -7,7 +7,7 @@ from cli import colon_pair, save_or_show
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("-f", "--frequency", type=colon_pair, default=None, help="Frequency range \"low:high\"")
+parser.add_argument("-f", "--frequency", type=colon_pair, default=None, help="Displayed frequency range \"low:high\"")
 parser.add_argument("-o", "--output", type=str, default=None, help="Output image file name")
 parser.add_argument("-p", "--plot", action="store_true", help="Also plot image when outputting to file")
 parser.add_argument("-x", "--x-limits", dest='x_limits', action='store', type=colon_pair, default=None,
@@ -38,11 +38,12 @@ else:
 
 if data_format == 'hdf5':
     if args.signal is None:
-        ds = fa.load_h5_signal(args.infile)
-        print("No signal selected.  Specify one of: ", list(ds.keys()))
+        with fa.open_h5_signal(args.infile) as ds:
+            print("No signal selected.  Specify one of: ", list(ds.keys()))
         exit(0)
-    signal = fa.load_h5_signal(args.infile, signalname=args.signal)
-    fs = 1.0 / signal.attrs['ChannelInformationSamplingPeriod'][0]
+    with fa.open_h5_signal(args.infile, signalname=args.signal) as dataset:
+        fs = 1.0 / dataset.attrs['ChannelInformationSamplingPeriod'][0]
+        signal = dataset[:]
 else:
     signal, time, _ = fa.load_nc_signal(args.infile)
     fs = 1.0 / (time[1] - time[0])
@@ -63,7 +64,7 @@ else:
 if args.y_limits is not None:
     flim = args.y_limits
 else:
-    flim = None
+    flim = args.frequency
 
 fig, ax, cs = fa.plot_spectrogram(signal, fs, window_time=args.window_time, window_overlap=args.overlap, time0=time0,
                                   clim=clim, flim=flim)

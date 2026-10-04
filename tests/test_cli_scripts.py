@@ -42,3 +42,24 @@ def test_board_field_plot_runs(tmp_path):
                   '-o', 'field.png', cwd=tmp_path)
     assert result.returncode == 0, result.stderr
     assert (tmp_path / 'field.png').stat().st_size > 0
+
+
+def test_spectrogram_frequency_option_sets_display_range(tmp_path):
+    import h5py
+    import numpy as np
+    import runpy
+    from unittest.mock import patch
+    import matplotlib.pyplot as plt
+    import flight_acoustics as fa
+    path = tmp_path / 'signal.h5'
+    with h5py.File(path, 'w') as handle:
+        dataset = handle.create_dataset('Table1/mic', data=np.sin(np.arange(4096)))
+        dataset.attrs['ChannelInformationSamplingPeriod'] = [.001]
+    plot = fa.plot_spectrogram
+    with patch.object(sys, 'argv', ['spectrogram_plot.py', str(path), '-s', 'mic', '-f', '100:200']), \
+            patch.object(fa, 'plot_spectrogram', wraps=plot) as mocked, \
+            patch('cli.save_or_show'):
+        runpy.run_path(str(REPO / 'spectrogram_plot.py'), run_name='__main__')
+    assert mocked.call_args.kwargs['flim'] == (100, 200)
+    assert np.array_equal(mocked.call_args.args[0], np.sin(np.arange(4096)))
+    plt.close('all')

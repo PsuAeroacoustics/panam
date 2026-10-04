@@ -7,7 +7,6 @@ from glob import glob
 
 import numpy as np
 from panam_acoustics.atmosphere import Atmosphere
-import h5py
 from typing import Any, Optional, cast
 import openpyxl
 import scipy.signal
@@ -17,17 +16,17 @@ import simplekml
 # Colormap helper will import palettable lazily
 import matplotlib
 from matplotlib import tri
-from matplotlib.pyplot import subplots, colorbar, style, contourf, show
+from matplotlib.pyplot import subplots, colorbar, contourf, show
 from netCDF4 import Dataset
-from pyuff import UFF
 from pymap3d import geodetic2enu, enu2geodetic
 
 import unit_conversion
 from panam_acoustics import filters as pa_filters
+from panam_acoustics.signal_io import (
+    load_nc_signal, load_h5_signal, open_h5_signal, load_UFF_signal,
+)
 
-style.use('fivethirtyeight')
-matplotlib.rcParams.update({'mathtext.fontset': 'dejavuserif'})
-matplotlib.rcParams.update({'figure.autolayout': True})
+from panam_acoustics.plotting import acoustic_plot_style
 
 
 def psd(signal, sampling_rate, cal=0.0):
@@ -78,11 +77,15 @@ def psd_welch(signal, sampling_rate, cal=0.0, window_time=1.0, window_type='hann
     window = scipy.signal.get_window(window_type, binwidth)
     frequency, power_spectral_density = scipy.signal.welch(kcal * signal, sampling_rate,
                                                            window=window, noverlap=int(binwidth * window_overlap))
-    if passband is not None:
-        pass_indicies = np.logical_and(frequency >= passband[0], frequency <= passband[1])
-        power_spectral_density = power_spectral_density[pass_indicies]
-        frequency = frequency[pass_indicies]
     df = frequency[1] - frequency[0]
+    if passband is not None:
+        if len(passband) != 2 or not np.isfinite(passband).all() or passband[0] > passband[1]:
+            raise ValueError('passband must be a finite ordered pair')
+        pass_indices = np.logical_and(frequency >= passband[0], frequency <= passband[1])
+        power_spectral_density = power_spectral_density[pass_indices]
+        frequency = frequency[pass_indices]
+        if frequency.size == 0:
+            raise ValueError('passband contains no frequency bins')
     if medfilter is not None:
         # medfilter is a width in Hz; medfilt wants an odd number of bins.
         medfilter_width = 2 * int(round(0.5 * float(medfilter) / df)) + 1
@@ -492,6 +495,10 @@ def ten_db_down_interval(levels, down=10.0):
     is part of the event, not cut off at the first dip.
     """
     levels = np.asarray(levels, dtype=float)
+    if levels.ndim != 1 or not levels.size:
+        raise ValueError('levels must be a nonempty one-dimensional history')
+    if np.isnan(down) or down < 0:
+        raise ValueError('down must be nonnegative or positive infinity')
     finite = np.isfinite(levels)
     if not finite.any():
         raise ValueError('no finite levels in the history')
@@ -500,7 +507,7 @@ def ten_db_down_interval(levels, down=10.0):
     return int(above[0]), int(above[-1])
 
 
-def sound_exposure_level(levels, dt, down=10.0, weighted_levels=None):
+def sound_exposure_level(levels, dt, down=10.0, weighted_levels=None, *, missing="raise"):
     """Sound exposure level of a noise event over its 10 dB-down duration.
 
     SEL = 10 log10( sum 10^(L/10) dt / T0 ), T0 = 1 s, summed over the interval
@@ -511,6 +518,8 @@ def sound_exposure_level(levels, dt, down=10.0, weighted_levels=None):
         levels: level history (dB; normally A-weighted, i.e. LA) at equal ``dt``.
         dt: sample interval, s.
         down: how far below the maximum the duration extends, dB (default 10).
+        missing: 'raise' (default) rejects NaN samples; 'omit' integrates
+            available samples and reports missing_samples. -inf means zero energy.
         weighted_levels: optional history to integrate over the interval chosen
             from ``levels`` (e.g. choose the interval on LA, integrate LC).
 
@@ -519,15 +528,30 @@ def sound_exposure_level(levels, dt, down=10.0, weighted_levels=None):
         lmax: maximum level, dB
         k1, k2: interval sample limits
         duration_s: (k2 - k1 + 1) * dt
+        missing_samples: number of omitted integration samples
         clipped: True when the interval touches the record edge -- the event
             may extend beyond the data and the SEL is then a lower bound.
     """
     levels = np.asarray(levels, dtype=float)
+    if levels.ndim != 1 or not levels.size:
+        raise ValueError('levels must be a nonempty one-dimensional history')
+    if not np.isfinite(dt) or dt <= 0:
+        raise ValueError('dt must be positive and finite')
+    if np.isnan(down) or down < 0:
+        raise ValueError('down must be nonnegative or positive infinity')
+    if missing not in ('raise', 'omit'):
+        raise ValueError("missing must be 'raise' or 'omit'")
+    integrand = levels if weighted_levels is None else np.asarray(weighted_levels, dtype=float)
+    if integrand.shape != levels.shape:
+        raise ValueError('weighted_levels must have the same shape as levels')
+    if np.isposinf(levels).any() or np.isposinf(integrand).any():
+        raise ValueError('positive infinite levels are invalid')
+    if missing == 'raise' and (np.isnan(levels).any() or np.isnan(integrand).any()):
+        raise ValueError("missing levels; use missing='omit' to integrate available samples")
     if np.isfinite(down):
         k1, k2 = ten_db_down_interval(levels, down)
     else:
         k1, k2 = 0, levels.size - 1
-    integrand = levels if weighted_levels is None else np.asarray(weighted_levels, dtype=float)
     segment = integrand[k1:k2 + 1]
     energy = np.sum(10.0 ** (segment[np.isfinite(segment)] / 10.0)) * float(dt)
     return {
@@ -535,6 +559,7 @@ def sound_exposure_level(levels, dt, down=10.0, weighted_levels=None):
         'lmax': float(np.nanmax(levels)),
         'k1': k1, 'k2': k2,
         'duration_s': (k2 - k1 + 1) * float(dt),
+        'missing_samples': int(np.isnan(segment).sum()),
         'clipped': bool(k1 == 0 or k2 == levels.size - 1),
     }
 
@@ -770,6 +795,7 @@ def spectrogram(signal, sampling_rate, window_time=0.5, window_type="hann", wind
     return f, t, SPL
 
 
+@acoustic_plot_style
 def plot_spectrogram(signal, sampling_rate, window_time=1.0, window_type="hann", window_overlap=7.0 / 8.0,
                      detrend='constant', dbref=20e-6, save_name=None, title=None, time0=0, clim=None, flim=None):
     """
@@ -2697,94 +2723,6 @@ def dBAw(f):
     return aweights
 
 
-def load_nc_signal(filename):
-    """
-    Load NASA-formatted netCDF acoustic signal
-    Args:
-        filename: path to netCDF file
-
-    Returns: tuple (pressure, time, location)
-    WHERE
-    pressure is an array of acoustic pressures
-    time is an array of sampled times
-    location is an array of the x,y,z location of the microphone
-    """
-    with Dataset(filename, mode='r') as file_handle:
-        # Masked (fill-value) samples are missing, not pressures
-        pressure = np.ma.filled(file_handle.variables['pressure'][:].astype(float), np.nan).flatten()
-        x = file_handle.X
-        y = file_handle.Y
-        z = file_handle.Z
-        sample_rate = file_handle.sample_rate
-        start_time = file_handle.start_time
-    # Not np.arange(start, stop, 1/fs): a float step can yield one sample too many.
-    time = start_time + np.arange(pressure.size) / sample_rate
-    location = np.array([x, y, z])
-    return pressure, time, location
-
-
-def load_h5_signal(filename, datasetname='Table1', signalname=None):
-    """
-    Load HDF5 files from BKConnect
-    Args:
-        filename: path to file
-        datasetname: optional dataset name (default 'Table1')
-        signalname: optional signal name (default None, loads all signals)
-
-    Returns: h5py dataset for entire group or specific signal
-    """
-    file = h5py.File(filename, 'r')
-    if signalname is None:
-        grp = file[datasetname]
-        # Return the group, type checker might complain but runtime is fine
-        return cast(h5py.Group, grp)  # type: ignore[return-value]
-    else:
-        grp = file[datasetname]
-        if isinstance(grp, h5py.Group):
-            ds = grp[signalname]
-            return cast(h5py.Dataset, ds)  # type: ignore[return-value]
-        else:
-            raise ValueError(f"Dataset {datasetname} is not a Group")
-
-
-def load_UFF_signal(filename, sets = None):
-    """
-    Load UFF acoustic signal file
-    Args:
-        filename: path to UFF file
-        sets: optional list of set numbers to load, default None (loads all sets)
-    Returns: tuple (pressures, fs, channel_names, time)
-    WHERE
-    pressures is a channels x timepoints matrix of acoustic pressures
-    fs is the sampling rate, Hz
-    channel_names is a list of channel names
-    time is an array of sampled times
-    """
-
-    file = UFF(filename)
-
-    if sets is None:
-        data = file.read_sets()
-    else:
-        data = file.read_sets(sets)
-    # pyuff returns a bare dict, not a one-element list, when it reads one set
-    if isinstance(data, dict):
-        data = [data]
-
-    channels = len(data)
-    datasize = len(data[0]['x'])
-    time = data[0]['x']
-    fs = 1./(time[1]-time[0])
-    pressures = np.zeros((channels, datasize))
-    channel_names = []
-    for i in range(channels):
-        if len(data[i]['x']) != datasize:
-            raise ValueError('Inconsistent recording lengths in UFF file.')
-        pressures[i, :] = data[i]['data']
-        channel_names.append(data[i]['id1'])
-    return pressures, fs, channel_names, time
-
-
 def highpass(x, fpass, fs, zero_phase=True):
     """
     Applies a high pass filter to a signal
@@ -3584,6 +3522,7 @@ def plot_fried_eggs(directory_names, metric='mean', dimensionless=False, altitud
     show(block=True)
 
 
+@acoustic_plot_style
 def fried_egg_plot(directory_name, metric='mean', dimensionless=False, altitude=500, cutoff=30, input_frequencies=None,
                    fpa_climb_cutoff=5, atmosphere=Atmosphere(temperature=293.15, pressure=101.325,
                                                              relative_humidity=20.0),
@@ -3734,6 +3673,7 @@ def nc_unwrapped(filename, infreqs=None, weight=None):
     colorbar()
 
 
+@acoustic_plot_style
 def plot_projection(filename, altitude=500, cutoff=30, infreqs=None, units='m'):
     """
     Generate a contour plot of sound pressure levels projected onto a ground plane.
@@ -4001,6 +3941,7 @@ def colorbar_ticks(levels, max_ticks=11):
     return levels[:: int(np.ceil(levels.size / max_ticks))]
 
 
+@acoustic_plot_style
 def plot_lambert_ea(azi,elv,SPL,SPL_range=None,weight=None,grid_convention='umapr',
                     levels=None,level_step=None):
     """
@@ -4120,6 +4061,7 @@ def nc_lambert_ea(filename, input_frequencies=None, weight=None, SPL_range=None,
     )
     return fig, ax, cs
 
+@acoustic_plot_style
 def lambert_ea_points(azimuth, elevation, markers=None, colors=None, sizes=None, alpha=1.0, grid_convention='umapr'):
     """
     Plot levels on an acoustic sphere using the Lambert equal-area azimuthal projection.

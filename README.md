@@ -22,3 +22,24 @@ name instead of using hard-coded paths. Copy `local_paths.example.toml` to
 `local_paths.toml` (git-ignored) and point each entry at your copy, or set the
 matching `PANAM_<NAME>` environment variable (e.g. `PANAM_NORAH2`). Tests
 whose data are not configured are skipped. See `local_paths.py` for the names.
+
+# Signal loading and plotting
+
+Signal loaders are available in `panam_acoustics.signal_io` and remain
+importable from `flight_acoustics`. Use `open_h5_signal` as a context manager
+and copy samples or attributes inside the context. The legacy
+`load_h5_signal` returns a live HDF5 object; callers must close its `.file`.
+UFF channels must have matching, uniformly spaced time grids.
+
+`sound_exposure_level` requires matching level-history shapes and a positive
+finite sample interval. NaN samples raise an error by default. Pass
+`missing="omit"` to integrate available samples; the returned
+`missing_samples` counts omitted integration samples, while `duration_s`
+remains the selected interval length. Negative infinity represents zero energy.
+
+Plotting functions apply their style within a temporary context; importing
+`flight_acoustics` leaves global Matplotlib settings unchanged. Tests use the
+noninteractive `Agg` backend automatically.
+
+For `spectrogram_plot.py`, `--frequency low:high` selects the displayed
+frequency range. `--y-limits` takes precedence when both are supplied.
