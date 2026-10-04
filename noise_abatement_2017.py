@@ -765,7 +765,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
                  third_octave_method='fft', board_correction='plate_bem', ground=None,
                  plate_table_directory=None, ray_model=None, interpolation=None,
                  rim_elevation_deg=None, max_rim_range_ft=None, remove_doppler=False,
-                 nose_from_heading=False, samples_path=None):
+                 nose_from_heading=False, samples_path=None, tone_aware=False):
     """Depropagate one run into an AAM-style source sphere.
 
     ``remove_doppler`` files band power at the emitted frequency, not the received one
@@ -777,6 +777,9 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     for a hover, whose velocity is a few tenths of a knot of drift in any direction.  The
     velocity handed to depropagation is then the heading's unit vector at 1e-3 ft/s, which
     sets the azimuth reference and leaves no Doppler or convective term.
+
+    ``tone_aware`` files each tone whole in the band of its own frequency
+    (:func:`flight_acoustics.tone_aware_band_power`) instead of summing whole FFT bins.
 
     ``samples_path``, if given, also saves the scattered samples (before gridding) to that
     .npz: azimuth and elevation (deg, panam's convention: 180 ahead, elevation positive
@@ -955,6 +958,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
         rim_range=(None if max_rim_range_ft is None else
                    (14.0 if rim_elevation_deg is None else rim_elevation_deg, max_rim_range_ft)),
         remove_doppler=remove_doppler,
+        tone_aware=tone_aware,
         return_scattered=samples_path is not None,
     )
     if samples_path is not None:

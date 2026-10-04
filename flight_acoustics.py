@@ -10,6 +10,7 @@ import h5py
 from typing import Any, Optional, cast
 import openpyxl
 import scipy.signal
+from scipy.ndimage import median_filter, maximum_filter1d
 from scipy.interpolate import RegularGridInterpolator
 from scipy.special import erf
 import simplekml
@@ -924,6 +925,67 @@ def hemigen(time, source, velocity, observers, speed_of_sound):
     return azimuth, elevation, r, t_observer, mach_r
 
 
+HANN_ENBW = 1.5          # equivalent noise bandwidth of a Hann window, bins
+
+
+def hann_power(offset):
+    """|W(d)|^2 of a Hann window, normalized to 1 at d = 0, d in bins."""
+    d = np.asarray(offset, dtype=float)
+    s = np.sinc(d)
+    out = np.where(np.abs(np.abs(d) - 1.0) < 1e-9, 0.25, s / np.where(np.abs(1 - d ** 2) < 1e-12, 1.0, 1 - d ** 2))
+    return out ** 2
+
+
+def tone_aware_band_power(psd, f, lower, upper, doppler=None, floor_bins=15, threshold_db=6.0, lobe=2, reach=4):
+    """Band power (bands x samples) from Hann-windowed PSD columns (freq x samples), tones filed whole.
+
+    Summing whole FFT bins between band edges (brick-wall) gives a tone near an edge to the wrong
+    band: with 0.64 s Hann windows (1.56 Hz bins) the B407 main rotor's 27.6 and 55.2 Hz harmonics,
+    0.6 and 1.0 Hz below the 25/31.5 and 50/63 Hz edges, put the 31.5 and 63 Hz bands of a hover
+    5-19 dB high against a 4 s reference, and the 50 Hz band 1.5-2 dB low.  Here instead:
+
+    each tone (a local maximum over +-lobe bins standing threshold_db above the running-median floor)
+    is located to a fraction of a bin by the Hann ratio formula, its power inferred from the peak bin
+    and the window's response, and that window-shaped contribution removed from the bins around it;
+    the tone is filed whole in the band of its own frequency (divided by doppler when given), the
+    remainder band-summed over (Doppler-scaled) edges."""
+    df = f[1] - f[0]
+    floor = median_filter(psd, size=(floor_bins, 1), mode='nearest')
+    peak = (psd == maximum_filter1d(psd, size=2 * lobe + 1, axis=0, mode='nearest')) & (psd > floor * 10 ** (threshold_db / 10))
+    peak[:reach] = peak[-reach:] = False
+    I, J = np.nonzero(peak)
+    p0 = np.maximum(psd[I, J] - floor[I, J], 1e-300)
+    pl = np.maximum(psd[I - 1, J] - floor[I - 1, J], 0.0)
+    pr = np.maximum(psd[I + 1, J] - floor[I + 1, J], 0.0)
+    right = pr >= pl
+    alpha = np.sqrt(np.where(right, pr, pl) / p0)
+    delta = np.clip((2 * alpha - 1) / (alpha + 1), 0.0, 0.5) * np.where(right, 1.0, -1.0)
+    # PSD of a tone of power P at bin offset x: P |W(x)|^2 / (ENBW df).
+    power = p0 * HANN_ENBW * df / np.maximum(hann_power(delta), 1e-6)
+    tonal = np.zeros_like(psd)
+    for o in range(-reach, reach + 1):
+        np.add.at(tonal, (I + o, J), power * hann_power(o - delta) / (HANN_ENBW * df))
+    broadband = np.clip(psd - tonal, 0.0, None)
+    f_peak = f[I] + delta * df
+    if doppler is not None:
+        f_peak = f_peak / doppler[J]
+    run = np.vstack((np.zeros((1, psd.shape[1])), np.cumsum(broadband * df, axis=0)))
+    e0 = f[0] - 0.5 * df
+    cols = np.arange(psd.shape[1])
+
+    def at(freq):
+        x = np.clip((freq - e0) / df, 0.0, run.shape[0] - 1.0)
+        k = np.minimum(np.floor(x).astype(int), run.shape[0] - 2)
+        return run[k, cols] + (x - k) * (run[k + 1, cols] - run[k, cols])
+    d = np.ones(psd.shape[1]) if doppler is None else doppler
+    out = np.zeros((len(lower), psd.shape[1]))
+    for ib, (lo, hi) in enumerate(zip(lower, upper)):
+        out[ib] = np.maximum(at(hi * d) - at(lo * d), 0.0)
+        inside = (f_peak >= lo) & (f_peak < hi)
+        np.add.at(out[ib], J[inside], power[inside])
+    return out
+
+
 def depropagate_hemisphere(
         mic_locations,
         pressure,
@@ -966,6 +1028,7 @@ def depropagate_hemisphere(
         interpolation=None,
         rim_range=None,
         remove_doppler=False,
+        tone_aware=False,
 ):
     """Generate an acoustic hemisphere from microphone time series and vehicle tracking data.
 
@@ -1136,6 +1199,12 @@ def depropagate_hemisphere(
         flip_y_for_geometry: if True, apply Y -> -Y to track_position/track_velocity/mic_locations.
         third_octave: if True, also compute third-octave band level hemispheres.
         third_octave_fmin: minimum band center (Hz) when third_octave=True.
+        tone_aware: if True, form third-octave band power with :func:`tone_aware_band_power`:
+            tones are located to a fraction of a bin, removed with the Hann window's own shape,
+            and filed whole in the band of their own frequency, instead of summing whole FFT
+            bins between band edges, which hands a tone near an edge to the wrong band (+5 to
+            +19 dB in the B407's 31.5 and 63 Hz bands).  Combines with remove_doppler.  FFT
+            method, Hann window.
         remove_doppler: if True, file each sample's third-octave band power at the frequency it
             was emitted at, not received at.  A sample's Doppler factor is
             D = 1 / (1 - v.u / c), v the source velocity at emission and u the unit vector
@@ -1221,6 +1290,8 @@ def depropagate_hemisphere(
         raise ValueError('Give only one ambient source, not both of: ' + ', '.join(ambient_sources))
     if ambient_percentile is not None and not 0.0 < float(ambient_percentile) < 100.0:
         raise ValueError('ambient_percentile must lie strictly between 0 and 100')
+    if tone_aware and third_octave_method != 'fft':
+        raise ValueError('tone_aware needs third_octave_method=\'fft\'')
     if remove_doppler and third_octave_method != 'fft':
         raise ValueError('remove_doppler needs third_octave_method=\'fft\'')
     if third_octave_method not in ('fft', 'filter_bank'):
@@ -1604,7 +1675,12 @@ def depropagate_hemisphere(
             # Integrate to third-octave bands in linear power, on edges that
             # tile even when the centres are nominal (see third_octave_band_edges)
             band_lower, band_upper = third_octave_band_edges(band_centers)
-            if doppler_geom is not None:
+            if tone_aware:
+                d_v = doppler_geom[tidx, im][valid] if doppler_geom is not None else None
+                powers = tone_aware_band_power(psd_v_lin, f_sel, band_lower, band_upper, doppler=d_v)
+                for ib in range(band_centers.size):
+                    band_power_lists[ib].append(powers[ib])
+            elif doppler_geom is not None:
                 # Running integral of the spectrum at the bins' edges, read at each sample's
                 # Doppler-scaled band edges.
                 d_v = doppler_geom[tidx, im][valid]
