@@ -665,22 +665,35 @@ def fresnel_disc_weight(bands, source_height, ground_distance, sound_speed,
     unit_x = (rho[:, None] * np.cos(phi)[None, :]).ravel()
     unit_y = (rho[:, None] * np.sin(phi)[None, :]).ravel()
 
-    weight = np.empty(f.shape)
-    flat = weight.ravel()
-    fields = [a.ravel() for a in (hs, d2, limit, total, center, semi_x, semi_y)]
-    for i, (h, d, lim, area, cx, ax, ay) in enumerate(zip(*fields)):
-        if area <= disc_area:
+    fields = [np.ascontiguousarray(a, dtype=float).ravel() for a in (hs, d2, limit, total, center, semi_x, semi_y)]
+    weight = _fresnel_disc_counts(*fields, unit_x, unit_y, radius, mic_height, disc_area)
+    return np.clip(weight.reshape(f.shape), 0.0, 1.0)
+
+
+@njit(parallel=True, cache=True)
+def _fresnel_disc_counts(h, d, lim, area, cx, ax, ay, unit_x, unit_y, radius, mic_height, disc_area):
+    """The sampled overlap of :func:`fresnel_disc_weight`, parallel over the (band, frame) points."""
+    n = unit_x.size
+    out = np.empty(h.size)
+    for i in prange(h.size):
+        count = 0
+        if area[i] <= disc_area:
             # Sample the ellipse; count what lies on the plate.
-            x = cx + ax * unit_x
-            y = ay * unit_y
-            flat[i] = np.mean(x ** 2 + y ** 2 <= radius ** 2)
+            for j in range(n):
+                x = cx[i] + ax[i] * unit_x[j]
+                y = ay[i] * unit_y[j]
+                if x ** 2 + y ** 2 <= radius ** 2:
+                    count += 1
+            out[i] = count / n
         else:
             # Sample the plate; count what lies in the ellipse.
-            x = radius * unit_x
-            y = radius * unit_y
-            inside = np.hypot(np.hypot(x + d, y), h) + np.sqrt(x ** 2 + y ** 2 + mic_height ** 2) <= lim
-            flat[i] = np.mean(inside) * disc_area / area
-    return np.clip(weight, 0.0, 1.0)
+            for j in range(n):
+                x = radius * unit_x[j]
+                y = radius * unit_y[j]
+                if np.hypot(np.hypot(x + d[i], y), h[i]) + np.sqrt(x ** 2 + y ** 2 + mic_height ** 2) <= lim[i]:
+                    count += 1
+            out[i] = count / n * disc_area / area[i]
+    return out
 
 
 def board_fresnel_disc(bands, source_height, ground_distance, sound_speed,
