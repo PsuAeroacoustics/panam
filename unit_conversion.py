@@ -556,14 +556,14 @@ def wt_conv(W, from_units=default_weight_units,
     if from_units == 'kg':
         pass
     elif from_units == 'lb':
-        W *= 0.453592
+        W *= 0.45359237  # kg per lb, exact by definition
     else:
         raise ValueError('from_units must be one of "lb" or "kg".')
 
     if to_units == 'kg':
         pass
     elif to_units == 'lb':
-        W *= 2.204622622
+        W /= 0.45359237
     else:
         raise ValueError('to_units must be one of "lb" or "kg".')
 
