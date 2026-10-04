@@ -2,6 +2,7 @@
 import os
 import re
 import warnings
+from collections import namedtuple
 from configparser import ConfigParser
 from glob import glob
 
@@ -10,6 +11,7 @@ from panam_acoustics.atmosphere import Atmosphere
 from typing import Any, Optional, cast
 import openpyxl
 import scipy.signal
+from scipy.ndimage import median_filter, maximum_filter1d
 from scipy.interpolate import RegularGridInterpolator
 from scipy.special import wofz
 import simplekml
@@ -950,6 +952,67 @@ def hemigen(time, source, velocity, observers, speed_of_sound):
     return azimuth, elevation, r, t_observer, mach_r
 
 
+HANN_ENBW = 1.5          # equivalent noise bandwidth of a Hann window, bins
+
+
+def hann_power(offset):
+    """|W(d)|^2 of a Hann window, normalized to 1 at d = 0, d in bins."""
+    d = np.asarray(offset, dtype=float)
+    s = np.sinc(d)
+    out = np.where(np.abs(np.abs(d) - 1.0) < 1e-9, 0.25, s / np.where(np.abs(1 - d ** 2) < 1e-12, 1.0, 1 - d ** 2))
+    return out ** 2
+
+
+def tone_aware_band_power(psd, f, lower, upper, doppler=None, floor_bins=15, threshold_db=6.0, lobe=2, reach=4):
+    """Band power (bands x samples) from Hann-windowed PSD columns (freq x samples), tones filed whole.
+
+    Summing whole FFT bins between band edges (brick-wall) gives a tone near an edge to the wrong
+    band: with 0.64 s Hann windows (1.56 Hz bins) the B407 main rotor's 27.6 and 55.2 Hz harmonics,
+    0.6 and 1.0 Hz below the 25/31.5 and 50/63 Hz edges, put the 31.5 and 63 Hz bands of a hover
+    5-19 dB high against a 4 s reference, and the 50 Hz band 1.5-2 dB low.  Here instead:
+
+    each tone (a local maximum over +-lobe bins standing threshold_db above the running-median floor)
+    is located to a fraction of a bin by the Hann ratio formula, its power inferred from the peak bin
+    and the window's response, and that window-shaped contribution removed from the bins around it;
+    the tone is filed whole in the band of its own frequency (divided by doppler when given), the
+    remainder band-summed over (Doppler-scaled) edges."""
+    df = f[1] - f[0]
+    floor = median_filter(psd, size=(floor_bins, 1), mode='nearest')
+    peak = (psd == maximum_filter1d(psd, size=2 * lobe + 1, axis=0, mode='nearest')) & (psd > floor * 10 ** (threshold_db / 10))
+    peak[:reach] = peak[-reach:] = False
+    I, J = np.nonzero(peak)
+    p0 = np.maximum(psd[I, J] - floor[I, J], 1e-300)
+    pl = np.maximum(psd[I - 1, J] - floor[I - 1, J], 0.0)
+    pr = np.maximum(psd[I + 1, J] - floor[I + 1, J], 0.0)
+    right = pr >= pl
+    alpha = np.sqrt(np.where(right, pr, pl) / p0)
+    delta = np.clip((2 * alpha - 1) / (alpha + 1), 0.0, 0.5) * np.where(right, 1.0, -1.0)
+    # PSD of a tone of power P at bin offset x: P |W(x)|^2 / (ENBW df).
+    power = p0 * HANN_ENBW * df / np.maximum(hann_power(delta), 1e-6)
+    tonal = np.zeros_like(psd)
+    for o in range(-reach, reach + 1):
+        np.add.at(tonal, (I + o, J), power * hann_power(o - delta) / (HANN_ENBW * df))
+    broadband = np.clip(psd - tonal, 0.0, None)
+    f_peak = f[I] + delta * df
+    if doppler is not None:
+        f_peak = f_peak / doppler[J]
+    run = np.vstack((np.zeros((1, psd.shape[1])), np.cumsum(broadband * df, axis=0)))
+    e0 = f[0] - 0.5 * df
+    cols = np.arange(psd.shape[1])
+
+    def at(freq):
+        x = np.clip((freq - e0) / df, 0.0, run.shape[0] - 1.0)
+        k = np.minimum(np.floor(x).astype(int), run.shape[0] - 2)
+        return run[k, cols] + (x - k) * (run[k + 1, cols] - run[k, cols])
+    d = np.ones(psd.shape[1]) if doppler is None else doppler
+    out = np.zeros((len(lower), psd.shape[1]))
+    for ib, (lo, hi) in enumerate(zip(lower, upper)):
+        out[ib] = np.maximum(at(hi * d) - at(lo * d), 0.0)
+        inside = (f_peak >= lo) & (f_peak < hi)
+        np.add.at(out[ib], J[inside], power[inside])
+    return out
+
+
 def depropagate_hemisphere(
         mic_locations,
         pressure,
@@ -986,7 +1049,13 @@ def depropagate_hemisphere(
         ambient_percentile=None,
         band_snr_gate_db=3.0,
         max_absorption_correction_db=None,
+        max_response_correction_db=None,
         receiver_response_db=None,
+        ray_model=None,
+        interpolation=None,
+        rim_range=None,
+        remove_doppler=False,
+        tone_aware=False,
 ):
     """Generate an acoustic hemisphere from microphone time series and vehicle tracking data.
 
@@ -1056,7 +1125,11 @@ def depropagate_hemisphere(
     ``max_absorption_correction_db`` to discard bins whose absorption
     correction exceeds what the measurement can support -- the band is simply
     not observable at that range, and a gap there is the honest result. It has
-    no effect unless ``apply_absorption_deprop=True``.
+    no effect unless ``apply_absorption_deprop=True``.  ``max_response_correction_db``
+    likewise discards bands whose receiver response (``receiver_response_db``) would have to
+    be divided out by more than that many dB: near grazing a ground board's modeled
+    response is a deep null, and dividing by it turns small measurement and model errors
+    into tens of dB.
 
     ``receiver_response_db``, if given, removes what the microphone's
     installation adds.  It is called as ``receiver_response_db(im, bands,
@@ -1069,6 +1142,40 @@ def depropagate_hemisphere(
     spreading, so a band's energy is divided by the band-averaged response.
     The pressures should then be supplied unscaled (no 0.5 pressure-doubling
     factor).
+
+    ``ray_model``, if given, replaces the straight line in uniform air with a
+    refracted ray (see :mod:`refracted_rays`, which defines the interface and
+    wraps NICE-OPS's ray tracer).  For each sampled emission point and
+    microphone it supplies where the sample is filed (the ray's launch
+    depression in place of the straight line's elevation; the azimuth is
+    unchanged), the reception time, the range spherical spreading is undone
+    over (the ray tube's), the arc absorption is undone over, and the source
+    offset ``receiver_response_db`` sees (the equivalent geometry at the ray's
+    arrival angle).  Pairs it marks invalid (no ray arrives) are skipped.
+    ``min_elevation_deg`` then applies to the filing angle; ``max_range``
+    stays on the straight-line distance.  Without one the result is unchanged.
+
+    ``rim_range``, if given as (elevation_deg, range), lets samples filed less than
+    ``elevation_deg`` below the horizon come from as far as ``range`` instead of
+    ``max_range``.  The range cap keeps a pass's samples to its steeper directions:
+    at 2,000 ft a pass at 480 ft never files below 14 deg, so a sphere's rim came
+    from low passes alone, and on the 2017 B407 data high passes of the same
+    condition imply a forward rim 1-3.5 dB louder (and an aft rim ~1 dB quieter)
+    than low passes do at the same angle.  With a ``ray_model`` the filing angle is
+    the ray's launch angle and the far samples are depropagated along it; the
+    absorption cap (``max_absorption_correction_db``) still drops the bands the
+    range makes unobservable.
+
+    ``interpolation``, if given (a dict; ``{}`` takes the defaults in
+    :data:`ADAPTIVE_INTERPOLATION`), grids the samples with a radius chosen per
+    node instead of the fixed ``rmax``: wide enough for ``k`` samples from
+    ``min_mics`` microphones and for the samples' own angular resolution, capped
+    at ``max_radius_deg`` (see :func:`adaptive_idw_weights`).  A sample's
+    resolution is the arc its analysis window smears over, the source's motion
+    across the line of sight in ``window_time`` plus ``source_extent`` (a length,
+    e.g. the rotor diameter), over the range.  Nodes beyond the cap are left NaN
+    and counted in ``out['interpolation']['gaps']``.  Without it the fixed
+    ``rmax`` gridding is unchanged.
 
     This is the "normal" processing flow used by the demo scripts: use the vehicle kinematics
     to compute emission-time geometry (azimuth/elevation/range) via :func:`hemigen`, sample
@@ -1090,7 +1197,7 @@ def depropagate_hemisphere(
       stayed hidden. ``as350_flip_check.py`` is a worked example. It once concluded the
       AS350 demo data needed the flip, but that was compensating for
       :func:`art2umapr` putting ART phi = +90 to port; with the AAM manual's sign
-      (phi > 0 starboard) the same residuals favour no flip. A right-handed, z-up
+      (phi > 0 starboard) the same residuals favor no flip. A right-handed, z-up
       frame needs no flip.
 
     Args:
@@ -1122,6 +1229,23 @@ def depropagate_hemisphere(
             Bands are also limited to those ``freq_range`` covers from edge to
             edge (:func:`third_octave_band_edges`); a band only partly inside
             it is left out, not summed over the part inside.
+        tone_aware: if True, form third-octave band power with :func:`tone_aware_band_power`:
+            tones are located to a fraction of a bin, removed with the Hann window's own shape,
+            and filed whole in the band of their own frequency, instead of summing whole FFT
+            bins between band edges, which hands a tone near an edge to the wrong band (+5 to
+            +19 dB in the B407's 31.5 and 63 Hz bands).  Combines with remove_doppler.  FFT
+            method, Hann window.
+        remove_doppler: if True, file each sample's third-octave band power at the frequency it
+            was emitted at, not received at.  A sample's Doppler factor is
+            D = 1 / (1 - v.u / c), v the source velocity at emission and u the unit vector
+            from the source to the microphone (straight line), so a band emitted over
+            [f_lower, f_upper] arrives over [D f_lower, D f_upper]; the narrowband spectrum is
+            integrated over those edges (its running integral interpolated linearly, so a
+            tone moves bands whole).  Levels are left as received.  It matters where a tone
+            sits near a band edge: at 46 kt the main rotor's 55 Hz harmonic is received at
+            58-60 Hz ahead, in the 63 Hz band, and 50-52 Hz behind.  Only the FFT method
+            supports it.  Use it for a sphere a hover is synthesized from; a flight sphere
+            NICE-OPS reads must keep received frequencies, since NICE-OPS applies no shift.
         third_octave_method: how band levels are formed when third_octave=True.
             'fft' (default) sums the PSD bins between each band's edges, a
             brick-wall band.  'filter_bank' uses a true one-third octave
@@ -1196,6 +1320,10 @@ def depropagate_hemisphere(
         raise ValueError('Give only one ambient source, not both of: ' + ', '.join(ambient_sources))
     if ambient_percentile is not None and not 0.0 < float(ambient_percentile) < 100.0:
         raise ValueError('ambient_percentile must lie strictly between 0 and 100')
+    if tone_aware and third_octave_method != 'fft':
+        raise ValueError('tone_aware needs third_octave_method=\'fft\'')
+    if remove_doppler and third_octave_method != 'fft':
+        raise ValueError('remove_doppler needs third_octave_method=\'fft\'')
     if third_octave_method not in ('fft', 'filter_bank'):
         raise ValueError("third_octave_method must be 'fft' or 'filter_bank'")
     use_filter_bank = bool(third_octave) and third_octave_method == 'filter_bank'
@@ -1237,12 +1365,43 @@ def depropagate_hemisphere(
 
     # Emission-time geometry
     az_deg, el_deg, r_geom, t_obs, _ = hemigen(track_time, pos_geom, vel_geom, mic_geom, speed_of_sound)
+    doppler_geom = None
+    if remove_doppler:
+        toward = np.asarray(mic_geom, dtype=float)[None, :, :] - np.asarray(pos_geom, dtype=float)[:, None, :]
+        toward = toward / np.linalg.norm(toward, axis=2, keepdims=True)
+        mach_toward = np.sum(np.asarray(vel_geom, dtype=float)[:, None, :] * toward, axis=2) / float(speed_of_sound)
+        doppler_geom = 1.0 / (1.0 - mach_toward)
 
     # Subsample emission-time points
     point_stride = int(point_stride)
     if point_stride < 1:
         raise ValueError('point_stride must be >= 1')
     tidx = np.arange(0, track_time.size, point_stride)
+
+    # Refracted rays, at the sampled points only: the filing angle and the
+    # reception time replace hemigen's; the spreading and absorption ranges and
+    # the receiver's source offset are kept alongside.
+    spread_geom = path_geom = ray_offset = ray_valid = None
+    if ray_model is not None:
+        rays = ray_model(np.asarray(track_position, dtype=float)[tidx], np.asarray(mic_locations, dtype=float))
+        shape = (tidx.size, nmics)
+        for key in ('depression_deg', 'travel_time', 'spreading_range', 'path_length', 'valid'):
+            if np.shape(rays[key]) != shape:
+                raise ValueError('ray_model {!r} must be shaped {}, got {}'.format(key, shape, np.shape(rays[key])))
+        if np.shape(rays['offset']) != shape + (3,):
+            raise ValueError('ray_model offset must be shaped {}'.format(shape + (3,)))
+        el_deg = np.array(el_deg, dtype=float)
+        t_obs = np.array(t_obs, dtype=float)
+        el_deg[tidx] = rays['depression_deg']
+        t_obs[tidx] = np.asarray(track_time, dtype=float)[tidx][:, None] + rays['travel_time']
+        spread_geom = np.full(r_geom.shape, np.nan)
+        path_geom = np.full(r_geom.shape, np.nan)
+        spread_geom[tidx] = rays['spreading_range']
+        path_geom[tidx] = rays['path_length']
+        ray_offset = np.array(rays['offset'], dtype=float)
+        if flip_y_for_geometry:
+            ray_offset[..., 1] *= -1.0
+        ray_valid = np.asarray(rays['valid'], dtype=bool) & np.all(np.isfinite(ray_offset), axis=-1)
 
     # Regular hemisphere grid (degrees) with seam closure at 360
     azi_grid_deg = np.arange(0.0, 360.0 + 1e-9, float(azi_step))
@@ -1263,6 +1422,16 @@ def depropagate_hemisphere(
     # Accumulate scattered samples
     fazi_list = []
     felv_list = []
+    fmic_list = []
+    fres_list = []
+    frange_list = []
+    fheight_list = []
+    interp_settings = None
+    if interpolation is not None:
+        unknown = set(interpolation) - set(ADAPTIVE_INTERPOLATION)
+        if unknown:
+            raise ValueError('unknown interpolation settings: {}'.format(sorted(unknown)))
+        interp_settings = dict(ADAPTIVE_INTERPOLATION, **interpolation)
     oaspl_power_list = []
     spl_a_power_list = []
     if third_octave:
@@ -1311,14 +1480,17 @@ def depropagate_hemisphere(
 
     pref_sq = (20e-6) ** 2
 
-    def _depropagate(lin, amb, r_v, alpha, response=None):
+    def _depropagate(lin, amb, r_v, alpha, response=None, r_path=None):
         """Gate against ambient, subtract it, then undo spreading and absorption.
 
         ``lin`` is (Nf, Npts) linear power (per bin or per band) at the
         microphone; ``amb`` the matching (Nf,) ambient or None; ``alpha`` the
         (Nf,) absorption coefficients in dB/m, used when absorption
-        depropagation is on.
+        depropagation is on.  Spreading is undone over ``r_v`` and absorption
+        over ``r_path`` (the same, without a ray model).
         """
+        if r_path is None:
+            r_path = r_v
         # Ambient gating and background subtraction have to happen before
         # spreading and absorption depropagation, or an ambient-limited band
         # gets amplified by both.
@@ -1336,7 +1508,7 @@ def depropagate_hemisphere(
         # Optional absorption depropagation back to r_ref
         if apply_absorption_deprop:
             assert r_ref_m is not None
-            r_m = unit_conversion.len_conv(r_v, from_units=length_units, to_units='m').astype(float)
+            r_m = unit_conversion.len_conv(r_path, from_units=length_units, to_units='m').astype(float)
             deltaL = np.asarray(alpha, dtype=float)[:, None] * (r_m[None, :] - r_ref_m)
             if max_absorption_correction_db is not None:
                 # Drop bins the measurement cannot support before applying the
@@ -1395,12 +1567,20 @@ def depropagate_hemisphere(
         if min_elevation_deg > 0.0:
             valid = np.logical_and(valid, el_sub >= float(min_elevation_deg))
         if max_range is not None:
-            valid = np.logical_and(valid, r_sub <= float(max_range))
+            cap = np.full(r_sub.shape, float(max_range))
+            if rim_range is not None:
+                rim_elevation, rim_cap = float(rim_range[0]), float(rim_range[1])
+                cap = np.where(el_sub < rim_elevation, max(rim_cap, float(max_range)), cap)
+            valid = np.logical_and(valid, r_sub <= cap)
+        if ray_valid is not None:
+            valid = np.logical_and(valid, ray_valid[:, im])
         if not np.any(valid):
             continue
 
         tobs_v = tobs_sub[valid]
         r_v = r_sub[valid]
+        spread_v = spread_geom[tidx, im][valid] if spread_geom is not None else r_v
+        path_v = path_geom[tidx, im][valid] if path_geom is not None else r_v
         az_v = az_sub[valid]
         el_v = el_sub[valid]
 
@@ -1467,11 +1647,19 @@ def depropagate_hemisphere(
 
         response_bins = response_bands = None
         if receiver_response_db is not None:
-            offset = pos_geom[tidx][valid] - mic_geom[im]
+            offset = (ray_offset[:, im][valid] if ray_offset is not None
+                      else pos_geom[tidx][valid] - mic_geom[im])
             gain_db = np.asarray(receiver_response_db(im, response_centers, offset), dtype=float)
             if gain_db.shape != (response_centers.size, tobs_v.size) or not np.all(np.isfinite(gain_db)):
                 raise ValueError('receiver_response_db must return finite values shaped (bands, points)')
             inverse = 10.0 ** (-gain_db / 10.0)
+            if max_response_correction_db is not None:
+                # As the absorption cap: a band the installation all but nulls
+                # cannot be divided back up.  A flush board's modeled response
+                # falls to -25 to -40 dB as the arrival nears grazing, and a
+                # curved ray arriving within half a degree of it turned a 90 dB
+                # sample into 125.
+                inverse = np.where(-gain_db <= float(max_response_correction_db), inverse, 0.0)
             # Each bin takes the band the band sums below put it in: nominal
             # centers get their base-10 edges (see third_octave_band_edges)
             _, response_upper = third_octave_band_edges(response_centers)
@@ -1480,7 +1668,7 @@ def depropagate_hemisphere(
             response_bins = inverse[band_of_bin]
             response_bands = inverse
 
-        psd_v_lin = _depropagate(psd_v_lin, amb_lin, r_v, alpha_db_per_m, response_bins)
+        psd_v_lin = _depropagate(psd_v_lin, amb_lin, spread_v, alpha_db_per_m, response_bins, path_v)
 
         # OASPL power over selected frequency range
         power_oaspl = np.sum(psd_v_lin * df, axis=0)
@@ -1488,6 +1676,18 @@ def depropagate_hemisphere(
 
         fazi_list.append(az_v)
         felv_list.append(el_v)
+        fmic_list.append(np.full(az_v.size, im))
+        frange_list.append(r_v)
+        fheight_list.append(pos_geom[tidx][valid][:, 2] - mic_geom[im][2])
+        if interpolation is not None:
+            # The arc one analysis window smears over: the source's motion across
+            # the line of sight in window_time, and its own size, over the range.
+            line = pos_geom[tidx][valid] - mic_geom[im]
+            unit_line = line / np.linalg.norm(line, axis=1)[:, None]
+            v = np.asarray(vel_geom, dtype=float)[tidx][valid]
+            across = np.linalg.norm(v - np.sum(v * unit_line, axis=1)[:, None] * unit_line, axis=1)
+            extent = float(interp_settings['source_extent'])
+            fres_list.append(np.degrees(np.hypot(across * float(window_time), extent) / r_v))
         oaspl_power_list.append(power_oaspl)
         spl_a_power_list.append(power_spl_a)
 
@@ -1502,22 +1702,43 @@ def depropagate_hemisphere(
                 band_v[ib, :] = np.interp(tobs_v, t_abs, band_frames[ib, :])
             alpha_band = (np.asarray(atmosphere.attenuation_coefficient(band_centers), dtype=float)
                           if apply_absorption_deprop else None)
-            band_v = _depropagate(band_v, amb_band, r_v, alpha_band, response_bands)
+            band_v = _depropagate(band_v, amb_band, spread_v, alpha_band, response_bands, path_v)
             for ib in range(band_centers.size):
                 band_power_lists[ib].append(band_v[ib, :])
         elif third_octave:
             # Integrate to third-octave bands in linear power, on edges that
             # tile even when the centers are nominal (see third_octave_band_edges)
             band_lower, band_upper = third_octave_band_edges(band_centers)
-            for ib, (f_lower, f_upper) in enumerate(zip(band_lower, band_upper)):
-                band_mask = np.logical_and(f_sel >= f_lower, f_sel < f_upper)
-                if np.any(band_mask):
-                    band_power = np.sum(psd_v_lin[band_mask, :] * df, axis=0)
-                else:
-                    # Keep shape/point counts consistent even if a band is empty at the
-                    # selected frequency resolution/range. This band will evaluate to -inf dB.
-                    band_power = np.zeros(tobs_v.size, dtype=float)
-                band_power_lists[ib].append(band_power)
+            if tone_aware:
+                d_v = doppler_geom[tidx, im][valid] if doppler_geom is not None else None
+                powers = tone_aware_band_power(psd_v_lin, f_sel, band_lower, band_upper, doppler=d_v)
+                for ib in range(band_centers.size):
+                    band_power_lists[ib].append(powers[ib])
+            elif doppler_geom is not None:
+                # Running integral of the spectrum at the bins' edges, read at each sample's
+                # Doppler-scaled band edges.
+                d_v = doppler_geom[tidx, im][valid]
+                running = np.vstack((np.zeros((1, tobs_v.size)), np.cumsum(psd_v_lin * df, axis=0)))
+                edge0 = f_sel[0] - 0.5 * df
+
+                def _running_at(freq):
+                    x = np.clip((freq - edge0) / df, 0.0, running.shape[0] - 1.0)
+                    k = np.minimum(np.floor(x).astype(int), running.shape[0] - 2)
+                    cols = np.arange(tobs_v.size)
+                    return running[k, cols] + (x - k) * (running[k + 1, cols] - running[k, cols])
+
+                for ib, (f_lower, f_upper) in enumerate(zip(band_lower, band_upper)):
+                    band_power_lists[ib].append(np.maximum(_running_at(f_upper * d_v) - _running_at(f_lower * d_v), 0.0))
+            else:
+                for ib, (f_lower, f_upper) in enumerate(zip(band_lower, band_upper)):
+                    band_mask = np.logical_and(f_sel >= f_lower, f_sel < f_upper)
+                    if np.any(band_mask):
+                        band_power = np.sum(psd_v_lin[band_mask, :] * df, axis=0)
+                    else:
+                        # Keep shape/point counts consistent even if a band is empty at the
+                        # selected frequency resolution/range. This band will evaluate to -inf dB.
+                        band_power = np.zeros(tobs_v.size, dtype=float)
+                    band_power_lists[ib].append(band_power)
 
     if len(oaspl_power_list) == 0:
         raise ValueError('No valid hemisphere samples were generated (check time alignment and inputs)')
@@ -1531,17 +1752,45 @@ def depropagate_hemisphere(
     # so points near 0 and 360 deg reach across the seam as they are; the seam
     # column is closed below.  (Copies of the points at +-360 deg, which this
     # once added, only tripled every weight, which the normalization cancels.)
-    # Every field is sampled at the same points, so the weights are shared
-    idw_weights = shepIDW_weights(ELV_GRID, AZI_GRID, felv_pts, fazi_pts, rmax=float(rmax))
 
-    # Cells with no sample within rmax come out NaN (no data) and cells whose
+    # Cells with no sample within reach come out NaN (no data) and cells whose
     # samples carry no energy -inf, never a finite floor; see power_to_db.
-    P_oaspl_grid = shepIDW_apply(idw_weights, P_oaspl_pts)
+    interpolation_info = None
+    if interp_settings is not None:
+        # One weight matrix for every quantity gridded: the radius is the node's,
+        # not the band's.  Geodesic distances, so the samples once, not at +-360.
+        weights, node_radius, node_gap, node_relaxed = adaptive_idw_weights(
+            ELV_GRID.ravel(), AZI_GRID.ravel(), felv_pts, fazi_pts, np.concatenate(fmic_list),
+            np.concatenate(fres_list), k=interp_settings['k'], min_mics=interp_settings['min_mics'],
+            kappa=interp_settings['kappa'], resolution_factor=interp_settings['resolution_factor'],
+            max_radius_deg=interp_settings['max_radius_deg'],
+            relax_min_mics=interp_settings.get('relax_min_mics', True), return_relaxed=True,
+            kernel=interp_settings.get('kernel', 'shepard'), aspect=interp_settings.get('aspect', 1.0),
+            shepard_floor=interp_settings.get('shepard_floor', 0.0))
+        node_gap = node_gap.reshape(ELV_GRID.shape)
+        node_relaxed = node_relaxed.reshape(ELV_GRID.shape)
+
+        def grid_power(power_pts):
+            g = np.asarray(weights @ np.asarray(power_pts, dtype=float)).reshape(ELV_GRID.shape)
+            return np.where(node_gap, np.nan, g)
+        interpolation_info = dict(interp_settings, mode='adaptive',
+                                  radius_deg=node_radius.reshape(ELV_GRID.shape),
+                                  gaps=int(node_gap[:, :-1].sum()) if node_gap.shape[1] > 1 else int(node_gap.sum()),
+                                  relaxed=int(node_relaxed[:, :-1].sum()) if node_relaxed.shape[1] > 1
+                                  else int(node_relaxed.sum()))
+    else:
+        # Every field is sampled at the same points, so the weights are shared
+        idw_weights = shepIDW_weights(ELV_GRID, AZI_GRID, felv_pts, fazi_pts, rmax=float(rmax))
+
+        def grid_power(power_pts):
+            return shepIDW_apply(idw_weights, power_pts)
+
+    P_oaspl_grid = grid_power(P_oaspl_pts)
     oaspl_db = power_to_db(P_oaspl_grid)
     if oaspl_db.shape[1] > 1:
         oaspl_db[:, -1] = oaspl_db[:, 0]
 
-    P_spl_a_grid = shepIDW_apply(idw_weights, P_spl_a_pts)
+    P_spl_a_grid = grid_power(P_spl_a_pts)
     spl_a_db = power_to_db(P_spl_a_grid)
     if spl_a_db.shape[1] > 1:
         spl_a_db[:, -1] = spl_a_db[:, 0]
@@ -1559,6 +1808,7 @@ def depropagate_hemisphere(
             'window_overlap': float(window_overlap),
             'point_stride': int(point_stride),
             'rmax_deg': float(rmax),
+            'rim_range': None if rim_range is None else (float(rim_range[0]), float(rim_range[1])),
             'apply_absorption_deprop': bool(apply_absorption_deprop),
             'third_octave_method': str(third_octave_method),
             # Depropagation removes absorption over r - r_ref only, so the
@@ -1576,6 +1826,8 @@ def depropagate_hemisphere(
             'narrowband_stride': int(narrowband_stride),
         }
     }
+    if interpolation_info is not None:
+        out['interpolation'] = interpolation_info
 
     scattered: Optional[dict[str, Any]] = None
     if return_scattered:
@@ -1584,7 +1836,14 @@ def depropagate_hemisphere(
             'elv_deg': felv_pts,
             'oaspl_power': P_oaspl_pts,
             'spl_a_power': P_spl_a_pts,
+            'mic': np.concatenate(fmic_list),
+            # Straight-line slant range and the source's height above the microphone, in
+            # length_units, at each sample's emission time.
+            'range': np.concatenate(frange_list),
+            'source_height': np.concatenate(fheight_list),
         })
+        if fres_list:
+            scattered['resolution_deg'] = np.concatenate(fres_list)
         out['scattered'] = scattered
 
     if third_octave:
@@ -1596,7 +1855,7 @@ def depropagate_hemisphere(
             P_band_pts = np.concatenate(band_power_lists[ib])
             if P_band_pts.size != fazi_pts.size:
                 raise ValueError('Internal error: third-octave sample count does not match scattered angle count')
-            P_band_grid = shepIDW_apply(idw_weights, P_band_pts)
+            P_band_grid = grid_power(P_band_pts)
             band_grids_db[ib, :, :] = power_to_db(P_band_grid)
             band_grids_db[ib, :, -1] = band_grids_db[ib, :, 0]
 
@@ -1634,8 +1893,7 @@ def depropagate_hemisphere(
         f_nb = f_sel_master[::narrowband_stride]
         psd_grid_db = np.full((f_nb.size, ELV_GRID.shape[0], ELV_GRID.shape[1]), -np.inf, dtype=float)
         for i_f, fi in enumerate(range(0, f_sel_master.size, narrowband_stride)):
-            P_f_pts = psd_power_pts[fi, :]
-            P_f_grid = shepIDW_apply(idw_weights, P_f_pts)
+            P_f_grid = grid_power(psd_power_pts[fi, :])
             psd_grid_db[i_f, :, :] = power_to_db(P_f_grid)
             psd_grid_db[i_f, :, -1] = psd_grid_db[i_f, :, 0]
 
@@ -2822,10 +3080,75 @@ def lambert_lon(azimuth):
 #                energy basis with EAA recomputed from the averaged spectrum.
 DATABASE_FORMAT_VERSION = 1
 
+# Values of the root attribute speed_reference: whether a condition's advance
+# ratio and flight path angle are taken against the ground or the air.
+SPEED_REFERENCES = ('ground', 'air')
+
 # A condition is "near level flight" within this many degrees of zero flight
 # path angle.  Used both to pick the source sphere for hover and to choose which
 # conditions get re-emitted at extended flight path angles.
 LEVEL_FLIGHT_TOLERANCE = 2.0
+
+# One condition to write, ready for add_sphere_group.  ``frequency`` and
+# ``amplitude`` are None when the database carries no spectra; ``coverage`` is
+# (n_phi, n_theta, n_bands) bool, see _complete_sphere_with_coverage.
+_SphereCondition = namedtuple('_SphereCondition', [
+    'name', 'phi', 'theta', 'radius', 'SPLA', 'EAA', 'speed', 'flight_path_angle',
+    'load_factor', 'frequency', 'amplitude', 'coverage'])
+
+
+def _read_doppler_shift_removed(filename):
+    """The DOPPLER_SHIFT_REMOVED flag a sphere file carries, or None if it has none.
+
+    0 means received-frame spheres (the normal case), 1 de-Dopplerized
+    (stationary-frame) ones.  :func:`write_aam_hemisphere_netcdf` writes it.
+    """
+    with Dataset(filename, mode='r') as file_handle:
+        if 'DOPPLER_SHIFT_REMOVED' not in file_handle.variables:
+            return None
+        raw = np.ma.filled(np.ma.asarray(file_handle.variables['DOPPLER_SHIFT_REMOVED'][...],
+                                         dtype=float), np.nan)
+    flag = np.asarray(raw, dtype=float).ravel()
+    if flag.size != 1 or flag[0] not in (0.0, 1.0):
+        raise ValueError('{}: DOPPLER_SHIFT_REMOVED must be 0 or 1, found {}'.format(filename, raw))
+    return int(flag[0])
+
+
+def _resolve_doppler_shift_removed(filenames, argument=None):
+    """The single DOPPLER_SHIFT_REMOVED flag every source sphere shares.
+
+    A sphere that carries the flag is taken at its word, and an ``argument``
+    given alongside must agree with it.  A sphere without the flag takes the
+    argument, or 0 (received frame) when there is none, with a warning.  Sources
+    that disagree would be combined into one database, so they are refused.
+    Returns the shared flag, 0 when there are no sources.
+    """
+    if argument is not None and argument not in (0, 1):
+        raise ValueError('doppler_shift_removed must be 0, 1 or None, not {!r}'.format(argument))
+    fallback = 0 if argument is None else int(argument)
+    resolved = {}
+    unlabelled = []
+    for filename in filenames:
+        flag = _read_doppler_shift_removed(filename)
+        if flag is None:
+            unlabelled.append(filename)
+            resolved[filename] = fallback
+            continue
+        if argument is not None and flag != argument:
+            raise ValueError('{} carries DOPPLER_SHIFT_REMOVED = {}, but the build was asked for {}'
+                             .format(os.path.basename(filename), flag, argument))
+        resolved[filename] = flag
+    if unlabelled and argument is None:
+        warnings.warn('{} source sphere(s) carry no DOPPLER_SHIFT_REMOVED; assuming 0 '
+                      '(received-frame spheres)'.format(len(unlabelled)))
+    values = set(resolved.values())
+    if len(values) > 1:
+        groups = ['{}: {}'.format(value, ', '.join(os.path.basename(f) for f, v in resolved.items()
+                                                    if v == value))
+                  for value in sorted(values)]
+        raise ValueError('DOPPLER_SHIFT_REMOVED differs between the sources of one database '
+                         '(' + '; '.join(groups) + '); combine spheres of one convention only')
+    return values.pop() if values else fallback
 
 
 def average_fore_and_aft(spectrum):
@@ -2886,7 +3209,23 @@ def _complete_sphere(phi_list, theta_list, spla, eaa, amplitude):
     data, so every array stays row-aligned with its azimuth -- the failure mode
     of the three-part slicing this replaces.
     """
+    phi, theta, spla, eaa, amplitude, _ = _complete_sphere_with_coverage(
+        phi_list, theta_list, spla, eaa, amplitude, measured=None)
+    return phi, theta, spla, eaa, amplitude
+
+
+def _complete_sphere_with_coverage(phi_list, theta_list, spla, eaa, amplitude, measured):
+    """:func:`_complete_sphere`, and the coverage of the completed rows.
+
+    ``measured`` is (n_phi, n_theta, n_bands) bool over the source rows, True
+    where a bin carries a measurement (see :func:`_measured_bins`), or None.
+    The returned coverage has the completed shape and is True only on source
+    rows, where the bin is measured.  The reflected upper surface is never
+    measured: it is a symmetry fill, so it is recorded as unmeasured.  Returns
+    None for coverage when ``measured`` is None.
+    """
     mirror_phi, source_index = mirror_phi_to_upper_surface(phi_list)
+    n_source = len(phi_list)
     phi_full_list = np.concatenate((np.asarray(phi_list, dtype=float), mirror_phi))
     # Rows sorted by phi, so the spectra -- written gridded, without angles of
     # their own -- are in the sorted order NICE-OPS reads them in.  Until
@@ -2895,9 +3234,45 @@ def _complete_sphere(phi_list, theta_list, spla, eaa, amplitude):
     # in the wrong direction.  dBA/EAA carry their angles per channel and were
     # never affected.
     order = np.argsort(phi_full_list, kind='stable')
-    rows = np.concatenate((np.arange(len(phi_list)), source_index))[order]
+    rows = np.concatenate((np.arange(n_source), source_index))[order]
+    # Which completed rows are source rows.  Mirror rows index source data too
+    # (source_index), so the row index alone cannot say which is which.
+    is_source = np.concatenate((np.ones(n_source, dtype=bool),
+                                np.zeros(source_index.size, dtype=bool)))[order]
     theta, phi = np.meshgrid(theta_list, phi_full_list[order])
-    return phi, theta, spla[rows], eaa[rows], amplitude[rows]
+    coverage = None
+    if measured is not None:
+        coverage = measured[rows] & is_source[:, None, None]
+    return phi, theta, spla[rows], eaa[rows], amplitude[rows], coverage
+
+
+def _measured_bins(amplitude, eaa):
+    """(n_phi, n_theta, n_bands) bool: True where a bin carries a measurement.
+
+    A bin is measured when its level is finite after :func:`mask_missing_levels`,
+    which turns the masked, gated and empty bins into -inf.  A direction whose
+    EAA is not finite is not measured either: :func:`_finite_sphere_levels`
+    zeroes that EAA, so the value is a fill, not an observation.
+    """
+    return np.isfinite(amplitude) & np.isfinite(eaa)[:, :, None]
+
+
+def _fore_aft_measured(measured):
+    """Coverage of a fore-to-aft averaged spectrum (see :func:`average_fore_and_aft`).
+
+    An averaged pair is measured only where both partners are.  Averaging a
+    measured bin with a gated partner gives both cells a level taken from the
+    partner, which is a fill, not a measurement.  The middle theta of an
+    odd-length axis is its own partner and is left as it is.
+    """
+    averaged = np.array(measured, dtype=bool, copy=True)
+    n_theta = averaged.shape[1]
+    for i in range(n_theta // 2):
+        j = n_theta - 1 - i
+        both = measured[:, i, :] & measured[:, j, :]
+        averaged[:, i, :] = both
+        averaged[:, j, :] = both
+    return averaged
 
 
 def mirror_phi_to_upper_surface(phi_list):
@@ -2950,7 +3325,9 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                                                    relative_humidity=20.0),
                              extended_flight_path_angles=None,
                              level_flight_tolerance=LEVEL_FLIGHT_TOLERANCE,
-                             store_spectrum=True, clamp_empty_directions=True):
+                             store_spectrum=True, clamp_empty_directions=True,
+                             hover_correction=None, hover_source=None,
+                             speed_reference='ground', doppler_shift_removed=None):
     """Build a NICE-OPS sphere database from a directory of sphere files.
 
     load_factors scales thrust: each source condition is written once per load
@@ -2985,6 +3362,19 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     given airspeed carries over to a steeper flight path.  The shipped
     databases use (-24.0, 35.0).
 
+    hover_source, when given, is the sphere file the hover is synthesized from in place of
+    the slowest near-level one in the directory -- typically that same run rebuilt with
+    ``build_sphere(remove_doppler=True)``, so that the fore-to-aft average combines
+    spectra at their emitted frequencies.  The flight spheres in the directory keep
+    their received ones.
+
+    hover_correction, when given, is added to the synthesized hover sphere's band levels
+    after the fore-to-aft average: a callable taking phi and theta (degrees, arrays shaped
+    like the sphere's (phi, theta) grid) and the band centers (Hz), returning dB with shape
+    (phi, theta, frequency).  It is how measured hovers, which cover only part of the
+    sphere, are blended into the synthesized one; the caller owns where it applies and how
+    it tapers.  Its ``description`` attribute, if any, is written to the database.
+
     clamp_empty_directions replaces the NaN that EAA becomes where ambient
     gating emptied a direction (``-inf - -inf``) with zero.  A NaN there is not
     local: it put 886 NaN cells into a NICE-OPS footprint.  The dBA level is
@@ -2995,9 +3385,31 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     different propagation distance -- without the original sphere files.  It
     accounts for roughly seven eighths of the file size and no consumer reads it
     today, so turn it off for databases that only need levels.
+
+    The database records what it was built against, so NICE-OPS can refuse a
+    mismatch instead of passing it silently.  Root attributes: speed_reference
+    ("ground" or "air"; the reference the conditions' advance ratio and flight
+    path angle are taken in), and build_temperature_K, build_pressure_kPa and
+    build_relative_humidity_percent, the atmosphere the broadband EAA was
+    computed in (taken from ``atmosphere``).  Each condition group carries
+    DOPPLER_SHIFT_REMOVED (0 received-frame, 1 de-Dopplerized) and a coverage
+    mask: 1 where a cell was measured, 0 where it was gated, masked, mirrored
+    from the other half of the sphere, or averaged from a gated partner.  It is
+    one int8 value per channel, in the same group and order as dBA; with
+    spectra it is per band, over the spectrum's own (PHI, THETA, frequency)
+    dimensions, and without, a channel is measured only when all its bands are.
+
+    speed_reference is written as given.  doppler_shift_removed, when given,
+    is the flag assumed for any source sphere that does not carry one; a sphere
+    that carries one must agree with it.  Sources with different flags are
+    refused, because they would be combined into one database.
     """
     # TODO pack in redimensionalization data
     # TODO add reinterpolation flag
+
+    if speed_reference not in SPEED_REFERENCES:
+        raise ValueError('speed_reference must be one of {}, not {!r}'.format(
+            SPEED_REFERENCES, speed_reference))
 
     # None means "write the LF=1 reference only, let the reader scale it" --
     # see the docstring.  Every load-factor loop below iterates this instead
@@ -3011,6 +3423,16 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     (main_rotor_radius, main_rotor_area, main_rotor_tip_speed,
      _, _, _, _, _, _, weight_coefficient, _, _, _, _) = read_vehicle_data(directory_name)
 
+    # Get list of full paths to netCDF files in directory
+    local_glob = os.path.expanduser(directory_name) + '/*.nc'
+    absolute_glob = os.path.abspath(local_glob)
+    # Sorted, so group numbering and hover-sphere ties do not depend on the
+    # order the filesystem happens to list the directory in.
+    file_list = sorted(glob(absolute_glob))
+    # Settled before the output exists, so a refused mix of sources leaves no
+    # half-written database behind.
+    doppler = _resolve_doppler_shift_removed(file_list, doppler_shift_removed)
+
     # Set up database
     ncdatabase = Dataset(os.path.abspath(os.path.expanduser(database_filename)), 'w')
 
@@ -3019,7 +3441,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     ncdatabase['same_grid'][:] = True
     # Optional: absent (old files) or false means every stored condition is a
     # real, independent sample and NICE-OPS must not scale between them.  True
-    # means every condition was synthesised from one LF=1 reference by a
+    # means every condition was synthesized from one LF=1 reference by a
     # uniform dB offset, so the reader may reproduce load factors this file
     # never stored by applying that same offset analytically.
     ncdatabase.createVariable("fixed_load_factor", 'b')
@@ -3029,6 +3451,14 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     # whenever the on-disk meaning of the sphere data changes.
     ncdatabase.createVariable("database_version", 'i4')
     ncdatabase['database_version'][:] = DATABASE_FORMAT_VERSION
+    # Optional root attributes recording what the database was built against.
+    # The EAA is computed with ``atmosphere`` (extract_SPL, spla_and_eaa_from_spectrum),
+    # so these are that atmosphere: temperature in K, pressure in kPa (the ISO 9613-1
+    # reference unit, as Atmosphere is written), relative humidity in percent.
+    ncdatabase.speed_reference = speed_reference
+    ncdatabase.build_temperature_K = float(atmosphere.temperature)
+    ncdatabase.build_pressure_kPa = float(atmosphere.pressure)
+    ncdatabase.build_relative_humidity_percent = float(atmosphere.relative_humidity)
 
     # Root vehicle data, as carried by every shipped database (S-76D_M3.nod,
     # AW139_M1.nod, Be407_spectral.nod).  NICE-OPS reads them to redimensionalize
@@ -3042,17 +3472,14 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     if main_rotor_tip_speed is not None:
         ncdatabase.createVariable("main_rotor_tip_speed_meters_per_sec", 'f8')
         ncdatabase['main_rotor_tip_speed_meters_per_sec'][:] = float(main_rotor_tip_speed)
+    if hover_correction is not None:
+        ncdatabase.hover_correction = str(getattr(hover_correction, 'description', 'applied'))
+    if hover_source is not None:
+        ncdatabase.hover_source = os.path.basename(str(hover_source))
     vehicle_weight_newtons = read_vehicle_weight_newtons(directory_name)
     if vehicle_weight_newtons is not None:
         ncdatabase.createVariable("vehicle_weight_newtons", 'f8')
         ncdatabase['vehicle_weight_newtons'][:] = float(vehicle_weight_newtons)
-
-    # Get list of full paths to netCDF files in directory
-    local_glob = os.path.expanduser(directory_name) + '/*.nc'
-    absolute_glob = os.path.abspath(local_glob)
-    # Sorted, so group numbering and hover-sphere ties do not depend on the
-    # order the filesystem happens to list the directory in.
-    file_list = sorted(glob(absolute_glob))
 
     min_speed = np.inf
     min_speed_file = None
@@ -3069,6 +3496,9 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
         # Load the sphere data
         (_, _, phi_list, theta_list, radius, _, SPLA, EAA, speed, flight_path_angle,
          frequency, amplitude) = extract_SPL(filename, infreqs, distance, atmosphere)
+        # Which bins carry a measurement.  Taken before the clamp, and before the
+        # completion fills the upper surface, so a gated bin is recorded as such.
+        measured = _measured_bins(amplitude, EAA)
         if clamp_empty_directions:
             SPLA, EAA = _finite_sphere_levels(SPLA, EAA)
         # Find the lowest speed file near level flight
@@ -3080,48 +3510,66 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
             slowest_speed = speed
             slowest_file = filename
         # Complete the sphere onto its upper surface
-        phi_full, theta_full, SPLA_full, EAA_full, amplitude_full = _complete_sphere(
-            phi_list, theta_list, SPLA, EAA, amplitude)
+        phi_full, theta_full, SPLA_full, EAA_full, amplitude_full, coverage_full = (
+            _complete_sphere_with_coverage(phi_list, theta_list, SPLA, EAA, amplitude, measured))
         # Remember near-level conditions; they are the ones re-emitted at the
         # extended flight path angles below.
         if extended_flight_path_angles is not None and np.abs(flight_path_angle) < level_flight_tolerance:
             level_conditions.append((phi_full, theta_full, radius, SPLA_full, EAA_full,
-                                     speed, frequency, amplitude_full))
+                                     speed, frequency, amplitude_full, coverage_full))
         # Augment load factor data
         for load_factor in load_factors_to_write:
             groupname = "sphere" + str(sphere_index)
             sphere_index = sphere_index + 1
-            pending_groups.append((groupname, phi_full, theta_full, radius, SPLA_full, EAA_full,
-                                   speed, flight_path_angle, load_factor,
-                                   frequency if store_spectrum else None,
-                                   amplitude_full if store_spectrum else None))
+            pending_groups.append(_SphereCondition(
+                groupname, phi_full, theta_full, radius, SPLA_full, EAA_full,
+                speed, flight_path_angle, load_factor,
+                frequency if store_spectrum else None,
+                amplitude_full if store_spectrum else None, coverage_full))
 
     if min_speed_file is None:
         # No sphere within level_flight_tolerance of level flight.  The hover
-        # sphere is synthesised by averaging the slowest one fore-to-aft, so
+        # sphere is synthesized by averaging the slowest one fore-to-aft, so
         # fall back to the slowest available rather than failing with an
         # unbound name -- the further it is from level flight, the rougher the
         # hover approximation.
         if slowest_file is None:
             raise ValueError('No sphere files found in ' + str(directory_name))
-        warnings.warn('No sphere within {:g} degrees of level flight; synthesising hover from the '
+        warnings.warn('No sphere within {:g} degrees of level flight; synthesizing hover from the '
                       'slowest available at {:.1f} knots.'.format(level_flight_tolerance, slowest_speed))
         min_speed_file = slowest_file
 
+    if hover_source is not None:
+        # Its DOPPLER_SHIFT_REMOVED does not enter the database's flag: a hover
+        # has no Doppler shift, so its emitted and received frequencies are one
+        # and the group is received-frame like the flight spheres around it.
+        min_speed_file = os.path.abspath(os.path.expanduser(hover_source))
     # Now, adapt the lowest speed sphere to a hover sphere by averaging from fore to aft
-    (_, _, phi_list, theta_list, radius, _, _, _, _, _,
+    (_, _, phi_list, theta_list, radius, _, _, eaa_source, _, _,
      frequency, amplitude) = extract_SPL(min_speed_file, infreqs, distance, atmosphere)
+    # The averaging below gives a gated bin the level of its partner, so the
+    # hover's coverage is measured only where both partners were.
+    measured = _fore_aft_measured(_measured_bins(amplitude, eaa_source))
     # Average the SPECTRUM fore-to-aft on an energy basis, then derive SPLA and
     # EAA from the averaged spectrum.  Averaging the broadband dB levels instead
     # (a) is not an energy average, and (b) leaves EAA untouched, so level and
     # excess attenuation end up describing different spheres.
     amplitude = average_fore_and_aft(amplitude)
+    if hover_correction is not None:
+        theta_grid, phi_grid = np.meshgrid(np.asarray(theta_list, dtype=float),
+                                           np.asarray(phi_list, dtype=float))
+        correction = np.asarray(hover_correction(phi_grid, theta_grid, np.asarray(frequency, dtype=float)),
+                                dtype=float)
+        if correction.shape != amplitude.shape:
+            raise ValueError('hover_correction returned shape {}, the sphere is {}'.format(
+                correction.shape, amplitude.shape))
+        amplitude = amplitude + correction
     SPLA, EAA = spla_and_eaa_from_spectrum(amplitude, frequency, distance, atmosphere)
     if clamp_empty_directions:
         SPLA, EAA = _finite_sphere_levels(SPLA, EAA)
     # Complete the sphere onto its upper surface
-    phi_full, theta_full, SPLA_full, EAA_full, amplitude_full = _complete_sphere(
-        phi_list, theta_list, SPLA, EAA, amplitude)
+    phi_full, theta_full, SPLA_full, EAA_full, amplitude_full, coverage_full = (
+        _complete_sphere_with_coverage(phi_list, theta_list, SPLA, EAA, amplitude, measured))
     # Set hover conditions.  Hover is a near-level condition, so it is written
     # at the extended angles as well as level flight.
     speed = 0
@@ -3134,27 +3582,29 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
         for flight_path_angle in flight_path_angles:
             groupname = "sphere" + str(sphere_index)
             sphere_index = sphere_index + 1
-            pending_groups.append((groupname, phi_full, theta_full, radius, SPLA_full, EAA_full,
-                                   speed, flight_path_angle, load_factor,
-                                   frequency if store_spectrum else None,
-                                   amplitude_full if store_spectrum else None))
+            pending_groups.append(_SphereCondition(
+                groupname, phi_full, theta_full, radius, SPLA_full, EAA_full,
+                speed, flight_path_angle, load_factor,
+                frequency if store_spectrum else None,
+                amplitude_full if store_spectrum else None, coverage_full))
 
     # Widen the flight-path-angle envelope: re-emit each near-level condition at
     # the extended angles, keeping its own airspeed and directivity.  Hover is
     # already covered above, so skip any condition at zero airspeed.
     if extended_flight_path_angles is not None:
         for (phi_full, theta_full, radius, SPLA_full, EAA_full,
-             level_speed, frequency, amplitude_full) in level_conditions:
+             level_speed, frequency, amplitude_full, coverage_full) in level_conditions:
             if level_speed == 0:
                 continue
             for extended_angle in extended_flight_path_angles:
                 for load_factor in load_factors_to_write:
                     groupname = "sphere" + str(sphere_index)
                     sphere_index = sphere_index + 1
-                    pending_groups.append((groupname, phi_full, theta_full, radius, SPLA_full,
-                                           EAA_full, level_speed, extended_angle, load_factor,
-                                           frequency if store_spectrum else None,
-                                           amplitude_full if store_spectrum else None))
+                    pending_groups.append(_SphereCondition(
+                        groupname, phi_full, theta_full, radius, SPLA_full, EAA_full,
+                        level_speed, extended_angle, load_factor,
+                        frequency if store_spectrum else None,
+                        amplitude_full if store_spectrum else None, coverage_full))
 
     # phi/theta (and frequency, for a spectral database) are usually the same
     # on every condition -- panam completes every sphere onto a common grid
@@ -3167,23 +3617,25 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     ncdatabase.createVariable("shared_grid_and_frequency", 'b')
     ncdatabase['shared_grid_and_frequency'][:] = shared_grid_and_frequency
     if shared_grid_and_frequency:
-        (_, phi0, theta0, _, _, _, _, _, _, frequency0, _) = pending_groups[0]
-        ncdatabase.createDimension("channels", phi0.size)
+        first = pending_groups[0]
+        ncdatabase.createDimension("channels", first.phi.size)
         ncdatabase.createVariable("phi", 'f8', ("channels",))
-        ncdatabase['phi'][:] = phi0.flatten()
+        ncdatabase['phi'][:] = first.phi.flatten()
         ncdatabase.createVariable("theta", 'f8', ("channels",))
-        ncdatabase['theta'][:] = theta0.flatten()
-        if frequency0 is not None:
-            ncdatabase.createDimension("frequency", np.size(frequency0))
+        ncdatabase['theta'][:] = first.theta.flatten()
+        if first.frequency is not None:
+            ncdatabase.createDimension("frequency", np.size(first.frequency))
             ncdatabase.createVariable("frequency", 'f8', ("frequency",))
-            ncdatabase['frequency'][:] = np.asarray(frequency0).flatten()
+            ncdatabase['frequency'][:] = np.asarray(first.frequency).flatten()
 
-    for (groupname, phi_full, theta_full, radius, SPLA_full, EAA_full, speed_or_level_speed,
-         flight_path_angle, load_factor, frequency, amplitude_full) in pending_groups:
-        add_sphere_group(ncdatabase, groupname, phi_full, theta_full, radius, SPLA_full, EAA_full,
-                         speed_or_level_speed, flight_path_angle, load_factor, main_rotor_radius,
-                         main_rotor_tip_speed, weight_coefficient, frequency, amplitude_full,
-                         write_grid_and_frequency=not shared_grid_and_frequency)
+    for condition in pending_groups:
+        add_sphere_group(ncdatabase, condition.name, condition.phi, condition.theta,
+                         condition.radius, condition.SPLA, condition.EAA,
+                         condition.speed, condition.flight_path_angle, condition.load_factor,
+                         main_rotor_radius, main_rotor_tip_speed, weight_coefficient,
+                         condition.frequency, condition.amplitude,
+                         write_grid_and_frequency=not shared_grid_and_frequency,
+                         doppler_shift_removed=doppler, coverage=condition.coverage)
     # Close explicitly: left to the garbage collector, a failed flush on close
     # is swallowed and the file can stay open (locked) while a traceback lives.
     ncdatabase.close()
@@ -3197,8 +3649,11 @@ def _grid_and_frequency_are_shared(pending_groups):
     """
     if not pending_groups:
         return False
-    _, phi0, theta0, *_, frequency0, _ = pending_groups[0]
-    for _, phi, theta, *_, frequency, _ in pending_groups[1:]:
+    first = pending_groups[0]
+    for condition in pending_groups[1:]:
+        phi, phi0 = condition.phi, first.phi
+        theta, theta0 = condition.theta, first.theta
+        frequency, frequency0 = condition.frequency, first.frequency
         if phi.shape != phi0.shape or not np.array_equal(phi, phi0):
             return False
         if theta.shape != theta0.shape or not np.array_equal(theta, theta0):
@@ -3240,7 +3695,18 @@ def _finite_sphere_levels(spla, eaa):
 
 def add_sphere_group(ncdatabase, groupname, phi, theta, radius, SPLA, EAA, speed, flight_path_angle, load_factor,
                      main_rotor_radius, main_rotor_tip_speed, weight_coefficient, frequency=None, amplitude=None,
-                     write_grid_and_frequency=True):
+                     write_grid_and_frequency=True, doppler_shift_removed=None, coverage=None):
+    """Write one condition group.
+
+    doppler_shift_removed, when given, is written as the group's scalar int
+    DOPPLER_SHIFT_REMOVED (0 received-frame, 1 de-Dopplerized).  coverage, when
+    given, is the (n_phi, n_theta, n_bands) bool measured mask of the completed
+    sphere.  It is written as int8 ``coverage`` over the amplitude's dimensions
+    ("PHI", "THETA", "frequency") when the group has spectra, and otherwise over
+    ("channels",), one value per channel in dBA's order, where a channel is
+    measured only if every band of it is.  Both are optional so that a caller
+    building a group by hand is unaffected.
+    """
     # Create a new group for this sphere
     this_group = ncdatabase.createGroup(groupname)
     # Define sphere nondimensional radius
@@ -3299,6 +3765,31 @@ def add_sphere_group(ncdatabase, groupname, phi, theta, radius, SPLA, EAA, speed
             this_group.variables['frequency'][:] = np.asarray(frequency).flatten()
         this_group.createVariable("amplitude", 'f8', ("PHI", "THETA", "frequency"))
         this_group.variables['amplitude'][:] = amplitude
+    has_spectrum = frequency is not None and amplitude is not None
+
+    if doppler_shift_removed is not None:
+        if doppler_shift_removed not in (0, 1):
+            raise ValueError('doppler_shift_removed must be 0 or 1, not {!r}'.format(doppler_shift_removed))
+        this_group.createVariable("DOPPLER_SHIFT_REMOVED", 'i4')
+        this_group.variables['DOPPLER_SHIFT_REMOVED'][:] = int(doppler_shift_removed)
+
+    if coverage is not None:
+        measured = np.asarray(coverage, dtype=bool)
+        if measured.ndim != 3 or measured.shape[:2] != phi.shape:
+            raise ValueError('coverage must be (n_phi, n_theta, n_bands) to match phi, not {}'.format(
+                measured.shape))
+        if has_spectrum:
+            # The same dimensions as the amplitude it masks: gridded (PHI, THETA, frequency).
+            this_group.createVariable("coverage", 'i1', ("PHI", "THETA", "frequency"))
+            this_group.variables['coverage'][:] = measured.astype(np.int8)
+        else:
+            # One value per channel, in the same order as dBA and EAA.  No spectrum to
+            # keep the bands in: a cell is measured only if all its bands are.
+            this_group.createVariable("coverage", 'i1', ("channels",))
+            this_group.variables['coverage'][:] = measured.all(axis=2).reshape(-1).astype(np.int8)
+        this_group.variables['coverage'].description = (
+            '1 = measured cell (every band measured, when there is no spectrum); 0 = unmeasured: '
+            'gated, masked, mirrored from the other half of the sphere, or averaged from a gated partner')
 
 
 def project_sphere(filename, altitude, elv_cutoff, infreqs=None,
@@ -4454,6 +4945,164 @@ def IDWweights(ielv, iazi, felv, fazi, rmax):
         # No neighbors within rmax — return zeros (matches safe behavior)
         wi = m
     return wi
+
+
+#: Defaults for depropagate_hemisphere(interpolation={...}); see adaptive_idw_weights.
+#: resolution_factor 0.5 takes half the window's arc, the sample being its center.  On a
+#: 2017 B407 sphere this gives about 3-5 deg at the rim, where samples crowd, 10-20 deg at
+#: 10-40 deg below the horizon, and 30-50 deg overhead, where they are sparse and one window
+#: spans a wide arc; 60 deg is the most a node may borrow from before it counts as a gap.
+ADAPTIVE_INTERPOLATION = dict(k=8, min_mics=3, kappa=1.3, resolution_factor=0.5, max_radius_deg=60.0,
+                              relax_min_mics=True, kernel='shepard', aspect=1.0,
+                              shepard_floor=0.0, source_extent=0.0)
+
+
+def adaptive_idw_weights(ielv, iazi, felv, fazi, mic, resolution_deg, *, k=8, min_mics=3, kappa=1.3,
+                         resolution_factor=0.5, max_radius_deg=60.0, chunk=256, relax_min_mics=True,
+                         return_relaxed=False, aspect=1.0, kernel='shepard', shepard_floor=0.0):
+    """Shepard weights with a radius chosen per node from the samples around it.
+
+    A fixed radius has to be as large as the sparsest part of the sphere needs, or that part
+    has holes, and is then far larger than the dense part can use.  On a 2017 B407 sphere the
+    nearest sample is under a degree away at the rim but up to 18 deg away overhead, so the
+    25 deg radius that keeps the overhead filled smears the rim -- by +1 dB at 2-4 deg below
+    the horizon and -0.3 dB at 10-20 deg against the samples themselves.
+
+    Here each node x gets
+        R(x) = max(kappa d_k(x), kappa d_M(x), resolution_factor s(x)),
+    with d_k the geodesic distance to the k-th nearest sample, d_M the distance within which
+    samples from min_mics distinct microphones lie, and s the median angular resolution of
+    its k nearest samples (``resolution_deg``: how much of the sphere one sample's window
+    smears over).  Every node within reach of k samples from min_mics microphones is
+    therefore filled -- no holes -- and each value brackets the node with several
+    microphones, laterally and along track, rather than extrapolating off one microphone's
+    line of samples.  kappa > 1 keeps the k-th sample inside the Franke and Nielson weight,
+    which falls to zero at R.  A node that would need more than max_radius_deg is a genuine
+    gap in the coverage, not a hole to smooth over: its row is empty and it is reported.
+
+    ``aspect`` > 1 stretches the neighborhood in azimuth: distances are measured as
+    sqrt(de^2 + (da cos e / aspect)^2), elevation differences de and azimuth differences da
+    along the circle of latitude, so a node reaches aspect times as far across the sphere in
+    azimuth as in elevation.  A pass's microphones each trace a line of samples nose to tail,
+    so at fixed elevation azimuth steps from one microphone's line to the next, while the
+    level's steepest change near the horizon is in elevation: a wide reach in azimuth
+    averages across the lines and a narrow one in elevation keeps that gradient.  1 (the
+    default) is the geodesic distance, as before.
+
+    ``kernel`` 'shepard' (the default) is Franke and Nielson's weight, ((R - h)/(R h))^2,
+    which grows without bound at a sample and so nearly interpolates: a node on one
+    microphone's line follows that microphone.  'biweight', (1 - (h/R)^2)^2, is finite
+    everywhere and averages its neighborhood instead.  ``shepard_floor`` keeps Shepard's
+    form but stops it interpolating: each distance h is taken as sqrt(h^2 + (f R)^2) in the
+    weight, f the floor as a fraction of the node's radius R.
+
+    With ``relax_min_mics`` (the default) such a node is first retried without the
+    microphone count -- its k nearest samples, from however many microphones, within the
+    cap -- and is a gap only if that fails too.  The nodes it fills are the ones only one
+    or two microphones see (steep to the side of a pass over a single line of them, a
+    descent's far end); left empty they were filled by the sphere writer's resampling,
+    which reads past the grid's edge.  ``return_relaxed`` adds their mask to the result.
+
+    Args:
+        ielv, iazi: node elevations and azimuths (deg), 1-D, same length.
+        felv, fazi: sample elevations and azimuths (deg), 1-D.  Geodesic distances, so no
+            +-360 copies are needed (or wanted: they would be counted as extra samples).
+        mic: (N,) the microphone each sample came from.
+        resolution_deg: (N,) each sample's angular resolution, deg.
+
+    Returns:
+        (weights, radius_deg, gap): a scipy.sparse CSR matrix (nodes x samples) whose rows sum
+        to one (empty for gaps), each node's radius (NaN for gaps), and the gap mask.
+    """
+    import scipy.sparse as sparse
+
+    ielv = np.asarray(ielv, dtype=float).ravel()
+    iazi = np.asarray(iazi, dtype=float).ravel()
+    felv = np.asarray(felv, dtype=float).ravel()
+    fazi = np.asarray(fazi, dtype=float).ravel()
+    mic = np.asarray(mic).ravel()
+    resolution_deg = np.asarray(resolution_deg, dtype=float).ravel()
+    n = felv.size
+    if not (fazi.size == mic.size == resolution_deg.size == n):
+        raise ValueError('felv, fazi, mic and resolution_deg must have the same length')
+    k = int(min(max(k, 1), n))
+    if kernel not in ('shepard', 'biweight'):
+        raise ValueError("kernel must be 'shepard' or 'biweight'")
+
+    def unit(elv, azi):
+        e, a = np.deg2rad(elv), np.deg2rad(azi)
+        return np.column_stack((np.cos(e) * np.cos(a), np.cos(e) * np.sin(a), np.sin(e)))
+
+    samples = unit(felv, fazi)
+    nodes = unit(ielv, iazi)
+    mic_codes, mic_index = np.unique(mic, return_inverse=True)
+    n_mics = mic_codes.size
+    by_mic = np.argsort(mic_index, kind='stable')
+    mic_starts = np.flatnonzero(np.r_[True, np.diff(mic_index[by_mic]) != 0])
+    rows, cols, vals = [], [], []
+    radius = np.full(ielv.size, np.nan)
+    relaxed = np.zeros(ielv.size, dtype=bool)
+    eps = 10.0 * np.finfo(float).eps
+    for start in range(0, ielv.size, chunk):
+        stop = min(start + chunk, ielv.size)
+        if aspect == 1.0:
+            h = np.degrees(np.arccos(np.clip(nodes[start:stop] @ samples.T, -1.0, 1.0)))
+        else:
+            de = ielv[start:stop, None] - felv[None, :]
+            da = (iazi[start:stop, None] - fazi[None, :] + 180.0) % 360.0 - 180.0
+            da *= np.cos(np.deg2rad(0.5 * (ielv[start:stop, None] + felv[None, :])))
+            h = np.sqrt(de ** 2 + (da / float(aspect)) ** 2)
+        order = np.argsort(h, axis=1)
+        d_k = np.take_along_axis(h, order[:, k - 1:k], axis=1)[:, 0]
+        # Nearest sample of each microphone, then the min_mics-th nearest microphone.
+        nearest_per_mic = np.minimum.reduceat(h[:, by_mic], mic_starts, axis=1)
+        if n_mics >= min_mics:
+            d_m = np.sort(nearest_per_mic, axis=1)[:, min_mics - 1]
+        else:
+            d_m = np.full(stop - start, np.inf)
+        s = np.median(resolution_deg[order[:, :k]], axis=1)
+        r = np.maximum(np.maximum(kappa * d_k, kappa * d_m), resolution_factor * s)
+        if relax_min_mics:
+            r_relaxed = np.maximum(kappa * d_k, resolution_factor * s)
+            retry = ~(r <= max_radius_deg) & (r_relaxed <= max_radius_deg)
+            relaxed[start:stop] = retry
+            r = np.where(retry, r_relaxed, r)
+        for i in range(stop - start):
+            node = start + i
+            hi = h[i]
+            j_min = order[i, 0]
+            if kernel == 'shepard' and shepard_floor <= 0.0 and hi[j_min] <= eps:
+                rows.append(np.array([node]))
+                cols.append(np.array([j_min]))
+                vals.append(np.array([1.0]))
+                radius[node] = r[i]
+                continue
+            if not (r[i] <= max_radius_deg):
+                continue
+            near = np.flatnonzero(hi < r[i])
+            if kernel == 'biweight':
+                m = (1.0 - (hi[near] / r[i]) ** 2) ** 2
+            elif shepard_floor > 0.0:
+                h_eff = np.sqrt(hi[near] ** 2 + (shepard_floor * r[i]) ** 2)
+                m = ((r[i] - hi[near]) / (r[i] * h_eff)) ** 2
+            else:
+                m = ((r[i] - hi[near]) / (r[i] * hi[near])) ** 2
+            total = m.sum()
+            if not total > 0.0:
+                continue
+            rows.append(np.full(near.size, node))
+            cols.append(near)
+            vals.append(m / total)
+            radius[node] = r[i]
+    if rows:
+        weights = sparse.csr_matrix((np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
+                                    shape=(ielv.size, n))
+    else:
+        weights = sparse.csr_matrix((ielv.size, n))
+    gap = ~np.isfinite(radius)
+    if return_relaxed:
+        return weights, radius, gap, relaxed & ~gap
+    return weights, radius, gap
 
 
 def shepIDW(ielv, iazi, felv, fazi, f, rmax):

@@ -1,6 +1,6 @@
 """Hover-sphere selection in build_empirical_database.
 
-The hover sphere is synthesised by averaging the slowest near-level sphere
+The hover sphere is synthesized by averaging the slowest near-level sphere
 fore-to-aft.  When no sphere falls within the level-flight tolerance there is
 nothing to average, and the selection used to leave `min_speed_file` unbound --
 the build then died with an UnboundLocalError from deep inside the writer

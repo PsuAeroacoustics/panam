@@ -1,4 +1,4 @@
-"""Fore/aft averaging used to synthesise a hover sphere from low-speed flight.
+"""Fore/aft averaging used to synthesize a hover sphere from low-speed flight.
 
 Two properties are pinned here:
 

@@ -267,6 +267,31 @@ def test_receiver_response_is_applied_per_band():
         np.testing.assert_allclose(b[finite] - a[finite], expected, atol=1e-9)
 
 
+def test_a_response_beyond_the_cap_drops_the_band_instead_of_dividing_it_up():
+    """max_response_correction_db: a band whose response is a deep null (-30 dB here) is
+    dropped, not raised 30 dB; a band within the cap is still divided out."""
+    scenario = _scenario(seed=7)
+
+    def response(im, bands, offset):
+        gain = np.zeros((bands.size, offset.shape[0]))
+        gain[np.argmin(np.abs(bands - 200.0))] = -30.0
+        gain[np.argmin(np.abs(bands - 400.0))] = -10.0
+        return gain
+
+    plain = _run(scenario)
+    capped = _run(scenario, receiver_response_db=response, max_response_correction_db=15.0)
+    uncapped = _run(scenario, receiver_response_db=response)
+    bands = np.asarray(plain['third_octave']['band_centers_hz'])
+    i200, i400 = np.argmin(np.abs(bands - 200.0)), np.argmin(np.abs(bands - 400.0))
+    a, b, c = (np.asarray(x['third_octave']['bands_db'][i200]) for x in (plain, capped, uncapped))
+    finite = np.isfinite(a) & (a > -200.0)
+    np.testing.assert_allclose(c[finite] - a[finite], 30.0, atol=1e-9)
+    assert not np.any(np.isfinite(b) & (b > -200.0))
+    a, b = (np.asarray(x['third_octave']['bands_db'][i400]) for x in (plain, capped))
+    finite = np.isfinite(a) & np.isfinite(b) & (a > -200.0)
+    np.testing.assert_allclose(b[finite] - a[finite], 10.0, atol=1e-9)
+
+
 def test_receiver_response_follows_the_band_sums_edges_for_nominal_centers():
     """Each bin is divided by the response of the band it is summed into.
 
