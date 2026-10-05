@@ -220,3 +220,22 @@ def test_a_database_filed_in_two_frames_is_refused(tmp_path):
     _label(directory, 'B.nc', 'nose')
     with pytest.raises(ValueError, match='must be one of'):
         _build(directory, tmp_path / 'bad.nod')
+
+
+@pytest.mark.parametrize('azimuth', [None, 'nose', ''])
+def test_the_shared_root_writer_refuses_a_database_without_a_frame(tmp_path, azimuth):
+    """build_empirical_database and the NORAH2 importer share _write_database_root, which
+    writes azimuth_reference itself, so neither can produce a database that does not say
+    which frame its azimuth is in."""
+    with Dataset(str(tmp_path / 'root.nod'), 'w') as nc:
+        with pytest.raises(ValueError, match='azimuth_reference'):
+            fa._write_database_root(nc, fixed_load_factor=True, speed_reference='ground',
+                                    atmosphere=fa.Atmosphere(), main_rotor_radius=None,
+                                    main_rotor_tip_speed=None, vehicle_weight_newtons=None,
+                                    azimuth_reference=azimuth)
+    with Dataset(str(tmp_path / 'root_heading.nod'), 'w') as nc:
+        fa._write_database_root(nc, fixed_load_factor=True, speed_reference='ground',
+                                atmosphere=fa.Atmosphere(), main_rotor_radius=None,
+                                main_rotor_tip_speed=None, vehicle_weight_newtons=None,
+                                azimuth_reference='heading')
+        assert nc.azimuth_reference == 'heading'

@@ -289,6 +289,10 @@ one; and spheres filed in different frames are refused, as mixed
 heading at all speeds for `heading`). The hover groups are heading-oriented on
 both sides whatever it says.
 
+The attribute is written by the root writer every database shares
+(`_write_database_root`), which refuses to write a database without one, so a
+NORAH2 import (`docs/norah2_import.md`) carries it too, as `track`.
+
 In the evaluation, moving only NICE-OPS's nose to the heading took the windy
 day's held-out SEL from 1.69 to 1.53 dB rms; rebuilding the spheres in the
 heading frame as well gave 1.50, and on the calm day the both-sides version cost
