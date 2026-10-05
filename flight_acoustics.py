@@ -3109,7 +3109,7 @@ def read_vehicle_rotor_data(filename):
 def fill_norah2_empty_cells(levels_db, phi_deg, theta_deg):
     """Fill every missing (-inf) cell of a hemisphere from its nearest filled direction.
 
-    NORAH2 does this at use time: a .hem leaves 38-67 % of its lower-hemisphere
+    NORAH2 does this at use time: a .hem leaves 33-62 % of its lower-hemisphere
     bins at NOVALUE, and its predictor takes an empty bin's level from the
     nearest bin that has one.  NICE-OPS instead reads an unmeasured cell as no
     data, which drops out of a blend where neighbors have data and is silence
@@ -3235,12 +3235,15 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
     if tas_air_density is not None and speed_mapping != 'ias_to_tas':
         raise ValueError("tas_air_density applies to speed_mapping='ias_to_tas' only")
 
-    hem_files = [os.path.abspath(os.path.expanduser(str(f))) for f in hem_files]
+    _check_build_atmosphere(atmosphere)
+
+    # realpath, so a symbolic link or a second spelling of one file is caught too.
+    hem_files = [os.path.realpath(os.path.expanduser(str(f))) for f in hem_files]
     if not hem_files:
         raise ValueError('no .hem files given')
     if len(set(hem_files)) != len(hem_files):
         raise ValueError('a .hem file is given more than once')
-    database_path = os.path.abspath(os.path.expanduser(str(database_filename)))
+    database_path = os.path.realpath(os.path.expanduser(str(database_filename)))
     if database_path in hem_files:
         raise ValueError('the output database is one of the input files')
     if not overwrite and os.path.exists(database_path):
@@ -3255,11 +3258,16 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
         name = os.path.basename(filename)
         try:
             hemisphere = load_norah2_hemisphere(filename)
-        except ValueError as error:
-            reason = str(error).replace(filename + ': ', '')
-            raise ValueError(f'{name}: cannot be converted ({reason}). Only two-axis '
-                             '(THETAOBSAC x PHIOBSAC) hemispheres become spheres; NORAH2\'s '
-                             'one-axis hover and idle tables have no elevation axis.') from None
+        except (ValueError, IndexError) as error:
+            # IndexError: a file that ends before its header says it should.
+            reason = str(error).replace(filename + ': ', '') or type(error).__name__
+            if isinstance(error, IndexError):
+                reason = f'it ends early ({reason})'
+            message = f'{name}: cannot be converted ({reason}).'
+            if 'axis' in reason or 'axes' in reason:
+                message += (' Only two-axis (THETAOBSAC x PHIOBSAC) hemispheres become spheres; '
+                            "NORAH2's one-axis hover and idle tables have no elevation axis.")
+            raise ValueError(message) from None
         constants = hemisphere['constants']
         missing = [c for c in _NORAH2_REQUIRED_CONSTANTS if c not in constants]
         if missing:
@@ -3326,8 +3334,9 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
                                advance_ratio=0.514444 * float(speed_knots) / main_rotor_tip_speed,
                                constants=constants))
 
-    # NICE-OPS refuses two spheres at one condition, and a set that does not
-    # span both axes it triangulates over; say so here, naming the files.
+    # NICE-OPS refuses two spheres at one condition, and a set of two or more
+    # that does not span both axes it triangulates over; say so here, naming
+    # the files.
     keys = {}
     for condition in conditions:
         key = (round(condition['advance_ratio'], 9), round(condition['flight_path_angle_deg'], 9))
@@ -3337,30 +3346,102 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
                              .format(keys[key], condition['source'], condition['speed_knots'],
                                      condition['flight_path_angle_deg']))
         keys[key] = condition['source']
-    if len(conditions) >= 3:
-        mus = [c['advance_ratio'] for c in conditions]
-        gammas = [c['flight_path_angle_deg'] for c in conditions]
+    if len(conditions) >= 2:
+        mus = np.array([c['advance_ratio'] for c in conditions])
+        gammas = np.array([c['flight_path_angle_deg'] for c in conditions])
+        # NICE-OPS refuses a database of two or more spheres in which either
+        # axis is constant, not only one of three or more (measured on the
+        # pinned binary: two level-flight spheres stop the run).
         if np.ptp(mus) == 0.0 or np.ptp(gammas) == 0.0:
-            raise ValueError('the hemispheres do not vary in both speed and flight path angle, '
-                             'which NICE-OPS needs to triangulate between three or more of them')
-    else:
+            raise ValueError('the hemispheres do not vary in both speed and flight path angle '
+                             f'({", ".join(c["source"] for c in conditions)}); NICE-OPS refuses a '
+                             'database of two or more spheres that does not')
+    if len(conditions) < 3:
         warnings.warn(f'{len(conditions)} hemisphere(s): NICE-OPS takes the nearest condition '
                       'rather than interpolating between fewer than three')
+    elif _conditions_are_collinear(mus, gammas):
+        # NICE-OPS loads these, but its triangulation has no simplex (it logs
+        # "0 simplices") and every query falls back to the nearest condition.
+        warnings.warn(f'the {len(conditions)} hemispheres lie on one line in (speed, flight path '
+                      'angle), so NICE-OPS finds no triangle among them and takes the nearest '
+                      'condition rather than interpolating')
 
-    ncdatabase = Dataset(database_path, 'w')
+    # Written to a temporary file beside the output and moved into place only
+    # when complete, so a failure while writing neither leaves a partial
+    # database nor destroys an existing one.
+    # (Not mkstemp: its file is private, 0600, and os.replace would keep that.)
+    temporary_path = os.path.join(os.path.dirname(database_path), '.{}.{}.tmp'.format(
+        os.path.basename(database_path), os.getpid()))
+    try:
+        _write_norah2_database(temporary_path, pending_groups, conditions,
+                               speed_mapping=speed_mapping, atmosphere=atmosphere,
+                               main_rotor_radius=main_rotor_radius,
+                               main_rotor_tip_speed=main_rotor_tip_speed,
+                               vehicle_weight_newtons=float(vehicle_weight_newtons),
+                               weight_coefficient=weight_coefficient,
+                               thrust_air_density=float(thrust_air_density),
+                               mirror_rotor=mirror_rotor,
+                               accept_ground_included=accept_ground_included,
+                               fill_empty=fill_empty)
+        os.replace(temporary_path, database_path)
+    except BaseException:
+        if os.path.exists(temporary_path):
+            os.remove(temporary_path)
+        raise
+    return [{k: v for k, v in c.items() if k != 'constants'} for c in conditions]
+
+
+def _conditions_are_collinear(mus, gammas):
+    """Whether (advance ratio, flight path angle) points all lie on one line.
+
+    Taken as NICE-OPS takes them, each axis normalized onto [0, 1] (a
+    collinear set stays collinear under that, and the tolerance then has a
+    scale).  Assumes both axes vary.
+    """
+    points = np.column_stack(((mus - mus.min()) / np.ptp(mus),
+                              (gammas - gammas.min()) / np.ptp(gammas)))
+    offsets = points[1:] - points[0]
+    return bool(np.linalg.matrix_rank(offsets, tol=1e-9) < 2)
+
+
+def _check_build_atmosphere(atmosphere):
+    """Refuse a build atmosphere (the EAA's) given in the wrong units.
+
+    The same bounds as a .hem's reference atmosphere, in the units Atmosphere
+    takes: kelvin, kPa, percent.
+    """
+    temperature = float(atmosphere.temperature)
+    pressure = float(atmosphere.pressure)
+    humidity = float(atmosphere.relative_humidity)
+    if not 200.0 <= temperature <= 350.0:
+        raise ValueError(f'build atmosphere: temperature {temperature:g} is not in kelvin '
+                         '(expected 200-350 K)')
+    if not 30.0 <= pressure <= 110.0:
+        raise ValueError(f'build atmosphere: pressure {pressure:g} is not in kPa '
+                         '(expected 30-110 kPa)')
+    if not 0.0 <= humidity <= 100.0:
+        raise ValueError(f'build atmosphere: relative humidity {humidity:g} is not a percentage')
+
+
+def _write_norah2_database(path, pending_groups, conditions, *, speed_mapping, atmosphere,
+                           main_rotor_radius, main_rotor_tip_speed, vehicle_weight_newtons,
+                           weight_coefficient, thrust_air_density, mirror_rotor,
+                           accept_ground_included, fill_empty):
+    """Write the checked conditions of :func:`build_database_from_norah2` to ``path``."""
+    ncdatabase = Dataset(path, 'w')
     try:
         _write_database_root(ncdatabase, fixed_load_factor=True,
                              speed_reference=NORAH2_SPEED_MAPPINGS[speed_mapping],
                              atmosphere=atmosphere, main_rotor_radius=main_rotor_radius,
                              main_rotor_tip_speed=main_rotor_tip_speed,
-                             vehicle_weight_newtons=float(vehicle_weight_newtons))
+                             vehicle_weight_newtons=vehicle_weight_newtons)
         ncdatabase.azimuth_reference = 'track'
         ncdatabase.source_format = 'NORAH2 hemisphere (.hem)'
         ncdatabase.norah2_speed_mapping = speed_mapping
         ncdatabase.norah2_mirror_rotor = int(bool(mirror_rotor))
         ncdatabase.norah2_ground_included_accepted = int(bool(accept_ground_included))
         ncdatabase.norah2_fill_empty = 'nearest' if fill_empty else 'none'
-        ncdatabase.norah2_thrust_air_density_kg_m3 = float(thrust_air_density)
+        ncdatabase.norah2_thrust_air_density_kg_m3 = thrust_air_density
         shared = _write_shared_grid_and_frequency(ncdatabase, pending_groups)
         for group, condition in zip(pending_groups, conditions):
             add_sphere_group(ncdatabase, group.name, group.phi, group.theta, group.radius,
@@ -3377,8 +3458,9 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
                 if constant in condition['constants']:
                     setattr(written, 'norah2_' + constant, float(condition['constants'][constant]))
     finally:
+        # Closed explicitly, so a failed flush raises here rather than being
+        # lost to the garbage collector.
         ncdatabase.close()
-    return [{k: v for k, v in c.items() if k != 'constants'} for c in conditions]
 
 
 def OASPL(amplitudes):

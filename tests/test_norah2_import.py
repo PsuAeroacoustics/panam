@@ -200,6 +200,42 @@ def test_starboard_stays_starboard_and_mirror_rotor_reverses_it(tmp_path):
         assert nc.norah2_mirror_rotor == 1
 
 
+
+def drop_last_phi_row(path):
+    """Cut a .hem's phi = 90 row, leaving an axis -90..80 that is not symmetric about 0."""
+    raw = Path(path).read_bytes().decode('ascii').split('\r\n')
+    start = raw.index('PHIOBSAC= 90.000000')
+    end = next(i for i in range(start + 1, len(raw)) if not raw[i].strip())
+    del raw[start:end]
+    axis = raw.index('PHIOBSAC\t19\t0\t3\t0')
+    raw[axis] = 'PHIOBSAC\t18\t0\t3\t0'
+    assert raw[axis + 1].endswith('\t80\t90\t')
+    raw[axis + 1] = raw[axis + 1][:-len('90\t')]
+    Path(path).write_bytes('\r\n'.join(raw).encode('ascii'))
+
+
+def test_mirror_rotor_relabels_an_uneven_azimuth_axis(tmp_path):
+    """On -90..80, phi -> -phi gives -80..90: the labels move with the data, not only the rows.
+
+    On the shipped, symmetric axis reversing the rows alone is indistinguishable from
+    the mirror; this axis tells them apart.
+    """
+    files = three_hems(tmp_path, starboard_boost_db=6.0)
+    for f in files:
+        drop_last_phi_row(f)
+    hem = fa.load_norah2_hemisphere(files[0])
+    assert list(hem['phi_deg']) == list(np.arange(-90.0, 81.0, 10.0))
+    out = tmp_path / 'mirrored.nod'
+    build(files, out, mirror_rotor=True)
+    phis, _, amplitude, coverage, _, _ = group_grid(out)
+    expected = hem['levels_db'] + offset_db(hem['frequency_hz'])
+    present = np.isfinite(expected)
+    for k, phi in enumerate(hem['phi_deg']):
+        row = list(phis).index(-phi)
+        assert np.allclose(amplitude[row][present[k]], expected[k][present[k]], atol=1e-9)
+        assert np.array_equal(coverage[row].astype(bool), present[k])
+
+
 def test_novalue_cells_are_missing_and_uncovered(tmp_path):
     """-999 bands and whole directions read as no data: -inf, coverage 0, EAA 0 if empty."""
     files = three_hems(tmp_path, starboard_boost_db=20.0, minimum_level_db=60.0)
@@ -377,8 +413,61 @@ def test_conditions_must_be_distinct_and_span_both_axes(tmp_path):
     level = [write_hem(tmp_path / f'l{i}.hem', speed, 0.0) for i, speed in enumerate((60.0, 80.0, 100.0))]
     with pytest.raises(ValueError, match='do not vary in both'):
         build(level, tmp_path / 'x.nod')
+    # Two are enough for NICE-OPS to refuse a constant axis (it stops the run).
+    with pytest.raises(ValueError, match='do not vary in both'):
+        build(level[:2], tmp_path / 'x.nod')
+    assert not (tmp_path / 'x.nod').exists()
     with pytest.warns(UserWarning, match='nearest condition'):
         build([a], tmp_path / 'one.nod')
+    with pytest.warns(UserWarning, match='nearest condition'):
+        build([a, level[1]], tmp_path / 'two.nod')
+
+
+def test_collinear_conditions_are_warned_about(tmp_path):
+    """Three conditions on one line: NICE-OPS triangulates no simplex and takes the nearest."""
+    line = [write_hem(tmp_path / f'c{i}.hem', speed, angle)
+            for i, (speed, angle) in enumerate([(60.0, -6.0), (80.0, -3.0), (100.0, 0.0)])]
+    with pytest.warns(UserWarning, match='lie on one line'):
+        build(line, tmp_path / 'line.nod')
+    assert (tmp_path / 'line.nod').exists()
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter('error', UserWarning)
+        build(three_hems(tmp_path), tmp_path / 'ok.nod')
+
+
+def test_a_truncated_file_is_refused_by_name(tmp_path):
+    files = three_hems(tmp_path)
+    raw = Path(files[1]).read_bytes().split(b'\r\n')
+    Path(files[1]).write_bytes(b'\r\n'.join(raw[:20]))
+    with pytest.raises(ValueError, match=r'X_1\.hem: cannot be converted \(it ends early'):
+        build(files, tmp_path / 'x.nod')
+    assert not (tmp_path / 'x.nod').exists()
+
+
+def test_build_atmosphere_units_are_checked(tmp_path):
+    files = three_hems(tmp_path)
+    with pytest.raises(ValueError, match='not in kPa'):
+        build(files, tmp_path / 'x.nod',
+              atmosphere=Atmosphere(temperature=293.15, pressure=101325.0, relative_humidity=20.0))
+    with pytest.raises(ValueError, match='not in kelvin'):
+        build(files, tmp_path / 'x.nod',
+              atmosphere=Atmosphere(temperature=20.0, pressure=101.325, relative_humidity=20.0))
+
+
+def test_a_failed_write_leaves_the_existing_output_alone(tmp_path, monkeypatch):
+    files = three_hems(tmp_path)
+    out = tmp_path / 'X.nod'
+    out.write_text('existing')
+
+    def fail(*args, **kwargs):
+        raise OSError('disk full')
+    monkeypatch.setattr(fa, 'add_sphere_group', fail)
+    with pytest.raises(OSError, match='disk full'):
+        build(files, out)
+    assert out.read_text() == 'existing'
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
+        [Path(f).name for f in files] + ['X.nod'])
 
 
 def test_overwrite_false_refuses_and_inputs_are_not_outputs(tmp_path):
@@ -391,6 +480,13 @@ def test_overwrite_false_refuses_and_inputs_are_not_outputs(tmp_path):
         build(files, files[0])
     with pytest.raises(ValueError, match='more than once'):
         build(files + [files[0]], out)
+    # The same file under another name is the same file.
+    link = tmp_path / 'link.hem'
+    link.symlink_to(files[0])
+    with pytest.raises(ValueError, match='more than once'):
+        build(files + [str(link)], out)
+    with pytest.raises(ValueError, match='one of the input files'):
+        build(files, link)
 
 
 def test_read_vehicle_rotor_data(tmp_path):

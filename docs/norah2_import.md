@@ -58,7 +58,7 @@ surface outward. So each band moves by
 alpha being the ISO 9613-1 coefficient (`panam_acoustics.iso_9613_1_1993`) at the
 band's center in the file's own TAMB/RELHUM/PAMB, not assumed ICAO constants.
 At r = 30.48 m that is +5.88 dB of spreading plus 0.18, 0.31, 0.65, 1.96 and
-2.93 dB of absorption at 1, 2, 4, 8 and 10 kHz.
+2.92 dB of absorption at 1, 2, 4, 8 and 10 kHz.
 
 **The hazard.** Read as lossless, the ICAO absorption over 60 m stays in the
 levels. On B407 spheres exported by NICE-OPS at 80 kt and -6 deg it is worth a
@@ -153,7 +153,8 @@ with no band left gets dBA -inf and EAA 0 (`_finite_sphere_levels`).
 
 That matters more here than for panam's spheres. Across the 203 two-axis files
 of the NORAH2 V2.0.74 public package, **45.5 %** of the lower-hemisphere cells are
-NOVALUE: whole directions, never single bands (40-53 % per aircraft). NORAH2's
+NOVALUE: whole directions, never single bands (40-53 % per aircraft, 33-62 %
+per file). NORAH2's
 own predictor fills an empty bin from its nearest neighbor at use time.
 `fill_empty` (`--fill-empty`) does the same in the database
 (`fill_norah2_empty_cells`). Each band takes its level from the nearest
@@ -204,22 +205,35 @@ reader that learns attitude-referenced spheres can tell these apart.
 ## What it refuses
 
 Each of these stops the conversion before the output is opened, with the file
-and the reason named:
+and the reason named. The database is written to a temporary file beside the
+output and moved into place only when it is complete, so a failure while
+writing leaves neither a partial database nor a damaged earlier one.
 
 - a missing vehicle value (tip speed, radius, weight);
 - no `speed_mapping`, or `tas_air_density` with `ground_speed`;
 - a missing required constant (POLDIST, FREEFIELD, TAMB, RELHUM, PAMB, ACSPEED, GAMM);
 - FREEFIELD = 0 without the option, and any FREEFIELD other than 0 or 2;
-- one-axis tables, or point-dependent parameters (NPARAD > 0);
+- one-axis tables, point-dependent parameters (NPARAD > 0), and a file that
+  ends before its header says it should;
 - TAMB outside 200-350 K, RELHUM outside 0-100 %, PAMB outside 30-110 kPa
-  (a file in deg C or hPa);
+  (a file in deg C or hPa), and a build atmosphere outside the same bounds
+  (given in deg C or Pa);
 - `ias_to_tas` without a usable measurement atmosphere or density;
 - files with different angle grids or bands, a file that is all NOVALUE, the
-  same file twice, or the output among the inputs;
+  same file twice (also through a symbolic link), or the output among the inputs;
 - two files at one flight condition (NICE-OPS takes one sphere per condition);
-- three or more conditions that do not vary in both speed and path angle,
-  which NICE-OPS cannot triangulate. One or two conditions convert, with a
-  warning that NICE-OPS will take the nearest one.
+- two or more conditions that do not vary in both speed and path angle. NICE-OPS
+  refuses such a database at load, two spheres as well as more (checked on the
+  pinned binary: two level-flight spheres stop the run).
+
+Two cases convert with a warning instead, because NICE-OPS loads them but takes
+the nearest condition rather than interpolating:
+
+- one or two conditions (fewer than a triangle needs);
+- three or more that lie on one line in (speed, path angle), for example
+  60 kt / -6 deg, 80 kt / -3 deg, 100 kt / 0 deg. NICE-OPS's triangulation of
+  them has no simplex (it logs "0 simplices"), and every query falls back to
+  the nearest condition.
 
 ## Not done
 
@@ -254,8 +268,12 @@ and the reason named:
 - **Speed and attributes.** Both speed mappings give the advance ratio and
   `speed_reference` they should, as do the density override and the moist-air
   density. The root and group attributes are checked, including C_T.
-- **Refusals.** Every refusal above has a test, and so does the command line
-  (argument errors exit 2, conversion errors exit 1 and leave no output).
+- **Refusals.** Every refusal and warning above has a test, and so does the
+  command line (argument errors exit 2, conversion errors exit 1 and leave no
+  output). A write that fails partway leaves an existing output untouched.
+- **An uneven azimuth axis.** On the shipped -90..90 axis, reversing the rows
+  alone is indistinguishable from `mirror_rotor`'s phi -> -phi. A file cut to
+  -90..80 tells them apart: the labels have to move with the data.
 - **The shipped R44 set** (`-m data`, with the NORAH2 package configured as
   `norah2` in `local_paths`) converts, level for level and coverage for coverage.
 
@@ -264,7 +282,10 @@ Each of these mutants fails at least one test:
 - dropping the kept first radius of absorption;
 - the ICAO constants in place of the file's atmosphere;
 - `argmin` for `argmax` in the fill;
-- `mirror_rotor` as a no-op;
+- `mirror_rotor` as a no-op, and `mirror_rotor` reversing the rows without
+  relabeling them;
+- the condition-span check applied only from three conditions up;
+- coverage taken after the fill instead of before;
 - the IAS-to-TAS ratio inverted.
 
 Every aircraft set in the public package converts under both mappings. The R22
