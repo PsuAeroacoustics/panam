@@ -3244,8 +3244,14 @@ _SphereCondition = namedtuple('_SphereCondition', [
     'load_factor', 'frequency', 'amplitude', 'coverage', 'run_metadata'], defaults=(None,))
 
 #: Per-group run metadata in a database (:func:`add_sphere_group`'s ``run_metadata``):
-#: variable name and units attribute (None: the wind units the caller declared).
-GROUP_RUN_METADATA_VARIABLES = (
+#: the name of each numeric group attribute (f8, NaN when unknown) and its units, written
+#: beside it as the text attribute ``<name>_units`` (None: the wind units the caller
+#: declared).  They are group attributes, not variables: NICE-OPS's nc_open reads every
+#: dataset's metadata in every group eagerly, and six one-element variables per group
+#: made a 1432-group database (B407_ambient_gated) load 0.23 s (31%) slower in every
+#: NICE-OPS run, where the same values as attributes, with their units, cost nothing
+#: measurable (0.72 s either way).
+GROUP_RUN_METADATA_NUMBERS = (
     ('gross_weight', 'N'),
     ('air_density', 'kg m-3'),
     ('wind_along_track', None),
@@ -3255,7 +3261,7 @@ GROUP_RUN_METADATA_VARIABLES = (
 )
 
 #: Per-group text attributes alongside them.
-GROUP_RUN_METADATA_ATTRIBUTES = ('wind_source', 'wind_units', 'wind_reference_direction',
+GROUP_RUN_METADATA_TEXT = ('wind_source', 'wind_units', 'wind_reference_direction',
                                  'air_density_source', 'source_sphere', 'condition_origin')
 
 #: Values of a group's condition_origin.
@@ -3672,11 +3678,12 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
 
     Every condition group also carries the metadata of the measured run its
     levels came from (see :func:`group_run_metadata` and
-    :data:`GROUP_RUN_METADATA_VARIABLES`), NaN where the sphere does not say:
-    gross_weight (N), air_density (kg m-3), wind_along_track and
-    wind_cross_track (in the units the build declared, the group's
-    wind_units), advance_ratio_air and thrust_coefficient_run, with the text
-    attributes wind_source, wind_units, wind_reference_direction,
+    :data:`GROUP_RUN_METADATA_NUMBERS`) as group attributes, NaN where the
+    sphere does not say: gross_weight (N), air_density (kg m-3),
+    wind_along_track and wind_cross_track (in the units the build declared,
+    the group's wind_units), advance_ratio_air and thrust_coefficient_run,
+    each with its units in ``<name>_units``, and the text attributes
+    wind_source, wind_units, wind_reference_direction,
     air_density_source, source_sphere (the sphere file's name) and
     condition_origin ('measured', 'extended_flight_path_angle' or
     'synthesized_hover').  NICE-OPS reads none of them; they are recorded so
@@ -3987,9 +3994,10 @@ def add_sphere_group(ncdatabase, groupname, phi, theta, radius, SPLA, EAA, speed
     """Write one condition group.
 
     run_metadata, when given, is a dict as :func:`group_run_metadata` returns: each
-    of :data:`GROUP_RUN_METADATA_VARIABLES` is written as an f8 over ("condition",)
-    with its units attribute (NaN where unknown), and each of
-    :data:`GROUP_RUN_METADATA_ATTRIBUTES` as a text attribute of the group.
+    of :data:`GROUP_RUN_METADATA_NUMBERS` is written as an f8 attribute of the group
+    (NaN where unknown) with its units in the text attribute ``<name>_units``, and
+    each of :data:`GROUP_RUN_METADATA_TEXT` as a text attribute.  Attributes, not
+    variables, for NICE-OPS's load time (see :data:`GROUP_RUN_METADATA_NUMBERS`).
 
     doppler_shift_removed, when given, is written as the group's scalar int
     DOPPLER_SHIFT_REMOVED (0 received-frame, 1 de-Dopplerized).  coverage, when
@@ -4085,25 +4093,14 @@ def add_sphere_group(ncdatabase, groupname, phi, theta, radius, SPLA, EAA, speed
             'gated, masked, mirrored from the other half of the sphere, or averaged from a gated partner')
 
     if run_metadata is not None:
-        missing = ({name for name, _ in GROUP_RUN_METADATA_VARIABLES} | set(GROUP_RUN_METADATA_ATTRIBUTES)) \
+        missing = ({name for name, _ in GROUP_RUN_METADATA_NUMBERS} | set(GROUP_RUN_METADATA_TEXT)) \
             - set(run_metadata)
         if missing:
             raise ValueError('run_metadata lacks {}'.format(sorted(missing)))
-        for name, units in GROUP_RUN_METADATA_VARIABLES:
-            variable = this_group.createVariable(name, 'f8', ("condition",))
-            variable[:] = float(run_metadata[name])
-            variable.units = str(run_metadata['wind_units']) if units is None else units
-        this_group.variables['gross_weight'].description = 'gross weight of the measured run, from its reference list'
-        this_group.variables['air_density'].description = 'air density at the measured run, at the aircraft'
-        this_group.variables['wind_along_track'].description = (
-            'wind at the aircraft along wind_reference_direction, positive toward it (a tailwind)')
-        this_group.variables['wind_cross_track'].description = (
-            'wind at the aircraft across wind_reference_direction, positive toward starboard')
-        this_group.variables['advance_ratio_air'].description = (
-            'horizontal airspeed of the measured run (ground velocity minus wind) over the tip speed')
-        this_group.variables['thrust_coefficient_run'].description = (
-            'gross_weight / (air_density pi R^2 V_tip^2): the measured run\'s own, not scaled by load factor')
-        for name in GROUP_RUN_METADATA_ATTRIBUTES:
+        for name, units in GROUP_RUN_METADATA_NUMBERS:
+            this_group.setncattr(name, np.float64(run_metadata[name]))
+            this_group.setncattr(name + '_units', str(run_metadata['wind_units']) if units is None else units)
+        for name in GROUP_RUN_METADATA_TEXT:
             this_group.setncattr(name, str(run_metadata[name]))
 
 

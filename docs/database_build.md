@@ -75,7 +75,7 @@ from (the steady window, or a hover's whole record) before it reads any audio.
 | test | default | why |
 | --- | --- | --- |
 | height above the ground under the aircraft | at least 10 ft (`min_height_above_array_ft`) | the depropagation geometry needs the aircraft above the microphones; the B407's GPS antenna reads 9-10 ft with the aircraft on the ground (runs 283421-2), so anything lower is impossible |
-| `|alt - ref_elips_ft - z|` | at most 10 ft | z has to be the height the frame says; the largest departure in any steady window of the six aircraft is 3.5 ft |
+| `|alt - ref_elips_ft - z|` | at most 10 ft, and finite | z has to be the height the frame says; the largest departure in any steady window of the six aircraft is 3.5 ft |
 | position finite | | |
 
 The ground under each sample is the height of the ground board nearest it in
@@ -136,9 +136,12 @@ The hover refusals are altitudes at or below the boards: EC130B4's 12 come
 within 2-5 ft of them, R44's 14 range from 4 ft above to 24 ft below, R66's 12
 from 17 to 33 ft below (the harness's `r66_hovers.py` already found the R66's
 altitude about 30 ft low and raises it before building), and two of the B407's
-in-ground-effect hovers come within 4.7 ft (283424) and go 11 ft below (283435). B206L3's hovers pass. A caller that corrects a hover's altitude (by
-patching `load_track`, as `r66_hovers.py` does) is checked on the corrected
-track; one that accepts the altitude as it is passes `track_check=False`.
+in-ground-effect hovers come within 4.7 ft (283424) and go 11 ft below (283435). B206L3's hovers pass. A caller that corrects a hover's altitude by patching
+`load_track` is checked on the corrected track, but it must shift `alt` by the
+same amount as `z`, or the altitude test refuses the run for z departing from
+its altitude: `r66_hovers.py` today raises `z` alone, and needs to raise `alt`
+with it (or pass `track_check=False`) to rebuild under this check. One that
+accepts the altitude as it is passes `track_check=False`.
 
 The decelerating level-off flag fires on 79 of the 659 steady runs, almost all
 descents whose window ends where the flare begins, which is why it is a flag.
@@ -217,10 +220,11 @@ declared unit; only the airspeed converts it.
 ### In the database
 
 `build_empirical_database` reads each sphere's metadata and writes it into
-every condition group its levels go to, as f8 variables over `("condition",)`
-with a `units` attribute, NaN when unknown:
+every condition group its levels go to, as f8 group attributes, NaN when
+unknown, each with its units in a text attribute beside it (`gross_weight_units`
+and so on):
 
-| variable | units | content |
+| attribute | units | content |
 | --- | --- | --- |
 | `gross_weight` | N | the run's gross weight |
 | `air_density` | kg m-3 | its air density at the aircraft |
@@ -242,7 +246,15 @@ file's name) and `condition_origin`:
 
 R and V_tip come from `vehicle.cfg`; a configuration read from a reference
 workbook (the `[Option]` path) gives no radius, and the two derived labels are
-then NaN. NICE-OPS reads none of these variables.
+then NaN. NICE-OPS reads none of them.
+
+They are attributes rather than variables for NICE-OPS's sake. netCDF-4 opens
+every dataset in every group when a file is opened, and NICE-OPS's database
+load is mostly that (its CLAUDE.md, "Where the database load time goes"). Six
+one-element variables per group took the 1432-group `B407_ambient_gated.nod`
+from 0.72 to 0.95 s per NICE-OPS run (31%, every run, footprint unchanged); the
+same values as group attributes, with their units, cost nothing measurable.
+`tests/test_database_provenance.py` pins that they stay attributes.
 
 ## The heading frame
 
@@ -305,8 +317,10 @@ in rotor radii), `rotor_scale`, `advance_ratio` (R), `flight_path_angle` (R),
 `thrust_coefficient` (R) over `condition`; `dBA` (R) and `EAA` (R) over
 `channels`, with `phi` and `theta` unless shared; `amplitude` over
 `(PHI, THETA, frequency)` and `frequency` unless shared, when spectra are kept;
-`DOPPLER_SHIFT_REMOVED` (i4); `coverage` (i1); the per-run metadata variables
-above, and the group attributes `wind_source`, `wind_units`,
+`DOPPLER_SHIFT_REMOVED` (i4); `coverage` (i1). Group attributes: the per-run
+metadata above, the f8 `gross_weight`, `air_density`, `wind_along_track`,
+`wind_cross_track`, `advance_ratio_air` and `thrust_coefficient_run`, each with
+its `<name>_units`, and the text `wind_source`, `wind_units`,
 `wind_reference_direction`, `air_density_source`, `source_sphere` and
 `condition_origin`. The additions are new names only, so `database_version`
 stays 1.

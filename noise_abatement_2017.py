@@ -758,7 +758,10 @@ def check_track(track, index_start, index_stop, *, ground_mics=None, ref_elips_f
       where its twin 285235 flew 47 ft above them: the tracking altitude, not the frame,
       is wrong (its z follows its alt exactly).
     * z does not follow the track's own altitude: ``|alt - ref_elips_ft - z|`` exceeds
-      ``max_altitude_mismatch_ft`` (needs ``alt`` in the track and ``ref_elips_ft``).
+      ``max_altitude_mismatch_ft`` (needs ``alt`` in the track and ``ref_elips_ft``; None
+      turns the test off), or the altitude is not finite.  A caller that corrects a track's
+      height (the R66's altitude reads about 30 ft low) must shift ``alt`` with ``z``, or
+      this refuses it.
     * z is not finite somewhere in the window.
 
     Flags (``motion_flags``; off for a hover, whose window is the whole record):
@@ -811,11 +814,15 @@ def check_track(track, index_start, index_stop, *, ground_mics=None, ref_elips_f
     elips = float('nan') if ref_elips_ft is None else float(ref_elips_ft)
     if 'alt' in track and np.isfinite(elips):
         mismatch = np.abs(np.asarray(track['alt'], dtype=float)[window] - elips - z)
-        worst = float(np.nanmax(mismatch)) if np.any(np.isfinite(mismatch)) else float('nan')
+        worst = float(np.max(mismatch))
         metrics['max_altitude_mismatch_ft'] = worst
-        if not np.isfinite(worst) or (max_altitude_mismatch_ft is not None and worst > float(max_altitude_mismatch_ft)):
-            refusals.append('its z departs from its altitude less ref_elips_ft by up to {:.1f} ft '
-                            '(at most {:g})'.format(worst, float(max_altitude_mismatch_ft)))
+        if max_altitude_mismatch_ft is not None:
+            if not np.isfinite(worst):
+                refusals.append('its altitude is not finite in the window, so z cannot be checked against it')
+            elif worst > float(max_altitude_mismatch_ft):
+                refusals.append('its z departs from its altitude less ref_elips_ft by up to {:.1f} ft (at most '
+                                '{:g}; a caller that corrects z must correct alt by the same amount)'.format(
+                                    worst, float(max_altitude_mismatch_ft)))
 
     if motion_flags and 'vx' in track and 'vy' in track and time.size > 2:
         step = float(np.median(np.diff(time)))
@@ -1936,8 +1943,8 @@ def main(argv=None):
                              'and write the table to --manifest if given; needs only the tracks')
     parser.add_argument('--hovers', action='store_true',
                         help='with --check-tracks, check the hover runs too (their whole record)')
-    parser.add_argument('--azimuth-reference', choices=('track', 'heading'), default='track',
-                        help="'track' (default) measures each sphere's azimuth from the ground track; "
+    parser.add_argument('--azimuth-reference', choices=('track', 'heading'), default=None,
+                        help="'track' (the default for flight) measures each sphere's azimuth from the ground track; "
                              "'heading' from the tracked INS heading, with Doppler and depropagation "
                              'still on the ground velocity.  Written to every sphere and so to the database')
     parser.add_argument('--winds', default=None,

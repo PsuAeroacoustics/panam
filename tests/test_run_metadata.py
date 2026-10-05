@@ -203,34 +203,38 @@ def test_every_group_carries_its_runs_metadata(tmp_path):
         for load_factor in (1.0, 2.0):
             a = next(g for (name, ct), g in measured.items() if name == 'A.nc'
                      and np.isclose(ct, load_factor * float(db.groups['sphere0']['thrust_coefficient'][0])))
-            assert float(a['gross_weight'][0]) == pytest.approx(weight)
-            assert float(a['air_density'][0]) == pytest.approx(1.0412)
-            assert float(a['wind_along_track'][0]) == -8.4 and float(a['wind_cross_track'][0]) == 2.5
+            assert float(a.getncattr('gross_weight')) == pytest.approx(weight)
+            assert float(a.getncattr('air_density')) == pytest.approx(1.0412)
+            assert float(a.getncattr('wind_along_track')) == -8.4 and float(a.getncattr('wind_cross_track')) == 2.5
             # The run's own C_T, not scaled by the group's load factor.
-            assert float(a['thrust_coefficient_run'][0]) == pytest.approx(ct_run, rel=1e-12)
-            assert float(a['advance_ratio_air'][0]) == pytest.approx(0.514444 * 88.6 / tip_speed, rel=1e-12)
+            assert float(a.getncattr('thrust_coefficient_run')) == pytest.approx(ct_run, rel=1e-12)
+            assert float(a.getncattr('advance_ratio_air')) == pytest.approx(0.514444 * 88.6 / tip_speed, rel=1e-12)
             assert a['advance_ratio'][0] == pytest.approx(0.514444 * 60.0 / tip_speed)
-            assert a['gross_weight'].units == 'N' and a['air_density'].units == 'kg m-3'
-            assert a['wind_along_track'].units == 'kt' and a['advance_ratio_air'].units == '1'
+            assert a.getncattr('gross_weight_units') == 'N' and a.getncattr('air_density_units') == 'kg m-3'
+            assert a.getncattr('wind_along_track_units') == 'kt' and a.getncattr('advance_ratio_air_units') == '1'
+            # Attributes, not variables (NICE-OPS's load time).
+            assert not {'gross_weight', 'air_density', 'thrust_coefficient_run'} & set(a.variables)
             assert a.getncattr('wind_source') == 'lidar' and a.getncattr('air_density_source') == 'ground stations'
             assert a.getncattr('wind_reference_direction') == 'ground track'
         b = next(g for (name, _), g in measured.items() if name == 'B.nc')
-        assert float(b['gross_weight'][0]) == pytest.approx(3300.0 * fa.POUND_FORCE_NEWTONS)
+        assert float(b.getncattr('gross_weight')) == pytest.approx(3300.0 * fa.POUND_FORCE_NEWTONS)
         for name in ('air_density', 'wind_along_track', 'wind_cross_track', 'advance_ratio_air',
                      'thrust_coefficient_run'):
-            assert np.isnan(float(b[name][0])), name
+            assert np.isnan(float(b.getncattr(name))), name
         assert b.getncattr('wind_source') == 'none' and b.getncattr('air_density_source') == 'none'
 
         # The level sphere is re-emitted at the extended angles with its own metadata.
         extended = groups['extended_flight_path_angle']
         assert extended and {g.getncattr('source_sphere') for g in extended} == {'A.nc'}
-        assert all(float(g['advance_ratio_air'][0]) == pytest.approx(0.514444 * 88.6 / tip_speed) for g in extended)
+        assert all(float(g.getncattr('advance_ratio_air')) == pytest.approx(0.514444 * 88.6 / tip_speed)
+                   for g in extended)
         # The hover keeps the source run's loading but no wind or flight condition.
         hover = groups['synthesized_hover']
         assert hover and {g.getncattr('source_sphere') for g in hover} == {'A.nc'}
         for g in hover:
-            assert float(g['thrust_coefficient_run'][0]) == pytest.approx(ct_run, rel=1e-12)
-            assert np.isnan(float(g['advance_ratio_air'][0])) and np.isnan(float(g['wind_along_track'][0]))
+            assert float(g.getncattr('thrust_coefficient_run')) == pytest.approx(ct_run, rel=1e-12)
+            assert np.isnan(float(g.getncattr('advance_ratio_air')))
+            assert np.isnan(float(g.getncattr('wind_along_track')))
             assert g.getncattr('wind_source') == 'none'
 
 

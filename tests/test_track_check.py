@@ -102,6 +102,24 @@ def test_z_that_does_not_follow_the_altitude_is_refused():
     assert check.metrics['max_altitude_mismatch_ft'] == pytest.approx(25.0)
     # Without the reference height there is nothing to compare.
     assert not na.check_track(track, *_whole(track)).refused
+    # None turns the test off, and an altitude that is not finite is refused with that reason.
+    assert not na.check_track(track, *_whole(track), ref_elips_ft=3926.51, max_altitude_mismatch_ft=None).refused
+    track['alt'][300] = np.nan
+    check = na.check_track(track, *_whole(track), ref_elips_ft=3926.51)
+    assert check.refused and 'altitude is not finite' in check.refusals[-1]
+    assert not na.check_track(track, *_whole(track), ref_elips_ft=3926.51, max_altitude_mismatch_ft=None).refused
+
+
+def test_a_height_correction_must_move_the_altitude_with_z():
+    """The R66's altitude reads ~30 ft low and the harness raises z before building; raising
+    z alone leaves it 30 ft from its own altitude, which the check refuses."""
+    track = _descent(-20.0, fpa_deg=0.0)
+    track['alt'] = track['z'] + 3926.51
+    track['z'] = track['z'] + 30.0
+    check = na.check_track(track, *_whole(track), ref_elips_ft=3926.51)
+    assert check.refused and 'correct alt by the same amount' in check.refusals[0]
+    track['alt'] = track['alt'] + 30.0
+    assert not na.check_track(track, *_whole(track), ref_elips_ft=3926.51).refused
 
 
 def test_a_position_that_is_not_finite_is_refused():
