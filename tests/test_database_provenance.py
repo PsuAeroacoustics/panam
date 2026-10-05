@@ -62,8 +62,13 @@ PRE_EXISTING_GROUP_VARIABLES = {
     'dBA', 'EAA', 'amplitude',
 }
 ADDED_ROOT_ATTRIBUTES = {'speed_reference', 'build_temperature_K', 'build_pressure_kPa',
-                         'build_relative_humidity_percent'}
+                         'build_relative_humidity_percent', 'azimuth_reference'}
 ADDED_GROUP_VARIABLES = {'DOPPLER_SHIFT_REMOVED', 'coverage'}
+# The per-run metadata are group attributes, never variables: a variable per group is a
+# dataset NICE-OPS's nc_open has to open (0.23 s more per load on a 1432-group database).
+ADDED_GROUP_ATTRIBUTES = ({name for name, _ in fa.GROUP_RUN_METADATA_NUMBERS}
+                          | {name + '_units' for name, _ in fa.GROUP_RUN_METADATA_NUMBERS}
+                          | set(fa.GROUP_RUN_METADATA_TEXT))
 
 
 def _write_sphere(path, amplitude, speed=70.0, flight_path_angle=0.0, doppler=None):
@@ -375,7 +380,8 @@ def test_a_fully_gated_direction_is_unmeasured_and_has_no_energy(tmp_path):
 def test_default_build_differs_from_the_old_one_only_by_the_added_items(tmp_path):
     """Not a comparison against a stored file: the pre-existing values are pinned to
     the same pipeline the old builder ran, and the set of names is pinned to what it
-    wrote.  The added items are exactly the four attributes and the two variables."""
+    wrote.  The added items are exactly the provenance attributes and variables
+    above, the azimuth_reference attribute and the per-run metadata attributes."""
     if not os.path.exists(SPHERE):
         pytest.skip('example sphere data not available')
     directory = tmp_path / 'source'
@@ -395,6 +401,7 @@ def test_default_build_differs_from_the_old_one_only_by_the_added_items(tmp_path
         assert ADDED_ROOT_ATTRIBUTES <= set(db.ncattrs())
         for group in db.groups.values():
             assert set(group.variables) == PRE_EXISTING_GROUP_VARIABLES | ADDED_GROUP_VARIABLES
+            assert set(group.ncattrs()) == ADDED_GROUP_ATTRIBUTES
 
         # The pre-existing numbers are the old pipeline's, bit for bit: a forward
         # sphere's dBA is the completed SPLA (no load-factor offset at LF = 1), and
