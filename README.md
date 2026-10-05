@@ -23,6 +23,12 @@ name instead of using hard-coded paths. Copy `local_paths.example.toml` to
 matching `PANAM_<NAME>` environment variable (e.g. `PANAM_NORAH2`). Tests
 whose data are not configured are skipped. See `local_paths.py` for the names.
 
+# Notes
+
+`docs/` holds the longer notes: `ground_plane_corrections.md` (the ground-plate
+corrections) and `database_build.md` (the 2017 sphere build's track check,
+per-run metadata, heading frame, and the `.nod` database format).
+
 # Signal loading and plotting
 
 Signal loaders are available in `panam_acoustics.signal_io` and remain
@@ -43,3 +49,10 @@ noninteractive `Agg` backend automatically.
 
 For `spectrogram_plot.py`, `--frequency low:high` selects the displayed
 frequency range. `--y-limits` takes precedence when both are supplied.
+
+# NORAH2 hemispheres
+
+`norah2_to_nod.py` builds a NICE-OPS database from NORAH2 `.hem` hemispheres
+(`flight_acoustics.build_database_from_norah2`). The vehicle and the meaning of
+ACSPEED (`--speed ias-to-tas` or `ground-speed`) must be given. See
+`docs/norah2_import.md` for the conversion and its hazards.
