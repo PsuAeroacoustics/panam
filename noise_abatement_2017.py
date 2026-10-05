@@ -496,6 +496,459 @@ def flight_condition(track, index_start, index_stop):
 
 
 # --------------------------------------------------------------------------
+# The track frame
+# --------------------------------------------------------------------------
+
+#: WGS84 semi-major axis (ft) and first eccentricity squared, for the local radii of
+#: curvature that turn latitude and longitude into feet about a run's reference point.
+WGS84_A_FT = 6378137.0 / 0.3048
+WGS84_E2 = 6.69437999014e-3
+
+#: A track frame's +x bearing fitted from the track's own latitude and longitude must agree
+#: with the reference list's ``true_heading`` to this many degrees.  Over every track of the
+#: six aircraft they agree to 0.4 deg (Amedee's flight layout 270, its hover layout 279;
+#: Eglin's 140 and 92.3).
+FRAME_BEARING_TOLERANCE_DEG = 1.0
+
+#: The fit is attempted only over a track spanning at least this much ground (ft); a hover's
+#: few feet of drift do not fix a direction.
+FRAME_FIT_MIN_SPAN_FT = 500.0
+
+
+def _float_or_nan(value):
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return float('nan')
+
+
+def local_east_north_ft(lat_deg, lon_deg, lat0_deg, lon0_deg):
+    """East and north (ft) of points from a reference point, on the WGS84 ellipsoid's
+    local radii of curvature at the reference: good to a fraction of a foot over the few
+    kilometers of an array."""
+    lat0 = np.radians(float(lat0_deg))
+    w = 1.0 - WGS84_E2 * np.sin(lat0) ** 2
+    meridional = WGS84_A_FT * (1.0 - WGS84_E2) / w ** 1.5
+    normal = WGS84_A_FT / np.sqrt(w)
+    east = np.radians(np.asarray(lon_deg, dtype=float) - float(lon0_deg)) * normal * np.cos(lat0)
+    north = np.radians(np.asarray(lat_deg, dtype=float) - float(lat0_deg)) * meridional
+    return east, north
+
+
+def east_north_to_frame(bearing_deg, east, north):
+    """East/north components to the track frame, whose +x lies along compass ``bearing_deg``
+    and +y along ``bearing_deg - 90`` (to the left of +x), z up: the frame of every 2017 AC
+    track, fitted from their latitude and longitude."""
+    b = np.radians(float(bearing_deg))
+    east, north = np.asarray(east, dtype=float), np.asarray(north, dtype=float)
+    return east * np.sin(b) + north * np.cos(b), -east * np.cos(b) + north * np.sin(b)
+
+
+def frame_to_east_north(bearing_deg, x, y):
+    """The inverse of :func:`east_north_to_frame`."""
+    b = np.radians(float(bearing_deg))
+    x, y = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
+    return x * np.sin(b) - y * np.cos(b), x * np.cos(b) + y * np.sin(b)
+
+
+def heading_to_frame(heading_deg, bearing_deg):
+    """Unit (x, y) of compass headings in the track frame of :func:`east_north_to_frame`."""
+    h = np.radians(np.asarray(heading_deg, dtype=float))
+    return east_north_to_frame(bearing_deg, np.sin(h), np.cos(h))
+
+
+def frame_bearing_deg(row, track=None, tolerance_deg=FRAME_BEARING_TOLERANCE_DEG):
+    """Compass bearing of a run's track-frame +x axis.
+
+    The reference list's ``true_heading`` is that bearing: 270 on Amedee's flight layout,
+    279 on its hover (static) layout, 140 and 92.3 at Eglin.  It is not one value for the
+    whole test, which is what the heading frame and the hovers need it for: a compass
+    heading means nothing in the track frame until it is known.  When the track carries
+    latitude and longitude and spans enough ground, the bearing is also fitted from them
+    (as the harness's ``frame_bearing`` does) and must agree, so a wrong reference-list entry
+    is refused rather than turning every heading by the error.  Without ``true_heading`` the
+    fit alone is used.  Raises ValueError when neither is available.
+    """
+    listed = _float_or_nan(row.get('true_heading'))
+    fitted = float('nan')
+    lat0, lon0 = _float_or_nan(row.get('ref_lat')), _float_or_nan(row.get('ref_lon'))
+    if track is not None and {'lat', 'lon', 'x'} <= set(track) and np.isfinite(lat0) and np.isfinite(lon0):
+        east, north = local_east_north_ft(track['lat'], track['lon'], lat0, lon0)
+        good = np.isfinite(east) & np.isfinite(north) & np.isfinite(track['x'])
+        if good.sum() > 2 and np.ptp(east[good]) ** 2 + np.ptp(north[good]) ** 2 >= FRAME_FIT_MIN_SPAN_FT ** 2:
+            a, b = np.linalg.lstsq(np.column_stack((east[good], north[good])), track['x'][good], rcond=None)[0]
+            fitted = float(np.degrees(np.arctan2(a, b)) % 360.0)
+    if np.isfinite(listed) and np.isfinite(fitted):
+        difference = (fitted - listed + 180.0) % 360.0 - 180.0
+        if abs(difference) > tolerance_deg:
+            raise ValueError('the track frame fitted from latitude and longitude runs along {:.1f} deg, but the '
+                             'reference list gives true_heading {:g}'.format(fitted, listed))
+        return listed % 360.0
+    if np.isfinite(listed):
+        return listed % 360.0
+    if np.isfinite(fitted):
+        return fitted
+    raise ValueError('no true_heading in the reference list and no latitude/longitude in the track to fit it '
+                     'from, so a compass direction cannot be put into the track frame')
+
+
+def ground_microphone_positions(test, run):
+    """The run's layout's ground-board microphones in its track frame (ft), from the
+    layout's microphone list (the reference list's ``mic_loc_file``).
+
+    The list gives each microphone's latitude, longitude and ellipsoidal height in meters;
+    the track's z is ellipsoidal height less ``ref_elips_ft`` (alt - z is that constant in
+    every track).  Checked on run 285236: microphones 1, 3, 10, 17 and 36 land within
+    0.6 ft in plan and 0.5 ft in height of the X, Y and Z their acoustic files carry.  Returns ``(positions, None)``,
+    or ``(None, reason)`` when the list, the reference point or a column is missing.
+    """
+    row = test.by_run.get(run) or {}
+    name = (row.get('mic_loc_file') or '').strip()
+    if not name:
+        return None, 'the reference list names no mic_loc_file'
+    path = os.path.join(test.base, name)
+    if not os.path.exists(path):
+        return None, 'no microphone list {}'.format(path)
+    lat0, lon0 = _float_or_nan(row.get('ref_lat')), _float_or_nan(row.get('ref_lon'))
+    elips0 = _float_or_nan(row.get('ref_elips_ft'))
+    if not (np.isfinite(lat0) and np.isfinite(lon0) and np.isfinite(elips0)):
+        return None, 'the reference list gives no ref_lat/ref_lon/ref_elips_ft'
+    try:
+        bearing = frame_bearing_deg(row)
+    except ValueError as error:
+        return None, str(error)
+    lat, lon, height_m = [], [], []
+    with _open_csv(path) as handle:
+        reader = csv.DictReader(handle)
+        fields = reader.fieldnames or []
+
+        def column(prefix):
+            return next((f for f in fields if f and f.strip().lower().startswith(prefix)), None)
+        lat_key, lon_key, hgt_key = column('latitude'), column('longitude'), column('hgt')
+        if None in (lat_key, lon_key, hgt_key):
+            return None, '{} has no Latitude/Longitude/Hgt columns'.format(name)
+        for entry in reader:
+            if str(entry.get('insttype', '')).strip() not in GROUND_BOARD_INSTRUMENTS:
+                continue
+            values = [_float_or_nan(entry.get(key)) for key in (lat_key, lon_key, hgt_key)]
+            if all(np.isfinite(values)):
+                lat.append(values[0])
+                lon.append(values[1])
+                height_m.append(values[2])
+    if not lat:
+        return None, '{} lists no ground-board microphone with a position'.format(name)
+    east, north = local_east_north_ft(lat, lon, lat0, lon0)
+    x, y = east_north_to_frame(bearing, east, north)
+    z = np.asarray(height_m) / 0.3048 - elips0
+    return np.column_stack((x, y, z)), None
+
+
+# --------------------------------------------------------------------------
+# Track checks
+# --------------------------------------------------------------------------
+
+#: A run is refused when its tracked position comes closer than this (ft) to the ground
+#: under it, the nearest ground board's height, anywhere in the window it is depropagated
+#: from.  Below the microphones is impossible, and so is within 10 ft: the B407's antenna
+#: reads 9-10 ft with the aircraft on the ground (runs 283421-2).  Every steady window of
+#: the six aircraft but one stays above 27 ft; 285236 descends to 66 ft below the boards.
+MIN_HEIGHT_ABOVE_ARRAY_FT = 10.0
+
+#: A run is refused when its z departs from its own altitude (``alt - ref_elips_ft``) by
+#: more than this (ft) in the window: z would then not be the height the frame says.  The
+#: largest departure in any steady window of the six aircraft is 3.5 ft.
+MAX_ALTITUDE_MISMATCH_FT = 10.0
+
+#: A window is flagged when its along-track acceleration, averaged over
+#: :data:`TRACK_CHECK_AVERAGING_S`, falls below minus this (ft/s^2, 1.8 kt/s) anywhere in it.
+DECELERATION_FLAG_FT_S2 = 3.0
+
+#: A window is flagged as ending at a decelerating level-off when, within
+#: :data:`LEVEL_OFF_LOOKAHEAD_S` of its end, the aircraft both decelerates along track by
+#: more than LEVEL_OFF_DECELERATION_FT_S2 and raises its flight path angle by more than
+#: LEVEL_OFF_FPA_RISE_DEG over the window's mean (both averaged over
+#: :data:`TRACK_CHECK_AVERAGING_S`).  Run 283101 (card D4) is the case: a level segment at
+#: 75 ft whose window ends 2 s before an aborted pull-up.
+LEVEL_OFF_DECELERATION_FT_S2 = 2.5
+LEVEL_OFF_FPA_RISE_DEG = 1.5
+LEVEL_OFF_LOOKAHEAD_S = 3.0
+
+#: A window is flagged when its mean flight path angle is this far (deg) from the flight
+#: card's ``fpa``: the window was not flown at the card's condition (283101, card -3 deg,
+#: is a level segment).  The sphere is labeled with the window's own condition either way.
+CARD_FPA_FLAG_DEG = 2.0
+
+#: Running mean the acceleration and flight path tests take, s.
+TRACK_CHECK_AVERAGING_S = 1.0
+
+
+class TrackRefused(ValueError):
+    """A run whose track fails :func:`check_track`; the message says why."""
+
+
+class TrackCheck:
+    """What :func:`check_track` found: ``refusals`` (reasons the run must not be
+    depropagated), ``flags`` (worth knowing, not disqualifying) and ``metrics``."""
+
+    def __init__(self, refusals, flags, metrics):
+        self.refusals = list(refusals)
+        self.flags = list(flags)
+        self.metrics = dict(metrics)
+
+    @property
+    def refused(self):
+        return bool(self.refusals)
+
+    def __repr__(self):
+        return 'TrackCheck(refusals={!r}, flags={!r})'.format(self.refusals, self.flags)
+
+
+def _running_mean(values, samples):
+    values = np.asarray(values, dtype=float)
+    samples = int(max(1, min(samples, values.size)))
+    if values.size == 0:
+        return values
+    return np.convolve(values, np.ones(samples) / samples, mode='valid')
+
+
+def height_above_array(x, y, z, ground_mics=None):
+    """Height (ft) of track points above the ground under them, and what that ground was.
+
+    The ground under a point is the height of the ground board nearest it in plan
+    (``ground_mics``, (n, 3) in the track frame); without boards, the frame's z = 0.
+    """
+    x, y, z = (np.asarray(v, dtype=float) for v in (x, y, z))
+    if ground_mics is None:
+        return z.copy(), 'frame z = 0'
+    mics = np.asarray(ground_mics, dtype=float).reshape(-1, 3)
+    nearest = np.argmin((x[:, None] - mics[None, :, 0]) ** 2 + (y[:, None] - mics[None, :, 1]) ** 2, axis=1)
+    return z - mics[nearest, 2], 'nearest of {} ground boards'.format(mics.shape[0])
+
+
+def check_track(track, index_start, index_stop, *, ground_mics=None, ref_elips_ft=None, card_fpa_deg=None,
+                min_height_ft=MIN_HEIGHT_ABOVE_ARRAY_FT, max_altitude_mismatch_ft=MAX_ALTITUDE_MISMATCH_FT,
+                deceleration_flag_ft_s2=DECELERATION_FLAG_FT_S2,
+                level_off_deceleration_ft_s2=LEVEL_OFF_DECELERATION_FT_S2,
+                level_off_fpa_rise_deg=LEVEL_OFF_FPA_RISE_DEG, level_off_lookahead_s=LEVEL_OFF_LOOKAHEAD_S,
+                card_fpa_flag_deg=CARD_FPA_FLAG_DEG, averaging_s=TRACK_CHECK_AVERAGING_S, motion_flags=True):
+    """Sanity of a loaded track (:func:`load_track`) over the window ``[index_start, index_stop)``
+    it is to be depropagated from.
+
+    Refusals, each a reason the run's depropagation geometry cannot be right:
+
+    * the aircraft comes within ``min_height_ft`` of the ground under it, or goes below it,
+      anywhere in the window.  The ground under each sample is the height of the nearest
+      ground board in plan (``ground_mics``, (n, 3) in the track frame, from
+      :func:`ground_microphone_positions`), which follows a sloping array (Eglin's boards
+      span 25 ft); without them it is the frame's z = 0, the reference point's height,
+      which on the Amedee lakebed is within 2 ft of every board.  None turns the test off.
+      Known case: B407 run 285236 (card D19), at 79 ft below the boards over the array
+      where its twin 285235 flew 47 ft above them: the tracking altitude, not the frame,
+      is wrong (its z follows its alt exactly).
+    * z does not follow the track's own altitude: ``|alt - ref_elips_ft - z|`` exceeds
+      ``max_altitude_mismatch_ft`` (needs ``alt`` in the track and ``ref_elips_ft``).
+    * z is not finite somewhere in the window.
+
+    Flags (``motion_flags``; off for a hover, whose window is the whole record):
+
+    * along-track deceleration (d|v_h|/dt, averaged over ``averaging_s``) beyond
+      ``deceleration_flag_ft_s2`` inside the window;
+    * the window ends at a decelerating level-off: within ``level_off_lookahead_s`` after
+      it, deceleration beyond ``level_off_deceleration_ft_s2`` together with a flight path
+      angle more than ``level_off_fpa_rise_deg`` above the window's mean.  The sphere holds
+      only the window's emission points, so this is no fault in the sphere; it says the
+      condition was left in a maneuver right after, as a descent's flare usually is.
+    * the window's mean flight path angle is more than ``card_fpa_flag_deg`` from the
+      card's ``card_fpa_deg``.
+
+    Deceleration is not refused: :func:`steady_window` holds speed within a few knots of
+    the window's median, which bounds any sustained deceleration inside it.
+
+    Returns a :class:`TrackCheck`.
+    """
+    refusals, flags = [], []
+    window = slice(int(index_start), int(index_stop))
+    time = np.asarray(track['time'], dtype=float)
+    t0 = float(time[0])
+    x = np.asarray(track['x'], dtype=float)[window]
+    y = np.asarray(track['y'], dtype=float)[window]
+    z = np.asarray(track['z'], dtype=float)[window]
+    t = time[window]
+    metrics = dict(min_height_above_array_ft=float('nan'), mean_height_above_array_ft=float('nan'),
+                   max_altitude_mismatch_ft=float('nan'), min_along_track_acceleration_ft_s2=float('nan'),
+                   plane='frame z = 0')
+    if z.size == 0:
+        return TrackCheck(['the window is empty'], [], metrics)
+    if not np.all(np.isfinite(z) & np.isfinite(x) & np.isfinite(y)):
+        refusals.append('its position is not finite in the window')
+        return TrackCheck(refusals, flags, metrics)
+
+    height, metrics['plane'] = height_above_array(x, y, z, ground_mics)
+    lowest = int(np.argmin(height))
+    metrics['min_height_above_array_ft'] = float(height[lowest])
+    metrics['mean_height_above_array_ft'] = float(np.mean(height))
+    if min_height_ft is not None and height[lowest] < float(min_height_ft):
+        where = 't = {:.1f} s, x = {:.0f} ft'.format(t[lowest] - t0, x[lowest])
+        if height[lowest] < 0.0:
+            refusals.append('the aircraft goes {:.0f} ft below the microphones at {} ({})'.format(
+                -height[lowest], where, metrics['plane']))
+        else:
+            refusals.append('the aircraft comes within {:.1f} ft of the microphones at {}, under the {:g} ft '
+                            'minimum ({})'.format(height[lowest], where, float(min_height_ft), metrics['plane']))
+
+    elips = float('nan') if ref_elips_ft is None else float(ref_elips_ft)
+    if 'alt' in track and np.isfinite(elips):
+        mismatch = np.abs(np.asarray(track['alt'], dtype=float)[window] - elips - z)
+        worst = float(np.nanmax(mismatch)) if np.any(np.isfinite(mismatch)) else float('nan')
+        metrics['max_altitude_mismatch_ft'] = worst
+        if not np.isfinite(worst) or (max_altitude_mismatch_ft is not None and worst > float(max_altitude_mismatch_ft)):
+            refusals.append('its z departs from its altitude less ref_elips_ft by up to {:.1f} ft '
+                            '(at most {:g})'.format(worst, float(max_altitude_mismatch_ft)))
+
+    if motion_flags and 'vx' in track and 'vy' in track and time.size > 2:
+        step = float(np.median(np.diff(time)))
+        samples = max(1, int(round(float(averaging_s) / step))) if step > 0 else 1
+        speed = np.hypot(np.asarray(track['vx'], dtype=float), np.asarray(track['vy'], dtype=float))
+        along = np.gradient(speed, time)
+        inside = _running_mean(along[window], samples)
+        if inside.size:
+            metrics['min_along_track_acceleration_ft_s2'] = float(np.min(inside))
+            if deceleration_flag_ft_s2 is not None and np.min(inside) < -float(deceleration_flag_ft_s2):
+                flags.append('it decelerates at {:.1f} ft/s^2 inside the window'.format(-np.min(inside)))
+        stop = int(index_stop)
+        after = slice(stop, int(np.searchsorted(time, time[stop - 1] + float(level_off_lookahead_s), side='right')))
+        if (level_off_deceleration_ft_s2 is not None and level_off_fpa_rise_deg is not None
+                and 'fpa_deg' in track and after.stop - after.start >= samples):
+            fpa = np.asarray(track['fpa_deg'], dtype=float)
+            deceleration = -float(np.min(_running_mean(along[after], samples)))
+            rise = float(np.max(_running_mean(fpa[after], samples)) - np.mean(fpa[window]))
+            if deceleration > float(level_off_deceleration_ft_s2) and rise > float(level_off_fpa_rise_deg):
+                flags.append('the window ends at a decelerating level-off: within {:g} s of its end the '
+                             'aircraft decelerates at {:.1f} ft/s^2 and its flight path angle rises {:.1f} deg'
+                             .format(float(level_off_lookahead_s), deceleration, rise))
+        card = float('nan') if card_fpa_deg is None else float(card_fpa_deg)
+        if card_fpa_flag_deg is not None and np.isfinite(card) and 'fpa_deg' in track:
+            flown = float(np.mean(np.asarray(track['fpa_deg'], dtype=float)[window]))
+            if abs(flown - card) > float(card_fpa_flag_deg):
+                flags.append('its window is flown at {:+.1f} deg, not the card\'s {:+g} deg'.format(flown, card))
+    return TrackCheck(refusals, flags, metrics)
+
+
+def run_track_check(test, run, track, index_start, index_stop, hover=False, **thresholds):
+    """:func:`check_track` for one run of ``test``, with the run's reference-list row
+    (``ref_elips_ft``, the card's ``fpa``) and its layout's ground boards
+    (:func:`ground_microphone_positions`); the frame's z = 0 stands in for them, with a
+    warning, when the microphone list cannot be read.  A hover's motion flags are off."""
+    row = test.by_run.get(run) or {}
+    mics, reason = ground_microphone_positions(test, run)
+    if mics is None:
+        logging.warning('Run %s: checking heights against the frame\'s z = 0, not the ground boards: %s',
+                        run, reason)
+    return check_track(track, index_start, index_stop, ground_mics=mics,
+                       ref_elips_ft=_float_or_nan(row.get('ref_elips_ft')),
+                       card_fpa_deg=None if hover else _float_or_nan(row.get('fpa')),
+                       motion_flags=not hover, **thresholds)
+
+
+# --------------------------------------------------------------------------
+# Run metadata
+# --------------------------------------------------------------------------
+
+#: Specific gas constant of dry air, J/(kg K), and standard gravity, m/s^2.
+DRY_AIR_GAS_CONSTANT = 287.058
+STANDARD_GRAVITY = 9.80665
+
+
+def run_gross_weight_lb(row):
+    """The run's gross weight from its reference-list row (``gross_weight``, pounds), or NaN.
+
+    The B407's read 3173-3824 lb, against the 2250 kg (4960 lb) its vehicle file's nominal
+    C_T is taken at."""
+    weight = _float_or_nan((row or {}).get('gross_weight'))
+    return weight if np.isfinite(weight) and weight > 0.0 else float('nan')
+
+
+def air_density_kg_m3(atmosphere, height_ft=0.0):
+    """Moist-air density (kg/m^3) at ``height_ft`` above where ``atmosphere`` was measured.
+
+    rho = (p - 0.378 e) / (R_d T), e the vapor pressure from the relative humidity and
+    ISO 9613-1's saturation pressure (the one absorption uses), carried up hydrostatically
+    at the measured temperature: p(h) = p exp(-g h / (R_d T_v)).  Over the few hundred feet
+    of these runs the temperature's lapse moves it by well under 0.1 %; the height itself
+    by about 3 % per 1000 ft, which is why it is applied.
+    """
+    temperature = float(atmosphere.temperature)
+    pressure_pa = 1000.0 * float(atmosphere.pressure)
+    if not (temperature > 0.0 and pressure_pa > 0.0):
+        return float('nan')
+    vapor_pa = 1000.0 * float(atmosphere.relative_humidity) / 100.0 * float(atmosphere.saturation_pressure)
+    if not 0.0 <= vapor_pa < pressure_pa:
+        return float('nan')
+    virtual_temperature = temperature / (1.0 - 0.378 * vapor_pa / pressure_pa)
+    scale = np.exp(-STANDARD_GRAVITY * float(height_ft) * 0.3048 / (DRY_AIR_GAS_CONSTANT * virtual_temperature))
+    return float(scale * (pressure_pa - 0.378 * vapor_pa) / (DRY_AIR_GAS_CONSTANT * temperature))
+
+
+def normalize_wind(wind):
+    """A caller's wind at the aircraft, as ``dict(east, north, units, source)``: the
+    components it blows toward, in the units declared.
+
+    ``wind`` gives either ``east`` and ``north`` (the direction the air moves toward), or
+    ``speed`` and ``direction_from_deg`` (meteorological: the compass direction, true north,
+    it blows from), plus ``units`` (one of :data:`flight_acoustics.WIND_SPEED_UNITS`) and
+    ``source`` (:data:`flight_acoustics.WIND_SOURCES`, '+'-joined for a combination).
+    Nothing is assumed: the units are the caller's, and a magnetic direction must be turned
+    to true north before it is given.
+    """
+    if not isinstance(wind, dict):
+        raise ValueError('wind must be a dict, not {!r}'.format(type(wind).__name__))
+    units = str(wind.get('units', '')).strip()
+    if units not in fa.WIND_SPEED_UNITS:
+        raise ValueError('wind units must be declared, one of {}, not {!r}'.format(
+            sorted(fa.WIND_SPEED_UNITS), wind.get('units')))
+    source = fa.normalize_wind_source(wind.get('source', ''))
+    if source == 'none':
+        raise ValueError("a wind with source 'none' is no wind; pass wind=None")
+    vector = {'east', 'north'} <= set(wind)
+    polar = {'speed', 'direction_from_deg'} <= set(wind)
+    if vector == polar:
+        raise ValueError('give the wind as east and north, or as speed and direction_from_deg, '
+                         'not {}'.format('both' if vector else 'neither'))
+    if vector:
+        east, north = float(wind['east']), float(wind['north'])
+    else:
+        speed, direction = float(wind['speed']), np.radians(float(wind['direction_from_deg']))
+        if speed < 0.0:
+            raise ValueError('wind speed must not be negative, got {}'.format(speed))
+        # Blowing from a bearing is moving toward the opposite one.
+        east, north = -speed * np.sin(direction), -speed * np.cos(direction)
+    if not (np.isfinite(east) and np.isfinite(north)):
+        raise ValueError('wind components must be finite')
+    return dict(east=float(east), north=float(north), units=units, source=source)
+
+
+def wind_components(wind, reference_east_north, ground_velocity_east_north_ft_s):
+    """Along- and cross-reference components of a :func:`normalize_wind` wind, in its own
+    units, and the mean horizontal airspeed (knots).
+
+    ``reference_east_north`` is the direction the components are taken along (the mean
+    ground track, or the heading for a hover); along is positive toward it (a tailwind),
+    cross positive toward its starboard side.  ``ground_velocity_east_north_ft_s`` is the
+    (n, 2) horizontal ground velocity over the window; the airspeed is the mean of
+    |v_ground - wind|, as the sphere's SPEED is the mean of |v_ground|.
+    """
+    reference = np.asarray(reference_east_north, dtype=float)
+    reference = reference / np.hypot(*reference)
+    starboard = np.array([reference[1], -reference[0]])
+    w = np.array([wind['east'], wind['north']])
+    along, cross = float(w @ reference), float(w @ starboard)
+    w_ft_s = w * fa.WIND_SPEED_UNITS[wind['units']] / 0.3048
+    ground = np.asarray(ground_velocity_east_north_ft_s, dtype=float).reshape(-1, 2)
+    airspeed_knots = float(np.mean(np.hypot(*(ground - w_ft_s).T))) * 0.3048 / 0.514444
+    return along, cross, airspeed_knots
+
+
+# --------------------------------------------------------------------------
 # Acoustic loading
 # --------------------------------------------------------------------------
 
@@ -801,8 +1254,37 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
                  third_octave_method='fft', board_correction='plate_bem', ground=None,
                  plate_table_directory=None, ray_model=None, interpolation=None,
                  rim_elevation_deg=None, max_rim_range_ft=None, remove_doppler=False,
-                 nose_from_heading=False, samples_path=None, tone_aware=False):
+                 nose_from_heading=False, samples_path=None, tone_aware=False,
+                 azimuth_reference=None, wind=None, track_check=True,
+                 min_height_above_array_ft=MIN_HEIGHT_ABOVE_ARRAY_FT):
     """Depropagate one run into an AAM-style source sphere.
+
+    ``track_check`` (default True) refuses, with :class:`TrackRefused` and the reason, a run
+    whose track :func:`check_track` finds impossible over the window: within
+    ``min_height_above_array_ft`` of the ground boards or below them (None turns that test
+    off), or with a z that does not follow its altitude.  Its flags (a deceleration, a
+    window ending at a decelerating level-off, a window flown away from the card's flight
+    path angle) are logged and returned as ``track_flags``.
+
+    ``azimuth_reference`` is what the sphere's azimuth is measured from: ``'track'``, the
+    ground-velocity direction (the default for flight, as every sphere before), or
+    ``'heading'``, the tracking file's INS heading put into the track frame by the run's
+    :func:`frame_bearing_deg`.  Doppler, the convective Mach number, spreading and every
+    other part of the depropagation still follow the ground velocity; only the filing
+    azimuth turns.  On windy day 284 the B407 crabbed 10.6 deg (median) against 4.2 on
+    calm day 286, so a track-filed sphere carries that day's crab in its azimuths.  A hover
+    (``nose_from_heading``) is always heading-filed, and None picks 'heading' for it;
+    'track' with ``nose_from_heading`` is refused.  Written to the sphere as the attribute
+    ``azimuth_reference``, which ``build_empirical_database`` carries to the database.
+
+    ``wind``, if given, is the wind at the aircraft over the window, as
+    :func:`normalize_wind` takes it: components or speed and direction, with the ``units``
+    and ``source`` the caller declares (nothing is assumed about either).  The sphere then
+    records its along- and cross-track components (along the heading for a hover) in those
+    units, and the run's horizontal airspeed.  Every sphere also records the run's gross
+    weight (reference list) and its air density at the aircraft (the ground stations'
+    T, p and RH, :func:`air_density_kg_m3`), NaN when unknown; see
+    :func:`flight_acoustics.write_aam_hemisphere_netcdf`'s ``run_metadata``.
 
     ``remove_doppler`` files band power at the emitted frequency, not the received one
     (:func:`flight_acoustics.depropagate_hemisphere`), and sets the sphere's
@@ -812,7 +1294,11 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     ``nose_from_heading`` orients the sphere by the tracked heading instead of the velocity:
     for a hover, whose velocity is a few tenths of a knot of drift in any direction.  The
     velocity handed to depropagation is then the heading's unit vector at 1e-3 ft/s, which
-    sets the azimuth reference and leaves no Doppler or convective term.
+    sets the azimuth reference and leaves no Doppler or convective term.  The heading is put
+    into the track frame by the run's own frame bearing (:func:`frame_bearing_deg`), not by
+    the flight layout's 270 deg this once assumed: the hover layouts' frames run along
+    279 deg (Amedee) and 92.3 deg (Eglin), so hovers built before 2026-10-05 have their
+    azimuths turned by 9 deg (Amedee) or 178 deg (Eglin).
 
     ``tone_aware`` files each tone whole in the band of its own frequency
     (:func:`flight_acoustics.tone_aware_band_power`) instead of summing whole FFT bins.
@@ -868,19 +1354,89 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
                                                 min_duration_s=min_steady_duration_s)
     speed_knots, fpa_deg = flight_condition(track, index_start, index_stop)
 
+    if azimuth_reference is None:
+        azimuth_reference = 'heading' if nose_from_heading else 'track'
+    if azimuth_reference not in fa.AZIMUTH_REFERENCES:
+        raise ValueError('azimuth_reference must be one of {}, not {!r}'.format(
+            fa.AZIMUTH_REFERENCES, azimuth_reference))
+    if nose_from_heading and azimuth_reference != 'heading':
+        raise ValueError("Run {}: nose_from_heading files a hover by its heading, so azimuth_reference "
+                         "'{}' contradicts it".format(run, azimuth_reference))
+
+    check = None
+    if track_check:
+        check = run_track_check(test, run, track, index_start, index_stop, hover=nose_from_heading,
+                                min_height_ft=min_height_above_array_ft)
+        if check.refused:
+            raise TrackRefused('Run {} (card {}) refused: {}'.format(run, row.get('test_cond'),
+                                                                   '; '.join(check.refusals)))
+        for flag in check.flags:
+            logging.warning('Run %s (card %s): %s', run, row.get('test_cond'), flag)
+
     segment = {key: value[index_start:index_stop] for key, value in track.items()
                if isinstance(value, np.ndarray) and value.size == track['time'].size}
     position = np.column_stack((segment['x'], segment['y'], segment['z']))
     velocity = np.column_stack((segment['vx'], segment['vy'], segment['vz_up']))
+    bearing = None
+    if azimuth_reference == 'heading' or wind is not None:
+        try:
+            bearing = frame_bearing_deg(row, track)
+        except ValueError as error:
+            raise ValueError('Run {}: {}'.format(run, error)) from None
+    nose = None
+    if azimuth_reference == 'heading':
+        heading = np.asarray(segment.get('heading', np.full(segment['time'].size, np.nan)), dtype=float)
+        if not np.all(np.isfinite(heading)):
+            raise ValueError('Run {}: the track carries no finite heading over the window, so the sphere '
+                             'cannot be filed by heading'.format(run))
+        nose_x, nose_y = heading_to_frame(heading, bearing)
+        nose = np.column_stack((nose_x, nose_y, np.zeros_like(nose_x)))
     if nose_from_heading:
-        # Compass heading to the track frame (+x along true bearing 270, +y south):
-        # east = -x, north = -y.
-        heading = np.radians(np.asarray(segment['heading'], dtype=float))
-        velocity = 1e-3 * np.column_stack((-np.sin(heading), -np.cos(heading), np.zeros_like(heading)))
+        # No Doppler or convective term, and the azimuth along the heading.
+        velocity = 1e-3 * nose
+        nose = None
 
+    density_source = 'caller'
     if atmosphere is None:
-        atmosphere = run_atmosphere(test, run, fallback=fa.Atmosphere(
-            temperature=293.15, pressure=101.325, relative_humidity=20.0))
+        try:
+            atmosphere = run_atmosphere(test, run)
+            density_source = 'ground stations'
+        except ValueError:
+            atmosphere = fa.Atmosphere(temperature=293.15, pressure=101.325, relative_humidity=20.0)
+            density_source = 'none'
+    if check is not None:
+        mean_height_ft = check.metrics['mean_height_above_array_ft']
+    else:
+        mics, _ = ground_microphone_positions(test, run)
+        mean_height_ft = float(np.mean(height_above_array(segment['x'], segment['y'], segment['z'], mics)[0]))
+    air_density = (float('nan') if density_source == 'none'
+                   else air_density_kg_m3(atmosphere, max(mean_height_ft, 0.0)))
+
+    wind_along = wind_cross = airspeed_knots = float('nan')
+    wind_units, wind_source, wind_reference = '', 'none', ''
+    if wind is not None:
+        try:
+            normalized = normalize_wind(wind)
+        except ValueError as error:
+            raise ValueError('Run {}: {}'.format(run, error)) from None
+        ground_east, ground_north = frame_to_east_north(bearing, segment['vx'], segment['vy'])
+        if nose_from_heading:
+            heading = np.radians(np.asarray(segment['heading'], dtype=float))
+            reference = (np.mean(np.sin(heading)), np.mean(np.cos(heading)))
+            wind_reference = 'heading'
+        else:
+            reference = (np.mean(ground_east), np.mean(ground_north))
+            wind_reference = 'ground track'
+        if not np.hypot(*reference) > 0.0:
+            raise ValueError('Run {}: no mean {} to take the wind along'.format(run, wind_reference))
+        wind_along, wind_cross, airspeed_knots = wind_components(
+            normalized, reference, np.column_stack((ground_east, ground_north)))
+        wind_units, wind_source = normalized['units'], normalized['source']
+    run_metadata = dict(gross_weight_lb=run_gross_weight_lb(row), air_density_kg_m3=air_density,
+                        air_density_source=density_source, wind_along_track=wind_along,
+                        wind_cross_track=wind_cross, wind_units=wind_units, wind_source=wind_source,
+                        wind_reference_direction=wind_reference, airspeed_knots=airspeed_knots)
+
     if speed_of_sound_ft_s is None:
         speed_of_sound_ft_s = sound_speed_ft_s(atmosphere)
 
@@ -994,6 +1550,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
         remove_doppler=remove_doppler,
         tone_aware=tone_aware,
         return_scattered=samples_path is not None,
+        track_nose=nose,
     )
     if samples_path is not None:
         scattered = hemisphere['scattered']
@@ -1017,6 +1574,8 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
                            row.get('run_num', run), run[:3]),
         overwrite=overwrite,
         doppler_shift_removed=1.0 if remove_doppler else 0.0,
+        azimuth_reference=azimuth_reference,
+        run_metadata=run_metadata,
     )
     norah2_output_path = None
     if norah2_directory is not None:
@@ -1048,6 +1607,14 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
                 relative_humidity=atmosphere.relative_humidity,
                 pressure_kpa=atmosphere.pressure,
                 speed_of_sound_ft_s=speed_of_sound_ft_s,
+                azimuth_reference=azimuth_reference,
+                track_flags='; '.join(check.flags) if check is not None else 'not checked',
+                min_height_above_array_ft=(check.metrics['min_height_above_array_ft']
+                                           if check is not None else float('nan')),
+                gross_weight_lb=run_metadata['gross_weight_lb'],
+                air_density_kg_m3=air_density, air_density_source=density_source,
+                wind_source=wind_source, wind_units=wind_units, wind_along_track=wind_along,
+                wind_cross_track=wind_cross, airspeed_knots=airspeed_knots,
                 rays='straight' if ray_model is None else getattr(ray_model, 'description', 'custom'),
                 interpolation=('fixed rmax {:g}'.format(rmax) if interpolation is None else
                                'adaptive ' + ' '.join('{}={}'.format(k, v) for k, v in sorted(
@@ -1119,8 +1686,17 @@ def _prefetch_run(test, run, gate_ambient=True, done=None):
 
 def build_all(aircraft, output_directory, *, root=None, runs=None,
               steady_only=True, reference_directory=None, sphere_prefix=None,
-              manifest_path=None, prefetch=True, norah2_directory=None, ray_models=None, **kwargs):
+              manifest_path=None, prefetch=True, norah2_directory=None, ray_models=None, winds=None,
+              **kwargs):
     """Rebuild every usable run for one aircraft.
+
+    ``winds``, if given, is called with each run id and returns that run's ``wind`` for
+    :func:`build_sphere` (see :func:`normalize_wind`), or None where the wind at the
+    aircraft is unknown; a mapping of run id to wind works too (:func:`read_winds` reads
+    one from a CSV file).
+
+    A run whose track :func:`check_track` refuses fails like any other, with the reason
+    in its failure record; pass ``track_check=False`` to build it anyway.
 
     ``ray_models``, if given, is called with each run id and returns that run's
     ``ray_model`` for :func:`build_sphere` (its own atmosphere), or None to
@@ -1174,10 +1750,16 @@ def build_all(aircraft, output_directory, *, root=None, runs=None,
                 candidate = os.path.join(os.path.expanduser(reference_directory), name)
                 reference = candidate if os.path.exists(candidate) else None
             try:
+                if winds is None:
+                    wind = None
+                elif callable(winds):
+                    wind = winds(run)
+                else:
+                    wind = winds.get(run)
                 record = build_sphere(test, run, os.path.join(output_directory, name),
                                       reference_sphere=reference, norah2_directory=norah2_directory,
                                       ray_model=ray_models(run) if ray_models is not None else None,
-                                      **kwargs)
+                                      wind=wind, **kwargs)
             except Exception as error:                  # noqa: BLE001
                 logging.warning('[%d/%d] %s failed: %s', number, len(runs), run, error)
                 failures.append(dict(run=run, error=str(error),
@@ -1217,7 +1799,9 @@ def write_manifest(path, records, failures):
               'speed_knots', 'flight_path_angle_deg', 'window_s', 'window_points',
               'min_elevation_deg', 'max_array_range_ft', 'temperature_k',
               'relative_humidity', 'pressure_kpa', 'speed_of_sound_ft_s', 'board_correction',
-              'rays', 'interpolation', 'gaps', 'rim_range', 'error']
+              'rays', 'interpolation', 'gaps', 'rim_range', 'azimuth_reference', 'track_flags',
+              'min_height_above_array_ft', 'gross_weight_lb', 'air_density_kg_m3', 'air_density_source',
+              'wind_source', 'wind_units', 'wind_along_track', 'wind_cross_track', 'airspeed_knots', 'error']
     with open(path, 'w', encoding='utf-8', newline='') as handle:
         writer = csv.DictWriter(handle, fieldnames=fields, extrasaction='ignore')
         writer.writeheader()
@@ -1227,13 +1811,133 @@ def write_manifest(path, records, failures):
             writer.writerow(failure)
 
 
+def read_winds(path):
+    """Per-run winds at the aircraft from a CSV file, as ``{run: wind}`` for :func:`build_all`.
+
+    Columns: ``run``, ``units`` and ``source``, and either ``east`` and ``north`` or
+    ``speed`` and ``direction_from_deg`` (see :func:`normalize_wind`).  A row whose wind
+    cells are blank is a run with no known wind and is left out.  Every row is checked as
+    it is read, so a bad unit or source fails before any sphere is built.
+    """
+    winds = {}
+    with open(os.path.abspath(os.path.expanduser(path)), encoding='utf-8-sig', newline='') as handle:
+        reader = csv.DictReader(handle)
+        fields = set(reader.fieldnames or [])
+        if not {'run', 'units', 'source'} <= fields:
+            raise ValueError('{}: a winds file needs run, units and source columns'.format(path))
+        for line, entry in enumerate(reader, start=2):
+            entry = {k: (v or '').strip() for k, v in entry.items() if k is not None}
+            run = entry['run']
+            values = {k: entry[k] for k in ('east', 'north', 'speed', 'direction_from_deg') if entry.get(k)}
+            if not run or not values:
+                continue
+            if run in winds:
+                raise ValueError('{}: run {} appears twice'.format(path, run))
+            try:
+                winds[run] = normalize_wind(dict({k: float(v) for k, v in values.items()},
+                                                 units=entry['units'], source=entry['source']))
+            except ValueError as error:
+                raise ValueError('{} line {}: {}'.format(path, line, error)) from None
+    return winds
+
+
+def check_tracks(aircraft, *, root=None, runs=None, steady_only=True, hovers=False,
+                 max_array_range_ft=None, min_steady_duration_s=8.0, **thresholds):
+    """Run :func:`check_track` over one aircraft's tracks without building anything.
+
+    A dry pass: every run with a tracking file whose card is steady (:func:`is_steady_flight_card`,
+    unless ``steady_only`` is False) or, with ``hovers``, a hover card, takes the window
+    :func:`build_sphere` would (the steady window, or a hover's whole record) and is checked
+    as the build would check it.  Acoustic data are not needed.  ``thresholds`` go to
+    :func:`check_track`.
+
+    Returns one dict per run: run, condition, status ('refused', 'flagged', 'ok', or
+    'no window' when :func:`steady_window` finds none), reasons (refusals, or the window's
+    error), flags, and the check's metrics.
+    """
+    test = NoiseAbatementTest(aircraft, root=root)
+    out = []
+    for row in test.reference:
+        run = row['combined']
+        condition = (row.get('test_cond') or '').strip()
+        hover = condition.startswith('H')
+        if runs is not None:
+            if run not in runs:
+                continue
+        elif condition == 'AMB' or (hover and not hovers) or (
+                not hover and steady_only and not is_steady_flight_card(row)):
+            continue
+        path = test.track_path(run)
+        if not os.path.exists(path):
+            continue
+        record = dict(run=run, condition=condition, status='ok', reasons='', flags='')
+        try:
+            track = load_track(path)
+            if hover:
+                index_start, index_stop = 0, int(track['time'].size)
+            else:
+                index_start, index_stop = steady_window(track, max_array_range=max_array_range_ft,
+                                                        min_duration_s=min_steady_duration_s)
+        except ValueError as error:
+            record.update(status='no window', reasons=str(error))
+            out.append(record)
+            continue
+        check = run_track_check(test, run, track, index_start, index_stop, hover=hover, **thresholds)
+        record.update(check.metrics)
+        record.update(reasons='; '.join(check.refusals), flags='; '.join(check.flags),
+                      window_s='{:.1f}-{:.1f}'.format(track['time'][index_start] - track['time'][0],
+                                                      track['time'][index_stop - 1] - track['time'][0]))
+        if check.refused:
+            record['status'] = 'refused'
+        elif check.flags:
+            record['status'] = 'flagged'
+        out.append(record)
+    return out
+
+
+def write_track_checks(path, records):
+    """Write :func:`check_tracks` records as CSV."""
+    path = os.path.abspath(os.path.expanduser(path))
+    os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+    fields = ['aircraft', 'run', 'condition', 'status', 'window_s', 'min_height_above_array_ft',
+              'mean_height_above_array_ft', 'max_altitude_mismatch_ft', 'min_along_track_acceleration_ft_s2',
+              'plane', 'reasons', 'flags']
+    with open(path, 'w', encoding='utf-8', newline='') as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields, extrasaction='ignore')
+        writer.writeheader()
+        for record in records:
+            writer.writerow(record)
+
+
 def main(argv=None):
     import argparse
 
     parser = argparse.ArgumentParser(
         description='Rebuild 2017 Noise Abatement source spheres with ambient gating.')
     parser.add_argument('aircraft', help='dataset directory name, e.g. B407')
-    parser.add_argument('output_directory')
+    parser.add_argument('output_directory', nargs='?', default=None,
+                        help='where the spheres go (not needed with --check-tracks)')
+    parser.add_argument('--check-tracks', action='store_true',
+                        help='do not build: check every steady run\'s track as the build would '
+                             '(heights above the ground boards, altitude consistency, decelerations, '
+                             'level-offs, card flight path angle), print what is refused and flagged, '
+                             'and write the table to --manifest if given; needs only the tracks')
+    parser.add_argument('--hovers', action='store_true',
+                        help='with --check-tracks, check the hover runs too (their whole record)')
+    parser.add_argument('--azimuth-reference', choices=('track', 'heading'), default='track',
+                        help="'track' (default) measures each sphere's azimuth from the ground track; "
+                             "'heading' from the tracked INS heading, with Doppler and depropagation "
+                             'still on the ground velocity.  Written to every sphere and so to the database')
+    parser.add_argument('--winds', default=None,
+                        help='CSV of the wind at the aircraft per run (run, units, source, and east/north '
+                             'or speed/direction_from_deg; see read_winds), recorded in each sphere; '
+                             'nothing is assumed about its units')
+    parser.add_argument('--no-track-check', action='store_true',
+                        help='build runs whose track fails the sanity check (below or within '
+                             '--min-height-above-array-ft of the ground boards, z not following altitude)')
+    parser.add_argument('--min-height-above-array-ft', type=float, default=MIN_HEIGHT_ABOVE_ARRAY_FT,
+                        help='refuse a run whose track comes closer than this to the ground boards '
+                             '(default %(default)s)')
     parser.add_argument('--root', default=None,
                         help='dataset root (default: the noise_abatement_2017 entry of local_paths)')
     parser.add_argument('--runs', nargs='*', default=None,
@@ -1285,6 +1989,27 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+    if args.check_tracks:
+        checks = check_tracks(args.aircraft, root=args.root, runs=args.runs,
+                              steady_only=not args.include_maneuvers, hovers=args.hovers,
+                              max_array_range_ft=args.max_array_range_ft,
+                              min_steady_duration_s=args.min_steady_duration_s,
+                              min_height_ft=args.min_height_above_array_ft)
+        for record in checks:
+            record['aircraft'] = args.aircraft
+            if record['status'] != 'ok':
+                print('{} {} {}: {}'.format(record['run'], record['condition'], record['status'],
+                                            '; '.join(r for r in (record['reasons'], record['flags']) if r)))
+        counts = defaultdict(int)
+        for record in checks:
+            counts[record['status']] += 1
+        print('{}: {} runs checked, {}'.format(args.aircraft, len(checks), ', '.join(
+            '{} {}'.format(n, status) for status, n in sorted(counts.items()))))
+        if args.manifest:
+            write_track_checks(args.manifest, checks)
+        return 0
+    if args.output_directory is None:
+        parser.error('output_directory is required unless --check-tracks is given')
     records, failures = build_all(
         args.aircraft, args.output_directory, root=args.root, runs=args.runs,
         steady_only=not args.include_maneuvers,
@@ -1300,7 +2025,11 @@ def main(argv=None):
         max_propagation_range_ft=args.max_propagation_range_ft,
         min_steady_duration_s=args.min_steady_duration_s,
         ambient_fallback_percentile=args.ambient_fallback_percentile,
-        prefetch=not args.no_prefetch)
+        prefetch=not args.no_prefetch,
+        azimuth_reference=args.azimuth_reference,
+        winds=read_winds(args.winds) if args.winds else None,
+        track_check=not args.no_track_check,
+        min_height_above_array_ft=args.min_height_above_array_ft)
     logging.info('Built %d spheres, %d failures', len(records), len(failures))
     return 0 if records else 1
 

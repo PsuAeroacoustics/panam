@@ -908,7 +908,7 @@ def linear_array_plan(nmics, altitude, min_elevation=10.0, target_elv=90.0):
     return r * np.tan(np.radians(angles))
 
 
-def hemigen(time, source, velocity, observers, speed_of_sound):
+def hemigen(time, source, velocity, observers, speed_of_sound, nose=None):
     """
     Compute the time of emission observer angles for a moving source
     Args:
@@ -917,6 +917,10 @@ def hemigen(time, source, velocity, observers, speed_of_sound):
         velocity: time x 3 matrix of source velocities
         observers: number of mics x 3 matrix of observer positions
         speed_of_sound: speed of sound
+        nose: optional time x 3 (or time x 2) matrix of directions the azimuth is
+            measured from, e.g. the airframe's heading.  Only its horizontal
+            direction is used.  Default None: the velocity's, as before.  The
+            Mach number is the velocity's either way.
 
     Returns: tuple (azimuth, elevation, r, t_observer, mach_r)
     WHERE
@@ -947,7 +951,15 @@ def hemigen(time, source, velocity, observers, speed_of_sound):
     elevation = np.degrees(np.arctan2(height, ground_range))
     # Compute azimuth as difference between aircraft heading and observer bearing
     bearing = np.degrees(np.arctan2(ry, rx))
-    heading = np.degrees(np.arctan2(vy, vx))
+    if nose is None:
+        heading = np.degrees(np.arctan2(vy, vx))
+    else:
+        nose = np.asarray(nose, dtype=float)
+        if nose.ndim != 2 or nose.shape[0] != np.size(time) or nose.shape[1] not in (2, 3):
+            raise ValueError('nose must be shaped (Nt, 2) or (Nt, 3) to match time, not {}'.format(nose.shape))
+        if not np.all(np.isfinite(nose[:, :2])) or np.any(np.hypot(nose[:, 0], nose[:, 1]) == 0.0):
+            raise ValueError('nose must give a finite, nonzero horizontal direction at every time')
+        heading = np.degrees(np.arctan2(nose[:, 1, None], nose[:, 0, None]))
     azimuth = np.remainder(bearing - (heading + 180), 360)
     return azimuth, elevation, r, t_observer, mach_r
 
@@ -1056,6 +1068,7 @@ def depropagate_hemisphere(
         rim_range=None,
         remove_doppler=False,
         tone_aware=False,
+        track_nose=None,
 ):
     """Generate an acoustic hemisphere from microphone time series and vehicle tracking data.
 
@@ -1211,6 +1224,12 @@ def depropagate_hemisphere(
         track_position: (Nt, 3) vehicle position array in same frame as microphones.
         track_velocity: optional (Nt, 3) vehicle velocity array in same frame as microphones.
             If None, computed by finite differences.
+        track_nose: optional (Nt, 3) direction, in the same frame, that the sphere's azimuth
+            is measured from (azimuth 180 along it): the airframe's heading, say, for a sphere
+            filed in the heading frame.  Only its horizontal direction is used.  Default None:
+            the velocity's (the ground track), as before.  Doppler, the convective Mach number
+            and the samples' angular resolution follow ``track_velocity`` either way, since
+            they are the motion, not the orientation.
         speed_of_sound: speed of sound in the length units per second (e.g., ft/s if length_units='ft').
         length_units: length units for mic/track geometry ('ft' or 'm' typically).
         r_ref: reference radius for depropagation in ``length_units``.
@@ -1295,6 +1314,10 @@ def depropagate_hemisphere(
     track_velocity = np.asarray(track_velocity, dtype=float)
     if track_velocity.shape != (track_time.size, 3):
         raise ValueError('track_velocity must be shape (Nt, 3) matching track_time')
+    if track_nose is not None:
+        track_nose = np.asarray(track_nose, dtype=float)
+        if track_nose.shape != (track_time.size, 3):
+            raise ValueError('track_nose must be shape (Nt, 3) matching track_time')
 
     def _as_mic_list_1d(x, *, name):
         if isinstance(x, list):
@@ -1358,13 +1381,19 @@ def depropagate_hemisphere(
         pos_geom[:, 1] *= -1.0
         vel_geom = track_velocity.copy()
         vel_geom[:, 1] *= -1.0
+        nose_geom = None
+        if track_nose is not None:
+            nose_geom = track_nose.copy()
+            nose_geom[:, 1] *= -1.0
     else:
         mic_geom = mic_locations
         pos_geom = track_position
         vel_geom = track_velocity
+        nose_geom = track_nose
 
     # Emission-time geometry
-    az_deg, el_deg, r_geom, t_obs, _ = hemigen(track_time, pos_geom, vel_geom, mic_geom, speed_of_sound)
+    az_deg, el_deg, r_geom, t_obs, _ = hemigen(track_time, pos_geom, vel_geom, mic_geom, speed_of_sound,
+                                               nose=nose_geom)
     doppler_geom = None
     if remove_doppler:
         toward = np.asarray(mic_geom, dtype=float)[None, :, :] - np.asarray(pos_geom, dtype=float)[:, None, :]
@@ -1821,6 +1850,8 @@ def depropagate_hemisphere(
                 'relative_humidity': float(atmosphere.relative_humidity),
             },
             'flip_y_for_geometry': bool(flip_y_for_geometry),
+            # What azimuth 180 points along: the velocity, or the track_nose given.
+            'azimuth_from': 'velocity' if track_nose is None else 'nose',
             'return_scattered': bool(return_scattered),
             'narrowband': bool(narrowband),
             'narrowband_stride': int(narrowband_stride),
@@ -2160,6 +2191,76 @@ def load_nc_sphere(filename):
 #: to this width (a Fortran CHARACTER(20) field written verbatim).
 AAM_SCALAR_UNIT_WIDTH = 20
 
+#: What a sphere's azimuth is measured from (azimuth 180 along it): ``'track'``, the
+#: ground-velocity direction, or ``'heading'``, the airframe's heading.  Written as the
+#: text attribute ``azimuth_reference`` of a sphere file and of a database.
+AZIMUTH_REFERENCES = ('track', 'heading')
+
+#: Wind speed units a caller may declare for :func:`write_aam_hemisphere_netcdf`'s run
+#: metadata, and their size in m/s.  The unit is stored as declared; it is converted only
+#: to form the airspeed.  No unit is assumed: the 2017 LIDAR's is still in question.
+WIND_SPEED_UNITS = {'kt': 0.514444, 'm/s': 1.0, 'ft/s': 0.3048, 'mph': 0.44704}
+
+#: Where a run's wind at the aircraft came from.  Several may be joined with '+', e.g.
+#: 'lidar+balloon' for a profile pieced together from both.
+WIND_SOURCES = ('lidar', 'balloon', 'station', 'none')
+
+#: Pounds-force to newtons.
+POUND_FORCE_NEWTONS = 4.4482216152605
+
+#: Per-run metadata a sphere file may carry (:func:`write_aam_hemisphere_netcdf`'s
+#: ``run_metadata``): sphere variable name, unit, and the key it is read back under by
+#: :func:`read_run_metadata`.  NaN where unknown.  WIND_* take the unit the caller declared.
+RUN_METADATA_VARIABLES = (
+    ('GROSS_WEIGHT', 'POUNDS', 'gross_weight_lb'),
+    ('AIR_DENSITY', 'KG/M^3', 'air_density_kg_m3'),
+    ('WIND_ALONG_TRACK', None, 'wind_along_track'),
+    ('WIND_CROSS_TRACK', None, 'wind_cross_track'),
+    ('AIRSPEED', 'KNOTS', 'airspeed_knots'),
+)
+
+#: Text attributes of a sphere file carrying the rest of the run metadata, '' if unknown.
+RUN_METADATA_ATTRIBUTES = ('wind_source', 'wind_units', 'wind_reference_direction', 'air_density_source')
+
+
+def normalize_wind_source(source):
+    """``source`` as stored: lower case, each '+'-joined part one of :data:`WIND_SOURCES`."""
+    text = str(source).strip().lower()
+    parts = [part.strip() for part in text.split('+')]
+    if not text or any(part not in WIND_SOURCES for part in parts) or ('none' in parts and len(parts) > 1):
+        raise ValueError('wind source must be one of {} (several joined with +), not {!r}'.format(
+            WIND_SOURCES, source))
+    return '+'.join(parts)
+
+
+def _empty_run_metadata():
+    out = {key: float('nan') for _, _, key in RUN_METADATA_VARIABLES}
+    out.update({name: '' for name in RUN_METADATA_ATTRIBUTES})
+    return out
+
+
+def read_run_metadata(filename):
+    """The per-run metadata a sphere file carries (see :data:`RUN_METADATA_VARIABLES`).
+
+    Returns a dict: the numbers (NaN when the file has none, as every sphere written before
+    these existed), the text attributes ('' when absent) and ``azimuth_reference`` (None
+    when absent).
+    """
+    out = _empty_run_metadata()
+    out['azimuth_reference'] = None
+    with Dataset(filename, mode='r') as handle:
+        for name, _, key in RUN_METADATA_VARIABLES:
+            if name in handle.variables:
+                value = np.ma.filled(np.ma.asarray(handle.variables[name][...], dtype=float), np.nan)
+                out[key] = float(np.ravel(value)[0])
+        for name in RUN_METADATA_ATTRIBUTES:
+            if name in handle.ncattrs():
+                out[name] = str(handle.getncattr(name))
+        if 'azimuth_reference' in handle.ncattrs():
+            out['azimuth_reference'] = str(handle.getncattr('azimuth_reference'))
+    return out
+
+
 #: Level written into AMPLITUDE where a band carries no usable data.  The AAM
 #: code masks known-bad values with -999, so that is what a sphere meant for it
 #: should carry.  Note the shipped 2017 spheres do not use it -- they mask with
@@ -2343,6 +2444,8 @@ def write_aam_hemisphere_netcdf(
     xyz_ft=(0.0, 0.0, 0.0),
         minimum_level_db: float = -100.0,
         overwrite: bool = True,
+        azimuth_reference: Optional[str] = None,
+        run_metadata: Optional[dict] = None,
 ):
     """Write a depropagated acoustic hemisphere to an AAM/RNM-style netCDF sphere.
 
@@ -2382,10 +2485,44 @@ def write_aam_hemisphere_netcdf(
             radius, so it catches the gated bands and nothing else. Pass -inf
             to keep every finite level.
         overwrite: If False, raises when filename exists.
+        azimuth_reference: what the hemisphere's azimuth was measured from,
+            one of :data:`AZIMUTH_REFERENCES`; written as the text attribute
+            ``azimuth_reference``.  None writes nothing (a reader then assumes
+            'track', as every sphere before it was).
+        run_metadata: optional dict describing the run the sphere was built
+            from, written as the scalar variables of :data:`RUN_METADATA_VARIABLES`
+            (NaN where a key is absent or None) and the text attributes of
+            :data:`RUN_METADATA_ATTRIBUTES`.  ``wind_units`` must be one of
+            :data:`WIND_SPEED_UNITS` when a wind component is finite, and is
+            written as the WIND_* variables' unit; ``wind_source`` is checked
+            against :data:`WIND_SOURCES`.  :func:`read_run_metadata` reads it back.
 
     Returns:
         None
     """
+
+    if azimuth_reference is not None and azimuth_reference not in AZIMUTH_REFERENCES:
+        raise ValueError('azimuth_reference must be one of {}, not {!r}'.format(
+            AZIMUTH_REFERENCES, azimuth_reference))
+    metadata = None
+    if run_metadata is not None:
+        unknown = set(run_metadata) - {key for _, _, key in RUN_METADATA_VARIABLES} - set(RUN_METADATA_ATTRIBUTES)
+        if unknown:
+            raise ValueError('unknown run_metadata keys: {}'.format(sorted(unknown)))
+        metadata = _empty_run_metadata()
+        for key, value in run_metadata.items():
+            if key in RUN_METADATA_ATTRIBUTES:
+                metadata[key] = '' if value is None else str(value)
+            else:
+                metadata[key] = float('nan') if value is None else float(value)
+        has_wind = np.isfinite(metadata['wind_along_track']) or np.isfinite(metadata['wind_cross_track'])
+        if has_wind and metadata['wind_units'] not in WIND_SPEED_UNITS:
+            raise ValueError('run_metadata wind_units must be one of {} when a wind is given, not {!r}'.format(
+                sorted(WIND_SPEED_UNITS), metadata['wind_units']))
+        if metadata['wind_source']:
+            metadata['wind_source'] = normalize_wind_source(metadata['wind_source'])
+        if has_wind and metadata['wind_source'] in ('', 'none'):
+            raise ValueError('run_metadata gives a wind but no wind_source')
 
     if not overwrite and os.path.exists(filename):
         raise FileExistsError(f'Output file already exists: {filename}')
@@ -2531,6 +2668,16 @@ def write_aam_hemisphere_netcdf(
         vMT.unit = _scalar_unit('DEGREE')
 
         ds.title = title if title is not None else 'AAM/RNM acoustic hemisphere'
+        if azimuth_reference is not None:
+            ds.azimuth_reference = azimuth_reference
+        if metadata is not None:
+            # Doubles, not the legacy scalars' float: a density or a weight is worth its digits.
+            for name, unit, key in RUN_METADATA_VARIABLES:
+                variable = ds.createVariable(name, 'f8')
+                variable.assignValue(metadata[key])
+                variable.unit = _scalar_unit(metadata['wind_units'] if unit is None else unit)
+            for name in RUN_METADATA_ATTRIBUTES:
+                ds.setncattr(name, metadata[name])
     finally:
         ds.close()
 
@@ -3094,7 +3241,114 @@ LEVEL_FLIGHT_TOLERANCE = 2.0
 # (n_phi, n_theta, n_bands) bool, see _complete_sphere_with_coverage.
 _SphereCondition = namedtuple('_SphereCondition', [
     'name', 'phi', 'theta', 'radius', 'SPLA', 'EAA', 'speed', 'flight_path_angle',
-    'load_factor', 'frequency', 'amplitude', 'coverage'])
+    'load_factor', 'frequency', 'amplitude', 'coverage', 'run_metadata'], defaults=(None,))
+
+#: Per-group run metadata in a database (:func:`add_sphere_group`'s ``run_metadata``):
+#: variable name and units attribute (None: the wind units the caller declared).
+GROUP_RUN_METADATA_VARIABLES = (
+    ('gross_weight', 'N'),
+    ('air_density', 'kg m-3'),
+    ('wind_along_track', None),
+    ('wind_cross_track', None),
+    ('advance_ratio_air', '1'),
+    ('thrust_coefficient_run', '1'),
+)
+
+#: Per-group text attributes alongside them.
+GROUP_RUN_METADATA_ATTRIBUTES = ('wind_source', 'wind_units', 'wind_reference_direction',
+                                 'air_density_source', 'source_sphere', 'condition_origin')
+
+#: Values of a group's condition_origin.
+CONDITION_ORIGINS = ('measured', 'extended_flight_path_angle', 'synthesized_hover')
+
+
+def _read_azimuth_reference(filename):
+    """The azimuth_reference a sphere file carries, or None if it has none."""
+    with Dataset(filename, mode='r') as handle:
+        if 'azimuth_reference' not in handle.ncattrs():
+            return None
+        value = str(handle.getncattr('azimuth_reference'))
+    if value not in AZIMUTH_REFERENCES:
+        raise ValueError('{}: azimuth_reference must be one of {}, found {!r}'.format(
+            filename, AZIMUTH_REFERENCES, value))
+    return value
+
+
+def _resolve_azimuth_reference(filenames, argument=None):
+    """The single azimuth_reference every source sphere shares.
+
+    As :func:`_resolve_doppler_shift_removed`: a sphere that carries one is taken at its
+    word and an ``argument`` given must agree with it; a sphere without one takes the
+    argument, or 'track' (what every sphere was built in before the attribute existed),
+    with a warning.  A database filed in two frames at once is refused.
+    """
+    if argument is not None and argument not in AZIMUTH_REFERENCES:
+        raise ValueError('azimuth_reference must be one of {} or None, not {!r}'.format(
+            AZIMUTH_REFERENCES, argument))
+    fallback = 'track' if argument is None else argument
+    resolved = {}
+    unlabeled = []
+    for filename in filenames:
+        value = _read_azimuth_reference(filename)
+        if value is None:
+            unlabeled.append(filename)
+            resolved[filename] = fallback
+            continue
+        if argument is not None and value != argument:
+            raise ValueError('{} carries azimuth_reference = {!r}, but the build was asked for {!r}'
+                             .format(os.path.basename(filename), value, argument))
+        resolved[filename] = value
+    if unlabeled and argument is None:
+        warnings.warn("{} source sphere(s) carry no azimuth_reference; assuming 'track' "
+                      "(azimuth from the ground track)".format(len(unlabeled)))
+    values = set(resolved.values())
+    if len(values) > 1:
+        groups = ['{}: {}'.format(value, ', '.join(os.path.basename(f) for f, v in resolved.items()
+                                                    if v == value))
+                  for value in sorted(values)]
+        raise ValueError('azimuth_reference differs between the sources of one database '
+                         '(' + '; '.join(groups) + '); build every sphere in one frame')
+    return values.pop() if values else fallback
+
+
+def group_run_metadata(filename, main_rotor_area=None, main_rotor_tip_speed=None,
+                       condition_origin='measured'):
+    """The per-group run metadata for a condition whose levels came from sphere ``filename``.
+
+    Reads the sphere's :func:`read_run_metadata` and forms the two dimensionless labels a
+    database can be relabeled by later:
+
+    * ``advance_ratio_air``: the run's horizontal airspeed (ground velocity minus the wind
+      at the aircraft) over the tip speed, as ``advance_ratio`` is its horizontal ground
+      speed over the tip speed;
+    * ``thrust_coefficient_run``: the run's own gross weight over rho A V_tip^2 at the run's
+      air density, where ``thrust_coefficient`` uses the vehicle file's nominal weight and
+      density.  It is the run's, not scaled by the group's load factor.
+
+    NaN wherever an input is unknown.  A synthesized hover keeps the source run's weight,
+    density and C_T (its levels are that run's), but no wind or advance ratio, which
+    describe a flight condition the hover is not.
+    """
+    if condition_origin not in CONDITION_ORIGINS:
+        raise ValueError('condition_origin must be one of {}, not {!r}'.format(CONDITION_ORIGINS, condition_origin))
+    run = read_run_metadata(filename)
+    nan = float('nan')
+    area = nan if main_rotor_area is None else float(main_rotor_area)
+    tip_speed = nan if main_rotor_tip_speed is None else float(main_rotor_tip_speed)
+    weight_newtons = run['gross_weight_lb'] * POUND_FORCE_NEWTONS
+    density = run['air_density_kg_m3']
+    out = dict(gross_weight=weight_newtons, air_density=density,
+               wind_along_track=run['wind_along_track'], wind_cross_track=run['wind_cross_track'],
+               advance_ratio_air=0.514444 * run['airspeed_knots'] / tip_speed,
+               thrust_coefficient_run=weight_newtons / (density * area * tip_speed ** 2),
+               wind_source=run['wind_source'] or 'none', wind_units=run['wind_units'],
+               wind_reference_direction=run['wind_reference_direction'],
+               air_density_source=run['air_density_source'] or 'none',
+               source_sphere=os.path.basename(str(filename)), condition_origin=condition_origin)
+    if condition_origin == 'synthesized_hover':
+        out.update(wind_along_track=nan, wind_cross_track=nan, advance_ratio_air=nan,
+                   wind_source='none', wind_units='', wind_reference_direction='')
+    return out
 
 
 def _read_doppler_shift_removed(filename):
@@ -3327,7 +3581,8 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                              level_flight_tolerance=LEVEL_FLIGHT_TOLERANCE,
                              store_spectrum=True, clamp_empty_directions=True,
                              hover_correction=None, hover_source=None,
-                             speed_reference='ground', doppler_shift_removed=None):
+                             speed_reference='ground', doppler_shift_removed=None,
+                             azimuth_reference=None):
     """Build a NICE-OPS sphere database from a directory of sphere files.
 
     load_factors scales thrust: each source condition is written once per load
@@ -3403,6 +3658,29 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     is the flag assumed for any source sphere that does not carry one; a sphere
     that carries one must agree with it.  Sources with different flags are
     refused, because they would be combined into one database.
+
+    The root text attribute azimuth_reference ('track' or 'heading', see
+    :data:`AZIMUTH_REFERENCES`) is always written: what the flight spheres'
+    azimuth is measured from, the ground track or the airframe's heading, for
+    NICE-OPS to orient its sphere by.  It is the value every source sphere in
+    the directory carries (``build_sphere(azimuth_reference=)``); azimuth_reference,
+    when given, is assumed for spheres that carry none and must agree with those
+    that do, and spheres filed in different frames are refused.  Without either,
+    'track', as every sphere was built before the attribute existed.  A hover is
+    oriented by its heading whatever this says, on both sides (``hover_source``
+    is not consulted).
+
+    Every condition group also carries the metadata of the measured run its
+    levels came from (see :func:`group_run_metadata` and
+    :data:`GROUP_RUN_METADATA_VARIABLES`), NaN where the sphere does not say:
+    gross_weight (N), air_density (kg m-3), wind_along_track and
+    wind_cross_track (in the units the build declared, the group's
+    wind_units), advance_ratio_air and thrust_coefficient_run, with the text
+    attributes wind_source, wind_units, wind_reference_direction,
+    air_density_source, source_sphere (the sphere file's name) and
+    condition_origin ('measured', 'extended_flight_path_angle' or
+    'synthesized_hover').  NICE-OPS reads none of them; they are recorded so
+    that air-referenced or per-run C_T labels can be tested without a rebuild.
     """
     # TODO pack in redimensionalization data
     # TODO add reinterpolation flag
@@ -3423,6 +3701,9 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     (main_rotor_radius, main_rotor_area, main_rotor_tip_speed,
      _, _, _, _, _, _, weight_coefficient, _, _, _, _) = read_vehicle_data(directory_name)
 
+    def run_metadata(filename, origin='measured'):
+        return group_run_metadata(filename, main_rotor_area, main_rotor_tip_speed, origin)
+
     # Get list of full paths to netCDF files in directory
     local_glob = os.path.expanduser(directory_name) + '/*.nc'
     absolute_glob = os.path.abspath(local_glob)
@@ -3432,6 +3713,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     # Settled before the output exists, so a refused mix of sources leaves no
     # half-written database behind.
     doppler = _resolve_doppler_shift_removed(file_list, doppler_shift_removed)
+    azimuth = _resolve_azimuth_reference(file_list, azimuth_reference)
 
     # Set up database
     ncdatabase = Dataset(os.path.abspath(os.path.expanduser(database_filename)), 'w')
@@ -3456,6 +3738,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     # so these are that atmosphere: temperature in K, pressure in kPa (the ISO 9613-1
     # reference unit, as Atmosphere is written), relative humidity in percent.
     ncdatabase.speed_reference = speed_reference
+    ncdatabase.azimuth_reference = azimuth
     ncdatabase.build_temperature_K = float(atmosphere.temperature)
     ncdatabase.build_pressure_kPa = float(atmosphere.pressure)
     ncdatabase.build_relative_humidity_percent = float(atmosphere.relative_humidity)
@@ -3516,8 +3799,9 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
         # extended flight path angles below.
         if extended_flight_path_angles is not None and np.abs(flight_path_angle) < level_flight_tolerance:
             level_conditions.append((phi_full, theta_full, radius, SPLA_full, EAA_full,
-                                     speed, frequency, amplitude_full, coverage_full))
+                                     speed, frequency, amplitude_full, coverage_full, filename))
         # Augment load factor data
+        measured_metadata = run_metadata(filename)
         for load_factor in load_factors_to_write:
             groupname = "sphere" + str(sphere_index)
             sphere_index = sphere_index + 1
@@ -3525,7 +3809,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                 groupname, phi_full, theta_full, radius, SPLA_full, EAA_full,
                 speed, flight_path_angle, load_factor,
                 frequency if store_spectrum else None,
-                amplitude_full if store_spectrum else None, coverage_full))
+                amplitude_full if store_spectrum else None, coverage_full, measured_metadata))
 
     if min_speed_file is None:
         # No sphere within level_flight_tolerance of level flight.  The hover
@@ -3578,6 +3862,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     else:
         flight_path_angles = [-12, 0, 12]
     # Augment load factor data
+    hover_metadata = run_metadata(min_speed_file, 'synthesized_hover')
     for load_factor in load_factors_to_write:
         for flight_path_angle in flight_path_angles:
             groupname = "sphere" + str(sphere_index)
@@ -3586,16 +3871,17 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                 groupname, phi_full, theta_full, radius, SPLA_full, EAA_full,
                 speed, flight_path_angle, load_factor,
                 frequency if store_spectrum else None,
-                amplitude_full if store_spectrum else None, coverage_full))
+                amplitude_full if store_spectrum else None, coverage_full, hover_metadata))
 
     # Widen the flight-path-angle envelope: re-emit each near-level condition at
     # the extended angles, keeping its own airspeed and directivity.  Hover is
     # already covered above, so skip any condition at zero airspeed.
     if extended_flight_path_angles is not None:
         for (phi_full, theta_full, radius, SPLA_full, EAA_full,
-             level_speed, frequency, amplitude_full, coverage_full) in level_conditions:
+             level_speed, frequency, amplitude_full, coverage_full, source_file) in level_conditions:
             if level_speed == 0:
                 continue
+            extended_metadata = run_metadata(source_file, 'extended_flight_path_angle')
             for extended_angle in extended_flight_path_angles:
                 for load_factor in load_factors_to_write:
                     groupname = "sphere" + str(sphere_index)
@@ -3604,7 +3890,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                         groupname, phi_full, theta_full, radius, SPLA_full, EAA_full,
                         level_speed, extended_angle, load_factor,
                         frequency if store_spectrum else None,
-                        amplitude_full if store_spectrum else None, coverage_full))
+                        amplitude_full if store_spectrum else None, coverage_full, extended_metadata))
 
     # phi/theta (and frequency, for a spectral database) are usually the same
     # on every condition -- panam completes every sphere onto a common grid
@@ -3635,7 +3921,8 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                          main_rotor_radius, main_rotor_tip_speed, weight_coefficient,
                          condition.frequency, condition.amplitude,
                          write_grid_and_frequency=not shared_grid_and_frequency,
-                         doppler_shift_removed=doppler, coverage=condition.coverage)
+                         doppler_shift_removed=doppler, coverage=condition.coverage,
+                         run_metadata=condition.run_metadata)
     # Close explicitly: left to the garbage collector, a failed flush on close
     # is swallowed and the file can stay open (locked) while a traceback lives.
     ncdatabase.close()
@@ -3695,8 +3982,14 @@ def _finite_sphere_levels(spla, eaa):
 
 def add_sphere_group(ncdatabase, groupname, phi, theta, radius, SPLA, EAA, speed, flight_path_angle, load_factor,
                      main_rotor_radius, main_rotor_tip_speed, weight_coefficient, frequency=None, amplitude=None,
-                     write_grid_and_frequency=True, doppler_shift_removed=None, coverage=None):
+                     write_grid_and_frequency=True, doppler_shift_removed=None, coverage=None,
+                     run_metadata=None):
     """Write one condition group.
+
+    run_metadata, when given, is a dict as :func:`group_run_metadata` returns: each
+    of :data:`GROUP_RUN_METADATA_VARIABLES` is written as an f8 over ("condition",)
+    with its units attribute (NaN where unknown), and each of
+    :data:`GROUP_RUN_METADATA_ATTRIBUTES` as a text attribute of the group.
 
     doppler_shift_removed, when given, is written as the group's scalar int
     DOPPLER_SHIFT_REMOVED (0 received-frame, 1 de-Dopplerized).  coverage, when
@@ -3790,6 +4083,28 @@ def add_sphere_group(ncdatabase, groupname, phi, theta, radius, SPLA, EAA, speed
         this_group.variables['coverage'].description = (
             '1 = measured cell (every band measured, when there is no spectrum); 0 = unmeasured: '
             'gated, masked, mirrored from the other half of the sphere, or averaged from a gated partner')
+
+    if run_metadata is not None:
+        missing = ({name for name, _ in GROUP_RUN_METADATA_VARIABLES} | set(GROUP_RUN_METADATA_ATTRIBUTES)) \
+            - set(run_metadata)
+        if missing:
+            raise ValueError('run_metadata lacks {}'.format(sorted(missing)))
+        for name, units in GROUP_RUN_METADATA_VARIABLES:
+            variable = this_group.createVariable(name, 'f8', ("condition",))
+            variable[:] = float(run_metadata[name])
+            variable.units = str(run_metadata['wind_units']) if units is None else units
+        this_group.variables['gross_weight'].description = 'gross weight of the measured run, from its reference list'
+        this_group.variables['air_density'].description = 'air density at the measured run, at the aircraft'
+        this_group.variables['wind_along_track'].description = (
+            'wind at the aircraft along wind_reference_direction, positive toward it (a tailwind)')
+        this_group.variables['wind_cross_track'].description = (
+            'wind at the aircraft across wind_reference_direction, positive toward starboard')
+        this_group.variables['advance_ratio_air'].description = (
+            'horizontal airspeed of the measured run (ground velocity minus wind) over the tip speed')
+        this_group.variables['thrust_coefficient_run'].description = (
+            'gross_weight / (air_density pi R^2 V_tip^2): the measured run\'s own, not scaled by load factor')
+        for name in GROUP_RUN_METADATA_ATTRIBUTES:
+            this_group.setncattr(name, str(run_metadata[name]))
 
 
 def project_sphere(filename, altitude, elv_cutoff, infreqs=None,
