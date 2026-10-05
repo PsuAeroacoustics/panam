@@ -43,3 +43,10 @@ noninteractive `Agg` backend automatically.
 
 For `spectrogram_plot.py`, `--frequency low:high` selects the displayed
 frequency range. `--y-limits` takes precedence when both are supplied.
+
+# NORAH2 hemispheres
+
+`norah2_to_nod.py` builds a NICE-OPS database from NORAH2 `.hem` hemispheres
+(`flight_acoustics.build_database_from_norah2`). The vehicle and the meaning of
+ACSPEED (`--speed ias-to-tas` or `ground-speed`) must be given. See
+`docs/norah2_import.md` for the conversion and its hazards.
