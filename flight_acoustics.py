@@ -2198,7 +2198,8 @@ AZIMUTH_REFERENCES = ('track', 'heading')
 
 #: Wind speed units a caller may declare for :func:`write_aam_hemisphere_netcdf`'s run
 #: metadata, and their size in m/s.  The unit is stored as declared; it is converted only
-#: to form the airspeed.  No unit is assumed: the 2017 LIDAR's is still in question.
+#: to form the airspeed.  No unit is assumed, even where one is known (the 2017 LIDAR's
+#: is knots: the harness's docs/lidar_units.md).
 WIND_SPEED_UNITS = {'kt': 0.514444, 'm/s': 1.0, 'ft/s': 0.3048, 'mph': 0.44704}
 
 #: Where a run's wind at the aircraft came from.  Several may be joined with '+', e.g.

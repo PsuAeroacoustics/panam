@@ -54,7 +54,9 @@ the B407 hovers' AC heading reads about 9 degrees clockwise of the flight cards'
 relative directions may be the same 9 degrees. The measured-hover analyses in the
 harness (`hover/depropagate_hovers.py`, `hover/r66_hovers.py`) and any database
 whose `hover_correction` came from them were built with the turned azimuths and
-want rebuilding.
+want rebuilding. The B407 hover correction the harness applies (dc99ecc and its
+rebuilds) is not one of them: `hover/fourier_correction.py` fits it to NICE-OPS
+predictions against the measured microphones, not to these spheres.
 
 The microphones are put into the same frame from the layout's microphone list
 (the reference list's `mic_loc_file`: latitude, longitude and ellipsoidal height
@@ -210,11 +212,16 @@ The **wind** is the caller's. `build_sphere(wind=...)`, `build_all(winds=...)`
 take either the components the air moves toward or a meteorological speed and
 direction (the compass bearing, true north, it blows from), with the units and
 the source declared. Nothing is assumed: a wind without declared units is
-refused, and so is an unknown source. The 2017 LIDAR's speed unit (knots or
-m/s) is still in question in the harness, and its direction reference (true or
-magnetic, 13.7 deg apart at Amedee) is not documented, so a caller that is not
-sure should leave the wind out rather than guess; a magnetic direction must be
-turned to true north before it is given. The components are stored in the
+refused, and so is an unknown source. The 2017 LIDAR's speed unit has since been
+settled as knots, as the data report says (the harness's `docs/lidar_units.md`,
+2026-10-05: balloon, station cups and the aircraft's own turns agree), so a
+2017 LIDAR wind is declared `kt`. Its direction reference is not documented;
+the harness reads it as true north, which the windy day's turns support (their
+wind lies -9 deg [-19, +2] from the LIDAR's, where uncorrected magnetic
+directions would put it about 13.5 deg clockwise) without proving it. A caller
+that is not sure of a wind should leave it out rather than guess; a magnetic
+direction (the ground stations') must be turned to true north before it is
+given. The components are stored in the
 declared unit; only the airspeed converts it.
 
 ### In the database
@@ -261,8 +268,12 @@ same values as group attributes, with their units, cost nothing measurable.
 A sphere's azimuth is measured from a direction: 180 is ahead along it, 90 to
 starboard. `hemigen` used the ground velocity, so a sphere built from a crabbed
 run carries the crab in its azimuths. The B407 crabbed 10.6 deg (median, max
-18.6) on windy day 284 and 4.2 deg on calm day 286; the INS heading has no
-offset of its own (crab = -0.08 deg + k asin(crosswind / V)).
+18.6) on windy day 284 and 4.2 deg on calm day 286. A pooled fit put the INS
+heading's own offset near zero (crab = -0.08 deg + k asin(crosswind / V)), but
+the harness's later check (`docs/lidar_units.md`) found the offset of the
+heading box from the airframe changes from day to day, by 3-4 deg on the B407
+and 15 deg on the EC130B4, and that the pilots do not fly zero sideslip; a crab
+offset has to be fitted per day, never per aircraft.
 
 `build_sphere(azimuth_reference=...)` and `--azimuth-reference`:
 
@@ -285,8 +296,10 @@ attribute `azimuth_reference`: the value every source sphere carries. Spheres
 without one are taken as `track`, with a warning; the `azimuth_reference`
 argument, when given, is assumed for them and must agree with those that carry
 one; and spheres filed in different frames are refused, as mixed
-`DOPPLER_SHIFT_REMOVED` is. NICE-OPS reads the attribute to choose its nose (the
-heading at all speeds for `heading`). The hover groups are heading-oriented on
+`DOPPLER_SHIFT_REMOVED` is. NICE-OPS (its `adopt-features-2026-10-05` branch,
+`--nose`) reads the attribute to choose its nose (the
+heading at all speeds for `heading`, which then needs the run's
+`--frame_bearing` for an AC track). The hover groups are heading-oriented on
 both sides whatever it says.
 
 The attribute is written by the root writer every database shares
@@ -294,9 +307,11 @@ The attribute is written by the root writer every database shares
 NORAH2 import (`docs/norah2_import.md`) carries it too, as `track`.
 
 In the evaluation, moving only NICE-OPS's nose to the heading took the windy
-day's held-out SEL from 1.69 to 1.53 dB rms; rebuilding the spheres in the
-heading frame as well gave 1.50, and on the calm day the both-sides version cost
-+0.025 dB. The rebuild is therefore optional: today's track-filed spheres carry
+day's held-out SEL from 1.69 to 1.53 dB rms (1.54 with NICE-OPS's `--nose
+heading` as merged, which the harness's paper scores); the heading frame on the
+build side as well, emulated by turning each held-out sphere by its own build
+crab rather than by a rebuild, gave 1.50, and on the calm day the both-sides
+version cost +0.025 dB. No heading-frame rebuild has been scored yet. The rebuild is therefore optional: today's track-filed spheres carry
 the build days' crab (about -4 deg on the held-out database), which costs well
 under 0.1 dB against a correct nose.
 
