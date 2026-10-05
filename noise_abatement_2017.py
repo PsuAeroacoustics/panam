@@ -28,7 +28,19 @@ spheres (see :func:`steady_window`):
   so flight path angle is ``atan2(-vz, hypot(vx, vy))``;
 * the sphere's ``SPEED`` is mean ground speed in knots (``VGk``);
 * both labels are means over the steady segment, and any steady sub-window
-  reproduces them, so the segment need not match the legacy one exactly.
+  reproduces them, so the segment need not match the legacy one exactly;
+* the track frame's +x runs along the reference list's ``true_heading``, which
+  differs between layouts (270 and 279 deg at Amedee, 140 and 92.3 at Eglin), and
+  +y 90 deg to its left; every compass direction goes through
+  :func:`frame_bearing_deg`.
+
+Before depropagating, :func:`build_sphere` refuses a run whose track is impossible
+over its window (:func:`check_track`: below or within 10 ft of the ground boards, or
+a z that does not follow its altitude) and flags one worth a second look; it records
+the run's gross weight, air density and, when the caller gives it, the wind at the
+aircraft; and it can file azimuth by the INS heading instead of the ground track
+(``azimuth_reference``).  ``docs/database_build.md`` describes all three, what the
+check finds across the six aircraft, and the sphere and database variables.
 """
 
 import contextlib

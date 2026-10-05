@@ -23,6 +23,12 @@ name instead of using hard-coded paths. Copy `local_paths.example.toml` to
 matching `PANAM_<NAME>` environment variable (e.g. `PANAM_NORAH2`). Tests
 whose data are not configured are skipped. See `local_paths.py` for the names.
 
+# Notes
+
+`docs/` holds the longer notes: `ground_plane_corrections.md` (the ground-plate
+corrections) and `database_build.md` (the 2017 sphere build's track check,
+per-run metadata, heading frame, and the `.nod` database format).
+
 # Signal loading and plotting
 
 Signal loaders are available in `panam_acoustics.signal_io` and remain
