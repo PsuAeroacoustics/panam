@@ -132,6 +132,39 @@ def test_written_sphere_carries_every_field_aam_reads(tmp_path):
         assert 'title' in sphere.ncattrs()
 
 
+def test_variables_are_declared_in_the_order_aam_reads_them(tmp_path):
+    # AAM 3.1.0 reads the variables by position and refused every sphere that
+    # declared PHI, THETA, FREQUENCY and AMPLITUDE first ("Variable ID mismatch!!",
+    # the 2026-10-05 Windows run).  ch146101.nc, AAM's own, declares this order.
+    path = tmp_path / 'sphere.nc'
+    fa.write_aam_hemisphere_netcdf(
+        str(path), minimal_hemisphere(), mode='third_octave', radius_ft=100.0,
+        run_metadata=dict(gross_weight_lb=2100.0, air_density_kg_m3=1.17))
+    order = list(fa.AAM_VARIABLE_ORDER)
+    with Dataset(str(path), 'r') as sphere:
+        assert list(sphere.variables)[:len(order)] == order
+        assert list(sphere.dimensions)[:len(order) - 1] == [n for n in order if n != 'AMPLITUDE']
+        # What AAM does not read follows AMPLITUDE.
+        assert set(list(sphere.variables)[len(order):]) == {'MASTTILT', 'GROSS_WEIGHT', 'AIR_DENSITY'}
+
+
+def test_the_weights_sum_to_the_run_gross_weight(tmp_path):
+    # AAM adds the three weights into the vehicle weight its QSAM2/FRAME lookup compares.
+    def weights(**kwargs):
+        path = tmp_path / 'w.nc'
+        fa.write_aam_hemisphere_netcdf(str(path), minimal_hemisphere(), mode='third_octave',
+                                       radius_ft=100.0, **kwargs)
+        with Dataset(str(path), 'r') as sphere:
+            return tuple(float(sphere[n][...]) for n in ('EMPTY_WEIGHT', 'FUEL_WEIGHT', 'LOAD_WEIGHT'))
+
+    assert weights(run_metadata=dict(gross_weight_lb=2100.0)) == (2100.0, 0.0, 0.0)
+    assert weights() == (0.0, 0.0, 0.0)
+    assert weights(run_metadata=dict(gross_weight_lb=None)) == (0.0, 0.0, 0.0)
+    # Given weights win, and a missing one is zero.
+    assert weights(run_metadata=dict(gross_weight_lb=2100.0), empty_weight_lb=1500.0,
+                   fuel_weight_lb=300.0) == (1500.0, 300.0, 0.0)
+
+
 def test_missing_bands_are_written_as_the_aam_sentinel(tmp_path):
     """Ambient gating leaves bands with no data; they must read back as no energy."""
     hemisphere = minimal_hemisphere()
