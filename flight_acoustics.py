@@ -2269,6 +2269,15 @@ def read_run_metadata(filename):
 #: :func:`mask_missing_levels` accepts all three on read.
 AAM_MISSING_LEVEL = -999.0
 
+#: The order AAM's own spheres declare their dimensions and variables in.  AAM 3.1.0 reads
+#: them by position, not by name: a sphere declaring PHI, THETA, FREQUENCY and AMPLITUDE
+#: first is refused ("RMNETCDF2 ... Variable ID mismatch!!"), as panam's were until the
+#: 2026-10-05 cross-code run found it.  Anything else a sphere carries comes after AMPLITUDE,
+#: which AAM accepts.
+AAM_VARIABLE_ORDER = ('BB', 'NB', 'PT', 'DOPPLER_SHIFT_REMOVED', 'EMPTY_WEIGHT', 'FUEL_WEIGHT',
+                      'LOAD_WEIGHT', 'RADIUS', 'FLIGHT_PATH_ANGLE', 'PYLON_ANGLE', 'SPEED', 'XYZ',
+                      'PHI', 'THETA', 'FREQUENCY', 'AMPLITUDE')
+
 #: Anything at or below this reads as masked.  Loose enough to survive the
 #: float32 round trip AMPLITUDE goes through, and far below any real source
 #: level, so it cannot swallow a measurement.
@@ -2437,9 +2446,9 @@ def write_aam_hemisphere_netcdf(
     NB: float = 0.0,
     PT: float = 0.0,
     doppler_shift_removed: float = 0.0,
-    empty_weight_lb: float = 0.0,
-    fuel_weight_lb: float = 0.0,
-    load_weight_lb: float = 0.0,
+    empty_weight_lb: Optional[float] = None,
+    fuel_weight_lb: Optional[float] = None,
+    load_weight_lb: Optional[float] = None,
     pylon_angle_deg: float = 90.0,
     masttilt_deg: float = 0.0,
     xyz_ft=(0.0, 0.0, 0.0),
@@ -2486,13 +2495,21 @@ def write_aam_hemisphere_netcdf(
             radius, so it catches the gated bands and nothing else. Pass -inf
             to keep every finite level.
         overwrite: If False, raises when filename exists.
+        empty_weight_lb, fuel_weight_lb, load_weight_lb: ``EMPTY_WEIGHT``,
+            ``FUEL_WEIGHT`` and ``LOAD_WEIGHT`` (lb).  AAM uses only their sum, as
+            the vehicle weight its effective-weight lookup (QSAM2, FRAME) compares.
+            Left all three None, a finite ``run_metadata`` ``gross_weight_lb`` is
+            written as EMPTY_WEIGHT with the other two zero, so the sum is the
+            run's weight (a run records no breakdown); without one all three are
+            zero.  Any one given, the others None are zero.
         azimuth_reference: what the hemisphere's azimuth was measured from,
             one of :data:`AZIMUTH_REFERENCES`; written as the text attribute
             ``azimuth_reference``.  None writes nothing (a reader then assumes
             'track', as every sphere before it was).
         run_metadata: optional dict describing the run the sphere was built
             from, written as the scalar variables of :data:`RUN_METADATA_VARIABLES`
-            (NaN where a key is absent or None) and the text attributes of
+            (left out where a key is absent, None or NaN, which
+            :func:`read_run_metadata` reads back as NaN) and the text attributes of
             :data:`RUN_METADATA_ATTRIBUTES`.  ``wind_units`` must be one of
             :data:`WIND_SPEED_UNITS` when a wind component is finite, and is
             written as the WIND_* variables' unit; ``wind_source`` is checked
@@ -2524,6 +2541,12 @@ def write_aam_hemisphere_netcdf(
             metadata['wind_source'] = normalize_wind_source(metadata['wind_source'])
         if has_wind and metadata['wind_source'] in ('', 'none'):
             raise ValueError('run_metadata gives a wind but no wind_source')
+
+    weights = (empty_weight_lb, fuel_weight_lb, load_weight_lb)
+    if all(weight is None for weight in weights):
+        gross = metadata['gross_weight_lb'] if metadata is not None else float('nan')
+        weights = (gross if np.isfinite(gross) else 0.0, 0.0, 0.0)
+    weights = tuple(0.0 if weight is None else float(weight) for weight in weights)
 
     if not overwrite and os.path.exists(filename):
         raise FileExistsError(f'Output file already exists: {filename}')
@@ -2576,20 +2599,27 @@ def write_aam_hemisphere_netcdf(
     # and to avoid HDF5 backend dependency issues on some CI platforms.
     ds = Dataset(filename, mode='w', format='NETCDF3_CLASSIC')
     try:
-        # Dimensions (legacy AAM/RNM spheres commonly include these singleton dims)
-        ds.createDimension('PHI', nphi)
-        ds.createDimension('THETA', nth)
-        ds.createDimension('FREQUENCY', nfreq)
-        ds.createDimension('XYZ', 3)
-        for d in [
-            'BB', 'NB', 'PT', 'DOPPLER_SHIFT_REMOVED',
-            'EMPTY_WEIGHT', 'FUEL_WEIGHT', 'LOAD_WEIGHT',
-            'RADIUS', 'FLIGHT_PATH_ANGLE', 'PYLON_ANGLE', 'SPEED', 'MASTTILT'
-        ]:
-            if d not in ds.dimensions:
-                ds.createDimension(d, 1)
+        # Dimensions and variables in AAM_VARIABLE_ORDER, which AAM checks by
+        # position; legacy AAM/RNM spheres give every scalar a singleton dimension
+        # of its own name, declared in the same order.  MASTTILT, which AAM does
+        # not read, comes after AMPLITUDE.
+        sizes = dict(XYZ=3, PHI=nphi, THETA=nth, FREQUENCY=nfreq)
+        for name in AAM_VARIABLE_ORDER + ('MASTTILT',):
+            if name != 'AMPLITUDE':
+                ds.createDimension(name, sizes.get(name, 1))
 
-        # Core AAM hemisphere variables
+        vBB = ds.createVariable('BB', 'f4')
+        vNB = ds.createVariable('NB', 'f4')
+        vPT = ds.createVariable('PT', 'f4')
+        vDSR = ds.createVariable('DOPPLER_SHIFT_REMOVED', 'f4')
+        vEW = ds.createVariable('EMPTY_WEIGHT', 'f4')
+        vFW = ds.createVariable('FUEL_WEIGHT', 'f4')
+        vLW = ds.createVariable('LOAD_WEIGHT', 'f4')
+        vr = ds.createVariable('RADIUS', 'f4')
+        vfpa = ds.createVariable('FLIGHT_PATH_ANGLE', 'f4')
+        vPA = ds.createVariable('PYLON_ANGLE', 'f4')
+        vs = ds.createVariable('SPEED', 'f4')
+        vXYZ = ds.createVariable('XYZ', 'f4', ('XYZ',))
         vphi = ds.createVariable('PHI', 'f4', ('PHI',))
         vth = ds.createVariable('THETA', 'f4', ('THETA',))
         vf = ds.createVariable('FREQUENCY', 'f4', ('FREQUENCY',))
@@ -2598,23 +2628,7 @@ def write_aam_hemisphere_netcdf(
         # makes netCDF4 return a masked array where they return a plain one.
         # The missing sentinel is written into the data instead, as they do.
         vamp = ds.createVariable('AMPLITUDE', 'f4', ('PHI', 'THETA', 'FREQUENCY'))
-
-        # Scalar flight/condition variables (AAM example uses 0-D scalars)
-        vr = ds.createVariable('RADIUS', 'f4')
-        vs = ds.createVariable('SPEED', 'f4')
-        vfpa = ds.createVariable('FLIGHT_PATH_ANGLE', 'f4')
-
-        # Additional AAM metadata variables seen in example spheres
-        vBB = ds.createVariable('BB', 'f4')
-        vNB = ds.createVariable('NB', 'f4')
-        vPT = ds.createVariable('PT', 'f4')
-        vDSR = ds.createVariable('DOPPLER_SHIFT_REMOVED', 'f4')
-        vEW = ds.createVariable('EMPTY_WEIGHT', 'f4')
-        vFW = ds.createVariable('FUEL_WEIGHT', 'f4')
-        vLW = ds.createVariable('LOAD_WEIGHT', 'f4')
-        vPA = ds.createVariable('PYLON_ANGLE', 'f4')
         vMT = ds.createVariable('MASTTILT', 'f4')
-        vXYZ = ds.createVariable('XYZ', 'f4', ('XYZ',))
 
         vphi[:] = np.asarray(phi_deg, dtype=np.float32)
         vth[:] = np.asarray(theta_deg, dtype=np.float32)
@@ -2629,9 +2643,9 @@ def write_aam_hemisphere_netcdf(
         vNB.assignValue(np.float32(NB))
         vPT.assignValue(np.float32(PT))
         vDSR.assignValue(np.float32(doppler_shift_removed))
-        vEW.assignValue(np.float32(empty_weight_lb))
-        vFW.assignValue(np.float32(fuel_weight_lb))
-        vLW.assignValue(np.float32(load_weight_lb))
+        vEW.assignValue(np.float32(weights[0]))
+        vFW.assignValue(np.float32(weights[1]))
+        vLW.assignValue(np.float32(weights[2]))
         vPA.assignValue(np.float32(pylon_angle_deg))
         vMT.assignValue(np.float32(masttilt_deg))
 
@@ -2673,7 +2687,11 @@ def write_aam_hemisphere_netcdf(
             ds.azimuth_reference = azimuth_reference
         if metadata is not None:
             # Doubles, not the legacy scalars' float: a density or a weight is worth its digits.
+            # An unknown is left out rather than written as NaN, which read_run_metadata
+            # reads back the same way and which no AAM sphere carries.
             for name, unit, key in RUN_METADATA_VARIABLES:
+                if not np.isfinite(metadata[key]):
+                    continue
                 variable = ds.createVariable(name, 'f8')
                 variable.assignValue(metadata[key])
                 variable.unit = _scalar_unit(metadata['wind_units'] if unit is None else unit)

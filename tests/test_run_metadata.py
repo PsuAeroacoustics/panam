@@ -134,6 +134,17 @@ def test_a_sphere_carries_its_run_metadata(tmp_path):
     read = fa.read_run_metadata(partial)
     assert read['gross_weight_lb'] == 3400.0 and np.isnan(read['air_density_kg_m3'])
     assert np.isnan(read['wind_along_track']) and read['wind_units'] == '' and read['azimuth_reference'] is None
+    # An unknown is left out of the file, not written as NaN (AAM read AIRSPEED = NaN
+    # in the 2026-10-05 run); it reads back as NaN all the same.
+    with Dataset(partial) as sphere:
+        assert 'GROSS_WEIGHT' in sphere.variables
+        assert not {'AIR_DENSITY', 'WIND_ALONG_TRACK', 'WIND_CROSS_TRACK', 'AIRSPEED'} & set(sphere.variables)
+    unknown = str(tmp_path / 'unknown_airspeed.nc')
+    fa.write_aam_hemisphere_netcdf(unknown, _hemisphere(), mode='third_octave',
+                                   run_metadata=dict(METADATA, airspeed_knots=float('nan')))
+    with Dataset(unknown) as sphere:
+        assert 'AIRSPEED' not in sphere.variables
+    assert np.isnan(fa.read_run_metadata(unknown)['airspeed_knots'])
 
 
 def test_a_sphere_without_metadata_reads_as_unknown(tmp_path):
