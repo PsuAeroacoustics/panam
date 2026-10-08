@@ -25,9 +25,11 @@ whose data are not configured are skipped. See `local_paths.py` for the names.
 
 # Notes
 
-`docs/` holds the longer notes: `ground_plane_corrections.md` (the ground-plate
-corrections) and `database_build.md` (the 2017 sphere build's track check,
-per-run metadata, heading frame, and the `.nod` database format).
+`docs/` holds the longer notes: `THEORY.md` (every model as equations, from the
+spectra through depropagation and gridding to the database and the metrics, with
+references), `ground_plane_corrections.md` (the ground-plate corrections) and
+`database_build.md` (the 2017 sphere build's track check, per-run metadata,
+heading frame, and the `.nod` database format).
 
 # Signal loading and plotting
 
