@@ -251,7 +251,11 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None, solver="auto", use_cou
 
     # Setting the filter order & coefficients
     p_arr = np.atleast_1d(p).astype(int)
-    p_p = int(np.max(p_arr))
+    # One structural order for every tracked order: the solver builds one stencil.  A list of
+    # different orders used to be reduced to its maximum without a word.
+    if np.any(p_arr != p_arr[0]):
+        raise ValueError(f"p must be a single filter order for every tracked order, got {p_arr.tolist()}")
+    p_p = int(p_arr[0])
     if p_p < 1 or n_x <= p_p:
         raise ValueError("p must be at least 1 and smaller than the signal length")
 

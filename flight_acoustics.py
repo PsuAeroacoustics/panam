@@ -42,7 +42,7 @@ def psd(signal, sampling_rate, cal=0.0):
     Returns: tuple (frequency, psd_db, level)
            WHERE
            frequency is an array of band frequencies
-           psd_db is the power spectral density in dB/Hz**2
+           psd_db is the power spectral density in dB re (20 uPa)^2/Hz
            level is the integrated sound pressure level over all bands in dB
     """
     kcal = 10 ** (cal / 20)
@@ -67,10 +67,10 @@ def psd_welch(signal, sampling_rate, cal=0.0, window_time=1.0, window_type='hann
         window_overlap: optional proportion of overlap for windows, default=0.5
         medfilter: width (in Hz) of the median filter, if None, no filter applied (default)
         passband: pair of values (in Hz) defining the lower and upper regions of the passband.  Default None.
-    Returns: tuple (frequency, psd_db, level)
+    Returns: tuple (frequency, psd_db, level, level_A)
            WHERE
            frequency is an array of band frequencies
-           psd_db is the power spectral density in dB/Hz**2
+           psd_db is the power spectral density in dB re (20 uPa)^2/Hz
            level is the integrated sound pressure level over all bands in dB
            level_A is the A-weighted integrated sound pressure level over all bands in dB
     """
@@ -783,7 +783,7 @@ def spectrogram(signal, sampling_rate, window_time=0.5, window_type="hann", wind
     WHERE
     f is an array of frequencies
     t is an array of times
-    SPL is a frequency x time power spectral density spectrogram, dB/Hz**2
+    SPL is a frequency x time power spectral density spectrogram, dB re (20 uPa)^2/Hz
     """
     # Pick next power of two that captures the window time, and generate the window
     binwidth = int(2.0 ** nextpow2(window_time * sampling_rate))
@@ -3704,7 +3704,8 @@ def highpass(x, fpass, fs, zero_phase=True):
         x: signal array
         fpass: high pass frequency
         fs: sampling rate of x
-        zero_phase: optional, use phase preserving filter, default True
+        zero_phase: optional, use phase preserving filter, default True.  Note that
+            panam_acoustics.filters.highpass, which this wraps, defaults to False (causal).
 
     Returns: filtered signal
     """
@@ -3718,7 +3719,8 @@ def lowpass(x, fpass, fs, zero_phase=True):
         x: signal array
         fpass: low pass frequency
         fs: sampling rate of x
-        zero_phase: optional, use phase preserving filter, default True
+        zero_phase: optional, use phase preserving filter, default True.  Note that
+            panam_acoustics.filters.lowpass, which this wraps, defaults to False (causal).
 
     Returns: filtered signal
     """
@@ -6336,18 +6338,24 @@ def ega(hs, hr, d2, f, a, flores, pt=True, cturb=0.0, boundary_loss_correction=T
     flores = np.asarray(flores, dtype=float)
     cturb = np.asarray(cturb, dtype=float)
     
-    mu = 0.727477  # Spherical spreading coefficient
-    eta = 6.325159  # Ground reflection coefficient
-    
+    # Chessell's band-average constants: averaging cos(2 pi f' tau + arg Q) uniformly over a
+    # one-third-octave band [f 2^-1/6, f 2^1/6] gives cos(eta f tau + arg Q) sin(mu f tau)/(mu f tau),
+    # with eta = pi (2^1/6 + 2^-1/6) (the band's arithmetic center) and mu = pi (2^1/6 - 2^-1/6)
+    # (its width).  They are not a spreading or a reflection coefficient.
+    mu = 0.727477
+    eta = 6.325159
+
     # Calculate geometric values
     direct_range = np.sqrt(d2**2 + (hs - hr)**2)  # Direct acoustic path distance
     image_range = np.sqrt(d2**2 + (hs + hr)**2)  # Image source acoustic path distance
-    grazing_angle = np.arccos((hs + hr) / image_range)  # Grazing angle (radians)
+    # The image path's angle from the ground normal (cos = (hs + hr)/R2), i.e. 90 deg less the
+    # grazing angle: the angle spherical_reflection_coefficient's cos_theta wants.
+    incidence_angle = np.arccos((hs + hr) / image_range)
     path_delay = (image_range - direct_range) / a  # Time delay between direct and image paths
     range_ratio = image_range / direct_range  # Ratio of distances
-    
+
     image_source_coeff = spherical_reflection_coefficient(
-        np.cos(grazing_angle), image_range, f, a, flores, boundary_loss_correction)
+        np.cos(incidence_angle), image_range, f, a, flores, boundary_loss_correction)
     image_source_magnitude = np.abs(image_source_coeff)  # Magnitude of image source term
     image_source_phase = np.angle(image_source_coeff)  # Phase of image source term
     
@@ -6368,8 +6376,8 @@ def ega(hs, hr, d2, f, a, flores, pt=True, cturb=0.0, boundary_loss_correction=T
         turbulence_factor = np.exp(-(0.5 * cturb * f * np.sqrt(direct_range))**2) if np.any(cturb > 0.0) else 1.0
         
         # Combine attenuation computation
-        ground_phase_term = eta * freq_path_delay + image_source_phase  # Ground reflection phase
-        spherical_phase_term = mu * freq_path_delay  # Spherical spreading phase
+        ground_phase_term = eta * freq_path_delay + image_source_phase  # interference phase at the band center
+        spherical_phase_term = mu * freq_path_delay  # the band-width sinc's argument
         cosine_factor = np.cos(ground_phase_term) * turbulence_factor
         
         attn = 1.0 + normalized_image_mag_sq + 2.0 * normalized_image_mag * cosine_factor

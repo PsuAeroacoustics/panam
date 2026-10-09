@@ -38,11 +38,20 @@ COLOCATED_PAIRS = ((50, 34), (51, 36), (52, 38))
 #: rather than fitted per pair: per-pair fits wandered from about 60 on the
 #: centerline to 180 on the sidelines, which is more likely something else
 #: (the ground plane itself, for one) being absorbed into the impedance.
+#:
+#: This is the first fit, and it stays the default of every function here that
+#: takes ``flow_resistance`` without ``ground``.  It is not the 2017 site ground:
+#: the later steep-angle and held-out fits (docs/ground_plane_corrections.md)
+#: chose variable porosity, sigma_e 200, which is
+#: ``noise_abatement_2017.SITE_GROUND`` and what the sphere builds pass as
+#: ``ground``.  Pass ``ground`` to model the site.
 FLOW_RESISTANCE = 100.0
 
-#: Pole microphone heights, ft, fitted at :data:`FLOW_RESISTANCE`.  The
-#: metadata does not record them (its heights are ground elevations); the
-#: nominal is the 1.2 m (3.94 ft) certification height.
+#: Pole microphone heights, ft, fitted at :data:`FLOW_RESISTANCE` (the notch
+#: fit above).  The metadata does not record them (its heights are ground
+#: elevations); the nominal is the 1.2 m (3.94 ft) certification height.  The
+#: steep-angle fit with the site ground puts all three at 4.05-4.08 ft
+#: (docs/ground_plane_corrections.md).
 POLE_HEIGHT_FT = {50: 3.96, 51: 4.07, 52: 4.12}
 
 #: GRAS 67AX: a flush-mounted 1/2" microphone (47AX) in a 400 mm diameter plate
@@ -270,7 +279,13 @@ def surface_admittance(frequency, model='delany_bazley', **params):
     ``variable_porosity`` (sigma_e, kPa s/m^2; alpha_e, 1/m) -- their eq. (10),
         Z = (1 + i) sqrt(R_se/(pi gamma rho0 f)) + i c0 alpha_e/(8 pi gamma f),
         R_se = 1000 sigma_e.  Two parameters: an effective flow resistivity and
-        the rate of porosity change with depth.
+        the rate of porosity change with depth.  The second term is what a
+        first-order (WKB) solution gives for porosity Omega0 exp(-alpha z) with
+        isothermal compressibility, with alpha_e = alpha/Omega0.  The commonly quoted
+        form, 0.436 (1 + i) sqrt(sigma_e/f) + 19.48 i alpha_e/f, has twice the
+        coefficient (c0/(4 pi gamma)): its alpha_e is defined differently, so an
+        alpha_e fitted in that form is halved here.  Not yet checked against the
+        printed eq. (10); the 2017 site ground uses alpha_e = 0.
     ``delany_bazley_layer`` (sigma; depth, m) -- a hard-backed layer, eq. (5),
         Z = Z_c coth(-i k d), with Delany-Bazley's characteristic impedance and
         wavenumber (eqs. 4a, 4b).  Their pasture/meadow class is a 0.05 m layer.
