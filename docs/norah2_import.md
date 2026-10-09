@@ -28,7 +28,7 @@ table constants, then levels on a THETAOBSAC x PHIOBSAC grid (0-180 deg x
 | --- | --- | --- |
 | POLDIST | distance the levels are given at, m | 60 (the hover table: 70) |
 | FREEFIELD | 2: free field, with absorption from the center to POLDIST included; 0: ground reflection and absorption included | 2 (the hover table: 0) |
-| TAMB, RELHUM, PAMB | atmosphere of that absorption, K, %, Pa | 298.1 K, 70 %, 101325 Pa (ICAO) |
+| TAMB, RELHUM, PAMB | atmosphere of that absorption, K, %, Pa | 298.1 K, 70 %, 101325 Pa (ICAO; the importer uses each file's own values, and `write_norah2_hemisphere` writes ICAO's 25 °C as 298.15 K) |
 | NOVALUE | no-data marker | -999 |
 | ACSPEED | labeled "indicated airspeed", kt | |
 | GAMM | flight path angle, deg, negative in descent | |

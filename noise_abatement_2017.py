@@ -754,8 +754,8 @@ def check_track(track, index_start, index_stop, *, ground_mics=None, ref_elips_f
       :func:`ground_microphone_positions`), which follows a sloping array (Eglin's boards
       span 25 ft); without them it is the frame's z = 0, the reference point's height,
       which on the Amedee lakebed is within 2 ft of every board.  None turns the test off.
-      Known case: B407 run 285236 (card D19), at 79 ft below the boards over the array
-      where its twin 285235 flew 47 ft above them: the tracking altitude, not the frame,
+      Known case: B407 run 285236 (card D19), whose steady window reaches 66 ft below the
+      nearest boards where its twin 285235 stays 40 ft above them: the tracking altitude, not the frame,
       is wrong (its z follows its alt exactly).
     * z does not follow the track's own altitude: ``|alt - ref_elips_ft - z|`` exceeds
       ``max_altitude_mismatch_ft`` (needs ``alt`` in the track and ``ref_elips_ft``; None
@@ -1473,8 +1473,9 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
                              'ambient-amplified high-frequency bands'
                              .format(run, row.get('layout')))
         # Checked against B407's measured ambient runs: a 5th-percentile
-        # estimate lands within about +-10 dB of the real thing per channel,
-        # so it is a fallback, not an equivalent.  Reported in the manifest.
+        # estimate agrees to -0.3 dB in the median, with about +-8 dB of scatter
+        # per channel (flight_acoustics.depropagate_hemisphere), so it is a
+        # fallback, not an equivalent.  Reported in the manifest.
         ambient_source = 'percentile-{:g}'.format(ambient_fallback_percentile)
     elif not gate_ambient:
         ambient_source = 'none'

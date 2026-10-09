@@ -34,7 +34,8 @@ incidence, corrected by a flat -6 dB, makes a free-field prediction look high
 at exactly those angles.
 
 NICE-OPS's own ground model (`--ground_effect`: Chien-Soroka reflection over a
-uniform Delany-Bazley ground) cannot represent this. It assumes a single
+uniform Delany-Bazley ground) cannot represent this. (It since can: NICE-OPS's
+`--plate_table` reads the axisymmetric BEM tables written below.) It assumes a single
 impedance everywhere, and its flush-receiver case gave a -3 to -4 dB offset
 against the data, which says the ground-plane receiver is being mis-modeled
 rather than that the ground effect is small.
@@ -142,8 +143,8 @@ centerline and the sidelines, so it is held at one site value.
     because near grazing the zone runs well past the microphone.
   - `board_fresnel_disc`: the Fresnel-ellipse share on a 400 mm disc.
 - Tests are in `tests/test_ground_plane.py`.
-- De Jong is not implemented yet. Its formula needs to come from the 1983 paper
-  or the 2006 JASA extension, not from memory.
+- De Jong was not implemented at first. It now is, as Lam & Monazzam's nMID
+  extension (`nmid_pressure_ratio`, `board_nmid`), taken from the 2006 paper.
 - R44 and R66 have no pole recordings (mics 50-52 are listed but have no
   files). The pairs exist on B407, AS350B3, B206L3 and EC130B4.
 
@@ -315,7 +316,7 @@ in dB, skipping bands with fewer than 300 frames. 771 runs.
 
 ### Path 3: boundary integral on the disc (2026-09-25)
 
-`disc_bem_factor`, `disc_bem_table` and `board_disc_bem` in `ground_plane.py`.
+`disc_bem_scattered`, `disc_bem_table` and `board_disc_bem` in `ground_plane.py`.
 
 Formulation:
 - For a locally reacting plane with dp/dz = -i k beta p (e^{-i omega t}),
@@ -864,7 +865,11 @@ plate model, per band and per frame:
   - mic outboard of the track (on the -y side for a mic at y < 0);
   - Q at the run's sound speed.
 - **Table cache.** Tables are cached per sound speed (0.5% steps) in
-  `~/.cache/panam/plate_tables`, about 30 s each.
+  `~/.cache/panam/plate_tables`, 15-45 s each.
+- **Response cap.** `max_response_correction_db` (default None, no cap) drops a
+  band whose correction would raise it by more than that many dB, rather than
+  amplify a measurement the plate response has nearly cancelled. The 2017
+  release databases were built with 15 dB.
 - **Inverted mics.** Every ground microphone in the NASA test was a flush
   67AX, including those the dataset labels `invgb7` (inverted, 7 mm gap), so
   they all use the flush model.

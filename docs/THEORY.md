@@ -584,9 +584,13 @@ These are in PANAM but not used to build the shipped databases.
 - **A stratified atmosphere without rays.** Absorption and timing use one uniform atmosphere; only
   the optional ray model sees the profile (§5.3).
 - **Band-integrated absorption.** ISO 9613-1 is evaluated at single frequencies.
-- **The variable-porosity model's second term** has not been checked against its source. Its
-  coefficient, $c_0/(8\pi\gamma) \approx 9.75$ m/s, is half the value usually quoted for that model,
-  $c_0/(4\pi\gamma)$. It does not affect the shipped spheres, which use $\alpha_e = 0$.
+- **The variable-porosity model's convention for $\alpha_e$.** The second term's coefficient,
+  $c_0/(8\pi\gamma) \approx 9.75$ m/s, is what a first-order (WKB) solution gives for porosity
+  $\Omega_0 e^{-\alpha z}$ with isothermal compressibility and $\alpha_e = \alpha/\Omega_0$. The form
+  usually quoted, $0.436(1+i)\sqrt{\sigma_e/f} + 19.48\,i\alpha_e/f$, has twice the coefficient,
+  $c_0/(4\pi\gamma)$, so its $\alpha_e$ is defined differently: an $\alpha_e$ fitted in that form is
+  halved here. The printed eq. (10) of [15] has not been checked. The shipped spheres
+  use $\alpha_e = 0$.
 
 ## References
 
