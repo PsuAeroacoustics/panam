@@ -1,5 +1,6 @@
 """Smoke tests for the command-line scripts, run as a user would run them."""
 
+import json
 import os
 import subprocess
 import sys
@@ -137,3 +138,49 @@ def test_ega_plot_help_examples_run(tmp_path):
         result = _run('ega_plot.py', *example, cwd=tmp_path)
         assert result.returncode == 0, (example, result.stderr)
         assert (tmp_path / example[example.index('-o') + 1]).stat().st_size > 0
+
+
+EXAMPLE_SPHERE = REPO / 'example_data' / 'AS350B3108.nc'
+
+
+def test_plot_projection_runs(tmp_path):
+    result = _run('plot_projection.py', str(EXAMPLE_SPHERE), '-a', '150', '-c', '20', '-o', 'projection.png',
+                  cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / 'projection.png').stat().st_size > 0
+
+
+def test_nc_lambert_ea_runs(tmp_path):
+    result = _run('nc_lambert_ea.py', str(EXAMPLE_SPHERE), '-f', '50:2000', '-w', 'A', '-g', 'art',
+                  '-o', 'lambert.png', cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / 'lambert.png').stat().st_size > 0
+
+
+def test_build_empirical_database_runs(tmp_path):
+    from netCDF4 import Dataset
+    hemispheres = []
+    for i, (speed, angle) in enumerate([(60, -3), (80, 0)]):
+        hemisphere = minimal_hemisphere()
+        hemisphere['third_octave']['bands_db'] += 3.0 * i
+        hemispheres.append((hemisphere, speed, angle))
+    write_sphere_directory(tmp_path / 'spheres', hemispheres)
+    result = _run('build_empirical_database.py', 'spheres', 'database.nod', cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    with Dataset(str(tmp_path / 'database.nod')) as ds:
+        assert len(ds.groups) >= 2
+
+
+def test_array_planner_subcommands_run(tmp_path):
+    design = ['--nmics', '6', '--altitude', '150']
+    result = _run('array_planner.py', 'design', *design, '--format', 'json', cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert len(json.loads(result.stdout)['ymics']) == 6
+    result = _run('array_planner.py', 'coverage', *design, '--x-offsets', '-200,0,200', '-o', 'coverage.png',
+                  cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / 'coverage.png').stat().st_size > 0
+    result = _run('array_planner.py', 'kml', *design, '--ref-lat', '40.8', '--ref-lon', '-77.9', '--heading', '90',
+                  '--kmz', 'array.kmz', cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / 'array.kmz').stat().st_size > 0
