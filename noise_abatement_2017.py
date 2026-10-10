@@ -1172,6 +1172,10 @@ def run_atmosphere(test, run, fallback=None):
     use the same columns, also log air density, and p / (R rho) reproduces
     their airtemp as Fahrenheit (e.g. AS350B3 day 289: 18.1 against 18.7 F)
     for every aircraft in the dataset.
+
+    The stations folder is ``<aircraft>_Ground_Stations`` for every aircraft
+    but EC130B4, whose folder is ``EC130B4_Ground Stations``; both spellings
+    are read.
     """
     row = test.by_run.get(run)
     try:
@@ -1182,7 +1186,7 @@ def run_atmosphere(test, run, fallback=None):
     day = run[:3]
     samples = []
     pattern = os.path.join(test.base, test.aircraft + '_Weather',
-                           test.aircraft + '_Ground_Stations',
+                           test.aircraft + '_Ground[_ ]Stations',
                            '{}_{}_*.csv'.format(test.aircraft, day))
     for path in sorted(glob.glob(pattern)):
         try:

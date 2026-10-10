@@ -186,6 +186,25 @@ def test_run_atmosphere_reads_station_temperature_as_fahrenheit(tmp_path):
     assert atmosphere.pressure == pytest.approx(88.83)
 
 
+def test_run_atmosphere_finds_stations_spelled_with_a_space(tmp_path):
+    """EC130B4's folder is 'EC130B4_Ground Stations'; its runs must not miss their weather."""
+    stations = tmp_path / 'X_Weather' / 'X_Ground Stations'
+    stations.mkdir(parents=True)
+    (stations / 'X_296_SWS1.csv').write_text(
+        '    utcsec,    time, airtemp, humidity, pressure\n'
+        '     39909, 11:05:09,       50.0,       80.0,    89.1000\n')
+
+    class FakeTest:
+        base = str(tmp_path)
+        aircraft = 'X'
+        by_run = {'296100': {'utc_secs_from_mid_start': '39910'}}
+
+    atmosphere = na.run_atmosphere(FakeTest(), '296100')
+    assert atmosphere.temperature == pytest.approx(283.15)
+    assert atmosphere.relative_humidity == pytest.approx(80.0)
+    assert atmosphere.pressure == pytest.approx(89.1)
+
+
 def _descending(vz_positive_up, rate_fps=10.0, n=500):
     time = np.arange(n) * 0.02
     z = 1000.0 - rate_fps * time
