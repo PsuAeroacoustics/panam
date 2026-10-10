@@ -235,11 +235,25 @@ def _load_depropagated_hemisphere_npz(path: str, *, field: str, fc_hz: Optional[
 	return HemisphereGrid(azi_grid_deg=azi_grid_deg, elv_grid_deg=elv_grid_deg, spl_db=spl, label=label)
 
 
+def _check_overflight(args: argparse.Namespace) -> None:
+	"""Refuse an altitude, speed or sampling period that is not positive."""
+	for option, value in (('--altitude', args.altitude), ('--speed', args.speed), ('--rate', args.rate)):
+		if not value > 0:
+			raise ValueError(f'{option} must be positive, got {value:g}')
+
+
 def _design_ymics(args: argparse.Namespace) -> np.ndarray:
 	if args.ymics is not None:
 		return np.asarray(args.ymics, dtype=float).ravel()
 	if args.nmics is None:
 		raise ValueError('Provide either --ymics or --nmics')
+	if args.nmics < 2:
+		raise ValueError(f'--nmics must be at least 2, got {args.nmics} '
+						 '(for a single microphone under the track give --ymics 0)')
+	if not 0 < args.min_elevation < 90:
+		raise ValueError(f'--min-elevation must be between 0 and 90 deg, got {args.min_elevation:g}')
+	if not 0 < args.target_elv <= 90:
+		raise ValueError(f'--target-elv must be greater than 0 and at most 90 deg, got {args.target_elv:g}')
 	return np.asarray(
 		fa.linear_array_plan(
 			args.nmics,
@@ -404,9 +418,13 @@ def build_parser() -> argparse.ArgumentParser:
 	common.add_argument('--nmics', type=int, default=None,
 						help='Number of microphones (used when --ymics is not set).')
 	common.add_argument('--min-elevation', type=float, default=10.0,
-						help='Min sideline elevation above horizon for design (deg). Default: 10.')
+						help='Elevation (deg) of the outermost microphones above the horizon, measured in the '
+							 '--target-elv plane; seen from directly overhead it is '
+							 'atan(sin(target_elv) * tan(min_elevation)), which equals it only at --target-elv 90. '
+							 'Between 0 and 90. Default: 10.')
 	common.add_argument('--target-elv', type=float, default=90.0,
-						help='Target elevation plane for equal-angle spacing (deg). Default: 90.')
+						help='Elevation (deg) of the plane in which the microphones are equally spaced in angle, '
+							 'greater than 0 and at most 90. Default: 90.')
 
 	# Shared overflight/coverage settings
 	common.add_argument(
@@ -489,6 +507,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 	parser = build_parser()
 	args = parser.parse_args(argv)
 	try:
+		_check_overflight(args)
 		return int(args.func(args))
 	except Exception as e:
 		parser.error(str(e))
