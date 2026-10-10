@@ -543,3 +543,81 @@ def test_board_disc_bem_takes_a_ground_model_from_the_table():
     built = gp.disc_bem_table(np.array([200.0]), C, sub_bands=1, elevations=np.array([10.0]),
                               azimuths=np.array([0.0]), ground=ground)
     assert built['flow_resistance'] is None and built['ground'] == ground
+
+
+# ---------------------------------------------------------------- measured pairs
+
+def _pair_channels(board_location=(0.0, 0.0, 0.0)):
+    """A pole at 25600 Hz and its ground plane at 25000 Hz (twice the pressure, 0.25 s later):
+    the same noise, under a flyover's envelope and a floor 40 dB down, as _read_signal gives them."""
+    from scipy.signal import resample_poly
+    rng = np.random.default_rng(1)
+    t0, rate = 99.0, 25600.0
+    t = t0 + np.arange(int(24.0 * rate)) / rate
+    master = rng.standard_normal(t.size) * (0.01 + np.exp(-0.5 * ((t - 111.0) / 3.0) ** 2))
+    pole = master[int(1.0 * rate):]                  # from 100 s
+    board = 2.0 * resample_poly(master, 125, 128)[int(1.25 * 25000):]   # from 100.25 s
+    signals = {'pole.nc': (pole, 100.0 + np.arange(pole.size) / rate, np.array([0.0, 0.0, 0.0]), rate),
+               'board.nc': (board, 100.25 + np.arange(board.size) / 25000.0, np.asarray(board_location, float),
+                            25000.0)}
+    return lambda path, *args, **kwargs: signals[path]
+
+
+class _PairTest:
+    acoustic_files = {'289001': {50: 'pole.nc', 34: 'board.nc'}}
+
+    def track_path(self, run):
+        return 'track.csv'
+
+
+def _pass_track():
+    # Level pass at 300 ft along x, overhead at 111 s.
+    t = np.linspace(90.0, 140.0, 501)
+    return {'time': t, 'x': 150.0 * (t - 111.0), 'y': np.full_like(t, 40.0), 'z': np.full_like(t, 300.0)}
+
+
+def test_pair_band_histories_align_and_resample_the_board(monkeypatch):
+    # The board's channel is resampled to the pole's rate and both are framed
+    # from 100.25 s, the later start: board - pole is the factor of 2 (6.02 dB)
+    # in every band and frame, which a misaligned frame would break under the envelope.
+    import noise_abatement_2017 as na
+    monkeypatch.setattr(na, '_read_signal', _pair_channels())
+    out = gp.pair_band_histories(_PairTest(), '289001', 50, 34, _pass_track(), C)
+    assert out['time'][0] == pytest.approx(100.25 + 0.25, abs=1e-9)        # the first frame's center
+    np.testing.assert_allclose(np.diff(out['time']), 0.5, atol=1e-9)
+    assert out['pole'].shape == (out['bands'].size, out['time'].size) == out['board'].shape
+    assert np.ptp(out['pole'][10]) > 30.0                   # the envelope spans the frames
+    # Up to 8 kHz to 0.05 dB; the 10 kHz band reaches 11.2 kHz, where the board's
+    # own 12.5 kHz Nyquist rate and the two resampling filters take 0.1-0.15 dB.
+    below = out['bands'] < 9000.0
+    np.testing.assert_allclose((out['board'] - out['pole'])[below], gp.PRESSURE_DOUBLING_DB, atol=0.05)
+    np.testing.assert_allclose((out['board'] - out['pole'])[~below], gp.PRESSURE_DOUBLING_DB, atol=0.2)
+    # The geometry is the pole's, at its location: the track passes 40 ft to the side at 300 ft.
+    heard = np.isfinite(out['elevation'])
+    assert heard.sum() > 40
+    np.testing.assert_allclose(out['source_dy'][heard], 40.0)
+    np.testing.assert_allclose(out['source_height'][heard], 300.0)
+    assert 75.0 < np.nanmax(out['elevation']) < np.degrees(np.arctan2(300.0, 40.0))
+    monkeypatch.setattr(na, '_read_signal', _pair_channels(board_location=(5.0, 0.0, 0.0)))
+    with pytest.raises(ValueError, match='not co-located'):
+        gp.pair_band_histories(_PairTest(), '289001', 50, 34, _pass_track(), C)
+
+
+def test_measured_board_transfer_gates_quiet_frames(monkeypatch):
+    # T_board = board - pole + G_pole where both channels are 10 dB over their
+    # floor, NaN in the quiet lead-in and tail.
+    import noise_abatement_2017 as na
+    monkeypatch.setattr(na, '_read_signal', _pair_channels())
+    monkeypatch.setattr(na, 'load_track', lambda path: _pass_track())
+    air = gp.fa.Atmosphere(temperature=288.15, pressure=101.325, relative_humidity=50.0)
+    monkeypatch.setattr(na, 'run_atmosphere', lambda test, run, fallback=None: air)
+    out = gp.measured_board_transfer(_PairTest(), '289001', 50, 34)
+    c = air.soundspeed / 0.3048
+    assert out['sound_speed'] == pytest.approx(c)
+    loud = np.isfinite(out['T_board'])
+    assert loud[:, np.argmin(np.abs(out['time'] - 111.3))].all()                    # overhead
+    assert not loud[:, :4].any() and not loud[:, -4:].any()                         # lead-in, tail
+    g_pole = gp.pole_ground_effect(out['bands'], out['source_height'], out['ground_distance'],
+                                   gp.POLE_HEIGHT_FT[50], c)
+    np.testing.assert_allclose(out['G_pole'], g_pole, atol=1e-12)
+    np.testing.assert_allclose(out['T_board'][loud], (gp.PRESSURE_DOUBLING_DB + g_pole)[loud], atol=0.2)
