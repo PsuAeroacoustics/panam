@@ -3,7 +3,7 @@ import pytest
 import matplotlib.pyplot as plt
 
 from flight_acoustics import psd, psd_welch, atmosorb, art2umapr, geodetic2array, array2geodetic, lambert_ea_points
-from flight_acoustics import dBAw, overall_SPL, level_history
+from flight_acoustics import dBAw, overall_SPL, level_history, dedopplerize
 
 P_REF = 2.0e-5
 
@@ -303,3 +303,19 @@ assert matplotlib.rcParams['figure.autolayout'] is False
 assert matplotlib.rcParams['mathtext.fontset'] == 'cm'
 '''], capture_output=True, text=True, env=dict(os.environ, MPLBACKEND='Agg'))
     assert result.returncode == 0, result.stderr
+
+
+def test_dedopplerize_leaves_unrecorded_emissions_missing():
+    """np.interp held the first and last samples flat for reception times outside
+    the record, a step that contaminated the de-Dopplerized spectrum."""
+    c = 1000.0
+    track_time = np.linspace(0.0, 2.0, 21)
+    position = np.column_stack([np.zeros(21), np.zeros(21), np.full(21, 100.0)])
+    observers = np.zeros((1, 3))
+    t = np.arange(0.2, 2.0, 1e-3)[None, :]          # starts after the first arrival (0.1 s)
+    pressure = np.sin(2 * np.pi * 50.0 * t)
+    emission, dpres = dedopplerize(t, pressure, c, track_time, position, observers)
+    received = emission + 0.1
+    outside = (received < t[0, 0]) | (received > t[0, -1])
+    assert outside.any() and np.all(np.isnan(dpres[0, outside]))
+    np.testing.assert_allclose(dpres[0, ~outside], np.sin(2 * np.pi * 50.0 * received[~outside]), atol=0.02)

@@ -1000,7 +1000,8 @@ def dedopplerize(time, pressure, speed_of_sound, track_time, position, observers
     Returns: tuple (emission_times, dpres)
     WHERE
     emission_times is an array emission times
-    dpres is an observer x emission times matrix of de-Dopplerized acoustic pressures
+    dpres is an observer x emission times matrix of de-Dopplerized acoustic pressures,
+    NaN where the emission would be received outside that observer's record
     """
     # If not set, infer sample rate from measured data
     if output_sample_rate is None:
@@ -1016,7 +1017,8 @@ def dedopplerize(time, pressure, speed_of_sound, track_time, position, observers
         ry = observer[1] - position[:, 1]
         rz = observer[2] - position[:, 2]
         r = np.interp(emission_times, track_time, np.sqrt(rx ** 2 + ry ** 2 + rz ** 2))
-        dpres[index, :] = np.interp(emission_times + r / speed_of_sound, time[index, :], pressure[index, :])
+        dpres[index, :] = np.interp(emission_times + r / speed_of_sound, time[index, :], pressure[index, :],
+                                    left=np.nan, right=np.nan)
         # Apply spherical spreading when radius is known
         if radius is not None:
             dpres[index, :] = r / radius * dpres[index, :]
