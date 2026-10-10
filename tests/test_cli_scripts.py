@@ -192,7 +192,7 @@ def test_array_planner_subcommands_run(tmp_path):
     result = run_here('array_planner.py', 'design', *design, '--format', 'json', cwd=tmp_path)
     assert result.returncode == 0, result.stderr
     assert len(json.loads(result.stdout)['ymics']) == 6
-    result = run_here('array_planner.py', 'coverage', *design, '--x-offsets', '-200,0,200', '-o', 'coverage.png',
+    result = run_here('array_planner.py', 'coverage', *design, '--x-offsets=-200,0,200', '-o', 'coverage.png',
                   cwd=tmp_path)
     assert result.returncode == 0, result.stderr
     assert (tmp_path / 'coverage.png').stat().st_size > 0

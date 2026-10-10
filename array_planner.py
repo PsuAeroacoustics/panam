@@ -392,15 +392,15 @@ def build_parser() -> argparse.ArgumentParser:
 			"  # Plot Lambert coverage points only\n"
 			"  %(prog)s coverage --nmics 12 --altitude 150 -o demo_plots/array_coverage_lambert.png\n\n"
 			"  # Plot multiple arrays at different X offsets\n"
-			"  %(prog)s coverage --nmics 12 --altitude 150 --x-offsets -200,0,200 -o /tmp/coverage.png\n\n"
+			"  %(prog)s coverage --nmics 12 --altitude 150 --x-offsets=-200,0,200 -o /tmp/coverage.png\n\n"
 			"  # Add a climb/descent (flight path angle), crossing altitude at x=0\n"
-			"  %(prog)s coverage --nmics 12 --altitude 150 --fpa 6 --x-offsets -200,0,200 -o /tmp/coverage_fpa6.png\n\n"
+			"  %(prog)s coverage --nmics 12 --altitude 150 --fpa 6 --x-offsets=-200,0,200 -o /tmp/coverage_fpa6.png\n\n"
 			"  # Overlay coverage on a depropagated hemisphere NPZ (from AS350_289108_demo.py)\n"
 			"  %(prog)s overlay --nmics 12 --altitude 150 --hemisphere demo_plots/hemisphere_third_octave.npz "
 			"--field oaspl_fullband -o demo_plots/coverage_on_hemisphere.png\n"
 			"\n"
 			"  # Export mic coordinates to KMZ (Google Earth)\n"
-			"  %(prog)s kml --nmics 12 --altitude 150 --x-offsets -200,0,200 "
+			"  %(prog)s kml --nmics 12 --altitude 150 --x-offsets=-200,0,200 "
 			"--ref-lat 34.0001 --ref-lon -118.0002 --ref-alt 250 --heading 90 "
 			"--kmz array.kmz\n"
 		),
@@ -442,7 +442,7 @@ def build_parser() -> argparse.ArgumentParser:
 		dest='x_offsets',
 		type=_parse_csv_floats,
 		default=None,
-		help='Comma-separated X offsets for additional arrays (same length units as altitude). Example: -x -200,0,200',
+		help='Comma-separated X offsets for additional arrays (same length units as altitude). Example: --x-offsets=-200,0,200 (with "=", since the value starts with "-")',
 	)
 	common.add_argument('--xmin', type=float, default=-1000.0,
 						help='Overflight start x (same length units as altitude). Default: -1000.')
