@@ -334,7 +334,9 @@ def scattering(frequencies, elevations, azimuths, sound_speed, flow_resistance=g
     the air: an inverted microphone over a board (SAE ARP 4055's 7 mm gap,
     :data:`ground_plane.INVERTED_MIC_HEIGHT_FT`).  Off the surface the field is
     p_inc + K p, not the surface value 2 (p_inc + K p).  The microphone's own
-    body is not modeled.
+    body is not modeled.  A flush microphone on the plate (no ``generator``
+    or ``mic_rz``) must be on the flat top, as in
+    :func:`ground_plane.raised_plate_scattering`.
     """
     frequencies = np.atleast_1d(np.asarray(frequencies, float))
     el = np.radians(np.atleast_1d(np.asarray(elevations, float)))
@@ -342,6 +344,9 @@ def scattering(frequencies, elevations, azimuths, sound_speed, flow_resistance=g
     radius = geometry.get('radius', gp.PLATE_RADIUS_FT)
     thickness = geometry.get('thickness', gp.PLATE_THICKNESS_FT)
     r_mic = float(np.hypot(*mic)); phi_mic = float(np.arctan2(mic[1], mic[0]))
+    if (generator is None and mic_rz is None and mic_height == 0.0
+            and r_mic >= radius - geometry.get('taper_length', gp.PLATE_TAPER_LENGTH_FT)):
+        raise ValueError('a flush microphone must be on the flat top')
     z_mic = thickness + float(mic_height)
     surface = mic_height == 0.0
     if mic_rz is not None:

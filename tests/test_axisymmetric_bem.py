@@ -35,6 +35,20 @@ def test_offset_microphone_mirror_symmetry():
     assert np.allclose(pd[0, 0, 0], pd[0, 0, 1], rtol=1e-6) and np.allclose(pr[0, 0, 0], pr[0, 0, 1], rtol=1e-6)
 
 
+def test_flush_microphone_must_be_on_the_flat_top():
+    # Over the taper or beyond the rim a flush microphone would sit in the air
+    # at the top's height and still be doubled as a surface point.
+    r_taper = gp.PLATE_RADIUS_FT - gp.PLATE_TAPER_LENGTH_FT
+    for r in (r_taper, gp.PLATE_RADIUS_FT - 0.5 * gp.PLATE_TAPER_LENGTH_FT, 1.2 * gp.PLATE_RADIUS_FT):
+        with pytest.raises(ValueError, match='flat top'):
+            ab.scattering([1000.0], [20.0], [0.0], C, mic=(0.0, r))
+        with pytest.raises(ValueError, match='flat top'):
+            ab.table(np.array([1000.0]), C, sub_bands=1, elevations=[20.0], azimuths=[0.0], mic=(r, 0.0))
+    # Raised (inverted) above the plate it is in the air anywhere.
+    pd, pr = ab.scattering([1000.0], [20.0], [0.0], C, mic=(0.0, r_taper), mic_height=gp.INVERTED_MIC_HEIGHT_FT)
+    assert np.isfinite(pd).all() and np.isfinite(pr).all()
+
+
 def test_matches_the_3d_surface_model():
     f, el = 500.0, 45.0
     pd, pr = ab.scattering([f], [el], [90.0], C)
