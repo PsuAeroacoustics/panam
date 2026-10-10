@@ -4917,6 +4917,20 @@ def add_sphere_group(ncdatabase, groupname, phi, theta, radius, SPLA, EAA, speed
 def project_sphere(filename, altitude, elv_cutoff, infreqs=None,
                    atmosphere=Atmosphere(temperature=293.15, pressure=101.325,
                                          relative_humidity=20.0)):
+    """A sphere's A-weighted levels projected onto flat ground ``altitude`` below it.
+
+    Each direction at least ``elv_cutoff`` deg below the horizon is carried along a
+    straight ray from the sphere's radius to the ground, with spherical spreading and
+    the sphere's absorption.  ``elv_cutoff`` must lie strictly between 0 and 90 deg: a
+    ray at or above the horizon never reaches the ground.
+
+    Returns:
+        (x, y, LA, speed, flight_path_angle): ground positions in altitude's units,
+        starboard +x and the flight direction +y, and the level there (dBA; -inf
+        where the direction has no energy).
+    """
+    if not 0.0 < elv_cutoff < 90.0:
+        raise ValueError(f'elv_cutoff must be between 0 and 90 deg below the horizon, not {elv_cutoff}')
     distance = 1000  # reference distance for EAA
     azi, elv, phi, theta, radius, SPLO, SPLA, EAA, speed, flight_path_angle, _, _ = extract_SPL(filename, infreqs, distance,
                                                                                           atmosphere)
@@ -5069,7 +5083,9 @@ def project_directory(directory_name, altitude=500, cutoff=30, input_frequencies
             flight_path_angles.append(flight_path_angle)
             Lmax.append(np.max(LA[stencil]))
             Lmean.append(np.mean(LA[stencil]))
-            run = re.search(r'(\d+)\.nc$', filename)
+            # The run number is the last three digits; any before them belong
+            # to the vehicle's name (Be407100.nc is the Bell 407's run 100).
+            run = re.search(r'(\d{3})\.nc$', os.path.basename(filename))
             runs.append(int(run.group(1)) if run else None)
     speeds = np.array(speeds)
     flight_path_angles = np.array(flight_path_angles)
@@ -5218,8 +5234,9 @@ def plot_projection(filename, altitude=500, cutoff=30, infreqs=None, units='m'):
     Args:
         filename (str): Path to the file containing netCDF formatted acoustic sphere data
         altitude (float, optional): Aircraft altitude in meters. Defaults to 500.
-        cutoff (float, optional): Cutoff angle in degrees for projection calculations. 
-            Defaults to 30.
+        cutoff (float, optional): Elevation cutoff (deg below the horizon, strictly
+            between 0 and 90): only directions at least this far below the horizon are
+            projected.  Defaults to 30.
         infreqs (array-like, optional): Input frequencies for analysis. Defaults to None.
         units (str, optional): Units for plot axes ('m' for meters, 'ft' for feet, etc.). 
             Defaults to 'm'.
@@ -5233,10 +5250,16 @@ def plot_projection(filename, altitude=500, cutoff=30, infreqs=None, units='m'):
     Notes:
         - The function uses triangulation and linear interpolation to create smooth contours
         - Sound pressure levels are displayed in dBA (A-weighted decibels)
-        - The plot uses a YlOrRd colormap with 9 levels
+        - The plot uses a YlOrRd colormap on round contour levels that cover the data
+          (see :func:`nice_levels`)
         - Coordinate system: cross-track (x-axis) and along-track (y-axis) directions
     """
     x, y, LA, speed, flight_path_angle = project_sphere(filename, altitude, cutoff, infreqs)
+    if x.size < 3:
+        raise ValueError(f'{filename}: {x.size} directions at least {cutoff} deg below the horizon; '
+                         'a footprint needs 3 (lower the cutoff)')
+    if not np.any(np.isfinite(LA)):
+        raise ValueError(f'{filename}: no direction at least {cutoff} deg below the horizon has a level')
     fig, ax = subplots(facecolor='white')
     xi = np.linspace(np.min(x), np.max(x), 100)
     yi = np.linspace(np.min(y), np.max(y), 100)
@@ -5248,16 +5271,17 @@ def plot_projection(filename, altitude=500, cutoff=30, infreqs=None, units='m'):
     interpolator = tri.LinearTriInterpolator(triangles, LA)
     xim, yim = np.meshgrid(xi, yi)
     li = interpolator(xim, yim)
-    num_levels = 9
-    levels = np.round(10 * np.linspace(np.nanmin(LA), np.nanmax(LA), num_levels)) / 10
-    color_map = get_ylorrd_cmap(num_levels)
+    # Round levels with the ends snapped outward, so neither the loudest spot nor the
+    # quietest is left blank (contourf fills only between the first and last level).
+    levels = nice_levels(np.nanmin(LA), np.nanmax(LA))
+    color_map = get_ylorrd_cmap(max(len(levels), 2))
     xi = unit_conversion.len_conv(xi, from_units='m', to_units=units)
     yi = unit_conversion.len_conv(yi, from_units='m', to_units=units)
     cs = ax.contourf(xi, yi, li, levels=levels, cmap=color_map)
     ax.axis('equal')
     ax.set_xlabel('Cross Track Direction, ' + units)
     ax.set_ylabel('Flight Track Direction, ' + units)
-    cb = colorbar(cs, format='%.0f')
+    cb = colorbar(cs, ticks=colorbar_ticks(levels))
     cb.set_label('Sound Pressure Level, dBA')
     return fig, ax, cs
 
