@@ -99,8 +99,8 @@ bins, and $P_b = R(f_u) - R(f_l)$ counts fractional bins.
 two bands. On the B407 the 27.6 and 55.2 Hz harmonics, 0.6 and 1.0 Hz from band edges, read
 5–19 dB high in the 31.5 and 63 Hz bands. `tone_aware_band_power` files each tone whole:
 
-1. The floor is the running median of the PSD over 15 bins. A tone is a local maximum over ±2 bins
-   standing more than 6 dB above it.
+1. The floor is the running median of the PSD over 15 bins, taken over the bins the ambient gate
+   left nonzero. A tone is a local maximum over ±2 bins standing more than 6 dB above it.
 2. Its offset from the peak bin follows from the Hann window's two-bin interpolation
    [9], with $p_0$ and $p_{l,r}$ the floor-subtracted peak and neighbors:
    $\alpha = \sqrt{\max(p_l, p_r)/p_0}$, $\delta = \pm\,\mathrm{clip}\!\left(\frac{2\alpha - 1}{\alpha + 1}, 0, \tfrac12\right)$, toward the larger neighbor.
@@ -350,7 +350,7 @@ carries none, and the plate BEM that builds the spheres has no roughness term.
 Each emission sample carries a received power spectrum $P(f)$ at a microphone. Depropagation
 refers it to the sphere radius $r_\mathrm{ref} = 100$ ft in four steps, in this order:
 
-1. **Ambient gate.** With $A(f)$ the ambient spectrum (the median over frames of a measured
+1. **Ambient gate.** With $A(f)$ the ambient spectrum (the mean power over the frames of a measured
    ambient run on the same layout, or a low percentile of the run's own spectrogram), a bin is kept
    only if it stands $G$ dB above the ambient, and the ambient is then subtracted:
    $P \leftarrow \max(P - A, 0)$ where $P \ge A\,10^{G/10}$, and 0 elsewhere.
@@ -362,8 +362,12 @@ refers it to the sphere radius $r_\mathrm{ref} = 100$ ft in four steps, in this 
    ISO 9613-1 coefficient at the received frequency (§5.4) and $\ell$ the straight distance or the
    ray's arc length. Bins whose correction would exceed a cap are discarded.
 
-The gate comes first: an ambient-limited bin would otherwise be amplified by both corrections. A
-discarded bin carries zero power. **The sphere keeps the absorption over its first
+The gate comes first: an ambient-limited bin would otherwise be amplified by both corrections. The
+ambient is a mean because each $P$ is a single frame, whose expectation is the mean; a single
+frame's bin of noise is exponentially distributed, so the median would sit $\ln 2$ of the mean
+(1.6 dB) low. A gated bin carries zero power (measured, no energy); a capped bin is missing (not
+measured): a band spanning one is missing for that sample, the overall levels sum the bins that
+remain, and the gridding (§6) leaves missing samples out of each node's weights. **The sphere keeps the absorption over its first
 $r_\mathrm{ref}$** in the run's own atmosphere; the database's EAA (§7.2) accounts for absorption
 beyond it.
 
