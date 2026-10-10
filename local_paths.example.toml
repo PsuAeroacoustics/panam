@@ -6,3 +6,5 @@
 noise_abatement_2017 = "/path/to/Noise_Abatement_2017"
 as350_demo = "/path/to/AS350_demo"
 norah2 = "/path/to/NORAH2_V2.0.74_public"
+niceops = "/path/to/NICEOPS/build/niceops"
+niceops_ray_geometry = "/path/to/NICEOPS/build/niceops_ray_geometry"

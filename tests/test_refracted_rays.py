@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from flight_acoustics import depropagate_hemisphere
+import local_paths
 import refracted_rays as rr
 
 P_REF = 2.0e-5
@@ -86,10 +87,13 @@ def test_ray_model_shapes_are_checked():
         _hemisphere(wrong)
 
 
-RAYS = os.environ.get('NICEOPS_RAY_GEOMETRY') or shutil.which('niceops_ray_geometry')
+# NICE-OPS's ray tracer: local_paths (PANAM_NICEOPS_RAY_GEOMETRY or local_paths.toml),
+# then NICEOPS_RAY_GEOMETRY, then PATH.
+RAYS = (local_paths.data_path('niceops_ray_geometry', required=False) or os.environ.get('NICEOPS_RAY_GEOMETRY')
+        or shutil.which('niceops_ray_geometry'))
 
 
-@pytest.mark.skipif(RAYS is None, reason='set NICEOPS_RAY_GEOMETRY to a niceops_ray_geometry build')
+@pytest.mark.skipif(RAYS is None, reason='niceops_ray_geometry not configured (local_paths: niceops_ray_geometry)')
 def test_external_model_in_uniform_air_is_straight(tmp_path):
     atmosphere = tmp_path / 'uniform.csv'
     atmosphere.write_text('z_ft,T_C,RH\n0,15,50\n')
@@ -105,7 +109,7 @@ def test_external_model_in_uniform_air_is_straight(tmp_path):
     assert np.allclose(got['travel_time'], want['travel_time'], rtol=1e-4)
 
 
-@pytest.mark.skipif(RAYS is None, reason='set NICEOPS_RAY_GEOMETRY to a niceops_ray_geometry build')
+@pytest.mark.skipif(RAYS is None, reason='niceops_ray_geometry not configured (local_paths: niceops_ray_geometry)')
 def test_external_model_under_an_inversion_launches_shallower(tmp_path):
     atmosphere = tmp_path / 'inversion.csv'
     atmosphere.write_text('z_ft,T_C,RH\n0,0,50\n150,8,50\n2000,8,50\n')

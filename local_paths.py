@@ -21,6 +21,12 @@ Known names:
     (the directory holding ``AAM/`` and the run's acoustic files).
 ``norah2``
     The EASA NORAH2 distribution (the directory holding ``Hemispheres/``).
+``niceops``
+    The NICE-OPS executable (a file, e.g. ``.../NICEOPS/build/niceops``), which
+    the tests use to load the databases PANAM writes.
+``niceops_ray_geometry``
+    NICE-OPS's ray-geometry executable, for
+    :func:`refracted_rays.external_ray_model` and its tests.
 """
 
 from __future__ import annotations
