@@ -320,3 +320,56 @@ def test_receiver_response_follows_the_band_sums_edges_for_nominal_centers():
         finite = np.isfinite(a)
         assert finite.any()
         np.testing.assert_allclose(b[finite] - a[finite], -gains_db[fc], atol=1e-9)
+
+
+def test_a_capped_sample_is_a_gap_not_silence():
+    """A band dropped by a cap was not measured; averaged in as zero power it pulled
+    every node it shared with measured samples down (-3 dB at half the weight)."""
+    scenario = _scenario(noise_only=True, seed=12)
+
+    def flat(im, bands, offset):
+        return np.zeros((bands.size, offset.shape[0]))
+
+    def null_on_mic_0(im, bands, offset):
+        return np.full((bands.size, offset.shape[0]), -30.0 if im == 0 else 0.0)
+
+    kept = _run(scenario, receiver_response_db=flat, return_scattered=True)
+    dropped = _run(scenario, receiver_response_db=null_on_mic_0, max_response_correction_db=15.0,
+                   return_scattered=True)
+
+    # Microphone 0's samples are missing, not silent ...
+    mic0 = dropped['scattered']['mic'] == 0
+    assert np.all(np.isnan(dropped['scattered']['oaspl_power'][mic0]))
+    assert np.all(np.isnan(dropped['scattered']['third_octave']['bands_db'][:, mic0]))
+    # ... so the nodes the other microphones reach keep their level.
+    for key in ('oaspl_db', 'spl_a_db'):
+        both = np.isfinite(kept[key]) & np.isfinite(dropped[key])
+        assert both.sum() > 0.5 * np.isfinite(kept[key]).sum()
+        assert abs(float(np.median(dropped[key][both] - kept[key][both]))) < 0.5
+    bands_kept, bands_dropped = kept['third_octave']['bands_db'], dropped['third_octave']['bands_db']
+    both = np.isfinite(bands_kept) & np.isfinite(bands_dropped)
+    assert abs(float(np.median(bands_dropped[both] - bands_kept[both]))) < 0.5
+
+
+def test_absorption_cap_leaves_capped_bands_missing():
+    scenario = _scenario(seed=5)
+    atmosphere = Atmosphere(temperature=300.0, pressure=90.0, relative_humidity=60.0)
+    capped = _run(scenario, apply_absorption_deprop=True, atmosphere=atmosphere,
+                  max_absorption_correction_db=0.05, return_scattered=True)
+    bands = capped['scattered']['third_octave']['bands_db']
+    # The highest band is beyond the cap for the farther samples: those are NaN,
+    # never -inf, and the overall level of every sample is still finite.
+    assert np.isnan(bands[-1]).any() and not np.isneginf(bands[-1]).any()
+    assert np.all(np.isfinite(capped['scattered']['oaspl_power']))
+
+
+def test_a_doppler_scaled_band_past_the_selected_range_is_missing():
+    """remove_doppler reads each band over [D f_lower, D f_upper]; past the selected
+    bins the band used to be integrated over part of its width without a word."""
+    import flight_acoustics as fa
+    f = np.arange(0.0, 2000.0 + 1e-9, 2.0)
+    lower, upper = fa.third_octave_band_edges(np.array([1000.0, 1600.0]))
+    dropped = np.zeros((f.size, 3), dtype=bool)
+    dropped[500, 2] = True          # a capped bin (1000 Hz) inside the 1 kHz band
+    missing = fa._bands_missing(dropped, f, lower, upper, np.array([1.0, 1.18, 1.0]))
+    assert missing.tolist() == [[False, False, True], [False, True, False]]

@@ -1111,6 +1111,16 @@ def hann_power(offset):
     return out ** 2
 
 
+def _running_integral_at(running, edge0, df, freq):
+    """``running`` (Nbins + 1, Npts), a cumulative sum over bins of width ``df``
+    whose first edge is ``edge0``, read at ``freq`` (Npts,) per column, linearly
+    between bin edges and held at the ends."""
+    x = np.clip((freq - edge0) / df, 0.0, running.shape[0] - 1.0)
+    k = np.minimum(np.floor(x).astype(int), running.shape[0] - 2)
+    cols = np.arange(running.shape[1])
+    return running[k, cols] + (x - k) * (running[k + 1, cols] - running[k, cols])
+
+
 def tone_aware_band_power(psd, f, lower, upper, doppler=None, floor_bins=15, threshold_db=6.0, lobe=2, reach=4):
     """Band power (bands x samples) from Hann-windowed PSD columns (freq x samples), tones filed whole.
 
@@ -1146,18 +1156,28 @@ def tone_aware_band_power(psd, f, lower, upper, doppler=None, floor_bins=15, thr
         f_peak = f_peak / doppler[J]
     run = np.vstack((np.zeros((1, psd.shape[1])), np.cumsum(broadband * df, axis=0)))
     e0 = f[0] - 0.5 * df
-    cols = np.arange(psd.shape[1])
-
-    def at(freq):
-        x = np.clip((freq - e0) / df, 0.0, run.shape[0] - 1.0)
-        k = np.minimum(np.floor(x).astype(int), run.shape[0] - 2)
-        return run[k, cols] + (x - k) * (run[k + 1, cols] - run[k, cols])
     d = np.ones(psd.shape[1]) if doppler is None else doppler
     out = np.zeros((len(lower), psd.shape[1]))
     for ib, (lo, hi) in enumerate(zip(lower, upper)):
-        out[ib] = np.maximum(at(hi * d) - at(lo * d), 0.0)
+        out[ib] = np.maximum(_running_integral_at(run, e0, df, hi * d) - _running_integral_at(run, e0, df, lo * d), 0.0)
         inside = (f_peak >= lo) & (f_peak < hi)
         np.add.at(out[ib], J[inside], power[inside])
+    return out
+
+
+def _bands_missing(dropped, f, lower, upper, doppler):
+    """(Nbands, Npts) True where a band, its edges scaled by each column's
+    ``doppler``, spans a ``dropped`` bin or reaches more than half a bin past
+    the bins ``f`` holds (the most an unscaled band within the selected range
+    can, since the bins stop within a bin of either end of it)."""
+    df = f[1] - f[0]
+    edge0, edge1 = f[0] - 0.5 * df, f[-1] + 0.5 * df
+    count = np.vstack((np.zeros((1, dropped.shape[1])), np.cumsum(dropped, axis=0, dtype=float)))
+    out = np.empty((len(lower), dropped.shape[1]), dtype=bool)
+    for ib, (lo, hi) in enumerate(zip(lower, upper)):
+        lo_d, hi_d = lo * doppler, hi * doppler
+        out[ib] = ((_running_integral_at(count, edge0, df, hi_d) - _running_integral_at(count, edge0, df, lo_d) > 0.0)
+                   | (lo_d < edge0 - 0.5 * df) | (hi_d > edge1 + 0.5 * df))
     return out
 
 
@@ -1278,7 +1298,9 @@ def depropagate_hemisphere(
     likewise discards bands whose receiver response (``receiver_response_db``) would have to
     be divided out by more than that many dB: near grazing a ground board's modeled
     response is a deep null, and dividing by it turns small measurement and model errors
-    into tens of dB.
+    into tens of dB.  A discarded bin is missing, not zero: a band any of whose bins
+    was discarded is missing for that sample, the overall levels sum the bins that
+    remain, and the gridding leaves missing samples out of each node's weights.
 
     ``receiver_response_db``, if given, removes what the microphone's
     installation adds.  It is called as ``receiver_response_db(im, bands,
@@ -1401,6 +1423,8 @@ def depropagate_hemisphere(
             58-60 Hz ahead, in the 63 Hz band, and 50-52 Hz behind.  Only the FFT method
             supports it.  Use it for a sphere a hover is synthesized from; a flight sphere
             NICE-OPS reads must keep received frequencies, since NICE-OPS applies no shift.
+            A band whose scaled edges reach past ``freq_range`` is missing for that sample
+            rather than integrated over part of its width.
         third_octave_method: how band levels are formed when third_octave=True.
             'fft' (default) sums the PSD bins between each band's edges, a
             brick-wall band.  'filter_bank' uses a true one-third octave
@@ -1428,8 +1452,10 @@ def depropagate_hemisphere(
             - when narrowband=True: 'narrowband' (frequency + PSD grids)
 
         Grid cells with no sample within ``rmax`` are NaN: nothing was
-        measured there.  Cells (and scattered samples) whose power is zero,
-        e.g. gated out as ambient, are -inf: measured, with no energy left.
+        measured there.  Scattered samples a cap discarded are NaN too, and a
+        cell's weights are taken over the samples it has.  Cells (and scattered
+        samples) whose power is zero, e.g. gated out as ambient, are -inf:
+        measured, with no energy left.
         Summing energy, a -inf contributes nothing and a NaN makes the sum
         unknown.
     """
@@ -1677,8 +1703,9 @@ def depropagate_hemisphere(
             if max_absorption_correction_db is not None:
                 # Drop bins the measurement cannot support before applying the
                 # correction, not after: once multiplied they are indisting-
-                # uishable from real high-frequency content.
-                lin = np.where(deltaL <= float(max_absorption_correction_db), lin, 0.0)
+                # uishable from real high-frequency content.  Dropped is NaN, not
+                # zero: nothing was measured there, rather than no energy.
+                lin = np.where(deltaL <= float(max_absorption_correction_db), lin, np.nan)
             lin = lin * (10.0 ** (deltaL / 10.0))
         return lin
 
@@ -1818,7 +1845,7 @@ def depropagate_hemisphere(
                 # falls to -25 to -40 dB as the arrival nears grazing, and a
                 # curved ray arriving within half a degree of it turned a 90 dB
                 # sample into 125.
-                inverse = np.where(-gain_db <= float(max_response_correction_db), inverse, 0.0)
+                inverse = np.where(-gain_db <= float(max_response_correction_db), inverse, np.nan)
             # Each bin takes the band the band sums below put it in: nominal
             # centers get their base-10 edges (see third_octave_band_edges)
             _, response_upper = third_octave_band_edges(response_centers)
@@ -1829,9 +1856,11 @@ def depropagate_hemisphere(
 
         psd_v_lin = _depropagate(psd_v_lin, amb_lin, spread_v, alpha_db_per_m, response_bins, path_v)
 
-        # OASPL power over selected frequency range
-        power_oaspl = np.sum(psd_v_lin * df, axis=0)
-        power_spl_a = np.sum((psd_v_lin * Aweight_lin[:, None]) * df, axis=0)
+        # OASPL power over selected frequency range: the bins a cap dropped are
+        # left out, and a sample with no bin left is missing
+        no_bins = np.all(np.isnan(psd_v_lin), axis=0)
+        power_oaspl = np.where(no_bins, np.nan, np.nansum(psd_v_lin * df, axis=0))
+        power_spl_a = np.where(no_bins, np.nan, np.nansum((psd_v_lin * Aweight_lin[:, None]) * df, axis=0))
 
         fazi_list.append(az_v)
         felv_list.append(el_v)
@@ -1868,26 +1897,27 @@ def depropagate_hemisphere(
             # Integrate to third-octave bands in linear power, on edges that
             # tile even when the centers are nominal (see third_octave_band_edges)
             band_lower, band_upper = third_octave_band_edges(band_centers)
-            if tone_aware:
-                d_v = doppler_geom[tidx, im][valid] if doppler_geom is not None else None
-                powers = tone_aware_band_power(psd_v_lin, f_sel, band_lower, band_upper, doppler=d_v)
+            if tone_aware or doppler_geom is not None:
+                d_v = doppler_geom[tidx, im][valid] if doppler_geom is not None else np.ones(tobs_v.size)
+                # A band is missing where any bin it spans was dropped (NaN), or
+                # where its Doppler-scaled edges leave the selected bins.
+                dropped = np.isnan(psd_v_lin)
+                psd_kept = np.where(dropped, 0.0, psd_v_lin)
+                missing = _bands_missing(dropped, f_sel, band_lower, band_upper, d_v)
+                if tone_aware:
+                    powers = tone_aware_band_power(psd_kept, f_sel, band_lower, band_upper,
+                                                   doppler=d_v if doppler_geom is not None else None)
+                else:
+                    # Running integral of the spectrum at the bins' edges, read at each
+                    # sample's Doppler-scaled band edges.
+                    running = np.vstack((np.zeros((1, tobs_v.size)), np.cumsum(psd_kept * df, axis=0)))
+                    powers = np.array([np.maximum(_running_integral_at(running, f_sel[0] - 0.5 * df, df, f_upper * d_v)
+                                                  - _running_integral_at(running, f_sel[0] - 0.5 * df, df, f_lower * d_v),
+                                                  0.0)
+                                       for f_lower, f_upper in zip(band_lower, band_upper)])
+                powers = np.where(missing, np.nan, powers)
                 for ib in range(band_centers.size):
                     band_power_lists[ib].append(powers[ib])
-            elif doppler_geom is not None:
-                # Running integral of the spectrum at the bins' edges, read at each sample's
-                # Doppler-scaled band edges.
-                d_v = doppler_geom[tidx, im][valid]
-                running = np.vstack((np.zeros((1, tobs_v.size)), np.cumsum(psd_v_lin * df, axis=0)))
-                edge0 = f_sel[0] - 0.5 * df
-
-                def _running_at(freq):
-                    x = np.clip((freq - edge0) / df, 0.0, running.shape[0] - 1.0)
-                    k = np.minimum(np.floor(x).astype(int), running.shape[0] - 2)
-                    cols = np.arange(tobs_v.size)
-                    return running[k, cols] + (x - k) * (running[k + 1, cols] - running[k, cols])
-
-                for ib, (f_lower, f_upper) in enumerate(zip(band_lower, band_upper)):
-                    band_power_lists[ib].append(np.maximum(_running_at(f_upper * d_v) - _running_at(f_lower * d_v), 0.0))
             else:
                 for ib, (f_lower, f_upper) in enumerate(zip(band_lower, band_upper)):
                     band_mask = np.logical_and(f_sel >= f_lower, f_sel < f_upper)
@@ -1930,8 +1960,17 @@ def depropagate_hemisphere(
         node_relaxed = node_relaxed.reshape(ELV_GRID.shape)
 
         def grid_power(power_pts):
-            g = np.asarray(weights @ np.asarray(power_pts, dtype=float)).reshape(ELV_GRID.shape)
-            return np.where(node_gap, np.nan, g)
+            # Missing (NaN) samples carry no weight: a node's weights are renormalized
+            # over the samples it has, and a node with none left is a gap.
+            power_pts = np.asarray(power_pts, dtype=float)
+            missing = np.isnan(power_pts)
+            g = np.asarray(weights @ np.where(missing, 0.0, power_pts))
+            if missing.any():
+                kept = np.asarray(weights @ (~missing).astype(float))
+                reweight = np.asarray(weights @ missing.astype(float)) > 0.0
+                with np.errstate(invalid='ignore', divide='ignore'):
+                    g = np.where(reweight, np.where(kept > 0.0, g / kept, np.nan), g)
+            return np.where(node_gap, np.nan, g.reshape(ELV_GRID.shape))
         interpolation_info = dict(interp_settings, mode='adaptive',
                                   radius_deg=node_radius.reshape(ELV_GRID.shape),
                                   gaps=int(node_gap[:, :-1].sum()) if node_gap.shape[1] > 1 else int(node_gap.sum()),
@@ -6124,11 +6163,22 @@ def shepIDW_apply(weights, f):
         f: data values, the shape of felv/fazi given to :func:`shepIDW_weights`.
 
     Returns:
-        as for :func:`shepIDW`.
+        as for :func:`shepIDW`.  A NaN value counts as missing: the node's
+        weights are renormalized over its other neighbors, and a node whose
+        neighbors are all missing is NaN.
     """
     shape, neighbors = weights
     fvals = np.asarray(f, dtype=float).ravel()
-    fi = np.array([np.sum(fvals[near] * w) if near.size else np.nan for near, w in neighbors],
+    if np.isnan(fvals).any():
+        def node(near, w):
+            kept = ~np.isnan(fvals[near])
+            if kept.all():
+                return np.sum(fvals[near] * w)
+            return np.sum(fvals[near][kept] * w[kept]) / np.sum(w[kept]) if kept.any() else np.nan
+    else:
+        def node(near, w):
+            return np.sum(fvals[near] * w)
+    fi = np.array([node(near, w) if near.size else np.nan for near, w in neighbors],
                   dtype=float).reshape(shape)
     if fi.ndim == 0:
         return float(fi)
