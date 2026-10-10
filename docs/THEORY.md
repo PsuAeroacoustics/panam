@@ -547,16 +547,20 @@ the ICAO reference atmosphere (298.15 K, 70% RH).
 ## 9. Metrics
 
 **Sound exposure level.** Over the 10 dB-down window (the first to the last sample within 10 dB of
-the maximum, dips included), $\mathrm{SEL} = 10\lg\left(\sum_k 10^{L_k/10}\Delta t/1\ \mathrm{s}\right)$
+the maximum, dips included; unlike the EPNL limits, a sample below the threshold is never one), $\mathrm{SEL} = 10\lg\left(\sum_k 10^{L_k/10}\Delta t/1\ \mathrm{s}\right)$
 [38]. Unlike NICE-OPS, PANAM's samples are already in reception time.
 
 **EPNL** follows 14 CFR 36, Appendix A, §A36.4 [38], identical to ICAO Annex 16 [39]:
 noy values from Table A36-3; $\mathrm{PNL} = 40 + \frac{10}{\lg 2}\lg(0.85n_\max + 0.15\sum n)$;
 the ten-step tone correction with Table A36-2; the band-sharing check of §A36.4.4.2; and the
-duration correction over the records within 10 dB of PNLTM, with $T_0 = 10$ s exactly (the
-regulation's −13 for 0.5 s records is that value rounded). Where readings of the regulation
-differ, PANAM puts 500 Hz in the middle range of Table A36-2 and takes the duration as one
-contiguous interval. NICE-OPS's EPNL is ported from this implementation.
+duration correction $D = 10\lg\sum_{k_1}^{k_2} 10^{\mathrm{PNLT}(k)/10} + 10\lg(\Delta t/T) - \mathrm{PNLTM}$,
+$T = 10$ s, taking the regulation's −13 dB for $10\lg(0.5/10) = -13.0103$ dB when
+$\Delta t = 0.5$ s (§A36.4.5.4; `normalization='exact'` keeps −13.0103). The limits $k_1, k_2$ are
+the PNLT samples closest to PNLTM − 10 (§A36.4.5.5): the first and last samples at or above it,
+each moved one sample outward when that sample is closer, and every sample between them is summed,
+dips included, which gives the longest duration when there are several peaks. Where readings of
+the regulation differ, PANAM puts 500 Hz in the middle range of Table A36-2. NICE-OPS's EPNL is
+ported from this implementation.
 
 **Band sharing.** When $C$ at PNLTM is below the mean $\bar C$ of the five records centered there
 (§A36.4.4.2), the adjustment $\Delta_B = \bar C - C(k_M)$ is added to the EPNL as a separate

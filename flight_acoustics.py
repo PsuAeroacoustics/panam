@@ -487,8 +487,16 @@ def tone_corrected_perceived_noise_level(band_levels, masked=False):
     return pnl + c_max, pnl, c_max, tone_band
 
 
+#: EPNL duration-correction reference time T, s (14 CFR 36 A36.4.5).
+EPNL_REFERENCE_DURATION_S = 10.0
+
+#: 10 lg(dt/T) for dt = 0.5 s as A36.4.5.4 writes it (exactly -13.0103).
+EPNL_HALF_SECOND_NORMALIZATION_DB = -13.0
+
+
 def effective_perceived_noise_level(band_level_history, dt=0.5,
-                                    bandshare_adjustment=True, masked=False):
+                                    bandshare_adjustment=True, masked=False,
+                                    normalization='regulatory'):
     """
     EPNL of a noise event, 14 CFR 36 Appendix A, A36.4.
 
@@ -499,6 +507,10 @@ def effective_perceived_noise_level(band_level_history, dt=0.5,
         bandshare_adjustment: apply the A36.4.4.2 five-interval check for
             tone suppression by band sharing at PNLTM
         masked: passed to :func:`tone_correction`
+        normalization: 'regulatory' (default) takes the A36.4.5.4 constant
+            -13 dB for 10 lg(dt/T) when dt = 0.5 s and the exact value for
+            any other dt; 'exact' always takes 10 lg(dt/T), -13.0103 dB for
+            0.5 s.  T = 10 s.
 
     Returns: dict with
         epnl: EPNL in EPNdB, PNLTM + D + delta_b
@@ -508,9 +520,16 @@ def effective_perceived_noise_level(band_level_history, dt=0.5,
         delta_b: band-sharing adjustment, dB (0 when not applied)
         duration_correction_db: D = 10 lg(sum 10^(PNLT/10) dt / T) - PNLTM,
             from the unadjusted PNLTM, so epnl = pnltm + D
-        k1, k2: duration-interval sample limits (contiguous, PNLTM-10 down)
+        k1, k2: duration-interval sample limits, inclusive
         pnlt, pnl, c_max, tone_band: per-sample histories
         clipped: True when the 10 dB-down interval hits the record edge
+
+    The duration limits follow A36.4.5.5: the PNLT samples closest to
+    PNLTM - 10 and, with several peaks, those giving the longest duration.
+    Starting from the first and last samples at or above PNLTM - 10, each
+    limit moves one sample outward when that sample is strictly closer to
+    PNLTM - 10.  Every sample between the limits is summed, dips below
+    PNLTM - 10 included.
 
     The band-sharing adjustment follows ICAO Annex 16 Vol. I, Appendix 2
     (and FAA AC 36-4): when C at PNLTM is below the mean C of the five
@@ -518,11 +537,11 @@ def effective_perceived_noise_level(band_level_history, dt=0.5,
     EPNL as a separate term.  PNLTM, the 10 dB-down limits and D are those of
     the unadjusted PNLT history.  Read literally, 14 CFR 36 raises PNLTM and
     takes D from it, and the two cancel in EPNL = PNLTM + D.
-
-    The duration correction uses the exact 10*log10(dt/T) normalization with
-    T = 10 s; the regulation's specialised "-13" constant for dt = 0.5 s is a
-    rounding of this (difference 0.01 dB).
     """
+    if normalization not in ('regulatory', 'exact'):
+        raise ValueError("normalization must be 'regulatory' or 'exact'")
+    if not np.isfinite(dt) or dt <= 0:
+        raise ValueError('dt must be positive and finite')
     spl = np.asarray(band_level_history, dtype=float)
     if np.isnan(spl).any():
         raise ValueError("NaN band levels in the history")
@@ -542,12 +561,21 @@ def effective_perceived_noise_level(band_level_history, dt=0.5,
         if c_max[k_m] < c_avg:
             delta_b = float(pnl[k_m] + c_avg) - pnltm
 
-    # Duration interval: contiguous from the first to the last sample at or
-    # above PNLTM-10 (dips within the interval are included), A36.4.5.
-    above = np.where(pnlt >= pnltm - 10.0)[0]
+    # Duration interval, A36.4.5.5: the outermost samples at or above
+    # PNLTM-10, each moved one sample outward when that one is closer to it.
+    threshold = pnltm - 10.0
+    above = np.where(pnlt >= threshold)[0]
     k1, k2 = int(above[0]), int(above[-1])
+    if k1 > 0 and abs(pnlt[k1 - 1] - threshold) < abs(pnlt[k1] - threshold):
+        k1 -= 1
+    if k2 < len(pnlt) - 1 and abs(pnlt[k2 + 1] - threshold) < abs(pnlt[k2] - threshold):
+        k2 += 1
+    if normalization == 'regulatory' and dt == 0.5:
+        normalization_db = EPNL_HALF_SECOND_NORMALIZATION_DB
+    else:
+        normalization_db = 10.0 * np.log10(dt / EPNL_REFERENCE_DURATION_S)
     duration = 10.0 * np.log10(
-        np.sum(10.0 ** (pnlt[k1:k2 + 1] / 10.0)) * dt / 10.0) - pnltm
+        np.sum(10.0 ** (pnlt[k1:k2 + 1] / 10.0))) + normalization_db - pnltm
     return {
         "epnl": pnltm + duration + delta_b,
         "pnltm": pnltm + delta_b,
@@ -564,10 +592,12 @@ def ten_db_down_interval(levels, down=10.0):
     """Sample limits of the 10 dB-down duration of a level history.
 
     ``(k1, k2)``: the first and last samples at or above ``max - down``.  Dips
-    below the threshold between them are inside the interval, as in the EPNL
-    duration of 14 CFR 36 A36.4.5 and the SEL convention that follows it --
-    a second rise (e.g. a hover at the end of an approach heard from upstream)
-    is part of the event, not cut off at the first dip.
+    below the threshold between them are inside the interval, so a second
+    rise (e.g. a hover at the end of an approach heard from upstream) is part
+    of the event, not cut off at the first dip.  Samples below the threshold
+    are never limits, even when one is closer to ``max - down`` than the
+    limit; the EPNL duration of 14 CFR 36 A36.4.5.5 instead takes the closest
+    samples (:func:`effective_perceived_noise_level`).
     """
     levels = np.asarray(levels, dtype=float)
     if levels.ndim != 1 or not levels.size:
@@ -586,8 +616,9 @@ def sound_exposure_level(levels, dt, down=10.0, weighted_levels=None, *, missing
     """Sound exposure level of a noise event over its 10 dB-down duration.
 
     SEL = 10 log10( sum 10^(L/10) dt / T0 ), T0 = 1 s, summed over the interval
-    from :func:`ten_db_down_interval` -- the standard duration for aircraft noise
-    metrics.  Pass ``down=np.inf`` to integrate the whole record instead.
+    from :func:`ten_db_down_interval`: the first to the last sample within
+    ``down`` dB of the maximum, dips between them included.  Pass
+    ``down=np.inf`` to integrate the whole record instead.
 
     Args:
         levels: level history (dB; normally A-weighted, i.e. LA) at equal ``dt``.

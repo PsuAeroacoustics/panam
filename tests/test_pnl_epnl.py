@@ -172,14 +172,53 @@ def test_masked_tone_correction_excludes_inaudible_tones():
 
 
 def test_epnl_constant_history():
-    """Constant PNLT for 20 s: EPNL = PNLTM + 10 log10(duration/10)."""
+    """Constant PNLT for 20 s: D = 10 lg 40 - 13 (A36.4.5.4), or 10 lg(20/10)
+    with the exact normalization."""
     hist = np.tile(FLAT, (40, 1))
     res = fa.effective_perceived_noise_level(hist, dt=0.5)
     assert res["duration_correction_db"] == pytest.approx(
-        10.0 * np.log10(40 * 0.5 / 10.0), abs=1e-6)
+        10.0 * np.log10(40) - 13.0, abs=1e-12)
     assert res["epnl"] == pytest.approx(res["pnltm"]
                                         + res["duration_correction_db"])
     assert res["clipped"]                            # window spans the record
+    exact = fa.effective_perceived_noise_level(hist, dt=0.5, normalization='exact')
+    assert exact["duration_correction_db"] == pytest.approx(
+        10.0 * np.log10(40 * 0.5 / 10.0), abs=1e-12)
+    assert res["epnl"] - exact["epnl"] == pytest.approx(-13.0 - 10.0 * np.log10(0.05), abs=1e-12)  # +0.0103
+
+
+def test_epnl_other_steps_use_the_exact_normalization():
+    """Only dt = 0.5 s has a regulatory constant: 80 records of 0.25 s give
+    D = 10 lg(80 * 0.25 / 10) either way."""
+    hist = np.tile(FLAT, (80, 1))
+    for normalization in ('regulatory', 'exact'):
+        res = fa.effective_perceived_noise_level(hist, dt=0.25, normalization=normalization)
+        assert res["duration_correction_db"] == pytest.approx(10.0 * np.log10(2.0), abs=1e-12)
+    with pytest.raises(ValueError, match='normalization'):
+        fa.effective_perceived_noise_level(hist, normalization='rounded')
+    with pytest.raises(ValueError, match='dt'):
+        fa.effective_perceived_noise_level(hist, dt=0.0)
+
+
+def test_epnl_duration_limits_are_the_samples_closest_to_pnltm_minus_10():
+    """A36.4.5.5: when PNLTM - 10 falls between samples, the closer one is the limit.
+
+    Flat spectra at 60, 69, 80, 79, 69.6, 50 dB: PNLTM - 10 lies between
+    records 1 and 2 and between records 4 and 3, about 1.2 and 0.6 dB above
+    records 1 and 4 and 9-10 dB below records 2 and 3.  The limits are records
+    1 and 4; the first and last records at or above it (2 and 3) were taken.
+    """
+    levels = np.array([60.0, 69.0, 80.0, 79.0, 69.6, 50.0])
+    hist = np.stack([np.full(24, lv) for lv in levels])
+    res = fa.effective_perceived_noise_level(hist, dt=0.5)
+    pnlt, threshold = res["pnlt"], res["pnltm"] - 10.0
+    assert pnlt[1] < threshold < pnlt[2] and pnlt[4] < threshold < pnlt[3]
+    assert threshold - pnlt[1] < pnlt[2] - threshold
+    assert threshold - pnlt[4] < pnlt[3] - threshold
+    assert (res["k1"], res["k2"]) == (1, 4)
+    expected = 10.0 * np.log10(np.sum(10.0 ** (pnlt[1:5] / 10.0))) - 13.0 - res["pnltm"]
+    assert res["duration_correction_db"] == pytest.approx(expected, abs=1e-12)
+    assert not res["clipped"]
 
 
 def test_epnl_contiguous_duration_window():
@@ -191,8 +230,9 @@ def test_epnl_contiguous_duration_window():
     assert res["k1"] == 1 and res["k2"] == 3
     # the k=2 dip is more than 10 dB down yet still integrated
     assert pnlt[2] < res["pnltm"] - 10.0
+    # the outer records (40 dB) are farther from PNLTM - 10 than 1 and 3
     expected = 10.0 * np.log10(
-        np.sum(10.0 ** (pnlt[1:4] / 10.0)) * 0.5 / 10.0) - res["pnltm"]
+        np.sum(10.0 ** (pnlt[1:4] / 10.0))) - 13.0 - res["pnltm"]
     assert res["duration_correction_db"] == pytest.approx(expected)
 
 
