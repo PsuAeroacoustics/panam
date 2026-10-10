@@ -1290,20 +1290,26 @@ def depropagate_hemisphere(
     * ``ambient_percentile`` -- a low percentile of the run's own spectrogram,
       per microphone and per frequency bin. Use it when no ambient recording
       exists for that array layout. It assumes the quietest few percent of
-      frames are signal-free: checked against B407's measured ambient runs,
-      the 5th percentile agrees to -0.3 dB in the median, but with roughly
-      +-8 dB of scatter per channel, so it is a fallback rather than an
-      equivalent. Note that a *higher* percentile is not safer -- 25 already
+      frames are signal-free: checked against the median spectrogram of B407's
+      measured ambient runs, the 5th percentile agrees to -0.3 dB in the
+      median (so about 1.9 dB below their mean, which the measured ambient now
+      uses), but with roughly +-8 dB of scatter per channel, so it is a
+      fallback rather than an equivalent. Note that a *higher* percentile is not safer -- 25 already
       overestimates that ambient by 8 dB. The bias runs the other way on a
       record that is mostly quiet, where a low percentile samples the low tail
       of the noise fluctuation and gates too little.
 
-    Either way each microphone's ambient PSD is the median spectrogram over
-    the ambient frames, computed with the same window settings as the run so
-    the frequency grids match. It is then applied per frequency bin *before*
-    depropagation: bins whose measured PSD is within ``band_snr_gate_db`` of
-    that mic's ambient are zeroed (they carry no usable signal), and the
-    ambient power is subtracted from the bins that pass.
+    Each microphone's ambient PSD is the mean spectrogram over the ambient
+    frames (in power), computed with the same window settings as the run so
+    the frequency grids match; with ``ambient_percentile`` it is that
+    percentile instead.  It is the mean, not the median, because a single
+    frame's bin of noise is exponentially distributed and its median is ln 2
+    of the mean (-1.6 dB), while the run's bins, from which it is subtracted,
+    are single frames whose expectation is the mean.  It is then applied per
+    frequency bin *before* depropagation: bins whose measured PSD is within
+    ``band_snr_gate_db`` of that mic's ambient are zeroed (they carry no
+    usable signal), and the ambient power is subtracted from the bins that
+    pass.
 
     An SNR gate alone is not sufficient, because it bounds the *relative*
     error of a bin but says nothing about how far the absorption correction
@@ -1835,18 +1841,18 @@ def depropagate_hemisphere(
             if f_amb.shape != f.shape or psd_amb_db.shape[1] < 1:
                 raise ValueError('ambient_pressure for mic {:d} did not yield a usable spectrogram on the run '
                                  'frequency grid (is the recording at least one window long?)'.format(im))
-            amb_lin = 10.0 ** (np.median(psd_amb_db[fmask, :], axis=1) / 10.0)
+            amb_lin = np.mean(10.0 ** (psd_amb_db[fmask, :] / 10.0), axis=1)
             if use_filter_bank:
-                amb_band = np.nanmedian(pa_filters.third_octave_filter_bank(
+                amb_band = np.nanmean(pa_filters.third_octave_filter_bank(
                     amb_p, amb_fs, band_centers, t_amb, frame_length), axis=1) / pref_sq
         elif ambient_time_range is not None:
             amb_mask = np.logical_and(t_abs >= float(ambient_time_range[0]),
                                       t_abs <= float(ambient_time_range[1]))
             if not np.any(amb_mask):
                 raise ValueError('ambient_time_range contains no spectrogram frames')
-            amb_lin = 10.0 ** (np.median(psd_sel_db[:, amb_mask], axis=1) / 10.0)
+            amb_lin = np.mean(psd_sel_lin[:, amb_mask], axis=1)
             if use_filter_bank:
-                amb_band = np.median(band_frames[:, amb_mask], axis=1)
+                amb_band = np.mean(band_frames[:, amb_mask], axis=1)
         elif ambient_percentile is not None:
             amb_lin = 10.0 ** (np.percentile(psd_sel_db, float(ambient_percentile), axis=1) / 10.0)
             if use_filter_bank:

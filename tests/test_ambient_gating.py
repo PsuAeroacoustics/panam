@@ -83,8 +83,9 @@ def test_ambient_gate_suppresses_a_noise_only_run():
     ungated = _peak_level(_run(scenario))
     suppression = {}
     for gate in (3.0, 6.0, 10.0):
-        gated = _run(scenario, ambient_pressure=ambient, band_snr_gate_db=gate)
-        suppression[gate] = ungated - _peak_level(gated)
+        gated = _run(scenario, ambient_pressure=ambient, band_snr_gate_db=gate)['oaspl_db']
+        # Every cell -inf (nothing left above the gate) is total suppression.
+        suppression[gate] = ungated - np.max(gated[~np.isnan(gated)])
 
     assert suppression[3.0] < suppression[6.0] < suppression[10.0]
     assert suppression[3.0] < 10.0
@@ -373,3 +374,18 @@ def test_a_doppler_scaled_band_past_the_selected_range_is_missing():
     dropped[500, 2] = True          # a capped bin (1000 Hz) inside the 1 kHz band
     missing = fa._bands_missing(dropped, f, lower, upper, np.array([1.0, 1.18, 1.0]))
     assert missing.tolist() == [[False, False, True], [False, True, False]]
+
+
+def test_the_measured_ambient_is_its_mean_power():
+    """The run's bins are single frames, whose expectation is the mean; a median
+    of single-frame noise bins is ln 2 of it (-1.6 dB), which left about half
+    the ambient after subtraction instead of the 1/e of a matched mean."""
+    scenario = _scenario(noise_only=True, seed=21, nsamples=20000)
+    ambient = _scenario(noise_only=True, seed=22, nsamples=40000)['pressure']
+    raw = _run(scenario, return_scattered=True)['scattered']['oaspl_power']
+    left = _run(scenario, ambient_pressure=ambient, band_snr_gate_db=-60.0,
+                return_scattered=True)['scattered']['oaspl_power']
+    # For single-frame bins (exponential, mean m) E[max(x - a, 0)] / E[x] is
+    # exp(-a/m): 0.37 for the mean, 0.5 for the median.  Interpolating between
+    # frames narrows the spread, so here the two read about 0.31 and 0.45.
+    assert np.sum(left) / np.sum(raw) < 0.38
