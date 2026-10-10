@@ -393,11 +393,12 @@ def test_shared_grid_and_frequency_is_detected_and_deduplicated(tmp_path):
             assert 'frequency' not in group.variables
             assert 'dBA' in group.variables
             assert 'amplitude' in group.variables
-            # A group's amplitude still resolves the shared root PHI/THETA/
-            # frequency dimensions (netCDF4 groups inherit their ancestors'
-            # dimensions) rather than defining its own: phi/theta are the
+            # Every group defines its own PHI, THETA and frequency dimensions
+            # (see add_sphere_group); only the phi/theta/frequency values are
+            # deduplicated to the root.  The root's phi/theta are the
             # flattened per-channel arrays (PHI * THETA long), while
             # amplitude keeps the unflattened (PHI, THETA) grid shape.
+            assert {'PHI', 'THETA', 'frequency'} <= set(group.dimensions)
             assert group['amplitude'].shape[0] * group['amplitude'].shape[1] == root_phi.size
             assert group['amplitude'].shape[2] == root_frequency.size
 
