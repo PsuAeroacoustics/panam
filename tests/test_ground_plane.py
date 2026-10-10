@@ -240,6 +240,40 @@ def _beta(f, sigma=100.0):
     return gp.surface_admittance(f, 'delany_bazley', sigma=sigma)
 
 
+POLE_GEOMETRIES = [(500.0, 100.0), (30.0, 1500.0), (4.0, 300.0)]      # (hs, d2), ft
+
+
+def test_pole_level_matches_ega():
+    # Delany-Bazley ground, no turbulence and no microphone response: the
+    # same band-averaged two-path level as flight_acoustics.ega.
+    bands = np.array([50.0, 100.0, 315.0, 630.0, 1250.0, 2500.0, 5000.0, 10000.0])
+    hs, d2 = np.array(POLE_GEOMETRIES).T
+    level = gp.pole_level(bands, hs, d2, 4.0, C, 'delany_bazley', sigma=200.0)
+    np.testing.assert_allclose(level, gp.pole_ground_effect(bands, hs, d2, 4.0, C, 200.0), rtol=0.0, atol=1e-9)
+
+
+def test_pole_level_weights_the_paths_and_their_coherence():
+    # |A_d|^2 + |A_r Q R1/R2|^2 + 2 A_d A_r |Q| R1/R2 cos(eta x + arg Q) sinc(mu x) coherence,
+    # x = f (R2 - R1) / c, with the microphone's response A_d, A_r on each path and the
+    # HARMONOISE coherence (lengths in meters).
+    bands = np.array([125.0, 1000.0, 4000.0])
+    hs, d2 = np.array(POLE_GEOMETRIES).T
+    hr, gamma_t, ft = 4.0, 3e-6, 0.3048
+    level = gp.pole_level(bands, hs, d2, hr, C, 'delany_bazley', gamma_t=gamma_t, response_direct=1.5,
+                          response_reflected=-2.0, sigma=200.0)
+    f = bands[:, None]
+    r1, r2 = np.hypot(d2, hs - hr), np.hypot(d2, hs + hr)
+    q = gp.fa.spherical_reflection_coefficient((hs + hr) / r2, r2, f, C, 200.0)
+    a_d, a_r = 10 ** (1.5 / 20), 10 ** (-2.0 / 20)
+    m, x = a_r * np.abs(q) * r1 / r2, f * (r2 - r1) / C
+    k = 2 * np.pi * f / (C * ft)
+    coherence = np.exp(-0.375 * 0.364 * k ** 2 * (hs * hr / (hs + hr) * ft) ** (5 / 3) * r1 * ft * gamma_t)
+    energy = a_d ** 2 + m ** 2 + 2 * a_d * m * np.cos(6.325159 * x + np.angle(q)) * \
+        np.sin(0.727477 * x) / (0.727477 * x) * coherence
+    np.testing.assert_allclose(level, 10 * np.log10(energy), rtol=0.0, atol=1e-9)
+    assert np.all(coherence < 1.0) and coherence.min() < 0.9          # the turbulence term is exercised
+
+
 @pytest.mark.parametrize('rho, z', [(0.02, 0.0), (0.1, 0.05), (1.0, 0.3), (30.0, 4.0)])
 def test_exact_green_satisfies_the_impedance_condition(rho, z):
     # dG/dz = -i k beta G on the plane, exactly (not approximately, as for Weyl-van der Pol).
