@@ -1749,7 +1749,7 @@ def table_frames(table, keys, bands, source_height, ground_distance, source_dx=N
 
 
 def board_disc_bem(bands, source_height, ground_distance, sound_speed,
-                   flow_resistance=FLOW_RESISTANCE, sub_bands=None, table=None,
+                   flow_resistance=None, sub_bands=None, table=None,
                    source_dx=None, source_dy=None, mirror_y=False):
     """The ground-plane microphone on a thin rigid disc in soft ground, band averaged, dB re free field.
 
@@ -1760,7 +1760,18 @@ def board_disc_bem(bands, source_height, ground_distance, sound_speed,
     ``source_dy``) and ``mirror_y`` as in :func:`table_frames`.  Bands the
     table was not computed for are NaN.  ``sub_bands`` is the table's own; a different count would pick
     frequencies the table does not hold.
+
+    The ground is the table's, as in :func:`axisymmetric_bem.board_level`:
+    ``table['ground']``, or Delany-Bazley at ``table['flow_resistance']``.
+    ``flow_resistance``, if given, must be the table's, so that Q and S see
+    the same ground.
     """
+    if table is None:
+        raise ValueError('board_disc_bem needs a table from disc_bem_table')
+    if flow_resistance is not None and float(flow_resistance) != float(table['flow_resistance']):
+        raise ValueError('flow_resistance {:g} differs from the table\'s {:g}; Q and S would see different '
+                         'grounds'.format(float(flow_resistance), float(table['flow_resistance'])))
+    flow_resistance = table['flow_resistance']
     f, hs, d2, elevation, offsets, values = table_frames(
         table, ('S',), bands, source_height, ground_distance, source_dx, source_dy, mirror_y, sub_bands)
     height = table['mic_height']

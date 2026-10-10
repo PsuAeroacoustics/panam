@@ -426,3 +426,16 @@ def test_table_frames_interpolate_bilinearly_and_wrap_in_azimuth():
     mirrored = gp.table_frames(table, ('S',), [1000.0], [hs] * 3, [d2] * 3, source_dx=-np.cos(toward),
                                source_dy=-np.sin(toward), mirror_y=True)[-1]
     np.testing.assert_allclose(mirrored[0, 0, 0].imag, [180.0, 345.0, 355.0], atol=1e-9)
+
+
+def test_board_disc_bem_takes_its_ground_from_the_table():
+    # Q from a ground other than the one S was computed over would mix two grounds.
+    table = dict(_disc_table(np.array([500.0])), flow_resistance=1e9)
+    level = gp.board_disc_bem([500.0], [100.0], [200.0], C, table=table)
+    assert np.array_equal(level, gp.board_disc_bem([500.0], [100.0], [200.0], C, flow_resistance=1e9, table=table))
+    assert not np.allclose(level, gp.board_disc_bem([500.0], [100.0], [200.0], C,
+                                                    table=_disc_table(np.array([500.0]))))
+    with pytest.raises(ValueError, match="differs from the table"):
+        gp.board_disc_bem([500.0], [100.0], [200.0], C, flow_resistance=gp.FLOW_RESISTANCE, table=table)
+    with pytest.raises(ValueError, match="needs a table"):
+        gp.board_disc_bem([500.0], [100.0], [200.0], C)
