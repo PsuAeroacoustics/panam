@@ -1501,11 +1501,10 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     # Trim the recordings to the observer times that the steady segment can
     # reach.  A full run is ~50 channels x 90 s x 25 kHz; loading only what is
     # used keeps a run inside a few hundred MB instead of a couple of GB.
+    # flip_y_for_geometry flips the track and the microphones together, which
+    # changes no distance, so the unflipped geometry gives the same range.
     def time_range(locations):
-        geometry_locations = locations.copy()
-        if flip_y_for_geometry:
-            geometry_locations[:, 1] *= -1.0
-        ranges = np.sqrt(((position[:, None, :] - geometry_locations[None, :, :]) ** 2).sum(axis=2))
+        ranges = np.sqrt(((position[:, None, :] - locations[None, :, :]) ** 2).sum(axis=2))
         return (float(segment['time'][0]),
                 float(segment['time'][-1] + ranges.max() / speed_of_sound_ft_s + 2.0 * window_time))
 

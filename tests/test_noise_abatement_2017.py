@@ -384,6 +384,31 @@ def test_the_sphere_build_warns_when_it_falls_back_to_a_standard_day(monkeypatch
                for message in messages), messages
 
 
+def test_the_recording_trim_does_not_depend_on_flip_y_for_geometry(monkeypatch, tmp_path):
+    """depropagate_hemisphere flips the track and the microphones together, which changes no
+    distance, so the trim range must be the same flipped or not.  It used to flip the
+    microphones alone; with the track off the centerline that cut the recordings short."""
+    _archive(tmp_path)
+    speed = 150.0
+    _write_csv(tmp_path / 'AS350B3' / 'AS350B3_AC_Data' / '289108AC.csv',
+               ['utcsec', 'x', 'y', 'z', 'vx', 'vy', 'vz', 'VGk', 'roll', 'heading'],
+               [[t, speed * (t - 105.0), 100.0, 300.0, speed, 0.0, 0.0, speed * 0.3048 / 0.514444, 0.0, 90.0]
+                for t in 100.0 + np.arange(500) / 50.0])
+    locations = np.array([location for _, location in ARCHIVE_MICS.values()], dtype=float)
+    ranges = {}
+
+    def stop(test, run, mics, time_range, **kwargs):
+        ranges[flip] = time_range(locations)
+        raise _StopAfterAtmosphere
+    monkeypatch.setattr(na, 'load_run_channels', stop)
+    test = na.NoiseAbatementTest('AS350B3', root=str(tmp_path))
+    for flip in (False, True):
+        with pytest.raises(_StopAfterAtmosphere):
+            na.build_sphere(test, '289108', str(tmp_path / 'out.nc'), board_correction='flat',
+                            flip_y_for_geometry=flip, speed_of_sound_ft_s=1125.0)
+    assert ranges[True] == ranges[False]
+
+
 @pytest.mark.parametrize('edge', ['start', 'end'])
 def test_steady_window_leaves_an_unsteady_edge_out(edge):
     """A brief excursion is closed only between two steady stretches.
