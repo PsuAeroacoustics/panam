@@ -439,3 +439,24 @@ def test_board_disc_bem_takes_its_ground_from_the_table():
         gp.board_disc_bem([500.0], [100.0], [200.0], C, flow_resistance=gp.FLOW_RESISTANCE, table=table)
     with pytest.raises(ValueError, match="needs a table"):
         gp.board_disc_bem([500.0], [100.0], [200.0], C)
+
+
+def test_board_disc_bem_takes_a_ground_model_from_the_table():
+    # A ground model sets Q whatever flow resistance the table carries (tables
+    # built before it was None hold the unused default); no flow resistance,
+    # the site's or that default, may be passed for it.
+    ground = dict(model='variable_porosity', sigma_e=200.0, alpha_e=0.0)
+    table = dict(_disc_table(np.array([500.0])), ground=ground)
+    level = gp.board_disc_bem([500.0], [100.0], [200.0], C, table=table)
+    r2 = np.hypot(200.0, 100.0)
+    energy = 0.0
+    for f in 500.0 * gp.sub_band_factors(2):
+        beta = gp.surface_admittance(f, **ground, sound_speed_mps=C * 0.3048)
+        energy += abs(1 + gp.fa.spherical_reflection_coefficient(100.0 / r2, r2, f, C, None, admittance=beta)) ** 2
+    assert level[0, 0] == pytest.approx(10 * np.log10(energy / 2), abs=1e-9)
+    for sigma in (200.0, gp.FLOW_RESISTANCE):
+        with pytest.raises(ValueError, match="flow_resistance does not apply"):
+            gp.board_disc_bem([500.0], [100.0], [200.0], C, flow_resistance=sigma, table=table)
+    built = gp.disc_bem_table(np.array([200.0]), C, sub_bands=1, elevations=np.array([10.0]),
+                              azimuths=np.array([0.0]), ground=ground)
+    assert built['flow_resistance'] is None and built['ground'] == ground

@@ -1657,6 +1657,8 @@ def disc_bem_table(bands, sound_speed, flow_resistance=FLOW_RESISTANCE, sub_band
 
     Returns a dict: frequencies, elevations, azimuths (deg), S (complex), and
     the microphone height used (``options`` go to :func:`disc_bem_scattered`).
+    With a ``ground`` model in ``options`` the stored ``flow_resistance`` is
+    None: the model, not ``flow_resistance``, set S.
     """
     bands = np.asarray(bands, dtype=float)
     offsets = sub_band_factors(sub_bands)
@@ -1666,7 +1668,9 @@ def disc_bem_table(bands, sound_speed, flow_resistance=FLOW_RESISTANCE, sub_band
     return dict(frequencies=frequencies, elevations=np.asarray(elevations, float),
                 azimuths=np.asarray(azimuths, float), S=scattered,
                 mic_height=options.get('mic_height', PLATE_MIC_HEIGHT_FT),
-                ground=options.get('ground'), flow_resistance=flow_resistance, sub_bands=sub_bands)
+                ground=options.get('ground'),
+                flow_resistance=None if options.get('ground') is not None else flow_resistance,
+                sub_bands=sub_bands)
 
 
 def table_sub_bands(table, sub_bands=None):
@@ -1764,10 +1768,14 @@ def board_disc_bem(bands, source_height, ground_distance, sound_speed,
     The ground is the table's, as in :func:`axisymmetric_bem.board_level`:
     ``table['ground']``, or Delany-Bazley at ``table['flow_resistance']``.
     ``flow_resistance``, if given, must be the table's, so that Q and S see
-    the same ground.
+    the same ground; with a ground model in the table it must not be given,
+    since the model, not a flow resistance, sets Q.
     """
     if table is None:
         raise ValueError('board_disc_bem needs a table from disc_bem_table')
+    if flow_resistance is not None and table.get('ground') is not None:
+        raise ValueError('the table\'s ground is a {!r} model, which sets Q; flow_resistance does not '
+                         'apply'.format(table['ground'].get('model')))
     if flow_resistance is not None and float(flow_resistance) != float(table['flow_resistance']):
         raise ValueError('flow_resistance {:g} differs from the table\'s {:g}; Q and S would see different '
                          'grounds'.format(float(flow_resistance), float(table['flow_resistance'])))
