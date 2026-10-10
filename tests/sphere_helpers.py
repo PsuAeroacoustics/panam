@@ -5,10 +5,21 @@ works under every pytest import mode, unlike importing one test module from
 another.
 """
 
+import os
+import shutil
+
 import numpy as np
 from netCDF4 import Dataset
 
 import flight_acoustics as fa
+import local_paths
+
+
+def executable(name):
+    """A NICE-OPS executable, or None: local_paths (PANAM_<NAME> or
+    local_paths.toml), then the variable <NAME>, then PATH."""
+    return (local_paths.data_path(name, required=False) or os.environ.get(name.upper())
+            or shutil.which(name))
 
 #: A vehicle.cfg for directories of spheres (AS350-like rotors).
 VEHICLE_CFG = ('[Main Rotor]\nradius = 5.334\ntip speed = 230.7\nblades = 4\n'

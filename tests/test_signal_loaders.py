@@ -37,6 +37,15 @@ def test_load_nc_signal_reads_fill_values_as_missing(tmp_path):
     np.testing.assert_array_equal(pressure, [0.1, np.nan, 0.3, 0.4, 0.5])
 
 
+def _uff_channel(pyuff, ch, t):
+    """A type-58 set: microphone ``ch``, a 5 ch Hz sine sampled at ``t``."""
+    return pyuff.prepare_58(func_type=1, rsp_node=ch, rsp_dir=1, ref_node=1, ref_dir=1,
+                            data=np.sin(2 * np.pi * 5.0 * ch * t), x=t, id1='mic%d' % ch, binary=0,
+                            abscissa_spacing=1, abscissa_min=0.0, abscissa_inc=1e-3,
+                            orddenom_spec_data_type=0, abscissa_spec_data_type=17,
+                            ordinate_spec_data_type=0)
+
+
 @pytest.mark.parametrize('channels', [1, 2])
 def test_load_uff_signal_single_and_multi_channel(tmp_path, channels):
     """pyuff returns a bare dict for a single set, which used to raise KeyError: 0."""
@@ -44,12 +53,7 @@ def test_load_uff_signal_single_and_multi_channel(tmp_path, channels):
     path = tmp_path / 'signal.uff'
     t = np.arange(1000) / 1000.0
     pyuff.UFF(str(path)).write_sets([
-        pyuff.prepare_58(func_type=1, rsp_node=ch, rsp_dir=1, ref_node=1, ref_dir=1,
-                         data=np.sin(2 * np.pi * 5.0 * ch * t), x=t, id1='mic%d' % ch, binary=0,
-                         abscissa_spacing=1, abscissa_min=0.0, abscissa_inc=1e-3,
-                         orddenom_spec_data_type=0, abscissa_spec_data_type=17,
-                         ordinate_spec_data_type=0)
-        for ch in range(1, channels + 1)], mode='overwrite')
+        _uff_channel(pyuff, ch, t) for ch in range(1, channels + 1)], mode='overwrite')
     pressures, fs, names, time = fa.load_UFF_signal(str(path))
     assert pressures.shape == (channels, t.size)
     assert fs == pytest.approx(1000.0)
@@ -70,12 +74,7 @@ def test_load_uff_signal_skips_header_and_units_sets(tmp_path):
                                date_db_written='01-Jan-26', time_db_written='00:00:00')
     units = pyuff.prepare_164(units_code=1, units_description='SI', temp_mode=2,
                               length=1.0, force=1.0, temp=1.0, temp_offset=273.15)
-    signals = [pyuff.prepare_58(func_type=1, rsp_node=ch, rsp_dir=1, ref_node=1, ref_dir=1,
-                                data=np.sin(2 * np.pi * 5.0 * ch * t), x=t, id1='mic%d' % ch, binary=0,
-                                abscissa_spacing=1, abscissa_min=0.0, abscissa_inc=1e-3,
-                                orddenom_spec_data_type=0, abscissa_spec_data_type=17,
-                                ordinate_spec_data_type=0)
-               for ch in (1, 2)]
+    signals = [_uff_channel(pyuff, ch, t) for ch in (1, 2)]
     pyuff.UFF(str(path)).write_sets([header, units, *signals], mode='overwrite')
     pressures, fs, names, _ = fa.load_UFF_signal(str(path))
     assert pressures.shape == (2, t.size)

@@ -88,5 +88,5 @@ def test_third_octave_band_levels_off_bin_tone_does_not_leak():
     tone = np.sqrt(2.0) * np.sin(2.0 * np.pi * 50.5 * t)    # 1 Pa rms, 93.98 dB
     band_centers, band_levels = fa.third_octave_band_levels(tone, fs)
     k = int(np.argmin(np.abs(band_centers - 50.0)))
-    assert band_levels[k] == pytest.approx(10.0 * np.log10(np.mean(tone ** 2) / 4.0e-10), abs=0.05)
+    assert band_levels[k] == pytest.approx(10.0 * np.log10(np.mean(tone ** 2) / fa.P_REF ** 2), abs=0.05)
     assert np.all(band_levels[band_centers >= 400.0] < band_levels[k] - 120.0)

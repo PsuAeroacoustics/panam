@@ -21,7 +21,6 @@ import sphere_helpers
 
 GOLDEN = os.path.join(os.path.dirname(__file__), 'data', 'golden_results.npz')
 REGENERATE = bool(os.environ.get('PANAM_REGENERATE_GOLDEN'))
-P_REF = 2.0e-5
 
 
 def _pass(seed=0):

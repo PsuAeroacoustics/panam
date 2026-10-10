@@ -29,10 +29,10 @@ def test_the_lambert_inverse_undoes_the_projection():
 def test_the_lambert_projection_is_equal_area(lat, lon):
     """Its Jacobian is the sphere's area element, cos(lat) dlat dlon."""
     step = 1e-6
-    x_lat = np.subtract(*fa.lambert_ea(np.array([lat + step, lat - step]), np.full(2, lon))[0]) / (2 * step)
-    y_lat = np.subtract(*fa.lambert_ea(np.array([lat + step, lat - step]), np.full(2, lon))[1]) / (2 * step)
-    x_lon = np.subtract(*fa.lambert_ea(np.full(2, lat), np.array([lon + step, lon - step]))[0]) / (2 * step)
-    y_lon = np.subtract(*fa.lambert_ea(np.full(2, lat), np.array([lon + step, lon - step]))[1]) / (2 * step)
+    x, y = fa.lambert_ea(np.array([lat + step, lat - step]), np.full(2, lon))
+    x_lat, y_lat = (x[0] - x[1]) / (2 * step), (y[0] - y[1]) / (2 * step)
+    x, y = fa.lambert_ea(np.full(2, lat), np.array([lon + step, lon - step]))
+    x_lon, y_lon = (x[0] - x[1]) / (2 * step), (y[0] - y[1]) / (2 * step)
     assert abs(x_lat * y_lon - x_lon * y_lat) == pytest.approx(np.cos(lat), rel=1e-8, abs=1e-9)
 
 

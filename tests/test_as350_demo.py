@@ -54,6 +54,6 @@ def test_the_saved_band_limits_match_the_bands_summed():
     power = 10.0 ** (bands_db / 10.0)
     np.testing.assert_allclose(levels['oaspl_fullband_db'], 10.0 * np.log10(power.sum(axis=0)), rtol=1e-12)
     np.testing.assert_allclose(levels['oaspl_db'], 10.0 * np.log10(power[:4].sum(axis=0)), rtol=1e-12)
-    a_weights = np.array([fa.dBAw(f) for f in centers[:4]])[:, None, None]
+    a_weights = fa.dBAw(centers[:4])[:, None, None]
     np.testing.assert_allclose(levels['spla_db'], 10.0 * np.log10((10.0 ** ((bands_db[:4] + a_weights) / 10.0)).sum(axis=0)),
                                rtol=1e-12)

@@ -1,14 +1,13 @@
 """depropagate_hemisphere's ray_model: the straight-ray model reproduces the default,
 and a refracted model refiles, respreads and skips samples as it says."""
 import os
-import shutil
 
 import numpy as np
 import pytest
 
 from flight_acoustics import depropagate_hemisphere
-import local_paths
 import refracted_rays as rr
+from sphere_helpers import executable
 
 P_REF = 2.0e-5
 SPEED = 1135.0
@@ -87,10 +86,7 @@ def test_ray_model_shapes_are_checked():
         _hemisphere(wrong)
 
 
-# NICE-OPS's ray tracer: local_paths (PANAM_NICEOPS_RAY_GEOMETRY or local_paths.toml),
-# then NICEOPS_RAY_GEOMETRY, then PATH.
-RAYS = (local_paths.data_path('niceops_ray_geometry', required=False) or os.environ.get('NICEOPS_RAY_GEOMETRY')
-        or shutil.which('niceops_ray_geometry'))
+RAYS = executable('niceops_ray_geometry')
 
 
 @pytest.mark.skipif(RAYS is None, reason='niceops_ray_geometry not configured (local_paths: niceops_ray_geometry)')

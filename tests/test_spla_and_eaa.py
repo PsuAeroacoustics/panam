@@ -14,7 +14,7 @@ ATMOSPHERE = Atmosphere(temperature=293.15, pressure=101.325, relative_humidity=
 
 
 def _formula(levels, frequency, distance):
-    a_weight = np.array([fa.dBAw(f) for f in frequency])
+    a_weight = fa.dBAw(frequency)
     alpha = ATMOSPHERE.attenuation_coefficient(np.asarray(frequency, dtype=float))
     spla = 10.0 * np.log10(np.sum(10.0 ** (0.1 * (levels + a_weight)), axis=-1))
     attenuated = 10.0 * np.log10(np.sum(10.0 ** (0.1 * (levels + a_weight - distance * alpha)), axis=-1))

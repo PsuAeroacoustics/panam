@@ -306,6 +306,16 @@ def _write_signal(path, pressure, fs, start_time, location):
         handle.X, handle.Y, handle.Z = location
 
 
+def _write_track(base, y=0.0):
+    """Run 289108's track: level at 300 ft, 150 ft/s along x, ``y`` ft off the centerline,
+    10 s at 50 Hz."""
+    speed = 150.0
+    _write_csv(base / 'AS350B3_AC_Data' / '289108AC.csv',
+               ['utcsec', 'x', 'y', 'z', 'vx', 'vy', 'vz', 'VGk', 'roll', 'heading'],
+               [[t, speed * (t - 105.0), y, 300.0, speed, 0.0, 0.0, speed * 0.3048 / na.fa.KNOT_MPS, 0.0, 90.0]
+                for t in 100.0 + np.arange(500) / 50.0])
+
+
 def _archive(root):
     """A level pass and its ambient run over ARCHIVE_MICS, laid out as the 2017
     archive.  The pass is white noise 20 dB over the ambient, so the ambient
@@ -317,11 +327,7 @@ def _archive(root):
                [['289101', 'AMB', 'A', '0', '0', '60.0', '101'], ['289108', 'L1', 'A', '0', '0', '100.0', '108']])
     _write_csv(base / 'AS350B3MicFullList.csv', ['M', 'insttype'],
                [[mic, kind] for mic, (kind, _) in ARCHIVE_MICS.items()])
-    speed = 150.0                                           # ft/s, level at 300 ft, 10 s at 50 Hz
-    _write_csv(base / 'AS350B3_AC_Data' / '289108AC.csv',
-               ['utcsec', 'x', 'y', 'z', 'vx', 'vy', 'vz', 'VGk', 'roll', 'heading'],
-               [[t, speed * (t - 105.0), 0.0, 300.0, speed, 0.0, 0.0, speed * 0.3048 / 0.514444, 0.0, 90.0]
-                for t in 100.0 + np.arange(500) / 50.0])
+    _write_track(base)
     fs = 25600.0
     acoustic = base / 'AS350B3_Acoustic_Data' / '289'
     for mic, (_, location) in ARCHIVE_MICS.items():
@@ -404,11 +410,7 @@ def test_the_recording_trim_does_not_depend_on_flip_y_for_geometry(monkeypatch, 
     distance, so the trim range must be the same flipped or not.  It used to flip the
     microphones alone; with the track off the centerline that cut the recordings short."""
     _archive(tmp_path)
-    speed = 150.0
-    _write_csv(tmp_path / 'AS350B3' / 'AS350B3_AC_Data' / '289108AC.csv',
-               ['utcsec', 'x', 'y', 'z', 'vx', 'vy', 'vz', 'VGk', 'roll', 'heading'],
-               [[t, speed * (t - 105.0), 100.0, 300.0, speed, 0.0, 0.0, speed * 0.3048 / 0.514444, 0.0, 90.0]
-                for t in 100.0 + np.arange(500) / 50.0])
+    _write_track(tmp_path / 'AS350B3', y=100.0)
     locations = np.array([location for _, location in ARCHIVE_MICS.values()], dtype=float)
     ranges = {}
 

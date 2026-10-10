@@ -6,8 +6,6 @@ the channels, coverage lengths, equal bands and channel counts across groups).
 These run NICE-OPS's self-test on a small database, and export a sphere back
 to check its orientation.  They skip when the executable is not configured.
 """
-import os
-import shutil
 import subprocess
 
 import numpy as np
@@ -15,12 +13,9 @@ import pytest
 from netCDF4 import Dataset
 
 import flight_acoustics as fa
-import local_paths
-from sphere_helpers import VEHICLE_CFG, minimal_hemisphere
+from sphere_helpers import executable, minimal_hemisphere, write_sphere_directory
 
-# local_paths (PANAM_NICEOPS or local_paths.toml), then NICEOPS, then PATH.
-NICEOPS = (local_paths.data_path('niceops', required=False) or os.environ.get('NICEOPS')
-           or shutil.which('niceops'))
+NICEOPS = executable('niceops')
 
 pytestmark = [
     pytest.mark.skipif(NICEOPS is None, reason='niceops not configured (local_paths: niceops)'),
@@ -41,15 +36,9 @@ def _patterned_hemisphere(offset_db):
 
 @pytest.fixture
 def spheres(tmp_path):
-    directory = tmp_path / 'spheres'
-    directory.mkdir()
-    (directory / 'vehicle.cfg').write_text(VEHICLE_CFG)
-    for name, speed, angle, offset in [('A100.nc', 70.0, 0.0, 0.0), ('A101.nc', 90.0, -6.0, 3.0)]:
-        fa.write_aam_hemisphere_netcdf(
-            str(directory / name), _patterned_hemisphere(offset), mode='third_octave',
-            phi_deg=np.arange(-90.0, 90.0 + 1e-9, 10.0), theta_deg=np.arange(0.0, 180.0 + 1e-9, 10.0),
-            radius_ft=100.0, speed_knots=speed, flight_path_angle_deg=angle, title='t')
-    return directory
+    return write_sphere_directory(
+        tmp_path / 'spheres', [(_patterned_hemisphere(0.0), 70.0, 0.0), (_patterned_hemisphere(3.0), 90.0, -6.0)],
+        phi_deg=np.arange(-90.0, 90.0 + 1e-9, 10.0), theta_deg=np.arange(0.0, 180.0 + 1e-9, 10.0))
 
 
 def _niceops(*args, cwd):
@@ -86,12 +75,12 @@ def test_niceops_exports_the_source_sphere_back_unchanged(spheres, tmp_path):
         group = ds.groups['sphere0']
         condition = [float(group[name][:].ravel()[0])
                      for name in ('advance_ratio', 'flight_path_angle', 'thrust_coefficient')]
-    assert condition[1] == 0.0                                       # sphere0 is A100.nc
+    assert condition[1] == 0.0                                       # sphere0 is X101.nc
     result = _niceops('-d', str(database), '--export_aam', 'export.nc',
                       '--sphere_condition', *('%.17g' % value for value in condition), cwd=tmp_path)
     assert result.returncode == 0, result.stdout[-2000:] + result.stderr
     exported, phi, theta, frequency, radius, speed, _ = fa.load_nc_sphere(str(tmp_path / 'export.nc'))
-    source, source_phi, source_theta, source_frequency, *_ = fa.load_nc_sphere(str(spheres / 'A100.nc'))
+    source, source_phi, source_theta, source_frequency, *_ = fa.load_nc_sphere(str(spheres / 'X101.nc'))
     rows = np.searchsorted(phi, source_phi)                          # the export covers phi -180..170
     np.testing.assert_array_equal(phi[rows], source_phi)
     np.testing.assert_array_equal(theta, source_theta)

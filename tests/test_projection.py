@@ -1,8 +1,5 @@
 """Ground footprints: project_sphere, plot_projection and project_directory."""
 
-import os
-import subprocess
-import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -29,10 +26,8 @@ def test_plot_projection_needs_three_directions():
 
 
 def test_plot_projection_reports_a_bad_cutoff_without_a_traceback(tmp_path):
-    env = dict(os.environ, MPLBACKEND='Agg', PYTHONPATH=str(REPO))
-    result = subprocess.run([sys.executable, str(REPO / 'plot_projection.py'), EXAMPLE, '-c', '0',
-                             '-o', 'out.png'], cwd=tmp_path, env=env, capture_output=True, text=True,
-                            timeout=600)
+    from test_cli_scripts import run_here
+    result = run_here('plot_projection.py', EXAMPLE, '-c', '0', '-o', 'out.png', cwd=tmp_path)
     assert result.returncode == 2
     assert 'between 0 and 90' in result.stderr and 'Traceback' not in result.stderr
 

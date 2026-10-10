@@ -30,10 +30,14 @@ def _quiet(band_freq):
     return np.full_like(band_freq, -100.0, dtype=float)
 
 
-def test_mil_std_nondetectability_status_and_trigger_selection():
+def _quiet_table():
+    """(table, its band centers, a spectrum quiet in every band)."""
     table = _table()
-    band_freq = table['band_freq_hz']
-    levels_10m = _quiet(band_freq)
+    return table, table['band_freq_hz'], _quiet(table['band_freq_hz'])
+
+
+def test_mil_std_nondetectability_status_and_trigger_selection():
+    table, band_freq, levels_10m = _quiet_table()
     idx_80 = int(np.where(band_freq == 80.0)[0][0])
     idx_100 = int(np.where(band_freq == 100.0)[0][0])
     idx_125 = int(np.where(band_freq == 125.0)[0][0])
@@ -74,9 +78,7 @@ def test_band_above_every_column_sets_a_lower_bound():
     """50 Hz at 110 dB at 10 m is 100.46 dB at 30 m, over the 6000 m column's
     92 dB: detectable beyond the table.  It was NaN and left out, so the
     overall distance came from a quieter band (141 m)."""
-    table = _table()
-    band_freq = table['band_freq_hz']
-    levels_10m = _quiet(band_freq)
+    table, band_freq, levels_10m = _quiet_table()
     levels_10m[band_freq == 50.0] = 110.0
     levels_10m[band_freq == 125.0] = 61.0
     result = fa.mil_std_1474e_nondetectability_distance(band_freq, levels_10m, table)
@@ -91,9 +93,7 @@ def test_band_above_every_column_sets_a_lower_bound():
 
 
 def test_several_bands_above_every_column_trigger_on_the_largest_exceedance():
-    table = _table()
-    band_freq = table['band_freq_hz']
-    levels_10m = _quiet(band_freq)
+    table, band_freq, levels_10m = _quiet_table()
     levels_10m[band_freq == 50.0] = 105.0       # 3.5 dB over 92 at 30 m
     levels_10m[band_freq == 63.0] = 110.0       # 6.5 dB over 94
     result = fa.mil_std_1474e_nondetectability_distance(band_freq, levels_10m, table)
@@ -105,9 +105,7 @@ def test_level_between_the_10_m_and_30_m_groups():
     at 30 m 63.96 dB, 1.04 dB under the 500 m column (65): d = 400 * 1.25 **
     (1.5 / 2.54) = 456.3 m.  It was 'above last' of the 10 m group (NaN) and
     'below first' of the 30 m group (invalid), and left out."""
-    table = _table()
-    band_freq = table['band_freq_hz']
-    levels_10m = _quiet(band_freq)
+    table, band_freq, levels_10m = _quiet_table()
     levels_10m[band_freq == 100.0] = 73.5
     result = fa.mil_std_1474e_nondetectability_distance(band_freq, levels_10m, table)
     e400 = 73.5 - 72.0
@@ -122,9 +120,7 @@ def test_level_between_the_10_m_and_30_m_groups():
 def test_band_over_its_last_listed_limit_is_bracketed():
     """10 kHz has no limit past 400 m (NA): at 97 dB, 1 dB over 400 m's 96,
     it lies between 400 and 500 m; 500 m is reported, an upper bound."""
-    table = _table()
-    band_freq = table['band_freq_hz']
-    levels_10m = _quiet(band_freq)
+    table, band_freq, levels_10m = _quiet_table()
     levels_10m[-1] = 97.0
     result = fa.mil_std_1474e_nondetectability_distance(band_freq, levels_10m, table)
     assert result['band_status'][-1] == 'before_unlisted'

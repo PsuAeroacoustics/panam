@@ -131,6 +131,12 @@ def test_board_level_takes_q_at_the_plates_top():
     assert level == pytest.approx(10 * np.log10(np.mean(np.abs(q) ** 2)), abs=1e-9)
 
 
+def _incident(f, el, az, r, z):
+    """The incident plane wave at (x=0, y=r, z), for a source at elevation el, azimuth az."""
+    k = 2 * np.pi * f / C
+    return np.exp(1j * k * (np.cos(np.radians(el)) * r * np.sin(np.radians(az)) - np.sin(np.radians(el)) * z))
+
+
 def test_field_matches_scattering_at_the_microphone():
     """field() off the surface reproduces scattering() at an inverted mic 7 mm above the plate."""
     f, el, az = 3000.0, 25.0, 40.0
@@ -138,9 +144,7 @@ def test_field_matches_scattering_at_the_microphone():
     rm = gp.PLATE_MIC_OFFSET_FT
     pd, pr = ab.scattering([f], [el], [az], C, mic=(0.0, rm), mic_height=gap)
     Pd, Pr = ab.field(f, el, az, C, [[0.0, rm, gp.PLATE_THICKNESS_FT + gap]])
-    k = 2 * np.pi * f / C
-    inc = np.exp(1j * k * np.cos(np.radians(el)) * rm * np.sin(np.radians(az))) * \
-        np.exp(-1j * k * np.sin(np.radians(el)) * (gp.PLATE_THICKNESS_FT + gap))
+    inc = _incident(f, el, az, rm, gp.PLATE_THICKNESS_FT + gap)
     assert Pd[0] / inc == pytest.approx(pd[0, 0, 0], rel=1e-5)
     assert Pr[0] / inc == pytest.approx(pr[0, 0, 0], rel=1e-5)
 
@@ -155,10 +159,9 @@ def test_field_on_the_surface_is_the_surface_value():
     taper = segs[(segs[:, 1] > segs[:, 3]) & (segs[:, 0] < segs[:, 2])][3]
     r_taper, z_taper = 0.5 * (taper[0] + taper[2]), 0.5 * (taper[1] + taper[3])
     Pd, Pr = ab.field(f, el, az, C, [[0.0, rm, t], [0.0, rm, t + 3e-9], [0.0, r_taper, z_taper]])
-    k = 2 * np.pi * f / C
     for i, (r, z, kw) in enumerate(((rm, t, {}), (rm, t, {}), (r_taper, z_taper, dict(mic_rz=(r_taper, z_taper))))):
         pd, pr = ab.scattering([f], [el], [az], C, mic=(0.0, r), **kw)
-        inc = np.exp(1j * k * (np.cos(np.radians(el)) * r * np.sin(np.radians(az)) - np.sin(np.radians(el)) * z))
+        inc = _incident(f, el, az, r, z)
         assert Pd[i] / inc == pytest.approx(pd[0, 0, 0], rel=1e-4)
         assert Pr[i] / inc == pytest.approx(pr[0, 0, 0], rel=1e-4)
 
