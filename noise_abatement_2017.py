@@ -24,8 +24,10 @@ Layout of the dataset this module expects (``root``)::
 Conventions established by checking regenerated labels against the legacy
 spheres (see :func:`steady_window`):
 
-* the tracking file's ``vz`` is positive *down* while ``z`` is positive *up*,
-  so flight path angle is ``atan2(-vz, hypot(vx, vy))``;
+* ``z`` is positive *up*, and the tracking file's ``vz`` is positive *down* in
+  every file except EC130B4 day 298's, where it is positive up; :func:`vz_sign`
+  takes the sign from dz/dt, and the flight path angle is
+  ``atan2(vz_up, hypot(vx, vy))``;
 * the sphere's ``SPEED`` is mean ground speed in knots (``VGk``);
 * both labels are means over the steady segment, and any steady sub-window
   reproduces them, so the segment need not match the legacy one exactly;
@@ -108,6 +110,10 @@ PLATE_TABLE_SOUND_SPEED_STEP = 0.005
 
 #: Legacy sphere reference radius, feet.
 DEFAULT_R_REF_FT = 100.0
+
+#: build_sphere's rim elevation, deg below the horizon, when max_rim_range_ft
+#: is given without rim_elevation_deg.
+DEFAULT_RIM_ELEVATION_DEG = 14.0
 
 #: Threads used to warm the cloud-storage cache ahead of each run.
 PREFETCH_WORKERS = 24
@@ -244,9 +250,8 @@ class NoiseAbatementTest:
         :func:`is_steady_flight_card`.  This is what determines which runs get
         a source sphere at all: turns and accelerating/decelerating passes
         smear directivity across azimuth in a way depropagation does not
-        correct for.  It reproduces the legacy Be407 sphere set exactly (113
-        of 113, no extras, no omissions) and adds a handful of duplicate-speed
-        runs the legacy build happened to skip.
+        correct for.  Against the legacy Be407 sphere set, see
+        :func:`is_steady_flight_card`.
         """
         out = []
         for row in self.reference:
@@ -327,8 +332,8 @@ def _open_csv(path):
     """Open a dataset CSV tolerantly.
 
     ``R66FullRefList.csv`` carries a stray non-UTF-8 byte (0x89 at offset
-    36283) in a comment field.  Latin-1 decodes every byte, so the run index
-    still reads rather than the whole aircraft failing to load.
+    36283) in a comment field.  It decodes as U+FFFD (``errors='replace'``),
+    so the run index still reads rather than the whole aircraft failing to load.
     """
     return open(path, encoding='utf-8-sig', errors='replace', newline='')
 
@@ -347,7 +352,7 @@ def vz_sign(track):
     """
     dz = np.gradient(track['z'], track['time'])
     vz = track['vz']
-    # Uncenterd, so a steady descent -- constant dz/dt, no variance to
+    # Uncentered, so a steady descent -- constant dz/dt, no variance to
     # correlate -- still decides: vz . dz/dt is +|dz|^2 when they agree.
     rms = lambda x: np.sqrt(np.mean(np.square(x)))
     if rms(vz) < 0.5 or rms(dz) < 0.5:                 # ft/s
@@ -365,7 +370,7 @@ def vz_sign(track):
 def load_track(path):
     """Load a tracking CSV, making the vertical velocity positive up.
 
-    ``z`` is positive up, but whether ``vz`` is depends on the aircraft; see
+    ``z`` is positive up, but whether ``vz`` is depends on the file (test day); see
     :func:`vz_sign`.  :func:`flight_acoustics.hemigen` only takes heading from
     the horizontal components, so the sign does not corrupt the hemisphere
     geometry, but it does set the flight path angle -- which is how a descent
@@ -452,11 +457,11 @@ def steady_window(track, speed_tolerance_knots=4.0, fpa_tolerance_deg=2.0,
     29 -- the tolerances are the knob for that trade.
 
     ``max_array_range``, when given, additionally restricts the window to
-    where the vehicle is within that distance of the array centroid (same
-    units as the track).  That bounds the vehicle, not the propagation path --
-    this array spans over 6000 ft, so a microphone at the far end is still
-    5000+ ft away from a vehicle sitting on top of the centroid.  Bounding the
-    path is what straight-ray validity actually asks for, and
+    where the vehicle is within that distance of the run's reference point,
+    the track frame's origin (same units as the track).  That bounds the
+    vehicle, not the propagation path -- this array spans over 6000 ft, so a
+    microphone at the far end is still 5000+ ft away from a vehicle sitting
+    over the reference point.  Bounding the path is what straight-ray validity actually asks for, and
     ``depropagate_hemisphere(max_range=)`` does it per emission point and
     microphone; this is the blunter instrument, off by default because it
     also throws away whole runs and, on a steep descent, selects the flare.
@@ -963,7 +968,7 @@ def wind_components(wind, reference_east_north, ground_velocity_east_north_ft_s)
     along, cross = float(w @ reference), float(w @ starboard)
     w_ft_s = w * fa.WIND_SPEED_UNITS[wind['units']] / 0.3048
     ground = np.asarray(ground_velocity_east_north_ft_s, dtype=float).reshape(-1, 2)
-    airspeed_knots = float(np.mean(np.hypot(*(ground - w_ft_s).T))) * 0.3048 / 0.514444
+    airspeed_knots = float(np.mean(np.hypot(*(ground - w_ft_s).T))) * 0.3048 / fa.KNOT_MPS
     return along, cross, airspeed_knots
 
 
@@ -1169,6 +1174,10 @@ def run_atmosphere(test, run, fallback=None):
     use the same columns, also log air density, and p / (R rho) reproduces
     their airtemp as Fahrenheit (e.g. AS350B3 day 289: 18.1 against 18.7 F)
     for every aircraft in the dataset.
+
+    The stations folder is ``<aircraft>_Ground_Stations`` for every aircraft
+    but EC130B4, whose folder is ``EC130B4_Ground Stations``; both spellings
+    are read.
     """
     row = test.by_run.get(run)
     try:
@@ -1179,7 +1188,7 @@ def run_atmosphere(test, run, fallback=None):
     day = run[:3]
     samples = []
     pattern = os.path.join(test.base, test.aircraft + '_Weather',
-                           test.aircraft + '_Ground_Stations',
+                           test.aircraft + '_Ground[_ ]Stations',
                            '{}_{}_*.csv'.format(test.aircraft, day))
     for path in sorted(glob.glob(pattern)):
         try:
@@ -1359,9 +1368,16 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     ground speed the AAM sphere is labeled with; the tracking data carries no
     airspeed.
 
+    ``atmosphere``, if not given, is the ground stations' at the time of the run
+    (:func:`run_atmosphere`).  A run whose day has no usable station record (AS350B3 day 292,
+    R66 day 231) is depropagated in a 20 C, 20 % RH, 101.325 kPa standard day with a logged
+    warning, and its sphere records the air density as NaN with source ``'none'``.
+
     Returns a dict describing what was processed, so a batch caller can log and
     audit it without re-opening the output.
     """
+    if rim_elevation_deg is None:
+        rim_elevation_deg = DEFAULT_RIM_ELEVATION_DEG
     row = test.by_run[run]
     track = load_track(test.track_path(run))
     if nose_from_heading:
@@ -1420,7 +1436,9 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
         try:
             atmosphere = run_atmosphere(test, run)
             density_source = 'ground stations'
-        except ValueError:
+        except ValueError as error:
+            logging.warning('Run %s: %s; depropagating in a 20 C, 20 %% RH, 101.325 kPa standard day',
+                            run, error)
             atmosphere = fa.Atmosphere(temperature=293.15, pressure=101.325, relative_humidity=20.0)
             density_source = 'none'
     if check is not None:
@@ -1487,11 +1505,10 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     # Trim the recordings to the observer times that the steady segment can
     # reach.  A full run is ~50 channels x 90 s x 25 kHz; loading only what is
     # used keeps a run inside a few hundred MB instead of a couple of GB.
+    # flip_y_for_geometry flips the track and the microphones together, which
+    # changes no distance, so the unflipped geometry gives the same range.
     def time_range(locations):
-        geometry_locations = locations.copy()
-        if flip_y_for_geometry:
-            geometry_locations[:, 1] *= -1.0
-        ranges = np.sqrt(((position[:, None, :] - geometry_locations[None, :, :]) ** 2).sum(axis=2))
+        ranges = np.sqrt(((position[:, None, :] - locations[None, :, :]) ** 2).sum(axis=2))
         return (float(segment['time'][0]),
                 float(segment['time'][-1] + ranges.max() / speed_of_sound_ft_s + 2.0 * window_time))
 
@@ -1566,7 +1583,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
         ray_model=ray_model,
         interpolation=interpolation,
         rim_range=(None if max_rim_range_ft is None else
-                   (14.0 if rim_elevation_deg is None else rim_elevation_deg, max_rim_range_ft)),
+                   (rim_elevation_deg, max_rim_range_ft)),
         remove_doppler=remove_doppler,
         tone_aware=tone_aware,
         return_scattered=samples_path is not None,
@@ -1641,7 +1658,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
                                    dict(fa.ADAPTIVE_INTERPOLATION, **interpolation).items()))),
                 gaps=(hemisphere.get('interpolation', {}).get('gaps', 0)),
                 rim_range='' if max_rim_range_ft is None else '{:g} ft below {:g} deg'.format(
-                    max_rim_range_ft, 14.0 if rim_elevation_deg is None else rim_elevation_deg),
+                    max_rim_range_ft, rim_elevation_deg),
                 board_correction=board_correction if board_correction == 'flat' else
                 'plate_bem ' + ' '.join('{}={}'.format(k, v) for k, v in
                                          sorted((ground or SITE_GROUND).items())))
@@ -1655,7 +1672,7 @@ def _run_file_paths(test, run, gate_ambient=True):
     """Every acoustic file one run needs, its ambient recording included
     unless ``gate_ambient`` is False (:func:`build_sphere` then reads none)."""
     mics = test.ground_board_mics(run)
-    paths = [test.acoustic_files[run][m] for m in mics if m in test.acoustic_files.get(run, {})]
+    paths = [test.acoustic_files[run][m] for m in mics]
     ambient = test.ambient_run(run) if gate_ambient else None
     if ambient:
         paths += [path for mic, path in test.acoustic_files.get(ambient, {}).items()
@@ -1983,13 +2000,16 @@ def main(argv=None):
     parser.add_argument('--max-absorption-correction-db', type=float, default=30.0,
                         help='discard bins needing more absorption correction than this; '
                              '30 dB is what keeps source spectra rolling off physically')
-    parser.add_argument('--point-stride', type=int, default=10)
+    parser.add_argument('--point-stride', type=int, default=10,
+                        help='depropagate every Nth sample of the steady track (default %(default)s, '
+                             "the 2017 release's setting; build_sphere and build_all default to 1, "
+                             'every sample, which is about N times slower and does not reproduce it)')
     parser.add_argument('--min-elevation-deg', type=float, default=10.0,
                         help='drop emission points below this elevation, where ground '
                              'impedance dominates (default 10)')
     parser.add_argument('--max-array-range-ft', type=float, default=None,
                         help='additionally restrict the track to within this distance of '
-                             'the array centroid; off by default, since capping the '
+                             "the run's reference point; off by default, since capping the "
                              'propagation path bounds the ray directly and this also '
                              'drops whole runs and biases descents toward the flare')
     parser.add_argument('--max-propagation-range-ft', type=float, default=2000.0,

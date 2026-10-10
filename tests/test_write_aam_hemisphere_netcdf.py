@@ -393,11 +393,12 @@ def test_shared_grid_and_frequency_is_detected_and_deduplicated(tmp_path):
             assert 'frequency' not in group.variables
             assert 'dBA' in group.variables
             assert 'amplitude' in group.variables
-            # A group's amplitude still resolves the shared root PHI/THETA/
-            # frequency dimensions (netCDF4 groups inherit their ancestors'
-            # dimensions) rather than defining its own: phi/theta are the
+            # Every group defines its own PHI, THETA and frequency dimensions
+            # (see add_sphere_group); only the phi/theta/frequency values are
+            # deduplicated to the root.  The root's phi/theta are the
             # flattened per-channel arrays (PHI * THETA long), while
             # amplitude keeps the unflattened (PHI, THETA) grid shape.
+            assert {'PHI', 'THETA', 'frequency'} <= set(group.dimensions)
             assert group['amplitude'].shape[0] * group['amplitude'].shape[1] == root_phi.size
             assert group['amplitude'].shape[2] == root_frequency.size
 
@@ -493,3 +494,22 @@ def test_hover_correction_of_the_wrong_shape_is_refused(tmp_path):
     with pytest.raises(ValueError, match='hover_correction returned shape'):
         fa.build_empirical_database(str(sphere_dir), str(tmp_path / 'x.nod'), load_factors=None,
                                     hover_correction=lambda phi, theta, f: np.zeros(3))
+
+
+@pytest.mark.parametrize('bad, message', [
+    (dict(xyz_ft=(0.0, 0.0)), 'xyz_ft'),
+    (dict(doppler_shift_removed=0.5), 'doppler_shift_removed'),
+    (dict(mode='octave'), 'mode'),
+])
+def test_bad_inputs_are_refused_before_an_existing_sphere_is_touched(tmp_path, bad, message):
+    """Each is checked before the file is opened for writing, so a refused call
+    leaves the sphere already there as it was (a bad xyz_ft used to truncate it)."""
+    path = tmp_path / 'sphere.nc'
+    arguments = dict(mode='third_octave', radius_ft=100.0, speed_knots=60.0, title='t')
+    fa.write_aam_hemisphere_netcdf(str(path), minimal_hemisphere(), **arguments)
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match=message):
+        fa.write_aam_hemisphere_netcdf(str(path), minimal_hemisphere(), **{**arguments, **bad}, overwrite=True)
+    assert path.read_bytes() == before
+    amplitude, *_ = fa.load_nc_sphere(str(path))
+    assert np.all(amplitude == 80.0)

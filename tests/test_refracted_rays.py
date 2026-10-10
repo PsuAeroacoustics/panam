@@ -1,13 +1,13 @@
 """depropagate_hemisphere's ray_model: the straight-ray model reproduces the default,
 and a refracted model refiles, respreads and skips samples as it says."""
 import os
-import shutil
 
 import numpy as np
 import pytest
 
 from flight_acoustics import depropagate_hemisphere
 import refracted_rays as rr
+from sphere_helpers import executable
 
 P_REF = 2.0e-5
 SPEED = 1135.0
@@ -86,10 +86,10 @@ def test_ray_model_shapes_are_checked():
         _hemisphere(wrong)
 
 
-RAYS = os.environ.get('NICEOPS_RAY_GEOMETRY') or shutil.which('niceops_ray_geometry')
+RAYS = executable('niceops_ray_geometry')
 
 
-@pytest.mark.skipif(RAYS is None, reason='set NICEOPS_RAY_GEOMETRY to a niceops_ray_geometry build')
+@pytest.mark.skipif(RAYS is None, reason='niceops_ray_geometry not configured (local_paths: niceops_ray_geometry)')
 def test_external_model_in_uniform_air_is_straight(tmp_path):
     atmosphere = tmp_path / 'uniform.csv'
     atmosphere.write_text('z_ft,T_C,RH\n0,15,50\n')
@@ -105,7 +105,7 @@ def test_external_model_in_uniform_air_is_straight(tmp_path):
     assert np.allclose(got['travel_time'], want['travel_time'], rtol=1e-4)
 
 
-@pytest.mark.skipif(RAYS is None, reason='set NICEOPS_RAY_GEOMETRY to a niceops_ray_geometry build')
+@pytest.mark.skipif(RAYS is None, reason='niceops_ray_geometry not configured (local_paths: niceops_ray_geometry)')
 def test_external_model_under_an_inversion_launches_shallower(tmp_path):
     atmosphere = tmp_path / 'inversion.csv'
     atmosphere.write_text('z_ft,T_C,RH\n0,0,50\n150,8,50\n2000,8,50\n')
@@ -141,3 +141,81 @@ def test_rim_range_admits_far_samples_only_at_the_rim():
     steep_rim = np.sort(rim['elv_deg'][rim['elv_deg'] >= 25.0])
     assert np.allclose(steep_plain, steep_rim)
     assert (rim['elv_deg'] < 25.0).sum() > (plain['elv_deg'] < 25.0).sum()
+
+
+# A stand-in for niceops_ray_geometry: straight lines at FAKE_SPEED, its rows in
+# reverse order, the pair with id FAKE_DARK_ID unlit, and exit 1 with FAKE_FAIL set.
+FAKE_TRACER = r'''#!{python}
+import argparse, csv, math, os, sys
+parser = argparse.ArgumentParser()
+for option in ('--atmosphere', '--paths', '--frame_bearing', '--refraction', '--ground', '--units', '-j'):
+    parser.add_argument(option)
+args = parser.parse_args()
+if os.environ.get('FAKE_FAIL'):
+    sys.stderr.write('fake tracer: profile rejected\n')
+    sys.exit(1)
+assert os.path.isfile(args.atmosphere)
+with open(args.paths) as handle:
+    rows = list(csv.DictReader(handle))
+print('id,lit,launch_deg,arrival_deg,spreading_db,shadow,boundary,from_fit,bounces,extras,extra_db,'
+      'source_height,ground_distance,range,path_length,travel_time')
+for row in reversed(rows):
+    dx, dy, hs, hr = (float(row[k]) for k in ('dx', 'dy', 'source_height', 'receiver_height'))
+    ground = math.hypot(dx, dy)
+    r = math.hypot(ground, hs - hr)
+    launch = -math.degrees(math.atan2(hs - hr, ground))
+    lit = 0 if row['id'] == os.environ.get('FAKE_DARK_ID') else 1
+    print(','.join(str(v) for v in (row['id'], lit, repr(launch), repr(launch), 0, 1 - lit, 'inf', 0, 0, 0, '-inf',
+                                    repr(hs), repr(ground), repr(r), repr(r), repr(r / {speed!r}))))
+'''
+
+
+def _fake_tracer(directory):
+    import sys
+    path = directory / 'fake_ray_geometry'
+    path.write_text(FAKE_TRACER.format(python=sys.executable, speed=SPEED))
+    path.chmod(0o755)
+    return path
+
+
+def test_external_model_parses_a_tracer_and_rebuilds_the_geometry(tmp_path, monkeypatch):
+    """The CSV round trip, the id reordering, the scaling to ground_distance,
+    the 'point' receiver height and the lit mask, against straight lines."""
+    tracer = _fake_tracer(tmp_path)
+    atmosphere = tmp_path / 'profile.csv'
+    atmosphere.write_text('z_ft,T_C,RH\n0,15,50\n')
+    monkeypatch.setenv('FAKE_DARK_ID', '4')                      # source 1, mic 1
+    flight = _flyover()
+    source, mics = flight['track_position'][::30], flight['mic_locations']
+    model = rr.external_ray_model(str(tracer), str(atmosphere), receiver='point',
+                                  receiver_heights=np.array([5.0, 1.0, 0.0]))
+    got, want = model(source, mics), rr.straight_ray_model(SPEED)(source, mics)
+    expected_valid = np.ones((source.shape[0], mics.shape[0]), dtype=bool)
+    expected_valid[1, 1] = False
+    assert np.array_equal(got['valid'], expected_valid)
+    for key in ('depression_deg', 'travel_time', 'spreading_range', 'path_length'):
+        np.testing.assert_allclose(got[key], want[key], rtol=1e-12, atol=1e-9, err_msg=key)
+    np.testing.assert_allclose(got['offset'], want['offset'], rtol=1e-12, atol=1e-9)
+    assert model.description == 'niceops_ray_geometry stratified point profile.csv'
+
+
+def test_external_model_runs_a_tracer_given_by_relative_path(tmp_path, monkeypatch):
+    """The tracer runs in a scratch directory, so a relative path to it must
+    not be resolved from there."""
+    (tmp_path / 'bin').mkdir()
+    _fake_tracer(tmp_path / 'bin')
+    (tmp_path / 'profile.csv').write_text('z_ft,T_C,RH\n0,15,50\n')
+    monkeypatch.chdir(tmp_path)
+    model = rr.external_ray_model(os.path.join('bin', 'fake_ray_geometry'), 'profile.csv')
+    got = model(np.array([[-500.0, 0.0, 300.0]]), np.zeros((1, 3)))
+    assert got['valid'].all()
+
+
+def test_external_model_reports_a_failed_tracer(tmp_path, monkeypatch):
+    tracer = _fake_tracer(tmp_path)
+    atmosphere = tmp_path / 'profile.csv'
+    atmosphere.write_text('z_ft,T_C,RH\n0,15,50\n')
+    monkeypatch.setenv('FAKE_FAIL', '1')
+    model = rr.external_ray_model(str(tracer), str(atmosphere))
+    with pytest.raises(RuntimeError, match=r'fake_ray_geometry failed \(1\): fake tracer: profile rejected'):
+        model(np.array([[-500.0, 0.0, 300.0]]), np.zeros((1, 3)))

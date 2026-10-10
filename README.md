@@ -1,3 +1,20 @@
+# PANAM
+
+PANAM is a Python toolkit for rotorcraft aeroacoustics: it turns flight-test
+microphone recordings into source noise spheres and builds the sphere databases
+that the NICE-OPS footprint model reads.
+
+Documentation:
+
+- `docs/THEORY.md`: start here. Every model as equations, from the spectra through
+  depropagation and gridding to the database and the metrics, with references.
+- `docs/database_build.md`: the 2017 sphere build's track check, per-run metadata,
+  heading frame, and the `.nod` database format.
+- `docs/ground_plane_corrections.md`: the ground-plate corrections and how they were fitted.
+- `docs/norah2_import.md`: converting NORAH2 hemispheres to a NICE-OPS database.
+- `noise_abatement_2017.py`: the sphere builder for the 2017 Noise Abatement flight test
+  (`python noise_abatement_2017.py -h`).
+
 # Installation Steps
 
 Python 3.11 or newer is required (`local_paths.py` uses `tomllib`).
@@ -22,14 +39,6 @@ name instead of using hard-coded paths. Copy `local_paths.example.toml` to
 `local_paths.toml` (git-ignored) and point each entry at your copy, or set the
 matching `PANAM_<NAME>` environment variable (e.g. `PANAM_NORAH2`). Tests
 whose data are not configured are skipped. See `local_paths.py` for the names.
-
-# Notes
-
-`docs/` holds the longer notes: `THEORY.md` (every model as equations, from the
-spectra through depropagation and gridding to the database and the metrics, with
-references), `ground_plane_corrections.md` (the ground-plate corrections) and
-`database_build.md` (the 2017 sphere build's track check, per-run metadata,
-heading frame, and the `.nod` database format).
 
 # Signal loading and plotting
 

@@ -43,24 +43,9 @@ def _table_bilinear(rho, z, u0, du, nu, v0, dv, nv, offset, i_red, j_red):
     return ir, jr
 
 
-@njit(cache=True, fastmath=False)
-def _table_lookup(rho, z, u0, du, nu, v0, dv, nv, offset, k, i_red, j_red):
-    """Bilinear lookup of the exact image integrals I, J (see gp.ImageIntegralTable)."""
-    ir, jr = _table_bilinear(rho, z, u0, du, nu, v0, dv, nv, offset, i_red, j_red)
-    r2 = max(np.sqrt(rho * rho + z * z), offset)
-    ph = np.exp(1j * k * r2)
-    return ir * ph / (4 * np.pi * r2), jr * ph / (4 * np.pi * r2 * r2)
-
-
-@njit(cache=True)
-def _dgdn(xr, xz, yr, yz, phi, nr, nz, k, beta, tab, skip_direct):
-    """dG/dn_y for target x = (xr, 0, xz) and source y = (yr cos phi, yr sin phi, yz), normal (nr, nz) at y."""
-    return _dgdn_cs(xr, xz, yr, yz, np.cos(phi), np.sin(phi), nr, nz, k, beta, tab, skip_direct)
-
-
 @njit(cache=True)
 def _dgdn_cs(xr, xz, yr, yz, c, s, nr, nz, k, beta, tab, skip_direct):
-    """:func:`_dgdn` given c = cos(phi) and s = sin(phi)."""
+    """dG/dn_y for target x = (xr, 0, xz) and source y = (yr c, yr s, yz), normal (nr, nz) at y; c, s = cos, sin phi."""
     u0, du, nu, v0, dv, nv, offset, i_red, j_red = tab
     dx = yr * c - xr
     dy = yr * s
@@ -76,7 +61,7 @@ def _dgdn_cs(xr, xz, yr, yz, c, s, nr, nz, k, beta, tab, skip_direct):
     r2 = np.sqrt(rho * rho + zs * zs)
     e2 = np.exp(1j * k * r2)
     g2 = e2 / (4 * np.pi * r2)
-    # I and J (_table_lookup), sharing e^{ikR2} unless R2 is below the table's offset.
+    # I and J by bilinear lookup in the table (gp.ImageIntegralTable), sharing e^{ikR2} unless R2 is below the table's offset.
     ir, jr = _table_bilinear(rho, zs, u0, du, nu, v0, dv, nv, offset, i_red, j_red)
     r2c = max(r2, offset)
     ph = e2 if r2c == r2 else np.exp(1j * k * r2c)
@@ -349,7 +334,9 @@ def scattering(frequencies, elevations, azimuths, sound_speed, flow_resistance=g
     the air: an inverted microphone over a board (SAE ARP 4055's 7 mm gap,
     :data:`ground_plane.INVERTED_MIC_HEIGHT_FT`).  Off the surface the field is
     p_inc + K p, not the surface value 2 (p_inc + K p).  The microphone's own
-    body is not modeled.
+    body is not modeled.  A flush microphone on the plate (no ``generator``
+    or ``mic_rz``) must be on the flat top, as in
+    :func:`ground_plane.raised_plate_scattering`.
     """
     frequencies = np.atleast_1d(np.asarray(frequencies, float))
     el = np.radians(np.atleast_1d(np.asarray(elevations, float)))
@@ -357,6 +344,9 @@ def scattering(frequencies, elevations, azimuths, sound_speed, flow_resistance=g
     radius = geometry.get('radius', gp.PLATE_RADIUS_FT)
     thickness = geometry.get('thickness', gp.PLATE_THICKNESS_FT)
     r_mic = float(np.hypot(*mic)); phi_mic = float(np.arctan2(mic[1], mic[0]))
+    if (generator is None and mic_rz is None and mic_height == 0.0
+            and r_mic >= radius - geometry.get('taper_length', gp.PLATE_TAPER_LENGTH_FT)):
+        raise ValueError('a flush microphone must be on the flat top')
     z_mic = thickness + float(mic_height)
     surface = mic_height == 0.0
     if mic_rz is not None:
@@ -404,6 +394,10 @@ def scattering(frequencies, elevations, azimuths, sound_speed, flow_resistance=g
     return pd_out, pr_out
 
 
+#: Points of :func:`field` this close to the plate's surface (ft, about 3 nm) are on it.
+SURFACE_TOLERANCE_FT = 1e-8
+
+
 def field(frequency, elevation, azimuth, sound_speed, points, flow_resistance=gp.FLOW_RESISTANCE, ground=None,
           segments_per_wavelength=10, max_segment=0.02, extra_modes=10, gauss=6, n_phi_uniform=None,
           **geometry):
@@ -415,7 +409,10 @@ def field(frequency, elevation, azimuth, sound_speed, points, flow_resistance=gp
     ground (z = 0).  Unlike :func:`scattering`, P_d and P_r are NOT normalized by the direct
     wave at each point: they are the complex fields per unit direct plane wave of phase zero at
     the origin, so the total field over the ground is P_d + Q P_r and the free field is
-    exp(i k . x).  Points inside the plate are NaN.  ``geometry`` as in :func:`scattering`.
+    exp(i k . x).  Points inside the plate are NaN.  Points on its surface (within
+    :data:`SURFACE_TOLERANCE_FT`) take the surface value 2 (p_inc + K p), as the flush
+    microphone does in :func:`scattering`; at the profile's corners, where the surface is
+    not smooth, that is approximate.  ``geometry`` as in :func:`scattering`.
     """
     pts = np.atleast_2d(np.asarray(points, float))
     radius = geometry.get('radius', gp.PLATE_RADIUS_FT)
@@ -424,13 +421,20 @@ def field(frequency, elevation, azimuth, sound_speed, points, flow_resistance=gp
     el, az = np.radians(float(elevation)), np.radians(float(azimuth))
     r_t = np.hypot(pts[:, 0], pts[:, 1])
     phi_t = np.arctan2(pts[:, 1], pts[:, 0])
-    z_t = pts[:, 2]
+    z_t = pts[:, 2].copy()
     # Below the plate's own profile (flat top, taper, rim), not its bounding
     # cylinder: the air over the taper is outside.
     edge_thickness = geometry.get('edge_thickness', gp.PLATE_EDGE_THICKNESS_FT)
     taper_length = geometry.get('taper_length', gp.PLATE_TAPER_LENGTH_FT)
     top = (np.interp(r_t, [radius - taper_length, radius], [thickness, edge_thickness])
-           if taper_length > 0.0 else thickness)
+           if taper_length > 0.0 else np.full(r_t.shape, thickness))
+    # Points on the surface are put exactly on it, where the kernel's
+    # principal value holds; just off it the quadrature cannot resolve them.
+    on_top = (r_t <= radius) & (np.abs(z_t - top) <= SURFACE_TOLERANCE_FT)
+    on_rim = ~on_top & (np.abs(r_t - radius) <= SURFACE_TOLERANCE_FT) & (z_t <= edge_thickness)
+    z_t[on_top] = top[on_top]
+    r_t = np.where(on_rim, radius, r_t)
+    on_surface = on_top | on_rim
     inside = (r_t < radius) & (z_t < top)
     extent = lambda segment: (max(2.0 * radius, float(r_t.max()) + radius) * 1.02 + 2 * segment,
                               max(2.0 * thickness, float(z_t.max()) + thickness) * 1.05)
@@ -454,8 +458,9 @@ def field(frequency, elevation, azimuth, sound_speed, points, flow_resistance=gp
     h = np.exp(1j * kappa * r_t[ok] * np.cos(phi_t[ok] - az))
     P_d = np.full(pts.shape[0], np.nan + 0j)
     P_r = np.full(pts.shape[0], np.nan + 0j)
-    P_d[ok] = h * np.exp(-1j * kz * z_t[ok]) + scat_d
-    P_r[ok] = h * np.exp(+1j * kz * z_t[ok]) + scat_r
+    surface_factor = np.where(on_surface[ok], 2.0, 1.0)
+    P_d[ok] = surface_factor * (h * np.exp(-1j * kz * z_t[ok]) + scat_d)
+    P_r[ok] = surface_factor * (h * np.exp(+1j * kz * z_t[ok]) + scat_r)
     return P_d, P_r
 
 
@@ -485,12 +490,17 @@ def table(bands, sound_speed, flow_resistance=gp.FLOW_RESISTANCE, ground=None, s
 
 def board_level(bands, source_height, ground_distance, sound_speed, table, sub_bands=None,
                 source_dx=None, source_dy=None, mirror_y=False):
-    """The flush microphone on the plate lying on the ground, band averaged, dB re free field.
+    """The microphone on the plate lying on the ground (flush or inverted, per the table),
+    band averaged, dB re free field.
 
     |P_d + Q P_r|^2 averaged over the band's sub-frequencies, with P_d, P_r
     interpolated (real and imaginary parts, bilinear in elevation and azimuth)
-    from ``table`` and Q from each frame's geometry, at the plate's top.
-    Azimuth, ``mirror_y`` and NaN for bands not in the table as in
+    from ``table`` and Q from each frame's geometry, at the plate's top whatever
+    the table's ``mic_height``: Q scales the reflected wave that the whole plate
+    scatters, not a reflected path to the microphone alone (as in
+    :func:`ground_plane.board_disc_bem`, which takes Q at the microphone's
+    height), and an inverted microphone's few millimeters change it
+    negligibly for distant sources.  Azimuth, ``mirror_y`` and NaN for bands not in the table as in
     :func:`ground_plane.table_frames`.  ``sub_bands`` is the table's own; a
     different count would pick frequencies the table does not hold.
     """

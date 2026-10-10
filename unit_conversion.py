@@ -48,20 +48,7 @@
 Convert between various units.
 """
 
-try:
-    from default_units import *
-except ImportError:
-    default_area_units = 'ft**2'
-    default_power_units = 'hp'
-    default_speed_units = 'kt'
-    default_temp_units = 'C'
-    default_weight_units = 'lb'
-    default_press_units = 'in HG'
-    default_density_units = 'lb/ft**3'
-    default_length_units = 'ft'
-    default_alt_units = default_length_units
-    default_avgas_units = 'lb'
-    default_vol_units = 'ft**3'
+from default_units import *
 
 
 def area_conv(A, from_units=default_area_units,
@@ -123,7 +110,7 @@ def area_conv(A, from_units=default_area_units,
         return A * (0.3048 / 1852) ** 2
     else:
         raise ValueError(
-            'from_units must be "ft**2" or "in**2" or "m**2" or "km**2" or "sm**2" (square statute miles) or "nm**2" (square nautical miles).')
+            'to_units must be "ft**2" or "in**2" or "m**2" or "km**2" or "sm**2" (square statute miles) or "nm**2" (square nautical miles).')
 
 
 def density_conv(D, from_units, to_units):
@@ -247,14 +234,14 @@ def len_conv(L, from_units=default_length_units,
     elif to_units == 'in':
         return L * 12.
     else:
-        raise ValueError('from_units must be "ft", "in", "m", "km", "sm" (statute miles) or "nm" (nautical miles).')
+        raise ValueError('to_units must be "ft", "in", "m", "km", "sm" (statute miles) or "nm" (nautical miles).')
 
 
 def power_conv(P, from_units=default_power_units,
                to_units=default_power_units):
     """
-    Convert power values between horsepower, ft-lb/mn,  ft-lb/s, watts, 
-    kilowatts, BTU/hr and BTU/mn.
+    Convert power values between horsepower, ft-lb/mn,  ft-lb/s, watts and
+    kilowatts.
     
     The incoming value is first converted to hp, then it is converted to the
     desired return value.
@@ -279,7 +266,7 @@ def power_conv(P, from_units=default_power_units,
     #     P /= 42.407227
     else:
         raise ValueError(
-            'from_units must be "hp", "ft-lb/mn", "ft-lb/s", "W" (watts), "kW" (kilowatts), "BTU/hr", or "BTU/mn".')
+            'from_units must be "hp", "ft-lb/mn", "ft-lb/s", "W" (watts) or "kW" (kilowatts).')
 
     if to_units == 'hp':
         return P
@@ -297,7 +284,7 @@ def power_conv(P, from_units=default_power_units,
     #     return P * 42.407227
     else:
         raise ValueError(
-            'to_units must be "hp", "ft-lb/mn", "ft-lb/s", "W" (watts), "kW" (kilowatts), "BTU/hr", or "BTU/mn".')
+            'to_units must be "hp", "ft-lb/mn", "ft-lb/s", "W" (watts) or "kW" (kilowatts).')
 
 
 def press_conv(P, from_units=default_press_units,
@@ -387,7 +374,7 @@ def speed_conv(S, from_units=default_speed_units,
     elif from_units == 'm/s':
         S *= len_conv(1, from_units='m', to_units='nm') * 3600.
     elif from_units == 'ft/s':
-        S *= len_conv(1, from_units=default_length_units, to_units='nm') \
+        S *= len_conv(1, from_units='ft', to_units='nm') \
              * 3600.
     else:
         raise ValueError('from_units must be one of "kt", "mph", "km/h", "m/s" and "ft/s".')
@@ -404,7 +391,7 @@ def speed_conv(S, from_units=default_speed_units,
         S *= len_conv(1, from_units='nm', to_units='m')
         return S / 3600.
     elif to_units == 'ft/s':
-        S *= len_conv(1, from_units='nm', to_units=default_length_units)
+        S *= len_conv(1, from_units='nm', to_units='ft')
         return S / 3600.
     else:
         raise ValueError('to_units must be one of "kt", "mph", "km/h", "m/s" and "ft/s".')
@@ -627,8 +614,8 @@ def avgas_conv(
     This function uses the 15 deg C density values provided by BP, with the
     variation with temperature provided in the Canada Flight Supplement.
     
-    The grade may be specified as \"80\", \"100\" or \"100LL\".  It defaults to 
-    \"100LL\" if it is not specified.
+    The grade may be specified as \"nominal\" (6.01 lb/USG at 15 deg C), \"80\",
+    \"100\" or \"100LL\".  It defaults to \"nominal\" if it is not specified.
     
     The temperature defaults to 15 deg C if it is not specified.
     """
@@ -650,7 +637,7 @@ def avgas_conv(
     elif str(grade) == '80':
         grade_density = 5.7583
     else:
-        raise ValueError('grade must be one of "nominal", "80", "100" or "100LL", with a default of "100LL"')
+        raise ValueError('grade must be one of "nominal", "80", "100" or "100LL", with a default of "nominal"')
 
     # Correct the density if the grade is other than nominal.
     # If the grade actually is nominal, we are multiplying by 1 / 1
@@ -668,7 +655,7 @@ def avgas_conv(
     elif from_units == 'l':
         AG *= vol_conv(lb_per_USG, from_units='l', to_units='USG')
     else:
-        raise ValueError('from_units must be one of "lb", "USG", "Imp Gal", "l", or "kg".')
+        raise ValueError('from_units must be one of "lb", "USG", "ImpGal", "l", or "kg".')
 
     if to_units == 'lb':
         pass
@@ -681,6 +668,6 @@ def avgas_conv(
     elif to_units == 'l':
         AG /= vol_conv(lb_per_USG, from_units='l', to_units='USG')
     else:
-        raise ValueError('from_units must be one of "lb", "USG", "Imp Gal", "l", or "kg".')
+        raise ValueError('to_units must be one of "lb", "USG", "ImpGal", "l", or "kg".')
 
     return AG

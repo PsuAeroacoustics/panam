@@ -48,3 +48,24 @@ def test_pounds_and_kilograms_convert_through_one_exact_constant():
     assert uc.wt_conv(1.0, from_units='lb', to_units='kg') == 0.45359237
     np.testing.assert_allclose(uc.wt_conv(uc.wt_conv(weights, from_units='kg', to_units='lb'),
                                           from_units='lb', to_units='kg'), weights, rtol=1e-15)
+
+
+def test_feet_per_second_does_not_follow_the_default_length_units(monkeypatch):
+    """The ft/s branches converted through default_length_units, so changing
+    that default to metres would have made 'ft/s' mean m/s."""
+    expected = (uc.speed_conv(100.0, 'ft/s', 'kt'), uc.speed_conv(100.0, 'kt', 'ft/s'))
+    monkeypatch.setattr(uc, 'default_length_units', 'm')
+    assert (uc.speed_conv(100.0, 'ft/s', 'kt'), uc.speed_conv(100.0, 'kt', 'ft/s')) == expected
+    assert uc.speed_conv(100.0, 'ft/s', 'm/s') == pytest.approx(30.48, rel=1e-12)
+
+
+@pytest.mark.parametrize('units', [dict(from_units='BTU/hr'), dict(to_units='BTU/mn')])
+def test_power_error_names_only_accepted_units(units):
+    with pytest.raises(ValueError) as raised:
+        uc.power_conv(1.0, **units)
+    assert 'BTU' not in str(raised.value)
+
+
+def test_avgas_grade_error_names_the_real_default():
+    with pytest.raises(ValueError, match='default of "nominal"'):
+        uc.avgas_conv(1.0, 'USG', 'lb', grade='91')

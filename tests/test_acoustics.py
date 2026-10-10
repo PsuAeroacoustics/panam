@@ -3,7 +3,7 @@ import pytest
 import matplotlib.pyplot as plt
 
 from flight_acoustics import psd, psd_welch, atmosorb, art2umapr, geodetic2array, array2geodetic, lambert_ea_points
-from flight_acoustics import dBAw, overall_SPL, level_history
+from flight_acoustics import dBAw, overall_SPL, level_history, dedopplerize
 
 P_REF = 2.0e-5
 
@@ -15,8 +15,8 @@ def test_psd_sine_level():
     # Sine with peak amplitude = p_ref so RMS = p_ref / sqrt(2)
     signal = P_REF * np.sin(2*np.pi*200*t)
     f, psd_db, level = psd(signal, fs)
-    # Expected level ~ -3.01 dB re 20 uPa
-    assert -4.5 < level < -1.5, f"Level outside expected range: {level}"  # loose tolerance for windowing
+    # RMS p_ref / sqrt(2): -3.0103 dB re 20 uPa, exact for a whole number of cycles
+    assert level == pytest.approx(-10.0 * np.log10(2.0), abs=1e-6)
     assert f[0] >= 0
     assert psd_db.shape == f.shape
 
@@ -53,7 +53,7 @@ def test_psd_welch_sine_level():
     t = np.arange(0, duration, 1/fs)
     signal = P_REF * np.sin(2*np.pi*500*t)
     f, psd_db, level, level_A = psd_welch(signal, fs, window_time=0.5)
-    assert -4.5 < level < -1.5
+    assert level == pytest.approx(-10.0 * np.log10(2.0), abs=1e-6)
     # At 500 Hz A-weighting is negative; ensure it is lower than unweighted
     assert level_A <= level
 
@@ -87,6 +87,43 @@ def test_psd_welch_medfilter_width_is_in_hz(width_hz):
     expected = 10.0 * np.log10(scipy.signal.medfilt(10.0 ** (raw_db / 10.0), bins))
     assert df == 4.0
     np.testing.assert_allclose(filtered_db, expected, atol=1e-9)
+
+
+@pytest.mark.parametrize('f0', [20.5, 25.5, 50.5])
+def test_overall_spl_a_weighted_level_of_an_off_bin_low_tone(f0):
+    """A tone between bins: its A-weighted level is its level plus the A-weighting.
+
+    A rectangular window leaks an off-bin tone across the spectrum with a
+    1/k**2 skirt, and the leakage reaching 1-4 kHz, where the A-weighting is
+    near 0 dB, read 1.8, 0.9 and 0.1 dB high at these frequencies.
+    """
+    fs = 25600
+    t = np.arange(fs) / fs
+    signal = np.sqrt(2.0) * np.sin(2 * np.pi * f0 * t)      # 1 Pa rms
+    level_A, level_Z = overall_SPL(signal, fs)
+    assert level_Z == pytest.approx(10.0 * np.log10(np.mean((signal - signal.mean()) ** 2) / P_REF ** 2),
+                                    abs=1e-9)
+    assert level_A == pytest.approx(level_Z + float(dBAw(f0)), abs=0.05)
+
+
+def test_level_history_a_weighted_level_of_an_off_bin_low_tone():
+    """Quarter-second periods (4 Hz bins): a rectangular window read 2.2 dB high.
+
+    Each period holds 12.6 cycles, so its own mean square is within 0.06 dB
+    of the tone's 1 Pa rms.
+    """
+    fs = 25600
+    t = np.arange(4 * fs) / fs
+    signal = np.sqrt(2.0) * np.sin(2 * np.pi * 50.5 * t)    # 1 Pa rms
+    _, level_a, level_z = level_history(signal, fs, period=0.25)
+    tone_level = 10.0 * np.log10(1.0 / P_REF ** 2)
+    np.testing.assert_allclose(level_z, tone_level, atol=0.07)
+    np.testing.assert_allclose(level_a, tone_level + float(dBAw(50.5)), atol=0.1)
+
+
+def test_overall_spl_of_silence_is_minus_inf():
+    level_A, level_Z = overall_SPL(np.zeros(1024), 1024)
+    assert level_A == -np.inf and level_Z == -np.inf
 
 
 def test_level_history_keeps_the_last_full_period():
@@ -266,3 +303,19 @@ assert matplotlib.rcParams['figure.autolayout'] is False
 assert matplotlib.rcParams['mathtext.fontset'] == 'cm'
 '''], capture_output=True, text=True, env=dict(os.environ, MPLBACKEND='Agg'))
     assert result.returncode == 0, result.stderr
+
+
+def test_dedopplerize_leaves_unrecorded_emissions_missing():
+    """np.interp held the first and last samples flat for reception times outside
+    the record, a step that contaminated the de-Dopplerized spectrum."""
+    c = 1000.0
+    track_time = np.linspace(0.0, 2.0, 21)
+    position = np.column_stack([np.zeros(21), np.zeros(21), np.full(21, 100.0)])
+    observers = np.zeros((1, 3))
+    t = np.arange(0.2, 2.0, 1e-3)[None, :]          # starts after the first arrival (0.1 s)
+    pressure = np.sin(2 * np.pi * 50.0 * t)
+    emission, dpres = dedopplerize(t, pressure, c, track_time, position, observers)
+    received = emission + 0.1
+    outside = (received < t[0, 0]) | (received > t[0, -1])
+    assert outside.any() and np.all(np.isnan(dpres[0, outside]))
+    np.testing.assert_allclose(dpres[0, ~outside], np.sin(2 * np.pi * 50.0 * received[~outside]), atol=0.02)

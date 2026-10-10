@@ -57,11 +57,10 @@ def plot(frequency, elevation, flow_resistance, output, x_range=(-0.4, 0.4), z_t
     ``ground`` (a :func:`ground_plane.surface_admittance` model dict) replaces
     Delany-Bazley at ``flow_resistance``; ``geometry`` goes to
     :func:`axisymmetric_bem.field` (radius, thickness, edge_thickness,
-    taper_length, in feet as there).
+    taper_length, in feet as there).  The figure is drawn without pyplot, so
+    the session's Matplotlib backend and open figures are left alone.
     """
-    import matplotlib
-    matplotlib.use('Agg')
-    import matplotlib.pyplot as plt
+    from matplotlib.figure import Figure
     radius = geometry.get('radius', gp.PLATE_RADIUS_FT) * FT
     thickness = geometry.get('thickness', gp.PLATE_THICKNESS_FT) * FT
     edge_thickness = geometry.get('edge_thickness', gp.PLATE_EDGE_THICKNESS_FT) * FT
@@ -74,8 +73,8 @@ def plot(frequency, elevation, flow_resistance, output, x_range=(-0.4, 0.4), z_t
     xl = np.linspace(*x_range, 4 * grid[0])
     Ll, Ll0 = level_re_free_field(frequency, elevation, xl, np.full_like(xl, zm), sound_speed, flow_resistance,
                                   ground, **geometry)
-    fig, (ax, bx) = plt.subplots(2, 1, figsize=(12.5, 5.6), sharex=True, height_ratios=(2.2, 1.4),
-                                 layout='constrained')
+    fig = Figure(figsize=(12.5, 5.6), layout='constrained')
+    ax, bx = fig.subplots(2, 1, sharex=True, height_ratios=(2.2, 1.4))
     im = ax.pcolormesh(x, z * 100, np.clip(L, *levels), cmap='magma', vmin=levels[0], vmax=levels[1],
                        shading='auto', rasterized=True)
     # The plate's section: flat top, taper, rim.
@@ -100,7 +99,6 @@ def plot(frequency, elevation, flow_resistance, output, x_range=(-0.4, 0.4), z_t
     bx.set_xlabel('Horizontal distance from the plate center, along the incidence direction (m)')
     bx.legend(loc='lower left', frameon=False)
     fig.savefig(output, dpi=200)
-    plt.close(fig)
     return output
 
 

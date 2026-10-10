@@ -474,14 +474,14 @@ def pole_level(bands, source_height, ground_distance, pole_height, sound_speed,
         f, hs * 0.3048, hr * 0.3048, direct * 0.3048, gamma_t, sound_speed * 0.3048)
     fd = f * delay
     with np.errstate(divide='ignore', invalid='ignore'):
-        sinc = np.where(fd > 0.0, np.sin(0.727477 * fd) / (0.727477 * fd), 1.0)
+        sinc = np.where(fd > 0.0, np.sin(fa.CHESSELL_MU * fd) / (fa.CHESSELL_MU * fd), 1.0)
     a_d = 1.0 if response_direct is None else 10.0 ** (0.05 * np.asarray(response_direct))
     a_r = 1.0 if response_reflected is None else 10.0 ** (0.05 * np.asarray(response_reflected))
     if roughness > 0.0:
         k = 2.0 * np.pi * f / sound_speed
         a_r = a_r * np.exp(-2.0 * (k * roughness * cos_theta) ** 2)
     energy = (a_d ** 2 + (a_r * np.abs(q) * ratio) ** 2
-              + 2.0 * a_d * a_r * np.abs(q) * ratio * np.cos(6.325159 * fd + np.angle(q)) * sinc
+              + 2.0 * a_d * a_r * np.abs(q) * ratio * np.cos(fa.CHESSELL_ETA * fd + np.angle(q)) * sinc
               * coherence)
     return 10.0 * np.log10(energy)
 
@@ -658,7 +658,7 @@ def fresnel_disc_weight(bands, source_height, ground_distance, sound_speed,
     surface counts in proportion to the share of the Fresnel ellipse it covers.
     The ellipse is the ground section of the zone where the path via the
     ground exceeds the specular path by less than ``zone_fraction`` of a
-    wavelength; the plate is a disc of ``radius`` centerd under the
+    wavelength; the plate is a disc of ``radius`` centered under the
     microphone.
 
     The overlap is integrated on an area-uniform polar grid (``samples`` =
@@ -873,9 +873,10 @@ def fit_two_path(frequency, level_db, dR_guess, sound_speed, receiver_height, fi
 
     The window runs from ``fmin`` (default 0.2 c / dR_guess) to ``fmax`` (default
     2.2 c / dR_guess, just below the guess's third null), so the first two nulls lie
-    inside.  A grid over dR (0.4-2.2 times the guess, zero phase) finds the basin; a
-    robust (soft-L1) least-squares fit then frees C, A, the roll-off, dR and the phase
-    (bounded by +-``phase_bound`` rad, or held at ``fix_phase``).  Use narrowband data
+    inside.  A grid over dR (0.4-2.2 times the guess, zero phase) finds the basin and
+    the offset; a robust (soft-L1) least-squares fit then frees C (within 40 dB of that
+    start, so an absolute level in dB re 20 uPa fits too), A, the roll-off, dR and the
+    phase (bounded by +-``phase_bound`` rad, or held at ``fix_phase``).  Use narrowband data
     (a few Hz) averaged over frames at nearly the same geometry: third-octave bands smear
     the nulls.
 
@@ -906,11 +907,11 @@ def fit_two_path(frequency, level_db, dR_guess, sound_speed, receiver_height, fi
     _, r0, a00, c0 = best
     if fix_phase is None:
         p0 = [c0, a00, 3000.0, r0, 0.0]
-        lo, hi = [-40, 0.05, 100.0, 0.02 * r0, -phase_bound], [40, 0.999, 1e6, 2 * hr, phase_bound]
+        lo, hi = [c0 - 40, 0.05, 100.0, 0.02 * r0, -phase_bound], [c0 + 40, 0.999, 1e6, 2 * hr, phase_bound]
         fun = lambda p: two_path_db(f, *p, sound_speed) - y
     else:
         p0 = [c0, a00, 3000.0, r0]
-        lo, hi = [-40, 0.05, 100.0, 0.02 * r0], [40, 0.999, 1e6, 2 * hr]
+        lo, hi = [c0 - 40, 0.05, 100.0, 0.02 * r0], [c0 + 40, 0.999, 1e6, 2 * hr]
         fun = lambda p: two_path_db(f, *p, fix_phase, sound_speed) - y
     res = least_squares(fun, p0, bounds=(lo, hi), loss='soft_l1', f_scale=2.0)
     p = res.x
@@ -971,8 +972,11 @@ def image_integrals(k, beta, rho, z_sum, n=10):
     The integrand peaks near q = rho, singularly so as Z -> 0, which the
     substitutions q = rho sin(phi) below rho and q = rho cosh(psi) above it take
     out (exactly, for Z = 0), with Gauss-Legendre segments graded toward the
-    peak on a width sqrt(2 Z / rho).  Above rho, e^{ikR_q} decays like e^{-k q},
-    so the upper limit is rho + 40/k.  Vectorized over ``rho`` and ``z_sum``.
+    peak on a width sqrt(2 Z / rho).  For rho < Z there is no such peak (R_q stays
+    about Z from zero; at rho = 0, R_q = Z + i q), and those substitutions, scaled
+    by rho, would miss the scale Z: the integral is taken directly in q, on
+    segments graded on Z.  Above rho, e^{ikR_q} decays like e^{-k q}, so the upper
+    limit is rho + 40/k.  Vectorized over ``rho`` and ``z_sum``.
 
     Needs a passive ground, Re(beta) > 0: otherwise e^{-k beta q} grows and the
     integral diverges.  Delany-Bazley-based layers are not passive at low
@@ -1004,6 +1008,9 @@ def _image_integral_nodes(k, beta, rho, z, x, w):
     big_j = np.empty(rho.size, dtype=np.complex128)
     for p in prange(rho.size):
         r0, z0 = rho[p], z[p]
+        if r0 < z0:
+            big_i[p], big_j[p] = _image_integral_in_q(k, beta, r0, z0, x, w, decay_q, r0 + q_top)
+            continue
         rho_s = max(r0, 1e-12)
         width = min(max(np.sqrt(2.0 * max(z0, 0.0) / rho_s), 1e-6), 0.25)
         # Below rho: phi in [0, pi/2], q = rho sin(phi), rho^2 - q^2 = rho^2 cos^2(phi).
@@ -1054,6 +1061,38 @@ def _image_integral_nodes(k, beta, rho, z, x, w):
         big_i[p] = acc_i
         big_j[p] = acc_j
     return big_i, big_j
+
+
+@njit(cache=True)
+def _image_integral_in_q(k, beta, r0, z0, x, w, decay_q, q_max):
+    """I and J of one point with rho < Z, integrated directly in q over [0, q_max].
+
+    R_q is then at least about Z from zero (at rho = 0, R_q = Z + i q), so the
+    integrand is smooth on the scale Z: Gauss-Legendre segments doubling from
+    Z / 8, with breakpoints on the decay scale too.
+    """
+    edges = [0.0, q_max]
+    step = 0.125 * z0
+    while step < q_max:
+        edges.append(step)
+        step *= 2.0
+    for d in decay_q:
+        if d < q_max:
+            edges.append(d)
+    e = np.array(edges)
+    e.sort()
+    acc_i = 0.0 + 0.0j
+    acc_j = 0.0 + 0.0j
+    for s in range(e.size - 1):
+        a, b = e[s], e[s + 1]
+        for g in range(x.size):
+            q = 0.5 * (b - a) * x[g] + 0.5 * (a + b)
+            wt = 0.5 * (b - a) * w[g]
+            r = np.sqrt(r0 * r0 + z0 * z0 - q * q + 2j * z0 * q)
+            term = np.exp(-k * beta * q) * np.exp(1j * k * r) / (4.0 * np.pi * r) * wt
+            acc_i += term
+            acc_j += term * (1j * k - 1.0 / r) / r
+    return acc_i, acc_j
 
 
 def exact_half_space_green(k, beta, rho, z_source, z_target, n=10):
@@ -1119,7 +1158,7 @@ class ImageIntegralTable:
 
 
 def disc_mesh(radius, cell):
-    """Polar mesh of a disc: centroids, areas and cell bounds, the first cell centerd at the origin.
+    """Polar mesh of a disc: centroids, areas and cell bounds, the first cell centered at the origin.
 
     A central disc of diameter ``cell`` holds the microphone; rings of width
     about ``cell`` are split into annular sectors about ``cell`` long.  Returns
@@ -1657,6 +1696,8 @@ def disc_bem_table(bands, sound_speed, flow_resistance=FLOW_RESISTANCE, sub_band
 
     Returns a dict: frequencies, elevations, azimuths (deg), S (complex), and
     the microphone height used (``options`` go to :func:`disc_bem_scattered`).
+    With a ``ground`` model in ``options`` the stored ``flow_resistance`` is
+    None: the model, not ``flow_resistance``, set S.
     """
     bands = np.asarray(bands, dtype=float)
     offsets = sub_band_factors(sub_bands)
@@ -1666,7 +1707,9 @@ def disc_bem_table(bands, sound_speed, flow_resistance=FLOW_RESISTANCE, sub_band
     return dict(frequencies=frequencies, elevations=np.asarray(elevations, float),
                 azimuths=np.asarray(azimuths, float), S=scattered,
                 mic_height=options.get('mic_height', PLATE_MIC_HEIGHT_FT),
-                ground=options.get('ground'), flow_resistance=flow_resistance, sub_bands=sub_bands)
+                ground=options.get('ground'),
+                flow_resistance=None if options.get('ground') is not None else flow_resistance,
+                sub_bands=sub_bands)
 
 
 def table_sub_bands(table, sub_bands=None):
@@ -1749,7 +1792,7 @@ def table_frames(table, keys, bands, source_height, ground_distance, source_dx=N
 
 
 def board_disc_bem(bands, source_height, ground_distance, sound_speed,
-                   flow_resistance=FLOW_RESISTANCE, sub_bands=None, table=None,
+                   flow_resistance=None, sub_bands=None, table=None,
                    source_dx=None, source_dy=None, mirror_y=False):
     """The ground-plane microphone on a thin rigid disc in soft ground, band averaged, dB re free field.
 
@@ -1760,7 +1803,22 @@ def board_disc_bem(bands, source_height, ground_distance, sound_speed,
     ``source_dy``) and ``mirror_y`` as in :func:`table_frames`.  Bands the
     table was not computed for are NaN.  ``sub_bands`` is the table's own; a different count would pick
     frequencies the table does not hold.
+
+    The ground is the table's, as in :func:`axisymmetric_bem.board_level`:
+    ``table['ground']``, or Delany-Bazley at ``table['flow_resistance']``.
+    ``flow_resistance``, if given, must be the table's, so that Q and S see
+    the same ground; with a ground model in the table it must not be given,
+    since the model, not a flow resistance, sets Q.
     """
+    if table is None:
+        raise ValueError('board_disc_bem needs a table from disc_bem_table')
+    if flow_resistance is not None and table.get('ground') is not None:
+        raise ValueError('the table\'s ground is a {!r} model, which sets Q; flow_resistance does not '
+                         'apply'.format(table['ground'].get('model')))
+    if flow_resistance is not None and float(flow_resistance) != float(table['flow_resistance']):
+        raise ValueError('flow_resistance {:g} differs from the table\'s {:g}; Q and S would see different '
+                         'grounds'.format(float(flow_resistance), float(table['flow_resistance'])))
+    flow_resistance = table['flow_resistance']
     f, hs, d2, elevation, offsets, values = table_frames(
         table, ('S',), bands, source_height, ground_distance, source_dx, source_dy, mirror_y, sub_bands)
     height = table['mic_height']

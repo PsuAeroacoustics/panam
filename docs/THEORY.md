@@ -75,7 +75,13 @@ in dB re $(20\ \mu\mathrm{Pa})^2$/Hz. For depropagation, $T_w = 0.5$ s with 50% 
 samples (0.64 s at 25.6 kHz, $\Delta f = 1.5625$ Hz). Each frame is a single periodogram. The
 averaging happens later, over the samples that fall in a sphere cell (§6). The spectrum at an
 emission point's reception time is interpolated between frame centers **in power**, not in dB.
-Welch averaging [7] is available for stationary signals (`psd_welch`).
+Welch averaging [7] is available for stationary signals (`psd_welch`). The whole-record
+spectrum (`psd`, and through it `third_octave_band_levels`, `overall_SPL` and `level_history`) is
+one Hann-windowed, density-scaled periodogram. A rectangular window would leak an off-bin rotor tone
+across the spectrum with a $1/k^2$ skirt, enough to raise the A-weighted level of a 25 Hz tone by
+0.9 dB in a 1 s record and 12 dB in a 0.25 s one. `overall_SPL`'s unweighted level is the record's
+mean-square pressure; its A-weighted level scales that by the A-weighted fraction of the Hann
+spectrum.
 
 ### 2.2 One-third-octave bands
 
@@ -93,8 +99,8 @@ bins, and $P_b = R(f_u) - R(f_l)$ counts fractional bins.
 two bands. On the B407 the 27.6 and 55.2 Hz harmonics, 0.6 and 1.0 Hz from band edges, read
 5–19 dB high in the 31.5 and 63 Hz bands. `tone_aware_band_power` files each tone whole:
 
-1. The floor is the running median of the PSD over 15 bins. A tone is a local maximum over ±2 bins
-   standing more than 6 dB above it.
+1. The floor is the running median of the PSD over 15 bins, taken over the bins the ambient gate
+   left nonzero. A tone is a local maximum over ±2 bins standing more than 6 dB above it.
 2. Its offset from the peak bin follows from the Hann window's two-bin interpolation
    [9], with $p_0$ and $p_{l,r}$ the floor-subtracted peak and neighbors:
    $\alpha = \sqrt{\max(p_l, p_r)/p_0}$, $\delta = \pm\,\mathrm{clip}\!\left(\frac{2\alpha - 1}{\alpha + 1}, 0, \tfrac12\right)$, toward the larger neighbor.
@@ -206,8 +212,10 @@ record, with the nose along the heading.
 
 For the layer, $Z_c = 1 + 9.08X^{-0.754} + 11.9iX^{-0.732}$ and
 $k = (2\pi f/c_0)(1 + 10.8X^{-0.70} + 10.3iX^{-0.595})$. A thin layer of low resistivity is not
-passive at low frequency, and is refused. The 2017 site ground is variable porosity with
-$\sigma_e = 200$ kPa·s/m² and $\alpha_e = 0$ (§4.6). The first term of the variable-porosity form is
+passive at low frequency ($\mathrm{Re}\,\beta < 0$). The exact Green's function used by the
+plate BEM (§4.5) refuses it; the impedance, reflection-coefficient and pole models use it
+unchecked. The 2017 site ground is variable porosity with $\sigma_e = 200$ kPa·s/m² and
+$\alpha_e = 0$ (§4.6). The first term of the variable-porosity form is
 the familiar $0.436(1+i)\sqrt{\sigma_e/f}$ with $\sigma_e$ in Pa·s/m².
 
 ### 4.2 The spherical-wave reflection coefficient
@@ -331,8 +339,9 @@ The site ground was fitted to the 2017 measurements (details in
 [`ground_plane_corrections.md`](ground_plane_corrections.md)). Pole–board pairs at elevations above
 30° constrain the turbulence strength, $\gamma_T \approx 3\times10^{-5}\ \mathrm{m}^{-2/3}$. The
 resistivity is poorly identified at steep angles. A held-out profile over resistivity selected
-variable porosity with $\sigma_e \approx 200$ kPa·s/m² and roughness of 10–15 mm, which is the
-adopted `SITE_GROUND`.
+variable porosity with $\sigma_e \approx 200$ kPa·s/m², the adopted `SITE_GROUND`. The fit also gives
+10–15 mm of roughness, which only the pole model (`pole_level`'s `roughness`) uses: `SITE_GROUND`
+carries none, and the plate BEM that builds the spheres has no roughness term.
 
 ## 5. Depropagation
 
@@ -341,7 +350,7 @@ adopted `SITE_GROUND`.
 Each emission sample carries a received power spectrum $P(f)$ at a microphone. Depropagation
 refers it to the sphere radius $r_\mathrm{ref} = 100$ ft in four steps, in this order:
 
-1. **Ambient gate.** With $A(f)$ the ambient spectrum (the median over frames of a measured
+1. **Ambient gate.** With $A(f)$ the ambient spectrum (the mean power over the frames of a measured
    ambient run on the same layout, or a low percentile of the run's own spectrogram), a bin is kept
    only if it stands $G$ dB above the ambient, and the ambient is then subtracted:
    $P \leftarrow \max(P - A, 0)$ where $P \ge A\,10^{G/10}$, and 0 elsewhere.
@@ -353,14 +362,20 @@ refers it to the sphere radius $r_\mathrm{ref} = 100$ ft in four steps, in this 
    ISO 9613-1 coefficient at the received frequency (§5.4) and $\ell$ the straight distance or the
    ray's arc length. Bins whose correction would exceed a cap are discarded.
 
-The gate comes first: an ambient-limited bin would otherwise be amplified by both corrections. A
-discarded bin carries zero power. **The sphere keeps the absorption over its first
+The gate comes first: an ambient-limited bin would otherwise be amplified by both corrections. The
+ambient is a mean because each $P$ is a single frame, whose expectation is the mean; a single
+frame's bin of noise is exponentially distributed, so the median would sit $\ln 2$ of the mean
+(1.6 dB) low. A gated bin carries zero power (measured, no energy); a capped bin is missing (not
+measured): a band spanning one is missing for that sample, the overall levels sum the bins that
+remain, and the gridding (§6) leaves missing samples out of each node's weights. **The sphere keeps the absorption over its first
 $r_\mathrm{ref}$** in the run's own atmosphere; the database's EAA (§7.2) accounts for absorption
 beyond it.
 
 The 2017 release used a 10 dB gate, a 15 dB response cap, a 30 dB absorption cap, a 2000 ft
 range limit and a 2° floor on the emission elevation. These are settings of the build script in the
-validation harness; PANAM's own defaults are looser.
+validation harness. `build_sphere` and its CLI default to the same gate, absorption cap and range, a
+10° elevation floor and no response cap. `depropagate_hemisphere`'s own defaults are looser: a 3 dB
+gate, no caps, no range limit and a 0° elevation floor.
 
 ### 5.2 Range and elevation limits
 
@@ -438,11 +453,14 @@ $$
 with $\kappa = 1.3$, $d_k$ the distance to the 8th nearest sample, $d_M$ the distance to the 3rd
 nearest distinct microphone, and $\tilde{s}$ the median angular resolution of the nearest samples,
 $s = \lvert\mathbf{v}_\perp\rvert T_w/r$ (the angle the source sweeps across the line of sight in
-one frame). A radius above 60° makes the node a gap. Two options shape the kernel:
+one frame). A node whose radius exceeds 60° is retried without the $d_M$ term, i.e. with its
+$k$ nearest samples from any number of microphones; it is a gap only if that radius also exceeds
+60°. The nodes filled this way are seen by only one or two microphones, and their count is
+reported as `relaxed` in the result's `interpolation` record. Two options shape the kernel:
 
-- **Aspect** stretches the distance in azimuth, $h = \sqrt{\Delta e^2 + (\Delta\psi\cos\bar{e}/A)^2}$, so that
-  samples along a flight pass (which spread in azimuth) share more than samples across it. The
-  2017 release used $A = 5$.
+- **Aspect** stretches the distance in azimuth, $h_A = \sqrt{\Delta e^2 + (h^2 - \Delta e^2)/A^2}$ from the
+  geodesic distance $h$ and the elevation difference $\Delta e$, so that samples along a flight pass
+  (which spread in azimuth) share more than samples across it. The 2017 release used $A = 5$.
 - **Floor** softens the Shepard singularity, $h \to \sqrt{h^2 + (fR)^2}$ in the denominator, so
   that one sample does not dominate a node it nearly hits. The 2017 release used $f = 1$.
 
@@ -513,7 +531,8 @@ database spans.
 
 Level conditions are copied to path angles of −24° and +35°, so that the condition hull covers
 steep states. The upper hemisphere, which no ground microphone sees, is completed by mirroring
-through the tip-path plane, $\phi' = 180^\circ - \phi$, and carries coverage 0. Database format
+through the sphere's horizontal plane (the level frame of §3.2), $\phi' = 180^\circ - \phi$
+wrapped into $[-180^\circ, 180^\circ)$, and carries coverage 0. Database format
 version 1 marks files with the corrected mirror (an earlier `-phi` mirror reflected the lower
 hemisphere onto itself).
 
@@ -535,27 +554,66 @@ $V_\mathrm{TAS} = V_\mathrm{IAS}\sqrt{1.225/\rho}$). A file whose levels include
 reflection (FREEFIELD = 0) is refused unless accepted explicitly.
 
 **Export.** Spheres can be written in the AAM netCDF format [11], in the variable order AAM
-3.1 reads by position, and as NORAH2 hemispheres, with the inverse of the conversion above against
-the ICAO reference atmosphere (298.15 K, 70% RH).
+3.1 reads by position, and as NORAH2 hemispheres. The NORAH2 export moves the levels to 60 m,
+takes out the absorption the sphere keeps over $r_\mathrm{ref}$ in the measurement atmosphere,
+and puts in absorption over the whole 60 m in the ICAO reference atmosphere (298.15 K, 70% RH):
+
+$$
+L(60\ \mathrm{m}) = L(r_\mathrm{ref}) - 20\lg\frac{60\ \mathrm{m}}{r_\mathrm{ref}}
++ \alpha_\mathrm{meas}(f)\,r_\mathrm{ref} - \alpha_\mathrm{ICAO}(f_c)\cdot 60\ \mathrm{m}.
+$$
+
+This is not the inverse of the import: a sphere exported and imported again comes back shifted by
+$(\alpha_\mathrm{meas} - \alpha_\mathrm{ICAO})\,r_\mathrm{ref}$ ([`norah2_import.md`](norah2_import.md)).
+A sphere built without absorption depropagation is written with spreading only.
 
 ## 9. Metrics
 
 **Sound exposure level.** Over the 10 dB-down window (the first to the last sample within 10 dB of
-the maximum, dips included), $\mathrm{SEL} = 10\lg\left(\sum_k 10^{L_k/10}\Delta t/1\ \mathrm{s}\right)$
+the maximum, dips included; unlike the EPNL limits, a sample below the threshold is never one), $\mathrm{SEL} = 10\lg\left(\sum_k 10^{L_k/10}\Delta t/1\ \mathrm{s}\right)$
 [38]. Unlike NICE-OPS, PANAM's samples are already in reception time.
 
 **EPNL** follows 14 CFR 36, Appendix A, §A36.4 [38], identical to ICAO Annex 16 [39]:
 noy values from Table A36-3; $\mathrm{PNL} = 40 + \frac{10}{\lg 2}\lg(0.85n_\max + 0.15\sum n)$;
 the ten-step tone correction with Table A36-2; the band-sharing check of §A36.4.4.2; and the
-duration correction over the records within 10 dB of PNLTM, with $T_0 = 10$ s exactly (the
-regulation's −13 for 0.5 s records is that value rounded). Where readings of the regulation
-differ, PANAM puts 500 Hz in the middle range of Table A36-2 and takes the duration as one
-contiguous interval. NICE-OPS's EPNL is ported from this implementation.
+duration correction $D = 10\lg\sum_{k_1}^{k_2} 10^{\mathrm{PNLT}(k)/10} + 10\lg(\Delta t/T) - \mathrm{PNLTM}$,
+$T = 10$ s, taking the regulation's −13 dB for $10\lg(0.5/10) = -13.0103$ dB when
+$\Delta t = 0.5$ s (§A36.4.5.4; `normalization='exact'` keeps −13.0103). The limits $k_1, k_2$ are
+the PNLT samples closest to PNLTM − 10 (§A36.4.5.5): the first and last samples at or above it,
+each moved one sample outward when that sample is closer, and every sample between them is summed,
+dips included, which gives the longest duration when there are several peaks. Where readings of
+the regulation differ, PANAM puts 500 Hz in the middle range of Table A36-2. NICE-OPS's EPNL is
+ported from this implementation.
 
-**Aural nondetectability.** MIL-STD-1474E Table C-1 [40] gives, per one-third-octave
-band, the level at which a sound is undetectable at each distance. A spectrum normalized to 10 m,
-$L_{10} = L + 20\lg(d/10)$, is shifted to each of the table's measurement distances and
-interpolated in $\lg$ distance. The nondetectability distance is the largest over the bands.
+**Band sharing.** When $C$ at PNLTM is below the mean $\bar C$ of the five records centered there
+(§A36.4.4.2), the adjustment $\Delta_B = \bar C - C(k_M)$ is added to the EPNL as a separate
+term, as ICAO Annex 16 Vol. I, Appendix 2 and FAA AC 36-4 apply it:
+$\mathrm{EPNL} = \mathrm{PNLTM} + D + \Delta_B$, with PNLTM, the 10 dB-down limits and $D$ all
+from the unadjusted PNLT history. Read literally, 14 CFR 36 raises PNLTM and takes $D$ from it, so
+the adjustment cancels in $\mathrm{PNLTM} + D$ and acts only by narrowing the duration, which
+lowers the EPNL. `effective_perceived_noise_level` returns `pnltm` (adjusted),
+`pnltm_unadjusted` and `delta_b`.
+
+The regulation's tone correction is defined for finite band levels. A band of $-\infty$ (zero
+energy) would make the step-7 background infinite or undefined, so it enters steps 1–7 at its
+noy threshold SPL(d) of Table A36-3 and carries no tone itself; PNL is unchanged, since the band
+has no noys either way. With `masked=True` every band below SPL(d) is treated so, as in
+NICE-OPS's `below_noy_floor` masking. A NaN band is a missing level: noys, PNL, $C$ and PNLT are
+NaN, and EPNL refuses the history.
+
+**Aural nondetectability.** MIL-STD-1474E Table C-I [40] gives, per one-third-octave
+band, the limit at each nondetectability distance $D_j$ (5 m to 6 km), measured at 2, 10 or 30 m
+$m_j$; a distance is met when no band exceeds its limit (§C.5.1.2). A spectrum normalized to 10 m,
+$L_{10} = L + 20\lg(d/10)$, is taken to each column's measurement distance by spherical
+spreading, giving the exceedance $e_j = L_{10} + 20\lg(10/m_j) - L_{\lim,j}$. A band's distance is
+where $e$, interpolated linearly in $\lg D$ between adjacent columns, falls to zero for the last
+time. Within a measurement-distance group this is the reading of Figures C-1 to C-5; across the
+30–100 m and 400–500 m group boundaries it rests on the same spreading that shifts the spectrum.
+The nondetectability distance is the largest over the bands, every band counting. A band under
+every column gives 5 m, an upper bound; one over the 6 km column gives 6 km, a lower bound that
+wins and flags the result; an NA entry (no limit listed) counts as met, so a band over its last
+listed column is bracketed by that column and the next. Table bands more than half a band outside
+the input spectrum are not evaluated rather than extrapolated.
 
 ## 10. Auxiliary models
 

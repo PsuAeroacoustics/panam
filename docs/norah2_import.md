@@ -115,8 +115,7 @@ spheres 10 kt apart that moves LA per cell by a median +0.5 to +1.7 dB, p95
 3-7 dB and at most 6.8-13.5 dB (same evaluation).
 
 An air-referenced database needs the wind at the aircraft in NICE-OPS
-(`--atmosphere` with wind columns, or `--wind` on its `adopt-features-2026-10-05`
-branch). Without it, NICE-OPS refuses the run unless
+(`--atmosphere` with wind columns, or `--wind`). Without it, NICE-OPS refuses the run unless
 told `--speed_reference ground`.
 
 ### 3. Ground: FREEFIELD = 0 tables
@@ -200,8 +199,8 @@ step that removes the Doppler shift, and its predictor applies none. So its
 spheres are taken to keep the shift the microphones received, as panam's do.
 EASA does not state it.
 
-NICE-OPS reads `azimuth_reference` to choose the sphere's nose (`--nose`, on
-its `adopt-features-2026-10-05` branch): `track` keeps the nose on the velocity,
+NICE-OPS reads `azimuth_reference` to choose the sphere's nose (`--nose`):
+`track` keeps the nose on the velocity,
 as these hemispheres were filed.
 
 ## What it refuses

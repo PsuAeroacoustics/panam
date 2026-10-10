@@ -6,7 +6,7 @@ This is a Python-based aeroacoustics analysis toolkit for rotorcraft noise model
 ## Architecture & Data Flow
 
 ### Core Module: `flight_acoustics.py`
-Central library containing all acoustic analysis and visualization functions. This is a **monolithic module** that other scripts import from. Key functional areas:
+Central library of acoustic analysis and visualization functions that the other scripts import from. The ground models (`ground_plane.py`, `axisymmetric_bem.py`), refracted rays (`refracted_rays.py`), the Vold-Kalman filter (`vold_kalman_filter.py`) and the 2017 Noise Abatement sphere build (`noise_abatement_2017.py`) are separate modules. Key functional areas:
 
 1. **Acoustic Signal Processing**: PSD computation (`psd`, `psd_welch`), spectrogram generation, A-weighting (`dBAw`), filtering
 2. **Spherical Noise Sources**: Load/manipulate netCDF acoustic hemispheres (`load_nc_sphere`, `extract_SPL`), coordinate transforms (ART ↔ UMAPR via `art2umapr`)
@@ -21,7 +21,8 @@ Thin argparse wrappers around `flight_acoustics.py` functions:
 - `fried_egg_plot.py`: Flight condition noise "carpet plots"
 - `spectrogram_plot.py`: Time-frequency analysis (supports HDF5/netCDF)
 - `atmomap.py`: Atmospheric absorption visualization
-- `build_empirical_database.py`: Compile netCDF sphere database
+- `build_empirical_database.py`: Build a NICE-OPS `.nod` database from a directory of AAM spheres
+- `norah2_to_nod.py`: Build a NICE-OPS `.nod` database from NORAH2 `.hem` hemispheres
 
 ### Supporting Libraries
 - `unit_conversion.py`: Aerospace unit conversions (originated from external library, extensive with functions like `avgas_conv`)
@@ -32,7 +33,7 @@ Thin argparse wrappers around `flight_acoustics.py` functions:
 ### Data Formats
 - **netCDF spheres**: Standard input format with variables `PHI`, `THETA`, `FREQUENCY`, `AMPLITUDE`, `RADIUS`, `SPEED`, `FLIGHT_PATH_ANGLE` (units: degrees, Hz, dB, feet, knots)
 - **NORAH2 hemispheres**: ASCII `.hem` files (HELENA GAD layout) at 60 m with ICAO-reference absorption included, 10° grid, 31 one-third octave bands 10 Hz–10 kHz; write with `write_norah2_hemisphere`, read with `load_norah2_hemisphere`, and index a set with `write_norah2_triangulation`
-- **HDF5 signals**: BKConnect format acoustic time series (use `load_h5_signal` with `datasetname='Table1'`)
+- **HDF5 signals**: BKConnect format acoustic time series (use `open_h5_signal` as a context manager, default `datasetname='Table1'`; the legacy `load_h5_signal` returns a live HDF5 object whose `.file` the caller must close)
 - **Config files**: `vehicle.cfg` (INI format) in sphere directories defines vehicle geometry and operating conditions
 
 ### Coordinate Systems
@@ -42,7 +43,7 @@ Thin argparse wrappers around `flight_acoustics.py` functions:
 - **Geodetic ↔ Local Array**: Use `geodetic2array`/`array2geodetic` with reference point and heading for microphone positioning
 
 ### Unit Philosophy
-All internal calculations use **SI-adjacent units** (meters, Hz, Pa) but I/O defaults to **aerospace units** (feet, knots, °C) per `default_units.py`. Use `unit_conversion.py` functions liberally; they auto-convert via intermediate base units.
+Each function states its units. The 2017 build, `depropagate_hemisphere` and the ground models work in ft and ft/s; NICE-OPS databases are in m. `unit_conversion.py` defaults follow `default_units.py` (ft, kt, °C); its functions convert via intermediate base units.
 
 ### Atmospheric Modeling
 The vendored `panam_acoustics` package (derived from python-acoustics, BSD-3) provides ISO 9613-1 atmospheric absorption: `panam_acoustics.atmosphere.Atmosphere(temperature=K, pressure=kPa, relative_humidity=%)`. `atmosorb(freq, temp, humid, pstat)` wraps it and takes °C, % RH and mbar → dB/m.
@@ -60,10 +61,10 @@ SPLA = np.apply_along_axis(OASPL, 2, amplitude + Aweight)
 ```
 
 ### Matplotlib Style
-Uses `fivethirtyeight` style globally with `matplotlib.rcParams` adjustments. Custom colormap helper `get_ylorrd_cmap(num_levels)` prefers palettable discrete maps but falls back to continuous.
+Plotting functions are decorated with `panam_acoustics.plotting.acoustic_plot_style`, which applies `fivethirtyeight` and the rc adjustments only for the duration of the call; never change the global style or `rcParams`. Custom colormap helper `get_ylorrd_cmap(num_levels)` prefers palettable discrete maps but falls back to continuous.
 
 ### Spherical Interpolation
-Modified Shepard's IDW used for hemispheric data (`shepIDW`, `IDWweights`). Uses geodesic distances (`geodist`) and Franke-Nielson radius-based weighting.
+Modified Shepard's IDW used for hemispheric data (`shepIDW`, or `adaptive_idw_weights` in `depropagate_hemisphere`). Uses geodesic distances (`geodist`) and Franke-Nielson radius-based weighting.
 
 ## Development Workflows
 
@@ -86,7 +87,7 @@ The CLI wrappers take `-h` for help. Common pattern:
 ### Adding Analysis Functions
 New acoustic analysis belongs in `flight_acoustics.py`. Follow patterns:
 - Use docstrings with Args/Returns sections
-- Default to aerospace units in signatures, convert internally
+- State the units of every argument and return value
 - Return numpy arrays or matplotlib (fig, ax, cs) tuples
 - Handle infinities/NaNs explicitly for acoustic data
 

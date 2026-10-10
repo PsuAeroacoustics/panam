@@ -212,3 +212,49 @@ def test_a_floored_shepard_weight_stops_interpolating_and_moves_toward_the_biwei
     assert ripple(floored) < ripple(plain)
     assert ripple(biweight) <= ripple(floored) * 1.05
     assert abs(np.polyfit(ielv[band], floored[band], 1)[0] - 0.2) < 0.03
+
+
+@pytest.mark.parametrize('aspect', [1.0, 5.0])
+@pytest.mark.parametrize('kernel', ['shepard', 'biweight'])
+def test_a_pole_node_has_one_value_whatever_azimuth_it_is_listed_at(aspect, kernel):
+    """The grid lists the pole once per azimuth; it is one direction and gets one value."""
+    felv, fazi, mic = _lines(n_mics=3, height=500.0)
+    keep = felv <= 85.0                              # sparse overhead, as on a real sphere
+    felv, fazi, mic = felv[keep], fazi[keep], mic[keep]
+    power = 10.0 ** (0.1 * (0.2 * felv + 0.5 * mic))
+    iazi = np.arange(0.0, 360.0 + 1e-9, 2.0)
+    w, radius, gap = adaptive_idw_weights(np.full(iazi.size, 90.0), iazi, felv, fazi, mic,
+                                          np.full(felv.size, 1.0), aspect=aspect, kernel=kernel,
+                                          shepard_floor=0.5 if kernel == 'shepard' else 0.0)
+    assert not gap.any()
+    level = 10.0 * np.log10(np.asarray(w @ power).ravel())
+    assert np.ptp(level) < 1e-9
+    assert np.ptp(radius) < 1e-9
+
+
+def test_the_azimuth_stretch_divides_the_part_of_the_geodesic_distance_elevation_does_not_explain():
+    """With k = 1 the radius is kappa times the distance to the nearest sample, so it shows
+    the distance itself."""
+    felv, fazi = np.array([40.0]), np.array([0.0])
+    ielv, iazi = np.array([30.0, 30.0, 90.0, 80.0, 60.0]), np.array([0.0, 30.0, 123.0, 180.0, 120.0])
+
+    def reach(aspect):
+        _, radius, _ = adaptive_idw_weights(ielv, iazi, felv, fazi, np.zeros(1), np.zeros(1), k=1,
+                                            min_mics=1, kappa=2.0, max_radius_deg=360.0, aspect=aspect)
+        return radius / 2.0
+
+    h = geodist(ielv, iazi, felv, fazi)
+    de = ielv - felv
+    assert np.allclose(reach(1.0), h, rtol=0, atol=1e-9)
+    for aspect in (0.5, 2.0, 5.0):
+        assert np.allclose(reach(aspect), np.sqrt(de ** 2 + (h ** 2 - de ** 2) / aspect ** 2), rtol=1e-12)
+    # Pure elevation: no stretch, and from a pole every sample is due south.
+    assert reach(5.0)[0] == pytest.approx(10.0, abs=1e-9)
+    assert reach(5.0)[2] == pytest.approx(50.0, abs=1e-9)
+    # Continuous in aspect.
+    assert np.allclose(reach(1.0 + 1e-9), reach(1.0), rtol=0, atol=1e-7)
+
+
+def test_aspect_must_be_positive():
+    with pytest.raises(ValueError, match='aspect'):
+        adaptive_idw_weights([10.0], [0.0], [10.0, 20.0], [0.0, 0.0], [0, 1], [1.0, 1.0], aspect=0.0)

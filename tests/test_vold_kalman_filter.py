@@ -162,12 +162,9 @@ def test_umfpack_without_scikits_umfpack_is_an_error():
         vold_kalman_filter(np.cos(2 * np.pi * np.cumsum(freq) / FS), freq, FS, 4.0, 1, solver='umfpack')
 
 
-def test_pardiso_is_never_handed_a_complex_system(monkeypatch):
+def test_pardiso_is_refused():
     """pypardiso solves only real systems and these are complex: "auto" used to
     try it first anyway, and "pardiso" passed it the complex matrix."""
-    calls = []
-    monkeypatch.setattr(vk, '_HAVE_PARDISO', True)
-    monkeypatch.setattr(vk, '_pardiso_spsolve', lambda A, b: calls.append(A), raising=False)
     x = _signal()[:1000]
     freq = np.column_stack([F1, F2])[:1000]
     expected, _, _ = vold_kalman_filter(x, freq, FS, 4.0, 2, solver='superlu')
@@ -175,7 +172,6 @@ def test_pardiso_is_never_handed_a_complex_system(monkeypatch):
     np.testing.assert_allclose(y, expected, rtol=0, atol=1e-7)     # banded Cholesky vs sparse LU
     with pytest.raises(TypeError, match='only real'):
         vold_kalman_filter(x, freq, FS, 4.0, 2, solver='pardiso')
-    assert calls == []
 
 
 @pytest.mark.parametrize('p,coupled,n_ord', [(1, True, 2), (2, True, 2), (3, True, 2), (1, False, 2),

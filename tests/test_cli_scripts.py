@@ -1,5 +1,6 @@
 """Smoke tests for the command-line scripts, run as a user would run them."""
 
+import json
 import os
 import subprocess
 import sys
@@ -11,9 +12,34 @@ REPO = Path(__file__).resolve().parents[1]
 
 
 def _run(script, *args, cwd):
+    """Run ``script`` in a fresh interpreter, as a user would."""
     env = dict(os.environ, MPLBACKEND='Agg', PYTHONPATH=str(REPO))
     return subprocess.run([sys.executable, str(REPO / script), *args], cwd=cwd, env=env,
                           capture_output=True, text=True, timeout=600)
+
+
+def run_here(script, *args, cwd):
+    """Run ``script`` as __main__ in this interpreter, which has PANAM imported
+    already (a fresh one spends ~2 s importing it); same result fields as _run."""
+    import contextlib
+    import io
+    import runpy
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    import matplotlib.pyplot as plt
+    stdout, stderr, code = io.StringIO(), io.StringIO(), 0
+    here = os.getcwd()
+    try:
+        os.chdir(cwd)
+        with patch.object(sys, 'argv', [script, *args]), contextlib.redirect_stdout(stdout), \
+                contextlib.redirect_stderr(stderr):
+            runpy.run_path(str(REPO / script), run_name='__main__')
+    except SystemExit as exit_:
+        code = exit_.code if isinstance(exit_.code, int) else (0 if exit_.code is None else 1)
+    finally:
+        os.chdir(here)
+        plt.close('all')
+    return SimpleNamespace(returncode=code, stdout=stdout.getvalue(), stderr=stderr.getvalue())
 
 
 def test_fried_egg_plot_runs(tmp_path):
@@ -47,19 +73,130 @@ def test_board_field_plot_runs(tmp_path):
 def test_spectrogram_frequency_option_sets_display_range(tmp_path):
     import h5py
     import numpy as np
-    import runpy
-    from unittest.mock import patch
-    import matplotlib.pyplot as plt
-    import flight_acoustics as fa
     path = tmp_path / 'signal.h5'
     with h5py.File(path, 'w') as handle:
         dataset = handle.create_dataset('Table1/mic', data=np.sin(np.arange(4096)))
         dataset.attrs['ChannelInformationSamplingPeriod'] = [.001]
+    call = _spectrogram_call(path, '-s', 'mic', '-f', '100:200')
+    assert call.kwargs['flim'] == (100, 200)
+    assert np.array_equal(call.args[0], np.sin(np.arange(4096)))
+
+
+def test_vold_kalman_filter_demo_runs(tmp_path):
+    """The demo's crossing chirp fell to negative frequency over its 5 s record."""
+    result = run_here('vold_kalman_filter.py', cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert 'Spectrogram generation skipped' not in result.stdout
+    plots = tmp_path / 'demo_plots'
+    assert (plots / 'vkf_example.png').stat().st_size > 0
+    assert len(list(plots.glob('vkf_spectrogram_*.png'))) == 10
+
+
+def _spectrogram_call(path, *options):
+    """Run spectrogram_plot.py in-process and return plot_spectrogram's call."""
+    import runpy
+    from unittest.mock import patch
+    import matplotlib.pyplot as plt
+    import flight_acoustics as fa
     plot = fa.plot_spectrogram
-    with patch.object(sys, 'argv', ['spectrogram_plot.py', str(path), '-s', 'mic', '-f', '100:200']), \
-            patch.object(fa, 'plot_spectrogram', wraps=plot) as mocked, \
-            patch('cli.save_or_show'):
-        runpy.run_path(str(REPO / 'spectrogram_plot.py'), run_name='__main__')
-    assert mocked.call_args.kwargs['flim'] == (100, 200)
-    assert np.array_equal(mocked.call_args.args[0], np.sin(np.arange(4096)))
-    plt.close('all')
+    try:
+        with patch.object(sys, 'argv', ['spectrogram_plot.py', str(path), *options]), \
+                patch.object(fa, 'plot_spectrogram', wraps=plot) as mocked, \
+                patch('cli.save_or_show'):
+            runpy.run_path(str(REPO / 'spectrogram_plot.py'), run_name='__main__')
+    finally:
+        plt.close('all')
+    return mocked.call_args
+
+
+def _write_nc_signal(path, pressure, sample_rate, start_time):
+    from netCDF4 import Dataset
+    with Dataset(str(path), 'w') as ds:
+        ds.createDimension('n', pressure.size)
+        ds.createVariable('pressure', 'f8', ('n',))[:] = pressure
+        ds.X, ds.Y, ds.Z = 0.0, 0.0, 0.0
+        ds.sample_rate = sample_rate
+        ds.start_time = start_time
+
+
+def test_spectrogram_netcdf_uses_the_file_start_time(tmp_path, capsys):
+    """The netCDF start_time was dropped: the axis began at 0, and -x in the
+    file's times sliced past the end of the record and crashed in scipy."""
+    import numpy as np
+    import pytest
+    pressure = np.sin(np.arange(20000) / 3.0)
+    path = tmp_path / 'signal.nc'
+    _write_nc_signal(path, pressure, 1000.0, 50000.0)
+
+    call = _spectrogram_call(path)
+    assert call.kwargs['time0'] == 50000.0
+    assert np.array_equal(call.args[0], pressure)
+
+    call = _spectrogram_call(path, '-x', '50005:50010')
+    assert call.kwargs['time0'] == pytest.approx(50005.0)
+    np.testing.assert_array_equal(call.args[0], pressure[5000:10001])
+
+    with pytest.raises(SystemExit) as raised:
+        _spectrogram_call(path, '-x', '0:5')
+    assert raised.value.code == 2
+    assert 'the record spans 50000 to 50020 s' in capsys.readouterr().err
+
+
+def test_ega_plot_help_examples_run(tmp_path):
+    """The epilog's second example used a -t flag the parser does not have."""
+    import shlex
+    help_text = run_here('ega_plot.py', '--help', cwd=tmp_path).stdout
+    examples = [shlex.split(line)[1:] for line in help_text.splitlines() if line.strip().startswith('ega_plot.py ')]
+    assert len(examples) == 3
+    for i, example in enumerate(examples):
+        if '-o' not in example:
+            example += ['-o', f'example{i}.pdf']
+        result = run_here('ega_plot.py', *example, cwd=tmp_path)
+        assert result.returncode == 0, (example, result.stderr)
+        assert (tmp_path / example[example.index('-o') + 1]).stat().st_size > 0
+
+
+EXAMPLE_SPHERE = REPO / 'example_data' / 'AS350B3108.nc'
+
+
+def test_plot_projection_runs(tmp_path):
+    result = run_here('plot_projection.py', str(EXAMPLE_SPHERE), '-a', '150', '-c', '20', '-o', 'projection.png',
+                  cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / 'projection.png').stat().st_size > 0
+
+
+def test_nc_lambert_ea_runs(tmp_path):
+    result = run_here('nc_lambert_ea.py', str(EXAMPLE_SPHERE), '-f', '50:2000', '-w', 'A', '-g', 'art',
+                  '-o', 'lambert.png', cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / 'lambert.png').stat().st_size > 0
+
+
+def test_build_empirical_database_runs(tmp_path):
+    from netCDF4 import Dataset
+    hemispheres = []
+    for i, (speed, angle) in enumerate([(60, -3), (80, 0)]):
+        hemisphere = minimal_hemisphere()
+        hemisphere['third_octave']['bands_db'] += 3.0 * i
+        hemispheres.append((hemisphere, speed, angle))
+    write_sphere_directory(tmp_path / 'spheres', hemispheres)
+    result = run_here('build_empirical_database.py', 'spheres', 'database.nod', cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    with Dataset(str(tmp_path / 'database.nod')) as ds:
+        assert len(ds.groups) >= 2
+
+
+def test_array_planner_subcommands_run(tmp_path):
+    design = ['--nmics', '6', '--altitude', '150']
+    result = run_here('array_planner.py', 'design', *design, '--format', 'json', cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert len(json.loads(result.stdout)['ymics']) == 6
+    result = run_here('array_planner.py', 'coverage', *design, '--x-offsets', '-200,0,200', '-o', 'coverage.png',
+                  cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / 'coverage.png').stat().st_size > 0
+    result = run_here('array_planner.py', 'kml', *design, '--ref-lat', '40.8', '--ref-lon', '-77.9', '--heading', '90',
+                  '--kmz', 'array.kmz', cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / 'array.kmz').stat().st_size > 0

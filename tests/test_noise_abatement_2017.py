@@ -186,6 +186,25 @@ def test_run_atmosphere_reads_station_temperature_as_fahrenheit(tmp_path):
     assert atmosphere.pressure == pytest.approx(88.83)
 
 
+def test_run_atmosphere_finds_stations_spelled_with_a_space(tmp_path):
+    """EC130B4's folder is 'EC130B4_Ground Stations'; its runs must not miss their weather."""
+    stations = tmp_path / 'X_Weather' / 'X_Ground Stations'
+    stations.mkdir(parents=True)
+    (stations / 'X_296_SWS1.csv').write_text(
+        '    utcsec,    time, airtemp, humidity, pressure\n'
+        '     39909, 11:05:09,       50.0,       80.0,    89.1000\n')
+
+    class FakeTest:
+        base = str(tmp_path)
+        aircraft = 'X'
+        by_run = {'296100': {'utc_secs_from_mid_start': '39910'}}
+
+    atmosphere = na.run_atmosphere(FakeTest(), '296100')
+    assert atmosphere.temperature == pytest.approx(283.15)
+    assert atmosphere.relative_humidity == pytest.approx(80.0)
+    assert atmosphere.pressure == pytest.approx(89.1)
+
+
 def _descending(vz_positive_up, rate_fps=10.0, n=500):
     time = np.arange(n) * 0.02
     z = 1000.0 - rate_fps * time
@@ -197,6 +216,21 @@ def test_vz_sign_follows_each_file_not_the_dataset():
     """Every 2017 file stores vz positive down except EC130B4 day 298's, which store it up."""
     assert na.vz_sign(_descending(vz_positive_up=False)) == -1.0
     assert na.vz_sign(_descending(vz_positive_up=True)) == 1.0
+
+
+@pytest.mark.parametrize('vz_positive_up', [False, True])
+def test_load_track_gives_a_descent_a_negative_flight_path_angle(tmp_path, vz_positive_up):
+    """fpa = atan2(vz_up, hypot(vx, vy)) whichever way the file stores vz."""
+    track = _descending(vz_positive_up)
+    path = tmp_path / 'track.csv'
+    _write_csv(path, ['utcsec', 'x', 'y', 'z', 'vx', 'vy', 'vz', 'VGk'],
+               [[t, 100.0 * t, 0.0, z, 100.0, 0.0, vz, 59.2]
+                for t, z, vz in zip(track['time'], track['z'], track['vz'])])
+    loaded = na.load_track(str(path))
+    vz_up = track['vz'] if vz_positive_up else -track['vz']
+    expected = np.degrees(np.arctan2(vz_up, 100.0))
+    np.testing.assert_allclose(loaded['fpa_deg'], expected, atol=1e-9)
+    assert np.median(loaded['fpa_deg']) < -5.0
 
 
 def test_vz_sign_on_a_level_track_falls_back_to_down():
@@ -272,6 +306,16 @@ def _write_signal(path, pressure, fs, start_time, location):
         handle.X, handle.Y, handle.Z = location
 
 
+def _write_track(base, y=0.0):
+    """Run 289108's track: level at 300 ft, 150 ft/s along x, ``y`` ft off the centerline,
+    10 s at 50 Hz."""
+    speed = 150.0
+    _write_csv(base / 'AS350B3_AC_Data' / '289108AC.csv',
+               ['utcsec', 'x', 'y', 'z', 'vx', 'vy', 'vz', 'VGk', 'roll', 'heading'],
+               [[t, speed * (t - 105.0), y, 300.0, speed, 0.0, 0.0, speed * 0.3048 / na.fa.KNOT_MPS, 0.0, 90.0]
+                for t in 100.0 + np.arange(500) / 50.0])
+
+
 def _archive(root):
     """A level pass and its ambient run over ARCHIVE_MICS, laid out as the 2017
     archive.  The pass is white noise 20 dB over the ambient, so the ambient
@@ -283,11 +327,7 @@ def _archive(root):
                [['289101', 'AMB', 'A', '0', '0', '60.0', '101'], ['289108', 'L1', 'A', '0', '0', '100.0', '108']])
     _write_csv(base / 'AS350B3MicFullList.csv', ['M', 'insttype'],
                [[mic, kind] for mic, (kind, _) in ARCHIVE_MICS.items()])
-    speed = 150.0                                           # ft/s, level at 300 ft, 10 s at 50 Hz
-    _write_csv(base / 'AS350B3_AC_Data' / '289108AC.csv',
-               ['utcsec', 'x', 'y', 'z', 'vx', 'vy', 'vz', 'VGk', 'roll', 'heading'],
-               [[t, speed * (t - 105.0), 0.0, 300.0, speed, 0.0, 0.0, speed * 0.3048 / 0.514444, 0.0, 90.0]
-                for t in 100.0 + np.arange(500) / 50.0])
+    _write_track(base)
     fs = 25600.0
     acoustic = base / 'AS350B3_Acoustic_Data' / '289'
     for mic, (_, location) in ARCHIVE_MICS.items():
@@ -343,6 +383,47 @@ def test_the_plate_correction_runs_through_the_sphere_build(monkeypatch, tmp_pat
     clear = (flat > -90.0) | (plate > -90.0 + expected)
     assert clear.sum() > 1000
     np.testing.assert_allclose(plate[clear] - flat[clear], expected, atol=1e-4)
+
+
+class _StopAfterAtmosphere(Exception):
+    pass
+
+
+def test_the_sphere_build_warns_when_it_falls_back_to_a_standard_day(monkeypatch, tmp_path, caplog):
+    """A run with no ground weather is depropagated in a standard day; that must not be silent."""
+    import logging
+    _archive(tmp_path)                                      # no <ac>_Weather folder at all
+
+    def stop(test, run, mics, time_range, **kwargs):
+        raise _StopAfterAtmosphere
+    monkeypatch.setattr(na, 'load_run_channels', stop)
+    test = na.NoiseAbatementTest('AS350B3', root=str(tmp_path))
+    with caplog.at_level(logging.WARNING), pytest.raises(_StopAfterAtmosphere):
+        na.build_sphere(test, '289108', str(tmp_path / 'out.nc'), board_correction='flat')
+    messages = [record.getMessage() for record in caplog.records if record.levelno == logging.WARNING]
+    assert any('289108' in message and 'No usable ground weather' in message and 'standard day' in message
+               for message in messages), messages
+
+
+def test_the_recording_trim_does_not_depend_on_flip_y_for_geometry(monkeypatch, tmp_path):
+    """depropagate_hemisphere flips the track and the microphones together, which changes no
+    distance, so the trim range must be the same flipped or not.  It used to flip the
+    microphones alone; with the track off the centerline that cut the recordings short."""
+    _archive(tmp_path)
+    _write_track(tmp_path / 'AS350B3', y=100.0)
+    locations = np.array([location for _, location in ARCHIVE_MICS.values()], dtype=float)
+    ranges = {}
+
+    def stop(test, run, mics, time_range, **kwargs):
+        ranges[flip] = time_range(locations)
+        raise _StopAfterAtmosphere
+    monkeypatch.setattr(na, 'load_run_channels', stop)
+    test = na.NoiseAbatementTest('AS350B3', root=str(tmp_path))
+    for flip in (False, True):
+        with pytest.raises(_StopAfterAtmosphere):
+            na.build_sphere(test, '289108', str(tmp_path / 'out.nc'), board_correction='flat',
+                            flip_y_for_geometry=flip, speed_of_sound_ft_s=1125.0)
+    assert ranges[True] == ranges[False]
 
 
 @pytest.mark.parametrize('edge', ['start', 'end'])
@@ -442,3 +523,63 @@ def test_the_prefetch_pool_is_shut_down_when_the_batch_is_interrupted(monkeypatc
     with pytest.raises(KeyboardInterrupt):
         na.build_all('AS350B3', str(tmp_path / 'out'), root=str(tmp_path))
     assert len(pools) == 1 and pools[0].closed
+
+
+def test_the_cli_help_states_the_point_stride_defaults(capsys):
+    """The CLI builds every 10th track sample, the API every one; the help must say so."""
+    with pytest.raises(SystemExit):
+        na.main(['--help'])
+    help_text = ' '.join(capsys.readouterr().out.split())
+    assert '--point-stride' in help_text
+    assert 'default 10' in help_text and 'default to 1' in help_text
+
+
+def _reference_index(rows, without_acoustics=()):
+    """A NoiseAbatementTest over ``rows`` (run, condition, layout, seconds) with no files behind it."""
+    test = object.__new__(na.NoiseAbatementTest)
+    test.reference = [dict(combined=run, test_cond=condition, layout=layout, utc_secs_from_mid_start=seconds)
+                      for run, condition, layout, seconds in rows]
+    test.by_run = {row['combined']: row for row in test.reference}
+    test.acoustic_files = {row['combined']: {1: 'x'} for row in test.reference
+                           if row['combined'] not in without_acoustics}
+    return test
+
+
+AMBIENT_ROWS = [
+    ('289101', 'AMB', 'A', '30000'),
+    ('289150', 'AMB', 'A', '40000'),
+    ('289160', 'AMB', 'A', '41000'),       # nearest to 289120, but has no acoustic files
+    ('289170', 'AMB', 'B', '40500'),
+    ('290101', 'AMB', 'A', '40900'),
+    ('290102', 'AMB', 'C', '40000'),
+    ('289120', 'L1', 'A', '40800'),
+    ('289121', 'L1', 'B', '30000'),
+    ('290120', 'L1', 'C', ''),
+    ('291120', 'L1', 'A', '30100'),
+    ('291121', 'L1', 'D', '30100'),
+]
+
+
+def test_ambient_run_prefers_the_same_day_and_layout_nearest_in_time():
+    test = _reference_index(AMBIENT_ROWS, without_acoustics={'289160'})
+    # 290101 is nearer in time-of-day, and 289160 nearer on the same day, but
+    # 290101 is another day and 289160 has nothing to gate against.
+    assert test.ambient_run('289120') == '289150'
+
+
+def test_ambient_run_falls_back_to_another_day_on_the_same_layout():
+    test = _reference_index(AMBIENT_ROWS, without_acoustics={'289160'})
+    assert test.ambient_run('291120') == '289101'                # nearest time, any day
+    assert test.ambient_run('290120') == '290102'                # no time: the only candidate
+
+
+def test_ambient_run_does_not_cross_layouts():
+    test = _reference_index(AMBIENT_ROWS)
+    assert test.ambient_run('289121') == '289170'                # its own layout, not A's 289101
+    assert test.ambient_run('291121') is None
+    assert _reference_index(AMBIENT_ROWS, without_acoustics={'289170'}).ambient_run('289121') is None
+
+
+def test_ambient_run_refuses_an_unknown_run():
+    with pytest.raises(KeyError):
+        _reference_index(AMBIENT_ROWS).ambient_run('999999')

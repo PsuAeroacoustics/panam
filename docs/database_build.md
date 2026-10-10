@@ -203,8 +203,9 @@ The **air density** is rho = (p - 0.378 e) / (R_d T) from the ground stations'
 temperature, pressure and humidity (`run_atmosphere`; e from ISO 9613-1's
 saturation pressure), carried up to the aircraft's mean height above the boards
 over the window, hydrostatically at the measured temperature (about 3% per
-1000 ft). When no station data exist the build still falls back to a standard
-day for absorption, as before, but the density is NaN, not the standard day's.
+1000 ft). When no station data exist (AS350B3 day 292, R66 day 231) the build
+falls back to a 20 C, 20% RH, 101.325 kPa standard day for absorption and logs a
+warning naming the run; the density is then NaN, not the standard day's.
 
 The **wind** is the caller's. `build_sphere(wind=...)`, `build_all(winds=...)`
 (a callable or a mapping by run) and `--winds FILE` (`read_winds`: columns
@@ -296,8 +297,8 @@ attribute `azimuth_reference`: the value every source sphere carries. Spheres
 without one are taken as `track`, with a warning; the `azimuth_reference`
 argument, when given, is assumed for them and must agree with those that carry
 one; and spheres filed in different frames are refused, as mixed
-`DOPPLER_SHIFT_REMOVED` is. NICE-OPS (its `adopt-features-2026-10-05` branch,
-`--nose`) reads the attribute to choose its nose (the
+`DOPPLER_SHIFT_REMOVED` is. NICE-OPS (`--nose`)
+reads the attribute to choose its nose (the
 heading at all speeds for `heading`, which then needs the run's
 `--frame_bearing` for an AC track). The hover groups are heading-oriented on
 both sides whatever it says.
@@ -332,7 +333,7 @@ Root attributes: `speed_reference` (`ground` or `air`), `azimuth_reference`
 when used `hover_correction` and `hover_source`.
 
 One group per condition (`sphere0`, `sphere1`, ...): `radius` (R, over `radii`,
-in rotor radii), `rotor_scale`, `advance_ratio` (R), `flight_path_angle` (R),
+in rotor radii), `rotor_scale` (R), `advance_ratio` (R), `flight_path_angle` (R),
 `thrust_coefficient` (R) over `condition`; `dBA` (R) and `EAA` (R) over
 `channels`, with `phi` and `theta` unless shared; `amplitude` over
 `(PHI, THETA, frequency)` and `frequency` unless shared, when spectra are kept;
@@ -343,3 +344,21 @@ its `<name>_units`, and the text `wind_source`, `wind_units`,
 `wind_reference_direction`, `air_density_source`, `source_sphere` and
 `condition_origin`. The additions are new names only, so `database_version`
 stays 1.
+
+The variables carry no units attributes. `radius` is in rotor radii and
+`rotor_scale` is the rotor radius in m; NICE-OPS refuses a database whose
+`radius` × `rotor_scale` differs between groups. `advance_ratio` and
+`thrust_coefficient` are nondimensional, `flight_path_angle`, `phi` and `theta`
+are in degrees (ART angles: `phi` over [-180, 180) once the upper surface is
+mirrored in, `theta` over [0, 180]) and `frequency` in Hz.
+`dBA` is the A-weighted level in dB at the sphere radius, -inf for an empty
+direction; `EAA` is in dB per 1000 m (THEORY §7.2); `amplitude` holds the
+unweighted band levels in dB at the sphere radius. The load-factor offset
+20 lg n is applied to `dBA` only, not to `amplitude`.
+
+The channels are the row-major flatten of `amplitude`'s (`PHI`, `THETA`) grid:
+channel r·n_theta + j holds the direction of `amplitude[r, j, :]`, and the rows
+are sorted by `phi` (`_complete_sphere_with_coverage`). NICE-OPS maps each
+channel's (`phi`, `theta`) to its grid cell when the channels form such a
+grid, and otherwise reads `amplitude` as gridded over the sorted unique
+angles.

@@ -43,11 +43,11 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Frequency vs distance for grass at 10m height difference
+  # Frequency vs distance for grass, source at 10 m, receiver at 1.5 m
   %(prog)s -g grass -f 100:5000 -d 50:500
 
   # Distance vs height for asphalt over 1 kHz
-  %(prog)s -g asphalt -t distance_height -f 1000 -d 10:300
+  %(prog)s -g asphalt -p distance_height -f 1000 -d 10:300
 
   # Broadband attenuation (third-octave) over hard ground
   %(prog)s -g rock -b -f 100:5000 -d 50:500 -o ega_rock_broadband.pdf
@@ -96,7 +96,7 @@ Examples:
     
     # Output
     parser.add_argument('-o', '--output', type=str, default='demo_plots/ega_plot.pdf',
-                        help='Output filename (default: ega_plot.pdf)')
+                        help='Output filename (default: demo_plots/ega_plot.pdf)')
     
     args = parser.parse_args()
     
@@ -165,8 +165,8 @@ Examples:
         cbar.set_label('Excess Attenuation (dB)')
     
         # Contour lines
-        c = ax.contour(X, Y, Z, colors='k', linewidths=0.5, alpha=0.4)
-        ax.clabel(c, fontsize=9, fmt='%.1f')
+        lines = ax.contour(X, Y, Z, colors='k', linewidths=0.5, alpha=0.4)
+        ax.clabel(lines, fontsize=9, fmt='%.1f')
     else:
         ax.plot(X, Z, '-b')
         ax.grid(True)

@@ -19,7 +19,7 @@ def main():
     parser.add_argument('-H', '--humidity', type=float, default=10.0,
                         help='Relative humidity in percent (default: 10.0)')
     parser.add_argument('-o', '--output', type=str, default='demo_plots/atmomap.pdf',
-                        help='Output filename (default: atmomap.pdf)')
+                        help='Output filename (default: demo_plots/atmomap.pdf)')
     
     args = parser.parse_args()
     

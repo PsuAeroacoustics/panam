@@ -83,8 +83,9 @@ def test_ambient_gate_suppresses_a_noise_only_run():
     ungated = _peak_level(_run(scenario))
     suppression = {}
     for gate in (3.0, 6.0, 10.0):
-        gated = _run(scenario, ambient_pressure=ambient, band_snr_gate_db=gate)
-        suppression[gate] = ungated - _peak_level(gated)
+        gated = _run(scenario, ambient_pressure=ambient, band_snr_gate_db=gate)['oaspl_db']
+        # Every cell -inf (nothing left above the gate) is total suppression.
+        suppression[gate] = ungated - np.max(gated[~np.isnan(gated)])
 
     assert suppression[3.0] < suppression[6.0] < suppression[10.0]
     assert suppression[3.0] < 10.0
@@ -320,3 +321,96 @@ def test_receiver_response_follows_the_band_sums_edges_for_nominal_centers():
         finite = np.isfinite(a)
         assert finite.any()
         np.testing.assert_allclose(b[finite] - a[finite], -gains_db[fc], atol=1e-9)
+
+
+def test_a_capped_sample_is_a_gap_not_silence():
+    """A band dropped by a cap was not measured; averaged in as zero power it pulled
+    every node it shared with measured samples down (-3 dB at half the weight)."""
+    scenario = _scenario(noise_only=True, seed=12)
+
+    def flat(im, bands, offset):
+        return np.zeros((bands.size, offset.shape[0]))
+
+    def null_on_mic_0(im, bands, offset):
+        return np.full((bands.size, offset.shape[0]), -30.0 if im == 0 else 0.0)
+
+    kept = _run(scenario, receiver_response_db=flat, return_scattered=True)
+    dropped = _run(scenario, receiver_response_db=null_on_mic_0, max_response_correction_db=15.0,
+                   return_scattered=True)
+
+    # Microphone 0's samples are missing, not silent ...
+    mic0 = dropped['scattered']['mic'] == 0
+    assert np.all(np.isnan(dropped['scattered']['oaspl_power'][mic0]))
+    assert np.all(np.isnan(dropped['scattered']['third_octave']['bands_db'][:, mic0]))
+    # ... so the nodes the other microphones reach keep their level.
+    for key in ('oaspl_db', 'spl_a_db'):
+        both = np.isfinite(kept[key]) & np.isfinite(dropped[key])
+        assert both.sum() > 0.5 * np.isfinite(kept[key]).sum()
+        assert abs(float(np.median(dropped[key][both] - kept[key][both]))) < 0.5
+    bands_kept, bands_dropped = kept['third_octave']['bands_db'], dropped['third_octave']['bands_db']
+    both = np.isfinite(bands_kept) & np.isfinite(bands_dropped)
+    assert abs(float(np.median(bands_dropped[both] - bands_kept[both]))) < 0.5
+
+
+def test_absorption_cap_leaves_capped_bands_missing():
+    scenario = _scenario(seed=5)
+    atmosphere = Atmosphere(temperature=300.0, pressure=90.0, relative_humidity=60.0)
+    capped = _run(scenario, apply_absorption_deprop=True, atmosphere=atmosphere,
+                  max_absorption_correction_db=0.05, return_scattered=True)
+    bands = capped['scattered']['third_octave']['bands_db']
+    # The highest band is beyond the cap for the farther samples: those are NaN,
+    # never -inf, and the overall level of every sample is still finite.
+    assert np.isnan(bands[-1]).any() and not np.isneginf(bands[-1]).any()
+    assert np.all(np.isfinite(capped['scattered']['oaspl_power']))
+
+
+def test_a_doppler_scaled_band_past_the_selected_range_is_missing():
+    """remove_doppler reads each band over [D f_lower, D f_upper]; past the selected
+    bins the band used to be integrated over part of its width without a word."""
+    import flight_acoustics as fa
+    f = np.arange(0.0, 2000.0 + 1e-9, 2.0)
+    lower, upper = fa.third_octave_band_edges(np.array([1000.0, 1600.0]))
+    dropped = np.zeros((f.size, 3), dtype=bool)
+    dropped[500, 2] = True          # a capped bin (1000 Hz) inside the 1 kHz band
+    missing = fa._bands_missing(dropped, f, lower, upper, np.array([1.0, 1.18, 1.0]))
+    assert missing.tolist() == [[False, False, True], [False, True, False]]
+
+
+def test_the_measured_ambient_is_its_mean_power():
+    """The run's bins are single frames, whose expectation is the mean; a median
+    of single-frame noise bins is ln 2 of it (-1.6 dB), which left about half
+    the ambient after subtraction instead of the 1/e of a matched mean."""
+    scenario = _scenario(noise_only=True, seed=21, nsamples=20000)
+    ambient = _scenario(noise_only=True, seed=22, nsamples=40000)['pressure']
+    raw = _run(scenario, return_scattered=True)['scattered']['oaspl_power']
+    left = _run(scenario, ambient_pressure=ambient, band_snr_gate_db=-60.0,
+                return_scattered=True)['scattered']['oaspl_power']
+    # For single-frame bins (exponential, mean m) E[max(x - a, 0)] / E[x] is
+    # exp(-a/m): 0.37 for the mean, 0.5 for the median.  Interpolating between
+    # frames narrows the spread, so here the two read about 0.31 and 0.45.
+    assert np.sum(left) / np.sum(raw) < 0.38
+
+
+def test_a_gap_in_one_recording_leaves_the_rest_of_its_bands():
+    """The filter bank's NaN frames are missing data; mapping them to zero power
+    turned a whole microphone into -inf."""
+    scenario = _scenario(seed=7)
+    clean = _run(scenario, third_octave_method='filter_bank', return_scattered=True)['scattered']
+    scenario['pressure'] = scenario['pressure'].copy()
+    scenario['pressure'][0, 3000] = np.nan
+    gapped = _run(scenario, third_octave_method='filter_bank', return_scattered=True)['scattered']
+    bands = gapped['third_octave']['bands_db'][:, gapped['mic'] == 0]
+    assert not np.isneginf(bands).any()
+    assert np.isfinite(bands).mean() > 0.5
+
+
+def test_an_ambient_window_of_the_run_gates_like_a_recording():
+    """ambient_time_range takes the ambient from a signal-free stretch of the run."""
+    scenario = _scenario(seed=10, duty=0.4)
+    window = _run(scenario, ambient_time_range=(0.0, 0.8), band_snr_gate_db=10.0)
+    recording = _run(scenario, ambient_pressure=_scenario(noise_only=True, seed=11)['pressure'],
+                     band_snr_gate_db=10.0)
+    a, b = window['oaspl_db'], recording['oaspl_db']
+    both = np.isfinite(a) & np.isfinite(b) & (a > -100.0) & (b > -100.0)
+    assert both.sum() > 0.5 * a.size
+    assert abs(float(np.median(a[both] - b[both]))) < 1.0

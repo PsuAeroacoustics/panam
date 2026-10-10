@@ -28,3 +28,18 @@ def test_level_re_free_field_uses_the_ground_model():
     ground = dict(model='delany_bazley', sigma=gp.RIGID_FLOW_RESISTANCE)
     hard = bfp.level_re_free_field(2000.0, 30.0, x, z, flow_resistance=225.0, ground=ground)[1]
     assert abs(hard[0] - soft[0]) > 0.1
+
+
+def test_plot_leaves_the_matplotlib_backend_alone(monkeypatch, tmp_path):
+    """plot() called matplotlib.use('Agg'), switching an interactive session's backend."""
+    import matplotlib
+    import matplotlib.pyplot as plt
+
+    def use(*args, **kwargs):
+        raise AssertionError('plot() switched the Matplotlib backend')
+    monkeypatch.setattr(matplotlib, 'use', use)
+    monkeypatch.setattr(bfp, 'level_re_free_field', lambda *a, **k: (np.zeros(np.shape(a[2])),) * 2)
+    figures = plt.get_fignums()
+    bfp.plot(1000.0, 30.0, 225.0, str(tmp_path / 'field.png'), grid=(11, 5))
+    assert (tmp_path / 'field.png').stat().st_size > 0
+    assert plt.get_fignums() == figures

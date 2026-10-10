@@ -81,15 +81,144 @@ def test_tone_correction_low_band_range():
     assert c == pytest.approx(10.0 / 6.0, abs=1e-6)
 
 
+def test_nan_band_propagates():
+    """A NaN band is a missing level: noys, PNL and C are NaN, not 0 noy and no tone."""
+    spl = FLAT.copy()
+    spl[K1000] = np.nan
+    assert np.isnan(fa.noys(spl)[K1000])
+    assert np.isnan(fa.perceived_noise_level(spl))
+    c, band = fa.tone_correction(spl)
+    assert np.isnan(c) and band == -1
+    hist = np.tile(FLAT, (3, 1))
+    hist[1, K1000] = np.nan
+    c, band = fa.tone_correction(hist)
+    assert c[0] == 0.0 and np.isnan(c[1]) and c[2] == 0.0
+    np.testing.assert_array_equal(band, [0, -1, 0])
+    pnlt, _, _, _ = fa.tone_corrected_perceived_noise_level(hist)
+    assert np.isnan(pnlt[1]) and np.isfinite(pnlt[[0, 2]]).all()
+    with pytest.raises(ValueError, match='NaN'):
+        fa.effective_perceived_noise_level(hist)
+
+
+def test_positive_infinite_band_is_rejected():
+    spl = FLAT.copy()
+    spl[K1000] = np.inf
+    with pytest.raises(ValueError, match='infinite'):
+        fa.tone_correction(spl)
+
+
+def test_silent_band_3_keeps_the_tones():
+    """Band 3 (80 Hz) anchors the background (step 7); at -inf it was -inf
+    everywhere, F was NaN and a 10 dB 1 kHz tone got no correction.  Entering
+    at SPL(d) = 39 dB it is the foot of a 31 dB rise, which steps 3-4 encircle
+    and smooth: F = 15.5 at 100 Hz (C = F/6 = 2.58) and the tone keeps F = 10.
+    """
+    spl = FLAT.copy()
+    spl[2] = -np.inf
+    spl[K1000] += 10.0
+    c, band = fa.tone_correction(spl)
+    assert band == K1000
+    assert c == pytest.approx(10.0 / 3.0, abs=1e-12)
+    spl[K1000] -= 10.0
+    c, band = fa.tone_correction(spl)
+    assert band == 3
+    assert c == pytest.approx(15.5 / 6.0, abs=1e-12)
+
+
+def test_silent_top_band_is_not_a_tone_in_its_neighbor():
+    """A 10 kHz band of -inf after a falling spectrum near its noy floor.
+
+    Taken literally its slope is -inf, the 8 kHz band's background is -inf
+    and the 8 kHz band read as a full 10/3 dB tone.  At SPL(d) = 21 dB it
+    continues the 2 dB-a-band fall exactly: no tone anywhere.
+    """
+    spl = 67.0 - 2.0 * np.arange(24.0)               # 67 dB falling to 21 dB
+    spl[23] = -np.inf
+    assert fa.tone_correction(spl) == (0.0, 0)
+    spl[23] = 21.0                                   # the same as SPL(d)
+    assert fa.tone_correction(spl) == (0.0, 0)
+
+
+def test_finite_spectra_are_unchanged_by_the_minus_inf_rule():
+    """Only -inf bands are substituted unless masked=True: a finite band far
+    below its threshold keeps the literal procedure's tone."""
+    spl = 67.0 - 2.0 * np.arange(24.0)
+    spl[23] = -200.0
+    c, band = fa.tone_correction(spl)
+    assert band == 22 and c == pytest.approx(10.0 / 3.0)
+    c, band = fa.tone_correction(spl, masked=True)
+    assert (c, band) == (0.0, 0)
+
+
+def test_masked_tone_correction_excludes_inaudible_tones():
+    """masked=True: bands below SPL(d) enter at SPL(d) and carry no tone.
+
+    A 2 dB-a-band fall (25 dB at 6.3 kHz) whose 8 and 10 kHz bands are 5 and
+    0 dB, below their thresholds of 17 and 21 dB.  Masked, they enter at 17
+    and 21: slopes -2, -8, +4, so step 3 encircles 10 kHz and step 4 puts it
+    at 17 - 8 = 9.  The background falls 27, 23, 17, 9: F = 2 at 6.3 kHz
+    (C = 2/3 - 1/2 = 1/6), 0 at 8 kHz, and 12 at 10 kHz, which as a masked
+    band carries no tone.  Literally the plunge gives 6.3 kHz C = 1.
+    """
+    spl = 67.0 - 2.0 * np.arange(24.0)
+    spl[22:] = [5.0, 0.0]
+    c, band = fa.tone_correction(spl)
+    assert band == 21 and c == pytest.approx(1.0)
+    c, band = fa.tone_correction(spl, masked=True)
+    assert band == 21 and c == pytest.approx(1.0 / 6.0, abs=1e-12)
+    pnlt, pnl, c_max, _ = fa.tone_corrected_perceived_noise_level(np.stack([spl, FLAT]), masked=True)
+    np.testing.assert_allclose(c_max, [1.0 / 6.0, 0.0], atol=1e-12)
+    np.testing.assert_allclose(pnlt - pnl, c_max)
+
+
 def test_epnl_constant_history():
-    """Constant PNLT for 20 s: EPNL = PNLTM + 10 log10(duration/10)."""
+    """Constant PNLT for 20 s: D = 10 lg 40 - 13 (A36.4.5.4), or 10 lg(20/10)
+    with the exact normalization."""
     hist = np.tile(FLAT, (40, 1))
     res = fa.effective_perceived_noise_level(hist, dt=0.5)
     assert res["duration_correction_db"] == pytest.approx(
-        10.0 * np.log10(40 * 0.5 / 10.0), abs=1e-6)
+        10.0 * np.log10(40) - 13.0, abs=1e-12)
     assert res["epnl"] == pytest.approx(res["pnltm"]
                                         + res["duration_correction_db"])
     assert res["clipped"]                            # window spans the record
+    exact = fa.effective_perceived_noise_level(hist, dt=0.5, normalization='exact')
+    assert exact["duration_correction_db"] == pytest.approx(
+        10.0 * np.log10(40 * 0.5 / 10.0), abs=1e-12)
+    assert res["epnl"] - exact["epnl"] == pytest.approx(-13.0 - 10.0 * np.log10(0.05), abs=1e-12)  # +0.0103
+
+
+def test_epnl_other_steps_use_the_exact_normalization():
+    """Only dt = 0.5 s has a regulatory constant: 80 records of 0.25 s give
+    D = 10 lg(80 * 0.25 / 10) either way."""
+    hist = np.tile(FLAT, (80, 1))
+    for normalization in ('regulatory', 'exact'):
+        res = fa.effective_perceived_noise_level(hist, dt=0.25, normalization=normalization)
+        assert res["duration_correction_db"] == pytest.approx(10.0 * np.log10(2.0), abs=1e-12)
+    with pytest.raises(ValueError, match='normalization'):
+        fa.effective_perceived_noise_level(hist, normalization='rounded')
+    with pytest.raises(ValueError, match='dt'):
+        fa.effective_perceived_noise_level(hist, dt=0.0)
+
+
+def test_epnl_duration_limits_are_the_samples_closest_to_pnltm_minus_10():
+    """A36.4.5.5: when PNLTM - 10 falls between samples, the closer one is the limit.
+
+    Flat spectra at 60, 69, 80, 79, 69.6, 50 dB: PNLTM - 10 lies between
+    records 1 and 2 and between records 4 and 3, about 1.2 and 0.6 dB above
+    records 1 and 4 and 9-10 dB below records 2 and 3.  The limits are records
+    1 and 4; the first and last records at or above it (2 and 3) were taken.
+    """
+    levels = np.array([60.0, 69.0, 80.0, 79.0, 69.6, 50.0])
+    hist = np.stack([np.full(24, lv) for lv in levels])
+    res = fa.effective_perceived_noise_level(hist, dt=0.5)
+    pnlt, threshold = res["pnlt"], res["pnltm"] - 10.0
+    assert pnlt[1] < threshold < pnlt[2] and pnlt[4] < threshold < pnlt[3]
+    assert threshold - pnlt[1] < pnlt[2] - threshold
+    assert threshold - pnlt[4] < pnlt[3] - threshold
+    assert (res["k1"], res["k2"]) == (1, 4)
+    expected = 10.0 * np.log10(np.sum(10.0 ** (pnlt[1:5] / 10.0))) - 13.0 - res["pnltm"]
+    assert res["duration_correction_db"] == pytest.approx(expected, abs=1e-12)
+    assert not res["clipped"]
 
 
 def test_epnl_contiguous_duration_window():
@@ -101,8 +230,9 @@ def test_epnl_contiguous_duration_window():
     assert res["k1"] == 1 and res["k2"] == 3
     # the k=2 dip is more than 10 dB down yet still integrated
     assert pnlt[2] < res["pnltm"] - 10.0
+    # the outer records (40 dB) are farther from PNLTM - 10 than 1 and 3
     expected = 10.0 * np.log10(
-        np.sum(10.0 ** (pnlt[1:4] / 10.0)) * 0.5 / 10.0) - res["pnltm"]
+        np.sum(10.0 ** (pnlt[1:4] / 10.0))) - 13.0 - res["pnltm"]
     assert res["duration_correction_db"] == pytest.approx(expected)
 
 
@@ -119,6 +249,34 @@ def test_epnl_bandshare_adjustment():
     assert res["pnltm"] > res0["pnltm"]
     lo_hi_avg = np.mean(res["c_max"][1:6])
     assert res["pnltm"] == pytest.approx(res["pnl"][3] + lo_hi_avg)
+    # Delta_B = C_avg - C(kM) = (4 * 10/3 + 0) / 5, added to the EPNL
+    assert res["delta_b"] == pytest.approx(8.0 / 3.0, abs=1e-9)
+    assert res0["delta_b"] == 0.0
+    assert res["pnltm_unadjusted"] == res0["pnltm"] == res0["pnltm_unadjusted"]
+    assert res["epnl"] - res0["epnl"] == pytest.approx(res["delta_b"], abs=1e-9)
+    assert res["epnl"] == pytest.approx(res["pnltm"] + res["duration_correction_db"])
+
+
+def test_epnl_bandshare_adjustment_never_lowers_epnl():
+    """The 10 dB-down limits come from the unadjusted PNLTM.
+
+    Records 1 and 5 are 7.47 dB below the peak: inside PNLTM - 10, outside
+    PNLTM + Delta_B - 10 = PNLTM - 7.33.  Raising PNLTM before choosing the
+    limits dropped them, and the adjustment lowered the EPNL by 0.52 dB
+    instead of raising it by Delta_B = 8/3.
+    """
+    hist = np.tile(FLAT, (7, 1))
+    hist[:, K1000] += 10.0
+    hist[3, K1000] -= 10.0
+    hist[3, :] += 4.0
+    hist[[0, 6], :] -= 30.0
+    hist[[1, 5], :] -= 7.0
+    res = fa.effective_perceived_noise_level(hist, bandshare_adjustment=True)
+    res0 = fa.effective_perceived_noise_level(hist, bandshare_adjustment=False)
+    assert res["pnltm"] - 10.0 > res["pnlt"][1] > res["pnltm_unadjusted"] - 10.0
+    assert (res["k1"], res["k2"]) == (res0["k1"], res0["k2"]) == (1, 5)
+    assert res["delta_b"] == pytest.approx(8.0 / 3.0, abs=1e-9)
+    assert res["epnl"] - res0["epnl"] == pytest.approx(8.0 / 3.0, abs=1e-9)
 
 
 def test_nice_levels():

@@ -240,6 +240,40 @@ def _beta(f, sigma=100.0):
     return gp.surface_admittance(f, 'delany_bazley', sigma=sigma)
 
 
+POLE_GEOMETRIES = [(500.0, 100.0), (30.0, 1500.0), (4.0, 300.0)]      # (hs, d2), ft
+
+
+def test_pole_level_matches_ega():
+    # Delany-Bazley ground, no turbulence and no microphone response: the
+    # same band-averaged two-path level as flight_acoustics.ega.
+    bands = np.array([50.0, 100.0, 315.0, 630.0, 1250.0, 2500.0, 5000.0, 10000.0])
+    hs, d2 = np.array(POLE_GEOMETRIES).T
+    level = gp.pole_level(bands, hs, d2, 4.0, C, 'delany_bazley', sigma=200.0)
+    np.testing.assert_allclose(level, gp.pole_ground_effect(bands, hs, d2, 4.0, C, 200.0), rtol=0.0, atol=1e-9)
+
+
+def test_pole_level_weights_the_paths_and_their_coherence():
+    # |A_d|^2 + |A_r Q R1/R2|^2 + 2 A_d A_r |Q| R1/R2 cos(eta x + arg Q) sinc(mu x) coherence,
+    # x = f (R2 - R1) / c, with the microphone's response A_d, A_r on each path and the
+    # HARMONOISE coherence (lengths in meters).
+    bands = np.array([125.0, 1000.0, 4000.0])
+    hs, d2 = np.array(POLE_GEOMETRIES).T
+    hr, gamma_t, ft = 4.0, 3e-6, 0.3048
+    level = gp.pole_level(bands, hs, d2, hr, C, 'delany_bazley', gamma_t=gamma_t, response_direct=1.5,
+                          response_reflected=-2.0, sigma=200.0)
+    f = bands[:, None]
+    r1, r2 = np.hypot(d2, hs - hr), np.hypot(d2, hs + hr)
+    q = gp.fa.spherical_reflection_coefficient((hs + hr) / r2, r2, f, C, 200.0)
+    a_d, a_r = 10 ** (1.5 / 20), 10 ** (-2.0 / 20)
+    m, x = a_r * np.abs(q) * r1 / r2, f * (r2 - r1) / C
+    k = 2 * np.pi * f / (C * ft)
+    coherence = np.exp(-0.375 * 0.364 * k ** 2 * (hs * hr / (hs + hr) * ft) ** (5 / 3) * r1 * ft * gamma_t)
+    energy = a_d ** 2 + m ** 2 + 2 * a_d * m * np.cos(6.325159 * x + np.angle(q)) * \
+        np.sin(0.727477 * x) / (0.727477 * x) * coherence
+    np.testing.assert_allclose(level, 10 * np.log10(energy), rtol=0.0, atol=1e-9)
+    assert np.all(coherence < 1.0) and coherence.min() < 0.9          # the turbulence term is exercised
+
+
 @pytest.mark.parametrize('rho, z', [(0.02, 0.0), (0.1, 0.05), (1.0, 0.3), (30.0, 4.0)])
 def test_exact_green_satisfies_the_impedance_condition(rho, z):
     # dG/dz = -i k beta G on the plane, exactly (not approximately, as for Weyl-van der Pol).
@@ -272,6 +306,41 @@ def test_image_integrals_converge_on_the_surface():
     a, _ = gp.image_integrals(k, beta, rho, z, n=10)
     b, _ = gp.image_integrals(k, beta, rho, z, n=24)
     assert np.all(np.isfinite(a)) and np.allclose(a, b, rtol=1e-5)
+
+
+def _image_integrals_by_brute_force(k, beta, rho, z):
+    # Directly in q, on Gauss-Legendre segments growing by 15 % from Z / 1000:
+    # fine on every scale for rho < Z, where R_q stays about Z from zero.
+    edges = [0.0]
+    while edges[-1] < rho + 60.0 / k:
+        edges.append(max(1e-3 * z, 1.15 * edges[-1]))
+    x, w = np.polynomial.legendre.leggauss(40)
+    a, b = np.array(edges[:-1])[:, None], np.array(edges[1:])[:, None]
+    q, wq = (0.5 * (b - a) * x + 0.5 * (a + b)).ravel(), (0.5 * (b - a) * w).ravel()
+    r = np.sqrt(rho ** 2 + (z + 1j * q) ** 2)
+    g = np.exp(-k * beta * q) * np.exp(1j * k * r) / (4 * np.pi * r) * wq
+    return g.sum(), (g * (1j * k - 1.0 / r) / r).sum()
+
+
+@pytest.mark.parametrize('rho_over_z', [0.0, 1e-4, 0.1, 0.9])
+@pytest.mark.parametrize('f, z', [(200.0, 1e-5), (200.0, 0.003), (1000.0, 0.05), (8000.0, 0.3)])
+def test_image_integrals_below_rho_equal_z(f, z, rho_over_z):
+    # A source above (or nearly above) the receiver: not 0 at rho = 0, and as
+    # accurate for rho << Z as near rho = Z.
+    k = 2 * np.pi * f / C; beta = _beta(f)
+    big_i, big_j = gp.image_integrals(k, beta, rho_over_z * z, z)
+    ref_i, ref_j = _image_integrals_by_brute_force(k, beta, rho_over_z * z, z)
+    assert complex(big_i[0]) == pytest.approx(ref_i, rel=1e-9)
+    assert complex(big_j[0]) == pytest.approx(ref_j, rel=1e-9)
+
+
+def test_image_integral_straight_above_is_an_exponential_integral():
+    # At rho = 0, R_q = Z + i q and I = -i e^{-i k beta Z} E1(-i k (1 + beta) Z) / (4 pi).
+    from scipy.special import exp1
+    for f, z in ((200.0, 0.003), (1000.0, 0.05), (4000.0, 2.0)):
+        k = 2 * np.pi * f / C; beta = _beta(f)
+        exact = -1j * np.exp(-1j * k * beta * z) * exp1(-1j * k * (1 + beta) * z) / (4 * np.pi)
+        assert complex(gp.image_integrals(k, beta, 0.0, z)[0][0]) == pytest.approx(exact, rel=1e-10)
 
 
 def test_image_integral_table_interpolates():
@@ -370,6 +439,20 @@ def test_fit_two_path_recovers_the_path_difference():
     assert held['dR'] == pytest.approx(true['dR'], rel=0.01) and held['phase_se'] == 0.0
 
 
+def test_fit_two_path_fits_an_absolute_level():
+    # A pole spectrum in dB re 20 uPa: the same shape 75 dB up fits to the same
+    # path difference, with the offset carried along.
+    rng = np.random.default_rng(0)
+    f = np.arange(50.0, 6000.0, 4.0)
+    y = gp.two_path_db(f, -5.0, 0.85, 4000.0, 0.62, 0.05, C) + rng.normal(0.0, 0.8, f.size)
+    for fix_phase in (None, 0.05):
+        low = gp.fit_two_path(f, y, dR_guess=0.45, sound_speed=C, receiver_height=4.0, fix_phase=fix_phase)
+        high = gp.fit_two_path(f, y + 75.0, dR_guess=0.45, sound_speed=C, receiver_height=4.0,
+                               fix_phase=fix_phase)
+        assert high['dR'] == pytest.approx(low['dR'], rel=1e-6)
+        assert high['offset_db'] == pytest.approx(low['offset_db'] + 75.0, abs=1e-4)
+
+
 def test_reflection_phase_is_zero_over_rigid_ground_and_small_over_stiff():
     rigid = gp.reflection_phase([500.0, 2000.0], 100.0, 300.0, 4.0, C, flow_resistance=gp.RIGID_FLOW_RESISTANCE)
     assert np.allclose(rigid, 0.0, atol=1e-6)
@@ -426,3 +509,115 @@ def test_table_frames_interpolate_bilinearly_and_wrap_in_azimuth():
     mirrored = gp.table_frames(table, ('S',), [1000.0], [hs] * 3, [d2] * 3, source_dx=-np.cos(toward),
                                source_dy=-np.sin(toward), mirror_y=True)[-1]
     np.testing.assert_allclose(mirrored[0, 0, 0].imag, [180.0, 345.0, 355.0], atol=1e-9)
+
+
+def test_board_disc_bem_takes_its_ground_from_the_table():
+    # Q from a ground other than the one S was computed over would mix two grounds.
+    table = dict(_disc_table(np.array([500.0])), flow_resistance=1e9)
+    level = gp.board_disc_bem([500.0], [100.0], [200.0], C, table=table)
+    assert np.array_equal(level, gp.board_disc_bem([500.0], [100.0], [200.0], C, flow_resistance=1e9, table=table))
+    assert not np.allclose(level, gp.board_disc_bem([500.0], [100.0], [200.0], C,
+                                                    table=_disc_table(np.array([500.0]))))
+    with pytest.raises(ValueError, match="differs from the table"):
+        gp.board_disc_bem([500.0], [100.0], [200.0], C, flow_resistance=gp.FLOW_RESISTANCE, table=table)
+    with pytest.raises(ValueError, match="needs a table"):
+        gp.board_disc_bem([500.0], [100.0], [200.0], C)
+
+
+def test_board_disc_bem_takes_a_ground_model_from_the_table():
+    # A ground model sets Q whatever flow resistance the table carries (tables
+    # built before it was None hold the unused default); no flow resistance,
+    # the site's or that default, may be passed for it.
+    ground = dict(model='variable_porosity', sigma_e=200.0, alpha_e=0.0)
+    table = dict(_disc_table(np.array([500.0])), ground=ground)
+    level = gp.board_disc_bem([500.0], [100.0], [200.0], C, table=table)
+    r2 = np.hypot(200.0, 100.0)
+    energy = 0.0
+    for f in 500.0 * gp.sub_band_factors(2):
+        beta = gp.surface_admittance(f, **ground, sound_speed_mps=C * 0.3048)
+        energy += abs(1 + gp.fa.spherical_reflection_coefficient(100.0 / r2, r2, f, C, None, admittance=beta)) ** 2
+    assert level[0, 0] == pytest.approx(10 * np.log10(energy / 2), abs=1e-9)
+    for sigma in (200.0, gp.FLOW_RESISTANCE):
+        with pytest.raises(ValueError, match="flow_resistance does not apply"):
+            gp.board_disc_bem([500.0], [100.0], [200.0], C, flow_resistance=sigma, table=table)
+    built = gp.disc_bem_table(np.array([200.0]), C, sub_bands=1, elevations=np.array([10.0]),
+                              azimuths=np.array([0.0]), ground=ground)
+    assert built['flow_resistance'] is None and built['ground'] == ground
+
+
+# ---------------------------------------------------------------- measured pairs
+
+def _pair_channels(board_location=(0.0, 0.0, 0.0)):
+    """A pole at 25600 Hz and its ground plane at 25000 Hz (twice the pressure, 0.25 s later):
+    the same noise, under a flyover's envelope and a floor 40 dB down, as _read_signal gives them."""
+    from scipy.signal import resample_poly
+    rng = np.random.default_rng(1)
+    t0, rate = 99.0, 25600.0
+    t = t0 + np.arange(int(24.0 * rate)) / rate
+    master = rng.standard_normal(t.size) * (0.01 + np.exp(-0.5 * ((t - 111.0) / 3.0) ** 2))
+    pole = master[int(1.0 * rate):]                  # from 100 s
+    board = 2.0 * resample_poly(master, 125, 128)[int(1.25 * 25000):]   # from 100.25 s
+    signals = {'pole.nc': (pole, 100.0 + np.arange(pole.size) / rate, np.array([0.0, 0.0, 0.0]), rate),
+               'board.nc': (board, 100.25 + np.arange(board.size) / 25000.0, np.asarray(board_location, float),
+                            25000.0)}
+    return lambda path, *args, **kwargs: signals[path]
+
+
+class _PairTest:
+    acoustic_files = {'289001': {50: 'pole.nc', 34: 'board.nc'}}
+
+    def track_path(self, run):
+        return 'track.csv'
+
+
+def _pass_track():
+    # Level pass at 300 ft along x, overhead at 111 s.
+    t = np.linspace(90.0, 140.0, 501)
+    return {'time': t, 'x': 150.0 * (t - 111.0), 'y': np.full_like(t, 40.0), 'z': np.full_like(t, 300.0)}
+
+
+def test_pair_band_histories_align_and_resample_the_board(monkeypatch):
+    # The board's channel is resampled to the pole's rate and both are framed
+    # from 100.25 s, the later start: board - pole is the factor of 2 (6.02 dB)
+    # in every band and frame, which a misaligned frame would break under the envelope.
+    import noise_abatement_2017 as na
+    monkeypatch.setattr(na, '_read_signal', _pair_channels())
+    out = gp.pair_band_histories(_PairTest(), '289001', 50, 34, _pass_track(), C)
+    assert out['time'][0] == pytest.approx(100.25 + 0.25, abs=1e-9)        # the first frame's center
+    np.testing.assert_allclose(np.diff(out['time']), 0.5, atol=1e-9)
+    assert out['pole'].shape == (out['bands'].size, out['time'].size) == out['board'].shape
+    assert np.ptp(out['pole'][10]) > 30.0                   # the envelope spans the frames
+    # Up to 8 kHz to 0.05 dB; the 10 kHz band reaches 11.2 kHz, where the board's
+    # own 12.5 kHz Nyquist rate and the two resampling filters take 0.1-0.15 dB.
+    below = out['bands'] < 9000.0
+    np.testing.assert_allclose((out['board'] - out['pole'])[below], gp.PRESSURE_DOUBLING_DB, atol=0.05)
+    np.testing.assert_allclose((out['board'] - out['pole'])[~below], gp.PRESSURE_DOUBLING_DB, atol=0.2)
+    # The geometry is the pole's, at its location: the track passes 40 ft to the side at 300 ft.
+    heard = np.isfinite(out['elevation'])
+    assert heard.sum() > 40
+    np.testing.assert_allclose(out['source_dy'][heard], 40.0)
+    np.testing.assert_allclose(out['source_height'][heard], 300.0)
+    assert 75.0 < np.nanmax(out['elevation']) < np.degrees(np.arctan2(300.0, 40.0))
+    monkeypatch.setattr(na, '_read_signal', _pair_channels(board_location=(5.0, 0.0, 0.0)))
+    with pytest.raises(ValueError, match='not co-located'):
+        gp.pair_band_histories(_PairTest(), '289001', 50, 34, _pass_track(), C)
+
+
+def test_measured_board_transfer_gates_quiet_frames(monkeypatch):
+    # T_board = board - pole + G_pole where both channels are 10 dB over their
+    # floor, NaN in the quiet lead-in and tail.
+    import noise_abatement_2017 as na
+    monkeypatch.setattr(na, '_read_signal', _pair_channels())
+    monkeypatch.setattr(na, 'load_track', lambda path: _pass_track())
+    air = gp.fa.Atmosphere(temperature=288.15, pressure=101.325, relative_humidity=50.0)
+    monkeypatch.setattr(na, 'run_atmosphere', lambda test, run, fallback=None: air)
+    out = gp.measured_board_transfer(_PairTest(), '289001', 50, 34)
+    c = air.soundspeed / 0.3048
+    assert out['sound_speed'] == pytest.approx(c)
+    loud = np.isfinite(out['T_board'])
+    assert loud[:, np.argmin(np.abs(out['time'] - 111.3))].all()                    # overhead
+    assert not loud[:, :4].any() and not loud[:, -4:].any()                         # lead-in, tail
+    g_pole = gp.pole_ground_effect(out['bands'], out['source_height'], out['ground_distance'],
+                                   gp.POLE_HEIGHT_FT[50], c)
+    np.testing.assert_allclose(out['G_pole'], g_pole, atol=1e-12)
+    np.testing.assert_allclose(out['T_board'][loud], (gp.PRESSURE_DOUBLING_DB + g_pole)[loud], atol=0.2)

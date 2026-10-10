@@ -35,6 +35,20 @@ def test_offset_microphone_mirror_symmetry():
     assert np.allclose(pd[0, 0, 0], pd[0, 0, 1], rtol=1e-6) and np.allclose(pr[0, 0, 0], pr[0, 0, 1], rtol=1e-6)
 
 
+def test_flush_microphone_must_be_on_the_flat_top():
+    # Over the taper or beyond the rim a flush microphone would sit in the air
+    # at the top's height and still be doubled as a surface point.
+    r_taper = gp.PLATE_RADIUS_FT - gp.PLATE_TAPER_LENGTH_FT
+    for r in (r_taper, gp.PLATE_RADIUS_FT - 0.5 * gp.PLATE_TAPER_LENGTH_FT, 1.2 * gp.PLATE_RADIUS_FT):
+        with pytest.raises(ValueError, match='flat top'):
+            ab.scattering([1000.0], [20.0], [0.0], C, mic=(0.0, r))
+        with pytest.raises(ValueError, match='flat top'):
+            ab.table(np.array([1000.0]), C, sub_bands=1, elevations=[20.0], azimuths=[0.0], mic=(r, 0.0))
+    # Raised (inverted) above the plate it is in the air anywhere.
+    pd, pr = ab.scattering([1000.0], [20.0], [0.0], C, mic=(0.0, r_taper), mic_height=gp.INVERTED_MIC_HEIGHT_FT)
+    assert np.isfinite(pd).all() and np.isfinite(pr).all()
+
+
 def test_matches_the_3d_surface_model():
     f, el = 500.0, 45.0
     pd, pr = ab.scattering([f], [el], [90.0], C)
@@ -101,6 +115,28 @@ def test_board_level_averages_over_the_tables_own_sub_frequencies():
         ab.board_level([1000.0], [100.0], [200.0], C, table, sub_bands=5)
 
 
+def test_board_level_takes_q_at_the_plates_top():
+    # P_d = 0, P_r = 1: the level is |Q|^2, Q at the image geometry of the
+    # plate's top even for an inverted microphone's table.
+    bands = np.array([2000.0])
+    frequencies = bands * gp.sub_band_factors(2)
+    ones = np.ones((2, 2, 2), dtype=complex)
+    t, hs, d2 = gp.PLATE_THICKNESS_FT, 0.5, 20.0
+    table = dict(frequencies=frequencies, elevations=np.array([0.0, 90.0]), azimuths=np.array([0.0, 180.0]),
+                 P_d=0.0 * ones, P_r=ones, thickness=t, mic_height=gp.INVERTED_MIC_HEIGHT_FT,
+                 flow_resistance=gp.FLOW_RESISTANCE, ground=None, sub_bands=2)
+    r2 = np.hypot(d2, hs + t)
+    q = gp.fa.spherical_reflection_coefficient((hs + t) / r2, r2, frequencies, C, gp.FLOW_RESISTANCE)
+    level = ab.board_level(bands, [hs], [d2], C, table)[0, 0]
+    assert level == pytest.approx(10 * np.log10(np.mean(np.abs(q) ** 2)), abs=1e-9)
+
+
+def _incident(f, el, az, r, z):
+    """The incident plane wave at (x=0, y=r, z), for a source at elevation el, azimuth az."""
+    k = 2 * np.pi * f / C
+    return np.exp(1j * k * (np.cos(np.radians(el)) * r * np.sin(np.radians(az)) - np.sin(np.radians(el)) * z))
+
+
 def test_field_matches_scattering_at_the_microphone():
     """field() off the surface reproduces scattering() at an inverted mic 7 mm above the plate."""
     f, el, az = 3000.0, 25.0, 40.0
@@ -108,11 +144,26 @@ def test_field_matches_scattering_at_the_microphone():
     rm = gp.PLATE_MIC_OFFSET_FT
     pd, pr = ab.scattering([f], [el], [az], C, mic=(0.0, rm), mic_height=gap)
     Pd, Pr = ab.field(f, el, az, C, [[0.0, rm, gp.PLATE_THICKNESS_FT + gap]])
-    k = 2 * np.pi * f / C
-    inc = np.exp(1j * k * np.cos(np.radians(el)) * rm * np.sin(np.radians(az))) * \
-        np.exp(-1j * k * np.sin(np.radians(el)) * (gp.PLATE_THICKNESS_FT + gap))
+    inc = _incident(f, el, az, rm, gp.PLATE_THICKNESS_FT + gap)
     assert Pd[0] / inc == pytest.approx(pd[0, 0, 0], rel=1e-5)
     assert Pr[0] / inc == pytest.approx(pr[0, 0, 0], rel=1e-5)
+
+
+def test_field_on_the_surface_is_the_surface_value():
+    # On the plate p = 2 (p_inc + K p), not the principal value p_inc + K p =
+    # p / 2: field() on the top and on the taper reproduces scattering()'s
+    # flush microphone there, and so does a point a nanometer off the top.
+    f, el, az = 3000.0, 25.0, 40.0
+    rm, t = gp.PLATE_MIC_OFFSET_FT, gp.PLATE_THICKNESS_FT
+    segs, _ = ab.plate_generator()
+    taper = segs[(segs[:, 1] > segs[:, 3]) & (segs[:, 0] < segs[:, 2])][3]
+    r_taper, z_taper = 0.5 * (taper[0] + taper[2]), 0.5 * (taper[1] + taper[3])
+    Pd, Pr = ab.field(f, el, az, C, [[0.0, rm, t], [0.0, rm, t + 3e-9], [0.0, r_taper, z_taper]])
+    for i, (r, z, kw) in enumerate(((rm, t, {}), (rm, t, {}), (r_taper, z_taper, dict(mic_rz=(r_taper, z_taper))))):
+        pd, pr = ab.scattering([f], [el], [az], C, mic=(0.0, r), **kw)
+        inc = _incident(f, el, az, r, z)
+        assert Pd[i] / inc == pytest.approx(pd[0, 0, 0], rel=1e-4)
+        assert Pr[i] / inc == pytest.approx(pr[0, 0, 0], rel=1e-4)
 
 
 def test_field_inside_the_plate_is_nan_and_far_field_tends_to_the_bare_ground():

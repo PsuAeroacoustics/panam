@@ -150,3 +150,20 @@ def test_depropagation_does_not_depend_on_the_length_unit(third_octave_method):
     np.testing.assert_allclose(meters['oaspl_db'][covered], feet['oaspl_db'][covered], atol=1e-6)
     for f_db, m_db in zip(feet['third_octave']['bands_db'], meters['third_octave']['bands_db']):
         np.testing.assert_allclose(m_db[covered], f_db[covered], atol=1e-6)
+
+
+def test_a_gap_costs_only_the_frames_that_reach_it():
+    """One NaN sample used to make the record's mean NaN, and with it every band
+    and every frame."""
+    fs = 8000.0
+    rng = np.random.default_rng(4)
+    x = rng.standard_normal(int(4 * fs))
+    centers = np.array([250.0, 500.0, 1000.0])
+    frames = np.arange(0.25, 3.8, 0.25)
+    clean = third_octave_filter_bank(x, fs, centers, frames, 2048)
+    x[int(2.0 * fs)] = np.nan
+    gapped = third_octave_filter_bank(x, fs, centers, frames, 2048)
+    reaches = np.abs(frames - 2.0) < 1024 / fs + 1e-9
+    assert np.all(np.isnan(gapped[:, reaches]))
+    far = np.abs(frames - 2.0) > 0.5
+    np.testing.assert_allclose(gapped[:, far], clean[:, far], rtol=0.02)
