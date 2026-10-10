@@ -41,8 +41,10 @@ over its window (:func:`check_track`: below or within 10 ft of the ground boards
 a z that does not follow its altitude) and flags one worth a second look; it records
 the run's gross weight, air density and, when the caller gives it, the wind at the
 aircraft; and it can file azimuth by the INS heading instead of the ground track
-(``azimuth_reference``).  ``docs/database_build.md`` describes all three, what the
-check finds across the six aircraft, and the sphere and database variables.
+(``azimuth_reference``).  ``docs/database_build.md`` describes all three and how to
+run a build; ``docs/notes/2017_build_findings.md`` records what the track check found
+across the six aircraft; ``docs/file_formats.md`` gives the sphere and database
+variables.
 """
 
 import contextlib
@@ -91,7 +93,7 @@ GROUND_BOARD_INSTRUMENTS = ('gdbdfl', 'invgb7')
 
 #: The test site's ground (Amedee Army Airfield), fitted to the co-located
 #: pole and ground-plate microphone pairs: variable porosity, effective flow
-#: resistivity 200 kPa s/m^2 (docs/ground_plane_corrections.md, path 4 and
+#: resistivity 200 kPa s/m^2 (docs/notes/ground_plane_corrections.md, path 4 and
 #: the run-holdout profile).
 SITE_GROUND = dict(model='variable_porosity', sigma_e=200.0, alpha_e=0.0)
 
@@ -582,8 +584,8 @@ def frame_bearing_deg(row, track=None, tolerance_deg=FRAME_BEARING_TOLERANCE_DEG
     whole test, which is what the heading frame and the hovers need it for: a compass
     heading means nothing in the track frame until it is known.  When the track carries
     latitude and longitude and spans enough ground, the bearing is also fitted from them
-    (as the harness's ``frame_bearing`` does) and must agree, so a wrong reference-list entry
-    is refused rather than turning every heading by the error.  Without ``true_heading`` the
+    and must agree, so a wrong reference-list entry is refused rather than turning every
+    heading by the error.  Without ``true_heading`` the
     fit alone is used.  Raises ValueError when neither is available.
     """
     listed = _float_or_nan(row.get('true_heading'))
@@ -1951,7 +1953,8 @@ def main(argv=None):
 
     parser = argparse.ArgumentParser(
         description='Rebuild 2017 Noise Abatement source spheres with ambient gating.')
-    parser.add_argument('aircraft', help='dataset directory name, e.g. B407')
+    parser.add_argument('aircraft', help='dataset directory name under --root: AS350B3, B206L3, B407, '
+                                         'EC130B4, R44 or R66')
     parser.add_argument('output_directory', nargs='?', default=None,
                         help='where the spheres go (not needed with --check-tracks)')
     parser.add_argument('--check-tracks', action='store_true',
@@ -1985,7 +1988,9 @@ def main(argv=None):
                              'way depropagation does not correct for')
     parser.add_argument('--reference-directory', default=None,
                         help='legacy spheres, used only for their PHI/THETA/FREQUENCY grids')
-    parser.add_argument('--manifest', default=None)
+    parser.add_argument('--manifest', default=None,
+                        help="CSV recording each run's inputs and outcome (with --check-tracks: "
+                             'the track-check table); default: not written')
     parser.add_argument('--norah2-directory', default=None,
                         help='also write each sphere as a NORAH2 .hem file here, with the '
                              'triangulation file NORAH2 needs to interpolate between them')
@@ -1996,10 +2001,13 @@ def main(argv=None):
                         help="'filter_bank' forms bands with a true one-third octave filter "
                              "bank, as an analyzer does; it differs from the default FFT band "
                              "sum only below ~100 Hz, between strong rotor tones")
-    parser.add_argument('--band-snr-gate-db', type=float, default=10.0)
+    parser.add_argument('--band-snr-gate-db', type=float, default=10.0,
+                        help="zero frequency bins less than this many dB above the mic's ambient "
+                             '(default %(default)g)')
     parser.add_argument('--max-absorption-correction-db', type=float, default=30.0,
-                        help='discard bins needing more absorption correction than this; '
-                             '30 dB is what keeps source spectra rolling off physically')
+                        help='discard bins needing more absorption correction than this, dB; '
+                             '30 dB is what keeps source spectra rolling off physically '
+                             '(default %(default)g)')
     parser.add_argument('--point-stride', type=int, default=10,
                         help='depropagate every Nth sample of the steady track (default %(default)s, '
                              "the 2017 release's setting; build_sphere and build_all default to 1, "
@@ -2017,11 +2025,13 @@ def main(argv=None):
                              'this, beyond which a straight ray through a homogeneous '
                              'atmosphere is a poor model (default 2000)')
     parser.add_argument('--min-steady-duration-s', type=float, default=8.0,
-                        help='shortest steady segment worth building a sphere from; '
-                             'the binding constraint on how many runs survive the gates')
+                        help='shortest steady segment worth building a sphere from, s; '
+                             'the binding constraint on how many runs survive the gates '
+                             '(default %(default)g)')
     parser.add_argument('--ambient-fallback-percentile', type=float, default=None,
-                        help='estimate ambient from the run itself (e.g. 5) where the array '
-                             'layout has no ambient run; less reliable than a measured one')
+                        help="percentile of the run's own spectrogram to use as ambient (e.g. 5) "
+                             'where the array layout has no ambient run; less reliable than a '
+                             'measured one')
     parser.add_argument('--no-prefetch', action='store_true',
                         help='do not warm the cloud-storage cache ahead of each run')
     parser.add_argument('--no-ambient-gate', action='store_true',

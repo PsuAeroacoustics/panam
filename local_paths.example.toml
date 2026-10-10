@@ -1,10 +1,19 @@
 # Copy to local_paths.toml (git-ignored) and point each entry at this
-# machine's copy.  Environment variables PANAM_<NAME> override these.
-# See local_paths.py for what each name is.
+# machine's copy.  Leave out what you do not have: scripts that need it stop
+# with a message, and tests that need it are skipped.  Precedence: a path given
+# on the command line, then the environment variable PANAM_<NAME> (e.g.
+# PANAM_NORAH2), then this file.  See local_paths.py for the details.
 
 [paths]
+# 2017 FAA/NASA Noise Abatement flight test archive (holds AS350B3/, B407/, ...).
+# Used by noise_abatement_2017.py (unless --root is given) and the track-check data tests.
 noise_abatement_2017 = "/path/to/Noise_Abatement_2017"
+# AS350 demo data (holds Acoustic/, Ambient/, AAM/ and Tracking/).
+# Used by AS350_289108_demo.py (unless --basepath is given) and as350_flip_check.py.
 as350_demo = "/path/to/AS350_demo"
+# EASA NORAH2 public distribution (holds Hemispheres/). Used only by the NORAH2 tests.
 norah2 = "/path/to/NORAH2_V2.0.74_public"
+# NICE-OPS executable. Used only by the tests that load PANAM-built databases in NICE-OPS.
 niceops = "/path/to/NICEOPS/build/niceops"
+# NICE-OPS ray-geometry executable. Used by refracted_rays.external_ray_model's tests.
 niceops_ray_geometry = "/path/to/NICEOPS/build/niceops_ray_geometry"

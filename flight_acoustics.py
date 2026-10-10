@@ -2409,8 +2409,8 @@ AZIMUTH_REFERENCES = ('track', 'heading')
 
 #: Wind speed units a caller may declare for :func:`write_aam_hemisphere_netcdf`'s run
 #: metadata, and their size in m/s.  The unit is stored as declared; it is converted only
-#: to form the airspeed.  No unit is assumed, even where one is known (the 2017 LIDAR's
-#: is knots: the harness's docs/lidar_units.md).
+#: to form the airspeed.  No unit is assumed, even where one is known (the 2017 LIDAR
+#: winds are in knots).
 WIND_SPEED_UNITS = {'kt': KNOT_MPS, 'm/s': 1.0, 'ft/s': 0.3048, 'mph': 0.44704}
 
 #: Where a run's wind at the aircraft came from.  Several may be joined with '+', e.g.
@@ -4946,8 +4946,11 @@ def project_sphere(filename, altitude, elv_cutoff, infreqs=None,
     the sphere's absorption.  ``elv_cutoff`` must lie strictly between 0 and 90 deg: a
     ray at or above the horizon never reaches the ground.
 
+    ``altitude`` is in meters: :func:`extract_SPL` converts the sphere's radius
+    from feet to meters, and the spreading and absorption compare the two.
+
     Returns:
-        (x, y, LA, speed, flight_path_angle): ground positions in altitude's units,
+        (x, y, LA, speed, flight_path_angle): ground positions in meters,
         starboard +x and the flight direction +y, and the level there (dBA; -inf
         where the direction has no energy).
     """

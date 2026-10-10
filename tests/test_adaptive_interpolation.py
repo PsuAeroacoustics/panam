@@ -97,7 +97,7 @@ def test_dense_rim_is_no_worse_than_a_fixed_radius():
                                     np.r_[power, power, power], rmax=25.0))
     # Where the samples are dense the radius is small, so the grid is no worse than the fixed
     # 25 deg one.  (A synthetic gradient this steep, averaged as power, is biased by any
-    # radius; spheres/rim_samples.py in the validation harness checks real spheres.)
+    # radius; real spheres are checked outside this repository.)
     rim = (ielv >= 4) & (ielv < 14) & ~gap & np.isfinite(fixed)
     err_adaptive = np.mean(np.abs(adaptive[rim] - level(ielv[rim])))
     err_fixed = np.mean(np.abs(fixed[rim] - level(ielv[rim])))

@@ -3,6 +3,23 @@
 This directory includes code derived from the python-acoustics project:
 https://github.com/python-acoustics/python-acoustics
 
+The derived files are:
+
+- `atmosphere.py`: the `Atmosphere` class (ISO 9613-1 absorption).
+- `iso_9613_1_1993.py`: the ISO 9613-1:1993 formulas and constants.
+- `filters.py`: the Butterworth `lowpass` and `highpass` helpers, whose
+  behavior is ported from python-acoustics and reimplemented with SciPy's SOS
+  filters. `tests/data/python_acoustics_reference.npz` holds the
+  python-acoustics output they are tested against.
+
+The rest of this package is PANAM's own code under the repository's MIT
+license: `signal_io.py`, `plotting.py`, `__init__.py` and
+`filters.third_octave_filter_bank`.
+
+Outside this directory, `unit_conversion.py` and `default_units.py` at the
+repository root are Kevin Horton's (2008, BSD-style license) and carry that
+license in their own headers.
+
 ## python-acoustics (BSD 3-Clause License)
 
 Copyright (c) 2013, Python Acoustics

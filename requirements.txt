@@ -1,3 +1,4 @@
+# Runtime dependencies (Python 3.11 or newer).
 numpy
 h5py
 openpyxl
@@ -9,4 +10,9 @@ matplotlib
 netCDF4
 pyuff
 pymap3d
+# Test runner, kept here so one install serves both CI and local test runs.
 pytest
+# Optional, not installed by default: scikits.umfpack, which
+# vold_kalman_filter uses in its sparse fallback solve (narrow bands, or a
+# system that is not positive definite) and for solver='umfpack'; without it
+# the fallback uses SciPy's SuperLU.

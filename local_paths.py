@@ -18,7 +18,7 @@ Known names:
     holding ``AS350B3/``, ``B407/``, ...).
 ``as350_demo``
     AS350 demo data used by ``AS350_289108_demo.py`` and ``as350_flip_check.py``
-    (the directory holding ``AAM/`` and the run's acoustic files).
+    (the directory holding ``Acoustic/``, ``Ambient/``, ``AAM/`` and ``Tracking/``).
 ``norah2``
     The EASA NORAH2 distribution (the directory holding ``Hemispheres/``).
 ``niceops``
@@ -27,6 +27,11 @@ Known names:
 ``niceops_ray_geometry``
     NICE-OPS's ray-geometry executable, for
     :func:`refracted_rays.external_ray_model` and its tests.
+
+Two older lookups remain.  ``as350_flip_check.py`` still reads the environment
+variable ``AS350_DEMO_PATH``, which takes precedence over ``as350_demo``.  The
+tests' ``sphere_helpers.executable`` tries this module first, then the
+unprefixed variables ``NICEOPS`` and ``NICEOPS_RAY_GEOMETRY``, then ``PATH``.
 """
 
 from __future__ import annotations

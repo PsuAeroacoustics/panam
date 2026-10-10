@@ -111,7 +111,7 @@ def test_z_that_does_not_follow_the_altitude_is_refused():
 
 
 def test_a_height_correction_must_move_the_altitude_with_z():
-    """The R66's altitude reads ~30 ft low and the harness raises z before building; raising
+    """The R66's altitude reads ~30 ft low, and a build that corrects it raises z; raising
     z alone leaves it 30 ft from its own altitude, which the check refuses."""
     track = _descent(-20.0, fpa_deg=0.0)
     track['alt'] = track['z'] + 3926.51

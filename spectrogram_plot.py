@@ -9,24 +9,31 @@ import flight_acoustics as fa
 from cli import colon_pair, save_or_show
 
 
-parser = argparse.ArgumentParser()
-parser.add_argument("-f", "--frequency", type=colon_pair, default=None, help="Displayed frequency range \"low:high\"")
-parser.add_argument("-o", "--output", type=str, default=None, help="Output image file name")
-parser.add_argument("-p", "--plot", action="store_true", help="Also plot image when outputting to file")
+parser = argparse.ArgumentParser(
+    description="Plot the spectrogram of one microphone signal from an HDF5 (.h5) or netCDF (.nc) file.")
+parser.add_argument("-f", "--frequency", type=colon_pair, default=None,
+                    help="Displayed frequency range \"low:high\", Hz (default: 0 to half the sampling rate)")
+parser.add_argument("-o", "--output", type=str, default=None,
+                    help="Image file to write (format from its extension); without it the plot opens in a window")
+parser.add_argument("-p", "--plot", action="store_true", help="With -o, also open the plot in a window")
 parser.add_argument("-x", "--x-limits", dest='x_limits', type=colon_pair, default=None,
-                    help="Time range to analyse and plot \"low:high\", s, in the file's own times (a "
+                    help="Time range to analyze and plot \"low:high\", s, in the file's own times (a "
                          "netCDF file's start_time onward; an HDF5 record starts at 0); the signal is trimmed "
                          "to it")
 parser.add_argument("-y", "--y-limits", dest='y_limits', type=colon_pair, default=None,
-                    help="Set plot y limits \"low:high\"")
+                    help="Displayed frequency range \"low:high\", Hz, as -f; takes precedence over -f "
+                         "when both are given")
 parser.add_argument("-c", "--c-limits", dest='c_limits', type=colon_pair, default=None,
-                    help="Set plot color level limits \"low:high\"")
-parser.add_argument("-d", "--data-format", default=None, help="Force input file format (hdf5 or netcdf)",
-                    choices=['hdf5', 'netcdf'])
-parser.add_argument("-w", "--window-time", default=0.1, type=float, help="Time length of window")
-parser.add_argument("-l", "--overlap", default=7.0 / 8.0, type=float, help="Proportion of window to overlap")
-parser.add_argument("-s", "--signal", default=None, help="Name of signal in HDF5 dataset")
-parser.add_argument("infile", help="Input filename.")
+                    help="Color scale limits \"low:high\", dB (default: from the data)")
+parser.add_argument("-d", "--data-format", default=None, choices=['hdf5', 'netcdf'],
+                    help="Input file format (default: from the extension, .h5/.hdf5 or .nc)")
+parser.add_argument("-w", "--window-time", default=0.1, type=float, help="Window length, s (default 0.1)")
+parser.add_argument("-l", "--overlap", default=7.0 / 8.0, type=float,
+                    help="Fraction of each window that overlaps the next, 0 to 1 (default 0.875)")
+parser.add_argument("-s", "--signal", default=None,
+                    help="Signal (dataset) name in an HDF5 file; without it the names are listed and "
+                         "nothing is plotted")
+parser.add_argument("infile", help="Recording file (.h5, .hdf5 or .nc)")
 args = parser.parse_args()
 
 if args.data_format is None:

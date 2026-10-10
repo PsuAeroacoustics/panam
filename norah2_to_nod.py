@@ -1,6 +1,6 @@
 """Build a NICE-OPS sphere database from NORAH2 (HELENA, ECAC Doc 32) .hem hemispheres.
 
-Usage:  PYTHONPATH=. python norah2_to_nod.py HEM [HEM ...] -o DATABASE.nod
+Usage:  python norah2_to_nod.py HEM [HEM ...] -o DATABASE.nod
             --vehicle VEHICLE.json --speed {ias-to-tas,ground-speed}
 
 A .hem carries no rotor or weight, so the vehicle is required: a NICE-OPS

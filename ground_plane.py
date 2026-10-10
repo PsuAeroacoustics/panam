@@ -1,11 +1,15 @@
 """Ground-plane microphones: co-located pole comparisons and mixed-impedance corrections.
 
-A ground-plane microphone is a small hard plate lying on softer ground, so its
-flat pressure-doubling correction (+6.02 dB, the ``ground_board_scale=0.5`` in
-:mod:`noise_abatement_2017`) holds only where the plate dominates the ground
-reflection: high frequency and steep incidence.  At low frequency and grazing
-incidence the reflection's Fresnel zone spreads onto the soft ground around the
-plate.  See ``docs/ground_plane_corrections.md`` for the review this follows.
+A ground-plane microphone is a small hard plate lying on softer ground, so a
+flat pressure-doubling correction (6.02 dB, amplitude x0.5; once the only
+correction, now ``board_correction='flat'`` in
+:func:`noise_abatement_2017.build_sphere`) holds only where the plate dominates
+the ground reflection: high frequency and steep incidence.  At low frequency and
+grazing incidence the reflection's Fresnel zone spreads onto the soft ground
+around the plate.  ``build_sphere`` defaults to ``board_correction='plate_bem'``,
+which divides out the plate's modeled response (:mod:`axisymmetric_bem`).  The
+model is in ``docs/THEORY.md`` (ground and receiver models);
+``docs/notes/ground_plane_corrections.md`` is the research log it came from.
 
 The 2017 NASA array has elevated (pole) microphones at the same surveyed points
 as three of its ground-plane microphones (:data:`COLOCATED_PAIRS`).  With the
@@ -41,7 +45,7 @@ COLOCATED_PAIRS = ((50, 34), (51, 36), (52, 38))
 #:
 #: This is the first fit, and it stays the default of every function here that
 #: takes ``flow_resistance`` without ``ground``.  It is not the 2017 site ground:
-#: the later steep-angle and held-out fits (docs/ground_plane_corrections.md)
+#: the later steep-angle and held-out fits (docs/notes/ground_plane_corrections.md)
 #: chose variable porosity, sigma_e 200, which is
 #: ``noise_abatement_2017.SITE_GROUND`` and what the sphere builds pass as
 #: ``ground``.  Pass ``ground`` to model the site.
@@ -51,7 +55,7 @@ FLOW_RESISTANCE = 100.0
 #: fit above).  The metadata does not record them (its heights are ground
 #: elevations); the nominal is the 1.2 m (3.94 ft) certification height.  The
 #: steep-angle fit with the site ground puts all three at 4.05-4.08 ft
-#: (docs/ground_plane_corrections.md).
+#: (docs/notes/ground_plane_corrections.md).
 POLE_HEIGHT_FT = {50: 3.96, 51: 4.07, 52: 4.12}
 
 #: GRAS 67AX: a flush-mounted 1/2" microphone (47AX) in a 400 mm diameter plate
@@ -745,7 +749,7 @@ def nmid_pressure_ratio(frequency, source_height, ground_distance, sound_speed,
     are :func:`flight_acoustics.spherical_reflection_coefficient` at the
     specular geometry; the plate is :data:`RIGID_FLOW_RESISTANCE`.
 
-    Known limitations (see docs/ground_plane_corrections.md): De Jong is
+    Known limitations (see docs/notes/ground_plane_corrections.md): De Jong is
     heuristic and stated invalid for kr < 10 (0.2 m to each edge: below about
     2.7 kHz); nMID loses accuracy toward grazing; and for a low receiver it does
     not reduce to the soft-ground result as the plate vanishes -- for a flush

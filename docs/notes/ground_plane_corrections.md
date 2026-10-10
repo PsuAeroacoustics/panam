@@ -1,18 +1,28 @@
 # Ground-plane microphone corrections: mixed impedance and grazing incidence
 
-Status: implemented (2026-09-26). The corrections are in `ground_plane.py` and
-`axisymmetric_bem.py`, the 2017 sphere builds divide out the plate's response
-by default ("In the sphere builds"), and NICE-OPS reads the exported plate
-table ("In NICE-OPS"). The notes are a research log in the order the work was
-done: later sections revise earlier ones, and the Plan at the end is the plan
-the work started from.
+> **Research log, 2026-09-25 to 2026-09-28. Not maintained to match the code.**
+> Sections are in the order the work was done, and later sections revise
+> earlier ones; the Plan near the end is the plan the work started from. The
+> current models (the plate on variable-porosity ground, the axisymmetric BEM,
+> and the band-averaged response division in the sphere builds) are documented
+> in [THEORY §4.5-4.6](../THEORY.md#45-ground-plate-microphones). Function
+> names are as they were at the time; the scratch scripts named below
+> (`fit_ground.py`, `eval_ground.py`, `profile_ground.py`, `thickness.py`) and
+> the figures were not kept.
+
+Status at the end of the log: implemented (2026-09-26). The corrections are in
+`ground_plane.py` and `axisymmetric_bem.py`, the 2017 sphere builds divide out
+the plate's response by default ("In the sphere builds"), and NICE-OPS reads
+the exported plate table ("In NICE-OPS").
 
 ## Why this matters
 
 Flight-test acoustics in this repository come mostly from ground-plane
-microphones, and panam reduces them to free field with a flat pressure-doubling
-correction (amplitude x0.5, i.e. -6.02 dB; `ground_board_scale=0.5` in
-`noise_abatement_2017.load_run_channels`). That correction is exact only for an
+microphones. Before 2026-09-26, PANAM reduced them to free field with a flat
+pressure-doubling correction (amplitude x0.5, i.e. -6.02 dB; `ground_board_scale=0.5`
+in `noise_abatement_2017.load_run_channels`). Since then `build_sphere` defaults
+to `board_correction='plate_bem'`, and `'flat'` is opt-in ("In the sphere
+builds", below). The flat correction is exact only for an
 infinite, rigid, flat ground. A real ground plane is a small hard plate lying on
 softer ground, so the boundary seen by the microphone is **mixed impedance**:
 
@@ -192,8 +202,8 @@ What is solid:
   - One caveat: the pole's modeled ground reflection at grazing and high
     frequency enters the measured T directly.
 
-Not yet trustworthy (figures: `ground_plane_measured.png` and `ground_plane_model_errors.png`
-in the session scratchpad):
+Not yet trustworthy (figures: `ground_plane_measured.png` and `ground_plane_model_errors.png`,
+not kept):
 
 - **The high bands (above about 3 kHz) read well above +6 dB**, up to +10-17 dB
   at grazing. A flush plate cannot do that. Candidates:
@@ -216,7 +226,7 @@ in the session scratchpad):
   plate, or the blend too simple. That is where De Jong, or a smaller zone
   fraction, should be tested.
 
-## Literature review of the downloaded papers (2026-09-25, ~/Desktop/papers)
+## Literature review (2026-09-25)
 
 - **De Jong, Moerkerken & van der Toorn 1983** (JSV 86:23), section 3.4, eqs.
   36-43. At one admittance step the field is the uniform-ground field on the
@@ -457,7 +467,7 @@ New in `ground_plane.py`:
 - `flight_acoustics.spherical_reflection_coefficient` accepts an admittance;
   `ega` is still bit-identical.
 
-**The fit** (scratchpad `fit_ground.py`) uses only frames at or above 30 deg,
+**The fit** (scratch script `fit_ground.py`) uses only frames at or above 30 deg,
 where the ICAO 6 dB correction holds and the boundary-integral plate model is
 good.
 - Observable: the raw board - pole difference.
@@ -513,8 +523,8 @@ per-band median error, dB:
 
 ### The pole microphones' response (2026-09-25)
 
-From the test report (Watts et al., NASA TM 2019, `Watts.TM2019.pdf` in the
-data folder), section 5.1:
+From the test report (Watts et al., NASA TM 2019, distributed with the 2017
+flight-test data), section 5.1:
 - "Three positions in the array used G.R.A.S. **46AE** microphones mounted on
   4 foot tripods to emulate certification placement at -45, 0, and 45 deg under
   the aircraft and perpendicular to the flight path."

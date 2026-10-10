@@ -19,7 +19,7 @@ counter-clockwise rotor in them is louder at phi > 0 in descent, the
 clockwise EC130 and Mi-8 at phi < 0.  With the sign corrected the same
 residuals favor no flip, which is now the demo's setting.
 
-Run:  PYTHONPATH=. python as350_flip_check.py
+Run:  python as350_flip_check.py
 
 The demo data are found through the ``as350_demo`` entry of local_paths
 (``AS350_DEMO_PATH`` is still honored and takes precedence).

@@ -1,6 +1,9 @@
 """Build a NICE-OPS sphere database from a directory of AAM sphere files.
 
-Usage:  PYTHONPATH=. python build_empirical_database.py SPHERE_DIRECTORY DATABASE_FILE
+Usage:  python build_empirical_database.py SPHERE_DIRECTORY DATABASE_FILE
+
+SPHERE_DIRECTORY holds the .nc spheres and a vehicle.cfg (rotors,
+atmosphere, weight and drag; see docs/file_formats.md).
 """
 import argparse
 

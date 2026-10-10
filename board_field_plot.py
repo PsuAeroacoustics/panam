@@ -111,7 +111,8 @@ def main(argv=None):
     ap.add_argument('--mic-height', type=float, default=gp.PLATE_MIC_HEIGHT_FT * FT,
                     help='microphone height above the plate top, m (default flush; 0.007 for an inverted mic)')
     ap.add_argument('--grid', default='201x101', help='map points, NXxNZ (default 201x101)')
-    ap.add_argument('-o', '--output', default='board_field.png')
+    ap.add_argument('-o', '--output', default='board_field.png',
+                    help='image file to write, always written (default board_field.png)')
     a = ap.parse_args(argv)
     nx, nz = (int(v) for v in a.grid.lower().split('x'))
     print(plot(a.frequency, a.elevation, a.flow_resistance, a.output, grid=(nx, nz), mic_height_m=a.mic_height))

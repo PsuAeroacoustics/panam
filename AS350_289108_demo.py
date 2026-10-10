@@ -1,4 +1,13 @@
 #!/usr/bin/env python3
+"""AS350 run 289108 demo: depropagate one 2017 Noise Abatement run to a hemisphere and
+compare it with the reference AAM sphere for the same run.
+
+Needs the AS350 demo data (the ``as350_demo`` entry of local_paths, or --basepath:
+the directory holding ``Acoustic/``, ``Ambient/``, ``AAM/`` and ``Tracking/``), which is not
+distributed with PANAM.  Writes its figures, the gridded hemisphere
+(``hemisphere_third_octave.npz``, which ``array_planner.py overlay`` reads) and an
+AAM-style sphere to --outdir.
+"""
 
 import os
 import argparse
@@ -220,9 +229,14 @@ def main():
 
 
 
-    parser = argparse.ArgumentParser(description='AS350 289108 Demo Plot Generator')
-    parser.add_argument('--show', action='store_true', help='Display plots interactively instead of saving.')
-    parser.add_argument('--outdir', default='demo_plots', help='Directory to save plots (default behavior).')
+    parser = argparse.ArgumentParser(
+        description='AS350 run 289108 demo: depropagate one 2017 Noise Abatement run to a hemisphere '
+                    'and compare it with the reference AAM sphere for the same run.')
+    parser.add_argument('--show', action='store_true',
+                        help='Open the plots in windows instead of saving them; nothing is written.')
+    parser.add_argument('--outdir', default='demo_plots',
+                        help='Directory for the figures, hemisphere_third_octave.npz and the AAM-style '
+                             'sphere (default demo_plots).')
     parser.add_argument('--basepath', default=None,
                         help='Base path to demo data (default: the as350_demo entry of local_paths).')
     args = parser.parse_args()
