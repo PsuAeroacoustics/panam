@@ -69,7 +69,12 @@ def external_ray_model(executable, atmosphere_path, *, frame_bearing_deg=90.0, r
     microphone).  ``receiver_heights`` (Nmics,) are the microphones' heights above
     the ground (default 0, flush); the sources' heights are measured from the
     same ground under each microphone.  Lengths are in ``length_units`` ('ft' or 'm').
+    ``executable`` is a path (relative to the current directory) or a name looked
+    up on PATH; the tracer runs in ``cwd``, by default a scratch directory.
     """
+    executable = os.fspath(executable)
+    if os.sep in executable or (os.altsep and os.altsep in executable):
+        executable = os.path.abspath(executable)   # the tracer runs in another directory
     if length_units not in ('ft', 'm'):
         raise ValueError("length_units must be 'ft' or 'm'")
     if receiver not in ('plate', 'point'):
