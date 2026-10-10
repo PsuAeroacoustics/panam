@@ -558,6 +558,15 @@ regulation's −13 for 0.5 s records is that value rounded). Where readings of t
 differ, PANAM puts 500 Hz in the middle range of Table A36-2 and takes the duration as one
 contiguous interval. NICE-OPS's EPNL is ported from this implementation.
 
+**Band sharing.** When $C$ at PNLTM is below the mean $\bar C$ of the five records centered there
+(§A36.4.4.2), the adjustment $\Delta_B = \bar C - C(k_M)$ is added to the EPNL as a separate
+term, as ICAO Annex 16 Vol. I, Appendix 2 and FAA AC 36-4 apply it:
+$\mathrm{EPNL} = \mathrm{PNLTM} + D + \Delta_B$, with PNLTM, the 10 dB-down limits and $D$ all
+from the unadjusted PNLT history. Read literally, 14 CFR 36 raises PNLTM and takes $D$ from it, so
+the adjustment cancels in $\mathrm{PNLTM} + D$ and acts only by narrowing the duration, which
+lowers the EPNL. `effective_perceived_noise_level` returns `pnltm` (adjusted),
+`pnltm_unadjusted` and `delta_b`.
+
 The regulation's tone correction is defined for finite band levels. A band of $-\infty$ (zero
 energy) would make the step-7 background infinite or undefined, so it enters steps 1–7 at its
 noy threshold SPL(d) of Table A36-3 and carries no tone itself; PNL is unchanged, since the band

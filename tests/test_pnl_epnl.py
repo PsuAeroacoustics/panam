@@ -209,6 +209,34 @@ def test_epnl_bandshare_adjustment():
     assert res["pnltm"] > res0["pnltm"]
     lo_hi_avg = np.mean(res["c_max"][1:6])
     assert res["pnltm"] == pytest.approx(res["pnl"][3] + lo_hi_avg)
+    # Delta_B = C_avg - C(kM) = (4 * 10/3 + 0) / 5, added to the EPNL
+    assert res["delta_b"] == pytest.approx(8.0 / 3.0, abs=1e-9)
+    assert res0["delta_b"] == 0.0
+    assert res["pnltm_unadjusted"] == res0["pnltm"] == res0["pnltm_unadjusted"]
+    assert res["epnl"] - res0["epnl"] == pytest.approx(res["delta_b"], abs=1e-9)
+    assert res["epnl"] == pytest.approx(res["pnltm"] + res["duration_correction_db"])
+
+
+def test_epnl_bandshare_adjustment_never_lowers_epnl():
+    """The 10 dB-down limits come from the unadjusted PNLTM.
+
+    Records 1 and 5 are 7.47 dB below the peak: inside PNLTM - 10, outside
+    PNLTM + Delta_B - 10 = PNLTM - 7.33.  Raising PNLTM before choosing the
+    limits dropped them, and the adjustment lowered the EPNL by 0.52 dB
+    instead of raising it by Delta_B = 8/3.
+    """
+    hist = np.tile(FLAT, (7, 1))
+    hist[:, K1000] += 10.0
+    hist[3, K1000] -= 10.0
+    hist[3, :] += 4.0
+    hist[[0, 6], :] -= 30.0
+    hist[[1, 5], :] -= 7.0
+    res = fa.effective_perceived_noise_level(hist, bandshare_adjustment=True)
+    res0 = fa.effective_perceived_noise_level(hist, bandshare_adjustment=False)
+    assert res["pnltm"] - 10.0 > res["pnlt"][1] > res["pnltm_unadjusted"] - 10.0
+    assert (res["k1"], res["k2"]) == (res0["k1"], res0["k2"]) == (1, 5)
+    assert res["delta_b"] == pytest.approx(8.0 / 3.0, abs=1e-9)
+    assert res["epnl"] - res0["epnl"] == pytest.approx(8.0 / 3.0, abs=1e-9)
 
 
 def test_nice_levels():

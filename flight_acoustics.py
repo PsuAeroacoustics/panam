@@ -279,7 +279,8 @@ def third_octave_band_edges(band_centers_hz):
 # Implements 14 CFR Part 36 Appendix A, section A36.4 (identical to ICAO
 # Annex 16 Vol. I Appendix 2): noy conversion via Table A36-3, PNL, the
 # ten-step spectral-irregularity (tone) correction with Table A36-2, the
-# A36.4.4.2 band-sharing adjustment to PNLTM, and the duration correction.
+# A36.4.4.2 band-sharing check, applied as ICAO Annex 16 Vol. I App. 2 adds
+# it (a separate Delta_B on the EPNL), and the duration correction.
 # Cross-checked against the CFR text and the MATLAB reference implementation
 # (tools.git/metrics/EPNLcalc.m); deviations from that MATLAB code are
 # deliberate and follow the regulation:
@@ -500,12 +501,23 @@ def effective_perceived_noise_level(band_level_history, dt=0.5,
         masked: passed to :func:`tone_correction`
 
     Returns: dict with
-        epnl: EPNL in EPNdB
-        pnltm: maximum tone-corrected perceived noise level, TPNdB
-        duration_correction_db: D
+        epnl: EPNL in EPNdB, PNLTM + D + delta_b
+        pnltm: PNLTM after the band-sharing check (pnltm_unadjusted +
+            delta_b), TPNdB
+        pnltm_unadjusted: the maximum of PNLT, TPNdB
+        delta_b: band-sharing adjustment, dB (0 when not applied)
+        duration_correction_db: D = 10 lg(sum 10^(PNLT/10) dt / T) - PNLTM,
+            from the unadjusted PNLTM, so epnl = pnltm + D
         k1, k2: duration-interval sample limits (contiguous, PNLTM-10 down)
         pnlt, pnl, c_max, tone_band: per-sample histories
         clipped: True when the 10 dB-down interval hits the record edge
+
+    The band-sharing adjustment follows ICAO Annex 16 Vol. I, Appendix 2
+    (and FAA AC 36-4): when C at PNLTM is below the mean C of the five
+    records centered there, delta_b = PNL(kM) + C_avg - PNLTM is added to the
+    EPNL as a separate term.  PNLTM, the 10 dB-down limits and D are those of
+    the unadjusted PNLT history.  Read literally, 14 CFR 36 raises PNLTM and
+    takes D from it, and the two cancel in EPNL = PNLTM + D.
 
     The duration correction uses the exact 10*log10(dt/T) normalization with
     T = 10 s; the regulation's specialised "-13" constant for dt = 0.5 s is a
@@ -520,14 +532,15 @@ def effective_perceived_noise_level(band_level_history, dt=0.5,
 
     k_m = int(np.nanargmax(pnlt))
     pnltm = float(pnlt[k_m])
+    delta_b = 0.0
     if bandshare_adjustment:
         # A36.4.4.2: if C at PNLTM is below the average of the five
         # consecutive intervals centered there, tone suppression by band
-        # sharing is suspected; recompute PNLTM with the average C.
+        # sharing is suspected; the difference is the adjustment Delta_B.
         lo, hi = max(0, k_m - 2), min(len(pnlt), k_m + 3)
         c_avg = float(np.mean(c_max[lo:hi]))
         if c_max[k_m] < c_avg:
-            pnltm = float(pnl[k_m] + c_avg)
+            delta_b = float(pnl[k_m] + c_avg) - pnltm
 
     # Duration interval: contiguous from the first to the last sample at or
     # above PNLTM-10 (dips within the interval are included), A36.4.5.
@@ -536,8 +549,10 @@ def effective_perceived_noise_level(band_level_history, dt=0.5,
     duration = 10.0 * np.log10(
         np.sum(10.0 ** (pnlt[k1:k2 + 1] / 10.0)) * dt / 10.0) - pnltm
     return {
-        "epnl": pnltm + duration,
-        "pnltm": pnltm,
+        "epnl": pnltm + duration + delta_b,
+        "pnltm": pnltm + delta_b,
+        "pnltm_unadjusted": pnltm,
+        "delta_b": delta_b,
         "duration_correction_db": duration,
         "k1": k1, "k2": k2,
         "pnlt": pnlt, "pnl": pnl, "c_max": c_max, "tone_band": tone_band,
