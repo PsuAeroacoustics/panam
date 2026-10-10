@@ -458,9 +458,9 @@ $k$ nearest samples from any number of microphones; it is a gap only if that rad
 60°. The nodes filled this way are seen by only one or two microphones, and their count is
 reported as `relaxed` in the result's `interpolation` record. Two options shape the kernel:
 
-- **Aspect** stretches the distance in azimuth, $h = \sqrt{\Delta e^2 + (\Delta\psi\cos\bar{e}/A)^2}$, so that
-  samples along a flight pass (which spread in azimuth) share more than samples across it. The
-  2017 release used $A = 5$.
+- **Aspect** stretches the distance in azimuth, $h_A = \sqrt{\Delta e^2 + (h^2 - \Delta e^2)/A^2}$ from the
+  geodesic distance $h$ and the elevation difference $\Delta e$, so that samples along a flight pass
+  (which spread in azimuth) share more than samples across it. The 2017 release used $A = 5$.
 - **Floor** softens the Shepard singularity, $h \to \sqrt{h^2 + (fR)^2}$ in the denominator, so
   that one sample does not dominate a node it nearly hits. The 2017 release used $f = 1$.
 

@@ -5965,14 +5965,17 @@ def adaptive_idw_weights(ielv, iazi, felv, fazi, mic, resolution_deg, *, k=8, mi
     which falls to zero at R.  A node that would need more than max_radius_deg is a genuine
     gap in the coverage, not a hole to smooth over: its row is empty and it is reported.
 
-    ``aspect`` > 1 stretches the neighborhood in azimuth: distances are measured as
-    sqrt(de^2 + (da cos e / aspect)^2), elevation differences de and azimuth differences da
-    along the circle of latitude, so a node reaches aspect times as far across the sphere in
-    azimuth as in elevation.  A pass's microphones each trace a line of samples nose to tail,
-    so at fixed elevation azimuth steps from one microphone's line to the next, while the
-    level's steepest change near the horizon is in elevation: a wide reach in azimuth
-    averages across the lines and a narrow one in elevation keeps that gradient.  1 (the
-    default) is the geodesic distance, as before.
+    ``aspect`` > 1 stretches the neighborhood in azimuth: the geodesic distance h from the
+    node to a sample is split into the elevation difference de and the rest,
+    sqrt(h^2 - de^2), which is the arc along the circle of latitude for nearby points, and
+    the distance is taken as sqrt(de^2 + (h^2 - de^2) / aspect^2).  A node so reaches aspect
+    times as far across the sphere in azimuth as in elevation.  A pass's microphones each
+    trace a line of samples nose to tail, so at fixed elevation azimuth steps from one
+    microphone's line to the next, while the level's steepest change near the horizon is in
+    elevation: a wide reach in azimuth averages across the lines and a narrow one in
+    elevation keeps that gradient.  The distance is continuous in aspect and in the node's
+    position, the geodesic distance at aspect 1 (the default), and at a pole (elevation +-90
+    deg), where every sample is due north or south, the geodesic distance for any aspect.
 
     ``kernel`` 'shepard' (the default) is Franke and Nielson's weight, ((R - h)/(R h))^2,
     which grows without bound at a sample and so nearly interpolates: a node on one
@@ -6013,6 +6016,9 @@ def adaptive_idw_weights(ielv, iazi, felv, fazi, mic, resolution_deg, *, k=8, mi
     k = int(min(max(k, 1), n))
     if kernel not in ('shepard', 'biweight'):
         raise ValueError("kernel must be 'shepard' or 'biweight'")
+    aspect = float(aspect)
+    if not aspect > 0.0:
+        raise ValueError('aspect must be positive')
 
     def unit(elv, azi):
         e, a = np.deg2rad(elv), np.deg2rad(azi)
@@ -6030,13 +6036,12 @@ def adaptive_idw_weights(ielv, iazi, felv, fazi, mic, resolution_deg, *, k=8, mi
     eps = 10.0 * np.finfo(float).eps
     for start in range(0, ielv.size, chunk):
         stop = min(start + chunk, ielv.size)
-        if aspect == 1.0:
-            h = np.degrees(np.arccos(np.clip(nodes[start:stop] @ samples.T, -1.0, 1.0)))
-        else:
-            de = ielv[start:stop, None] - felv[None, :]
-            da = (iazi[start:stop, None] - fazi[None, :] + 180.0) % 360.0 - 180.0
-            da *= np.cos(np.deg2rad(0.5 * (ielv[start:stop, None] + felv[None, :])))
-            h = np.sqrt(de ** 2 + (da / float(aspect)) ** 2)
+        h = np.degrees(np.arccos(np.clip(nodes[start:stop] @ samples.T, -1.0, 1.0)))
+        if aspect != 1.0:
+            # The elevation difference is never more than the geodesic distance; the
+            # clip is for the arc cosine's roundoff.
+            de2 = (ielv[start:stop, None] - felv[None, :]) ** 2
+            h = np.sqrt(de2 + np.maximum(h ** 2 - de2, 0.0) / aspect ** 2)
         order = np.argsort(h, axis=1)
         d_k = np.take_along_axis(h, order[:, k - 1:k], axis=1)[:, 0]
         # Nearest sample of each microphone, then the min_mics-th nearest microphone.
