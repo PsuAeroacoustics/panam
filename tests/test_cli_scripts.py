@@ -123,3 +123,17 @@ def test_spectrogram_netcdf_uses_the_file_start_time(tmp_path, capsys):
         _spectrogram_call(path, '-x', '0:5')
     assert raised.value.code == 2
     assert 'the record spans 50000 to 50020 s' in capsys.readouterr().err
+
+
+def test_ega_plot_help_examples_run(tmp_path):
+    """The epilog's second example used a -t flag the parser does not have."""
+    import shlex
+    help_text = _run('ega_plot.py', '--help', cwd=tmp_path).stdout
+    examples = [shlex.split(line)[1:] for line in help_text.splitlines() if line.strip().startswith('ega_plot.py ')]
+    assert len(examples) == 3
+    for i, example in enumerate(examples):
+        if '-o' not in example:
+            example += ['-o', f'example{i}.pdf']
+        result = _run('ega_plot.py', *example, cwd=tmp_path)
+        assert result.returncode == 0, (example, result.stderr)
+        assert (tmp_path / example[example.index('-o') + 1]).stat().st_size > 0

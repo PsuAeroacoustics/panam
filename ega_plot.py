@@ -43,11 +43,11 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Frequency vs distance for grass at 10m height difference
+  # Frequency vs distance for grass, source at 10 m, receiver at 1.5 m
   %(prog)s -g grass -f 100:5000 -d 50:500
 
   # Distance vs height for asphalt over 1 kHz
-  %(prog)s -g asphalt -t distance_height -f 1000 -d 10:300
+  %(prog)s -g asphalt -p distance_height -f 1000 -d 10:300
 
   # Broadband attenuation (third-octave) over hard ground
   %(prog)s -g rock -b -f 100:5000 -d 50:500 -o ega_rock_broadband.pdf
