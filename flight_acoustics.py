@@ -11,7 +11,7 @@ from panam_acoustics.atmosphere import Atmosphere
 from typing import Any, Optional, cast
 import openpyxl
 import scipy.signal
-from scipy.ndimage import median_filter, maximum_filter1d
+from scipy.ndimage import maximum_filter1d
 from scipy.interpolate import RegularGridInterpolator
 from scipy.special import wofz
 import simplekml
@@ -90,7 +90,7 @@ def psd_welch(signal, sampling_rate, cal=0.0, window_time=1.0, window_type='hann
            level_A is the A-weighted integrated sound pressure level over all bands in dB
     """
     kcal = 10 ** (cal / 20)
-    binwidth = int(2.0 ** nextpow2(window_time * sampling_rate))
+    binwidth = frame_length(window_time, sampling_rate)
     window = scipy.signal.get_window(window_type, binwidth)
     frequency, power_spectral_density = scipy.signal.welch(kcal * signal, sampling_rate,
                                                            window=window, noverlap=int(binwidth * window_overlap))
@@ -170,6 +170,11 @@ def level_history(signal, sampling_rate, period=1.0, window='hann'):
     for i in range(0, len(edges) - 1, 1):
         level_a[i], level_z[i] = overall_SPL(signal[int(edges[i]):int(edges[i + 1])], sampling_rate, window)
     return time, level_a, level_z
+
+
+def frame_length(window_time, sampling_rate):
+    """Samples in an analysis frame of ``window_time`` seconds: the next power of two."""
+    return int(2.0 ** nextpow2(window_time * sampling_rate))
 
 
 def nextpow2(x):
@@ -922,7 +927,7 @@ def spectrogram(signal, sampling_rate, window_time=0.5, window_type="hann", wind
     SPL is a frequency x time power spectral density spectrogram, dB re (20 uPa)^2/Hz
     """
     # Pick next power of two that captures the window time, and generate the window
-    binwidth = int(2.0 ** nextpow2(window_time * sampling_rate))
+    binwidth = frame_length(window_time, sampling_rate)
     window = scipy.signal.get_window(window_type, binwidth)
     # Calculate the spectrogram as a PSD
     f, t, Sxx = scipy.signal.spectrogram(signal, sampling_rate, window, noverlap=round(window_overlap * binwidth),
@@ -1123,6 +1128,14 @@ def _running_integral_at(running, edge0, df, freq):
     return running[k, cols] + (x - k) * (running[k + 1, cols] - running[k, cols])
 
 
+def _band_integrals(running, edge0, df, lower, upper, scale):
+    """(Nbands, Npts): ``running`` (see :func:`_running_integral_at`) between each
+    band's edges, the edges scaled by each column's ``scale``."""
+    return np.array([_running_integral_at(running, edge0, df, hi * scale)
+                     - _running_integral_at(running, edge0, df, lo * scale)
+                     for lo, hi in zip(lower, upper)]).reshape(len(lower), running.shape[1])
+
+
 def _running_floor(psd, size, chunk=64):
     """Running median over ``size`` bins of each column of ``psd`` (bins x samples),
     edges held, taken over the bins that are not zero.
@@ -1180,9 +1193,8 @@ def tone_aware_band_power(psd, f, lower, upper, doppler=None, floor_bins=15, thr
     run = np.vstack((np.zeros((1, psd.shape[1])), np.cumsum(broadband * df, axis=0)))
     e0 = f[0] - 0.5 * df
     d = np.ones(psd.shape[1]) if doppler is None else doppler
-    out = np.zeros((len(lower), psd.shape[1]))
+    out = np.maximum(_band_integrals(run, e0, df, lower, upper, d), 0.0)
     for ib, (lo, hi) in enumerate(zip(lower, upper)):
-        out[ib] = np.maximum(_running_integral_at(run, e0, df, hi * d) - _running_integral_at(run, e0, df, lo * d), 0.0)
         inside = (f_peak >= lo) & (f_peak < hi)
         np.add.at(out[ib], J[inside], power[inside])
     return out
@@ -1195,12 +1207,13 @@ def _bands_missing(dropped, f, lower, upper, doppler):
     can, since the bins stop within a bin of either end of it)."""
     df = f[1] - f[0]
     edge0, edge1 = f[0] - 0.5 * df, f[-1] + 0.5 * df
-    count = np.vstack((np.zeros((1, dropped.shape[1])), np.cumsum(dropped, axis=0, dtype=float)))
-    out = np.empty((len(lower), dropped.shape[1]), dtype=bool)
-    for ib, (lo, hi) in enumerate(zip(lower, upper)):
-        lo_d, hi_d = lo * doppler, hi * doppler
-        out[ib] = ((_running_integral_at(count, edge0, df, hi_d) - _running_integral_at(count, edge0, df, lo_d) > 0.0)
-                   | (lo_d < edge0 - 0.5 * df) | (hi_d > edge1 + 0.5 * df))
+    lower, upper = np.asarray(lower, dtype=float), np.asarray(upper, dtype=float)
+    out = ((lower[:, None] * doppler[None, :] < edge0 - 0.5 * df)
+           | (upper[:, None] * doppler[None, :] > edge1 + 0.5 * df))
+    if dropped.any():
+        count = np.zeros((dropped.shape[0] + 1, dropped.shape[1]), dtype=np.int32)
+        np.cumsum(dropped, axis=0, dtype=np.int32, out=count[1:])
+        out |= _band_integrals(count, edge0, df, lower, upper, doppler) > 0.0
     return out
 
 
@@ -1815,12 +1828,12 @@ def depropagate_hemisphere(
 
         # Filter-bank band levels on the spectrogram's own frames, so they
         # share its time base (and its ambient treatment below).
-        frame_length = int(2.0 ** nextpow2(window_time * fs))
+        frame_samples = frame_length(window_time, fs)
         band_frames = None
         if use_filter_bank:
             # NaN where the record has a gap (or the band reaches Nyquist): no data
             band_frames = pa_filters.third_octave_filter_bank(
-                pressure_list[im], fs, band_centers, t_rel, frame_length) / pref_sq
+                pressure_list[im], fs, band_centers, t_rel, frame_samples) / pref_sq
 
         # Per-bin (and per-band) ambient reference.
         amb_lin = None
@@ -1846,7 +1859,7 @@ def depropagate_hemisphere(
             amb_lin = np.nanmean(10.0 ** (psd_amb_db[fmask, :] / 10.0), axis=1)
             if use_filter_bank:
                 amb_band = np.nanmean(pa_filters.third_octave_filter_bank(
-                    amb_p, amb_fs, band_centers, t_amb, frame_length), axis=1) / pref_sq
+                    amb_p, amb_fs, band_centers, t_amb, frame_samples), axis=1) / pref_sq
         elif ambient_time_range is not None:
             amb_mask = np.logical_and(t_abs >= float(ambient_time_range[0]),
                                       t_abs <= float(ambient_time_range[1]))
@@ -1887,9 +1900,14 @@ def depropagate_hemisphere(
 
         # OASPL power over selected frequency range: the bins a cap dropped are
         # left out, and a sample with no bin left is missing
-        no_bins = np.all(np.isnan(psd_v_lin), axis=0)
-        power_oaspl = np.where(no_bins, np.nan, np.nansum(psd_v_lin * df, axis=0))
-        power_spl_a = np.where(no_bins, np.nan, np.nansum((psd_v_lin * Aweight_lin[:, None]) * df, axis=0))
+        dropped = np.isnan(psd_v_lin)
+        if dropped.any():
+            no_bins = np.all(dropped, axis=0)
+            power_oaspl = np.where(no_bins, np.nan, np.nansum(psd_v_lin * df, axis=0))
+            power_spl_a = np.where(no_bins, np.nan, np.nansum((psd_v_lin * Aweight_lin[:, None]) * df, axis=0))
+        else:
+            power_oaspl = np.sum(psd_v_lin * df, axis=0)
+            power_spl_a = np.sum((psd_v_lin * Aweight_lin[:, None]) * df, axis=0)
 
         fazi_list.append(az_v)
         felv_list.append(el_v)
@@ -1930,20 +1948,15 @@ def depropagate_hemisphere(
                 d_v = doppler_geom[tidx, im][valid] if doppler_geom is not None else np.ones(tobs_v.size)
                 # A band is missing where any bin it spans was dropped (NaN), or
                 # where its Doppler-scaled edges leave the selected bins.
-                dropped = np.isnan(psd_v_lin)
-                psd_kept = np.where(dropped, 0.0, psd_v_lin)
+                psd_kept = np.where(dropped, 0.0, psd_v_lin) if dropped.any() else psd_v_lin
                 missing = _bands_missing(dropped, f_sel, band_lower, band_upper, d_v)
                 if tone_aware:
-                    powers = tone_aware_band_power(psd_kept, f_sel, band_lower, band_upper,
-                                                   doppler=d_v if doppler_geom is not None else None)
+                    powers = tone_aware_band_power(psd_kept, f_sel, band_lower, band_upper, doppler=d_v)
                 else:
                     # Running integral of the spectrum at the bins' edges, read at each
                     # sample's Doppler-scaled band edges.
                     running = np.vstack((np.zeros((1, tobs_v.size)), np.cumsum(psd_kept * df, axis=0)))
-                    powers = np.array([np.maximum(_running_integral_at(running, f_sel[0] - 0.5 * df, df, f_upper * d_v)
-                                                  - _running_integral_at(running, f_sel[0] - 0.5 * df, df, f_lower * d_v),
-                                                  0.0)
-                                       for f_lower, f_upper in zip(band_lower, band_upper)])
+                    powers = np.maximum(_band_integrals(running, f_sel[0] - 0.5 * df, df, band_lower, band_upper, d_v), 0.0)
                 powers = np.where(missing, np.nan, powers)
                 for ib in range(band_centers.size):
                     band_power_lists[ib].append(powers[ib])
@@ -3266,8 +3279,7 @@ def write_norah2_triangulation(filename, hemispheres, *, corrections=NORAH2_DEFA
     if np.unique(np.round(points, 6), axis=0).shape[0] != points.shape[0]:
         raise ValueError('two hemispheres share a flight condition; NORAH2 merges repeat runs '
                          'into one hemisphere per condition, so average them first')
-    if np.ptp(points[:, 0]) == 0.0 or np.ptp(points[:, 1]) == 0.0 or \
-            _conditions_are_collinear(points[:, 0], points[:, 1]):
+    if _conditions_are_collinear(points[:, 0], points[:, 1]):
         raise ValueError('the conditions lie on one line in (speed, flight path angle); '
                          'NORAH2 needs at least one triangle')
     triangles = Delaunay(points).simplices
@@ -3771,8 +3783,10 @@ def _conditions_are_collinear(mus, gammas):
 
     Taken as NICE-OPS takes them, each axis normalized onto [0, 1] (a
     collinear set stays collinear under that, and the tolerance then has a
-    scale).  Assumes both axes vary.
+    scale).  A constant axis is collinear.
     """
+    if np.ptp(mus) == 0.0 or np.ptp(gammas) == 0.0:
+        return True
     points = np.column_stack(((mus - mus.min()) / np.ptp(mus),
                               (gammas - gammas.min()) / np.ptp(gammas)))
     offsets = points[1:] - points[0]
@@ -5115,8 +5129,6 @@ def project_directory(directory_name, altitude=500, cutoff=30, input_frequencies
             nondimensional_flat_plate_drag, main_rotor_tip_speed)
 
 
-
-
 @acoustic_plot_style
 def fried_egg_plot(directory_name, metric='mean', dimensionless=False, altitude=500, cutoff=30, input_frequencies=None,
                    fpa_climb_cutoff=5, atmosphere=Atmosphere(temperature=293.15, pressure=101.325,
@@ -5227,8 +5239,6 @@ def extract_SPL(filename, infreqs=None, distance=1000,
     # frequency/amplitude are returned so callers can recompute band-based
     # quantities (e.g. EAA) after modifying the spectrum.
     return azi, elv, phi, theta, radius, SPLO, SPLA, EAA, speed, flight_path_angle, frequency, amplitude
-
-
 
 
 @acoustic_plot_style
@@ -5969,8 +5979,6 @@ def geodist(elv1, azi1, elv2, azi2):
     return arclength
 
 
-
-
 #: Defaults for depropagate_hemisphere(interpolation={...}); see adaptive_idw_weights.
 #: resolution_factor 0.5 takes half the window's arc, the sample being its center.  On a
 #: 2017 B407 sphere this gives about 3-5 deg at the rim, where samples crowd, 10-20 deg at
@@ -6478,7 +6486,6 @@ def ega(hs, hr, d2, f, a, flores, pt=True, cturb=0.0, boundary_loss_correction=T
     a = np.asarray(a, dtype=float)
     flores = np.asarray(flores, dtype=float)
     cturb = np.asarray(cturb, dtype=float)
-
 
     # Calculate geometric values
     direct_range = np.sqrt(d2**2 + (hs - hr)**2)  # Direct acoustic path distance

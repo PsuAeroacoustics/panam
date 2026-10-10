@@ -99,7 +99,7 @@ def third_octave_filter_bank(signal, fs, band_centers, frame_centers, frame_leng
     out = np.full((band_centers.size, frame_centers.size), np.nan)
     if gaps.all():
         return out
-    x = np.where(gaps, 0.0, x - x[~gaps].mean()) if gaps.any() else x - x.mean()
+    x = np.where(gaps, 0.0, x - x[~gaps].mean())
 
     decimated = {0: x}
 

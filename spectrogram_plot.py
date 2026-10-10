@@ -59,7 +59,7 @@ if args.x_limits is not None:
     selection = (time >= low) & (time <= high)
     signal = signal[selection]
     time = time[selection]
-    window_samples = int(2.0 ** fa.nextpow2(args.window_time * fs))
+    window_samples = fa.frame_length(args.window_time, fs)
     if signal.size < window_samples:
         parser.error(f"-x {low:g}:{high:g} selects {signal.size} samples, fewer than one {window_samples}-sample "
                      f"window; the record spans {time_range[0]:g} to {time_range[1]:g} s")

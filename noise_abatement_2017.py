@@ -1376,6 +1376,8 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     Returns a dict describing what was processed, so a batch caller can log and
     audit it without re-opening the output.
     """
+    if rim_elevation_deg is None:
+        rim_elevation_deg = DEFAULT_RIM_ELEVATION_DEG
     row = test.by_run[run]
     track = load_track(test.track_path(run))
     if nose_from_heading:
@@ -1581,7 +1583,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
         ray_model=ray_model,
         interpolation=interpolation,
         rim_range=(None if max_rim_range_ft is None else
-                   (DEFAULT_RIM_ELEVATION_DEG if rim_elevation_deg is None else rim_elevation_deg, max_rim_range_ft)),
+                   (rim_elevation_deg, max_rim_range_ft)),
         remove_doppler=remove_doppler,
         tone_aware=tone_aware,
         return_scattered=samples_path is not None,
@@ -1656,7 +1658,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
                                    dict(fa.ADAPTIVE_INTERPOLATION, **interpolation).items()))),
                 gaps=(hemisphere.get('interpolation', {}).get('gaps', 0)),
                 rim_range='' if max_rim_range_ft is None else '{:g} ft below {:g} deg'.format(
-                    max_rim_range_ft, DEFAULT_RIM_ELEVATION_DEG if rim_elevation_deg is None else rim_elevation_deg),
+                    max_rim_range_ft, rim_elevation_deg),
                 board_correction=board_correction if board_correction == 'flat' else
                 'plate_bem ' + ' '.join('{}={}'.format(k, v) for k, v in
                                          sorted((ground or SITE_GROUND).items())))

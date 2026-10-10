@@ -195,7 +195,7 @@ def oaspl_grids(band_centers, bands_db, freq_range):
         raise ValueError('No third-octave bands fall within hemisphere_freq_range_hz')
 
     P_plot = np.power(10.0, bands_db[band_mask, ...] / 10.0)
-    Aweight = np.array([fa.dBAw(f) for f in band_centers[band_mask]], dtype=float)
+    Aweight = fa.dBAw(band_centers[band_mask])
     Aweight = Aweight.reshape((-1,) + (1,) * (np.ndim(bands_db) - 1))
     P_plot_A = np.power(10.0, (bands_db[band_mask, ...] + Aweight) / 10.0)
     P_full = np.power(10.0, bands_db / 10.0)
