@@ -521,3 +521,12 @@ def test_the_prefetch_pool_is_shut_down_when_the_batch_is_interrupted(monkeypatc
     with pytest.raises(KeyboardInterrupt):
         na.build_all('AS350B3', str(tmp_path / 'out'), root=str(tmp_path))
     assert len(pools) == 1 and pools[0].closed
+
+
+def test_the_cli_help_states_the_point_stride_defaults(capsys):
+    """The CLI builds every 10th track sample, the API every one; the help must say so."""
+    with pytest.raises(SystemExit):
+        na.main(['--help'])
+    help_text = ' '.join(capsys.readouterr().out.split())
+    assert '--point-stride' in help_text
+    assert 'default 10' in help_text and 'default to 1' in help_text

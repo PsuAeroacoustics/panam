@@ -1998,7 +1998,10 @@ def main(argv=None):
     parser.add_argument('--max-absorption-correction-db', type=float, default=30.0,
                         help='discard bins needing more absorption correction than this; '
                              '30 dB is what keeps source spectra rolling off physically')
-    parser.add_argument('--point-stride', type=int, default=10)
+    parser.add_argument('--point-stride', type=int, default=10,
+                        help='depropagate every Nth sample of the steady track (default %(default)s, '
+                             "the 2017 release's setting; build_sphere and build_all default to 1, "
+                             'every sample, which is about N times slower and does not reproduce it)')
     parser.add_argument('--min-elevation-deg', type=float, default=10.0,
                         help='drop emission points below this elevation, where ground '
                              'impedance dominates (default 10)')
