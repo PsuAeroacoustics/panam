@@ -75,3 +75,18 @@ def test_third_octave_band_levels_drops_bands_past_nyquist():
     band_centers, _ = fa.third_octave_band_levels(noise, fs)
     assert np.all(band_centers * 2.0 ** (1.0 / 6.0) <= fs / 2.0)
     assert band_centers[-1] == pytest.approx(16000.0)
+
+
+def test_third_octave_band_levels_off_bin_tone_does_not_leak():
+    """A 50.5 Hz tone (between 1 Hz bins) stays in its band.
+
+    A rectangular window leaks it with a 1/k**2 skirt: the 1 kHz band read
+    66 dB below the tone band, and the 10 kHz band 92 dB below it.
+    """
+    fs = 25600
+    t = np.arange(fs) / fs
+    tone = np.sqrt(2.0) * np.sin(2.0 * np.pi * 50.5 * t)    # 1 Pa rms, 93.98 dB
+    band_centers, band_levels = fa.third_octave_band_levels(tone, fs)
+    k = int(np.argmin(np.abs(band_centers - 50.0)))
+    assert band_levels[k] == pytest.approx(10.0 * np.log10(np.mean(tone ** 2) / 4.0e-10), abs=0.05)
+    assert np.all(band_levels[band_centers >= 400.0] < band_levels[k] - 120.0)

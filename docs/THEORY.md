@@ -75,7 +75,13 @@ in dB re $(20\ \mu\mathrm{Pa})^2$/Hz. For depropagation, $T_w = 0.5$ s with 50% 
 samples (0.64 s at 25.6 kHz, $\Delta f = 1.5625$ Hz). Each frame is a single periodogram. The
 averaging happens later, over the samples that fall in a sphere cell (§6). The spectrum at an
 emission point's reception time is interpolated between frame centers **in power**, not in dB.
-Welch averaging [7] is available for stationary signals (`psd_welch`).
+Welch averaging [7] is available for stationary signals (`psd_welch`). The whole-record
+spectrum (`psd`, and through it `third_octave_band_levels`, `overall_SPL` and `level_history`) is
+one Hann-windowed, density-scaled periodogram. A rectangular window would leak an off-bin rotor tone
+across the spectrum with a $1/k^2$ skirt, enough to raise the A-weighted level of a 25 Hz tone by
+0.9 dB in a 1 s record and 12 dB in a 0.25 s one. `overall_SPL`'s unweighted level is the record's
+mean-square pressure; its A-weighted level scales that by the A-weighted fraction of the Hann
+spectrum.
 
 ### 2.2 One-third-octave bands
 

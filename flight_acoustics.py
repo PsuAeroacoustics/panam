@@ -37,14 +37,23 @@ P_REF = 2.0e-5
 KNOT_MPS = 0.514444
 
 
-def psd(signal, sampling_rate, cal=0.0):
+def psd(signal, sampling_rate, cal=0.0, window='hann'):
     """
     Compute the acoustic power spectral density of a signal
+
+    A single periodogram of the whole record, density-scaled (divided by
+    ``sampling_rate * sum(w**2)``), so a broadband level and the integral over
+    all bands are unbiased whatever the window.  The default Hann window
+    keeps a tone's leakage within a few bins (sidelobes falling 18 dB per
+    octave); a tone's power is spread over its main lobe, four bins wide.
+    ``window='boxcar'`` gives the exact energy of the record (Parseval) but
+    leaks an off-bin tone across the whole spectrum with a 1/k**2 skirt.
 
     Args:
         signal: Array-like acoustic signal
         sampling_rate: Sampling rate of signal, Hz
         cal: Optional calibration factor to apply to signal (dB)
+        window: window name or array, see scipy.signal.get_window, default 'hann'
     Returns: tuple (frequency, psd_db, level)
            WHERE
            frequency is an array of band frequencies
@@ -52,10 +61,11 @@ def psd(signal, sampling_rate, cal=0.0):
            level is the integrated sound pressure level over all bands in dB
     """
     kcal = 10 ** (cal / 20)
-    frequency, power_spectral_density = scipy.signal.periodogram(kcal * signal, sampling_rate)
+    frequency, power_spectral_density = scipy.signal.periodogram(kcal * signal, sampling_rate, window=window)
     df = frequency[1] - frequency[0]
-    psd_db = 10.0 * np.log10(power_spectral_density / (P_REF ** 2))
-    level = 20.0 * np.log10(np.sqrt(np.sum(power_spectral_density * df)) / P_REF)
+    with np.errstate(divide='ignore'):
+        psd_db = 10.0 * np.log10(power_spectral_density / (P_REF ** 2))
+        level = 20.0 * np.log10(np.sqrt(np.sum(power_spectral_density * df)) / P_REF)
     return frequency, psd_db, level
 
 
@@ -105,30 +115,47 @@ def psd_welch(signal, sampling_rate, cal=0.0, window_time=1.0, window_type='hann
     return frequency, psd_db, level, level_A
 
 
-def overall_SPL(signal, sampling_rate):
+def overall_SPL(signal, sampling_rate, window='hann'):
     """
     Computed A-weighted and unweighted sound pressure levels
+
+    The unweighted level is the mean-square pressure of the record (mean
+    removed), exact for any signal.  The A-weighted level scales it by the
+    A-weighted fraction of the record's windowed spectrum (:func:`psd`), so a
+    strong low-frequency tone does not leak into the bands where the
+    A-weighting is near 0 dB.
+
     Args:
         signal: pressure time history signal, Pa
         sampling_rate: sampling rate of signal, Hz
+        window: window of the spectrum the A-weighting is applied to, see
+            :func:`psd`, default 'hann'
 
     Returns:
     tuple (A-weighted Level, Unweighted Level)
     """
-    f, spl, levelZ = psd(signal, sampling_rate)
-    weight = dBAw(f)
-    df = f[1] - f[0]
-    levelA = 10.0 * np.log10(df * np.sum(10.0 ** ((spl + weight) / 10.0)))
+    signal = np.asarray(signal, dtype=float)
+    mean_square = np.mean((signal - np.mean(signal)) ** 2)
+    f, spl, _ = psd(signal, sampling_rate, window=window)
+    power = 10.0 ** (spl / 10.0)
+    total = np.sum(power)
+    with np.errstate(divide='ignore'):
+        levelZ = 10.0 * np.log10(mean_square / P_REF ** 2)
+        if total > 0:
+            levelA = levelZ + 10.0 * np.log10(np.sum(10.0 ** (dBAw(f) / 10.0) * power) / total)
+        else:
+            levelA = -np.inf
     return levelA, levelZ
 
 
-def level_history(signal, sampling_rate, period=1.0):
+def level_history(signal, sampling_rate, period=1.0, window='hann'):
     """
     Compute time history of SPL
     Args:
         signal: pressure time history signal, Pa
         sampling_rate: sampling rate of signal, Hz
         period: integration time for SPL calculations, sec
+        window: window of each period's spectrum, see :func:`overall_SPL`
 
     Returns:
         tuple (time, A-weighted level, Unweighted level)
@@ -141,7 +168,7 @@ def level_history(signal, sampling_rate, period=1.0):
     level_a = np.zeros_like(time)
     level_z = np.zeros_like(time)
     for i in range(0, len(edges) - 1, 1):
-        level_a[i], level_z[i] = overall_SPL(signal[int(edges[i]):int(edges[i + 1])], sampling_rate)
+        level_a[i], level_z[i] = overall_SPL(signal[int(edges[i]):int(edges[i + 1])], sampling_rate, window)
     return time, level_a, level_z
 
 
@@ -177,7 +204,7 @@ def _bands_within(band_centers, fmin, fmax):
     return np.logical_and(lower * slack >= fmin, upper <= fmax * slack)
 
 
-def third_octave_band_levels(signal, sampling_rate, cal=0.0, fmin=20.0, fmax=20000.0):
+def third_octave_band_levels(signal, sampling_rate, cal=0.0, fmin=20.0, fmax=20000.0, window='hann'):
     """
     Compute third-octave band levels of a signal
     Args:
@@ -186,6 +213,8 @@ def third_octave_band_levels(signal, sampling_rate, cal=0.0, fmin=20.0, fmax=200
         cal: Optional calibration factor to apply to signal (dB)
         fmin: minimum frequency for third-octave bands, Hz
         fmax: maximum frequency for third-octave bands, Hz
+        window: window of the spectrum summed into bands, see :func:`psd`,
+            default 'hann'
 
     Returns: tuple (band_centers, band_levels)
            WHERE
@@ -200,7 +229,7 @@ def third_octave_band_levels(signal, sampling_rate, cal=0.0, fmin=20.0, fmax=200
         _within_quarter_band(BASE2_BAND_CENTERS, fmin, fmax),
         _bands_within(BASE2_BAND_CENTERS, 0.0, 0.5 * sampling_rate))]
     # Compute PSD
-    frequency, psd_db, _ = psd(signal, sampling_rate, cal)
+    frequency, psd_db, _ = psd(signal, sampling_rate, cal, window)
     psd_linear = (P_REF ** 2) * 10.0 ** (psd_db / 10.0)
     df = frequency[1] - frequency[0]
     band_levels = np.zeros_like(band_centers)
