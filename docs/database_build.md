@@ -203,8 +203,9 @@ The **air density** is rho = (p - 0.378 e) / (R_d T) from the ground stations'
 temperature, pressure and humidity (`run_atmosphere`; e from ISO 9613-1's
 saturation pressure), carried up to the aircraft's mean height above the boards
 over the window, hydrostatically at the measured temperature (about 3% per
-1000 ft). When no station data exist the build still falls back to a standard
-day for absorption, as before, but the density is NaN, not the standard day's.
+1000 ft). When no station data exist (AS350B3 day 292, R66 day 231) the build
+falls back to a 20 C, 20% RH, 101.325 kPa standard day for absorption and logs a
+warning naming the run; the density is then NaN, not the standard day's.
 
 The **wind** is the caller's. `build_sphere(wind=...)`, `build_all(winds=...)`
 (a callable or a mapping by run) and `--winds FILE` (`read_winds`: columns
