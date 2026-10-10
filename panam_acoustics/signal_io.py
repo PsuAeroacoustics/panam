@@ -70,7 +70,9 @@ def load_UFF_signal(filename, sets = None):
     Load UFF acoustic signal file
     Args:
         filename: path to UFF file
-        sets: optional list of set numbers to load, default None (loads all sets)
+        sets: optional list of set numbers to load, default None (loads all sets);
+            only type-58 (function at nodal DOF) sets are read as channels, so
+            header (151), units (164) and other sets are skipped
     Returns: tuple (pressures, fs, channel_names, time)
     WHERE
     pressures is a channels x timepoints matrix of acoustic pressures
@@ -88,9 +90,10 @@ def load_UFF_signal(filename, sets = None):
     # pyuff returns a bare dict, not a one-element list, when it reads one set
     if isinstance(data, dict):
         data = [data]
+    data = [d for d in data if d.get('type') == 58]
 
     if not data:
-        raise ValueError('No signal sets in UFF file.')
+        raise ValueError('No type-58 signal sets in UFF file.')
     channels = len(data)
     datasize = len(data[0]['x'])
     time = data[0]['x']
