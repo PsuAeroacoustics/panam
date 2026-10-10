@@ -297,8 +297,8 @@ attribute `azimuth_reference`: the value every source sphere carries. Spheres
 without one are taken as `track`, with a warning; the `azimuth_reference`
 argument, when given, is assumed for them and must agree with those that carry
 one; and spheres filed in different frames are refused, as mixed
-`DOPPLER_SHIFT_REMOVED` is. NICE-OPS (its `adopt-features-2026-10-05` branch,
-`--nose`) reads the attribute to choose its nose (the
+`DOPPLER_SHIFT_REMOVED` is. NICE-OPS (`--nose`)
+reads the attribute to choose its nose (the
 heading at all speeds for `heading`, which then needs the run's
 `--frame_bearing` for an AC track). The hover groups are heading-oriented on
 both sides whatever it says.
