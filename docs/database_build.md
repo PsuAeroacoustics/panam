@@ -333,7 +333,7 @@ Root attributes: `speed_reference` (`ground` or `air`), `azimuth_reference`
 when used `hover_correction` and `hover_source`.
 
 One group per condition (`sphere0`, `sphere1`, ...): `radius` (R, over `radii`,
-in rotor radii), `rotor_scale`, `advance_ratio` (R), `flight_path_angle` (R),
+in rotor radii), `rotor_scale` (R), `advance_ratio` (R), `flight_path_angle` (R),
 `thrust_coefficient` (R) over `condition`; `dBA` (R) and `EAA` (R) over
 `channels`, with `phi` and `theta` unless shared; `amplitude` over
 `(PHI, THETA, frequency)` and `frequency` unless shared, when spectra are kept;
@@ -344,3 +344,21 @@ its `<name>_units`, and the text `wind_source`, `wind_units`,
 `wind_reference_direction`, `air_density_source`, `source_sphere` and
 `condition_origin`. The additions are new names only, so `database_version`
 stays 1.
+
+The variables carry no units attributes. `radius` is in rotor radii and
+`rotor_scale` is the rotor radius in m; NICE-OPS refuses a database whose
+`radius` × `rotor_scale` differs between groups. `advance_ratio` and
+`thrust_coefficient` are nondimensional, `flight_path_angle`, `phi` and `theta`
+are in degrees (ART angles: `phi` over [-180, 180) once the upper surface is
+mirrored in, `theta` over [0, 180]) and `frequency` in Hz.
+`dBA` is the A-weighted level in dB at the sphere radius, -inf for an empty
+direction; `EAA` is in dB per 1000 m (THEORY §7.2); `amplitude` holds the
+unweighted band levels in dB at the sphere radius. The load-factor offset
+20 lg n is applied to `dBA` only, not to `amplitude`.
+
+The channels are the row-major flatten of `amplitude`'s (`PHI`, `THETA`) grid:
+channel r·n_theta + j holds the direction of `amplitude[r, j, :]`, and the rows
+are sorted by `phi` (`_complete_sphere_with_coverage`). NICE-OPS maps each
+channel's (`phi`, `theta`) to its grid cell when the channels form such a
+grid, and otherwise reads `amplitude` as gridded over the sorted unique
+angles.
