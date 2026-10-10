@@ -364,6 +364,26 @@ def test_the_plate_correction_runs_through_the_sphere_build(monkeypatch, tmp_pat
     np.testing.assert_allclose(plate[clear] - flat[clear], expected, atol=1e-4)
 
 
+class _StopAfterAtmosphere(Exception):
+    pass
+
+
+def test_the_sphere_build_warns_when_it_falls_back_to_a_standard_day(monkeypatch, tmp_path, caplog):
+    """A run with no ground weather is depropagated in a standard day; that must not be silent."""
+    import logging
+    _archive(tmp_path)                                      # no <ac>_Weather folder at all
+
+    def stop(test, run, mics, time_range, **kwargs):
+        raise _StopAfterAtmosphere
+    monkeypatch.setattr(na, 'load_run_channels', stop)
+    test = na.NoiseAbatementTest('AS350B3', root=str(tmp_path))
+    with caplog.at_level(logging.WARNING), pytest.raises(_StopAfterAtmosphere):
+        na.build_sphere(test, '289108', str(tmp_path / 'out.nc'), board_correction='flat')
+    messages = [record.getMessage() for record in caplog.records if record.levelno == logging.WARNING]
+    assert any('289108' in message and 'No usable ground weather' in message and 'standard day' in message
+               for message in messages), messages
+
+
 @pytest.mark.parametrize('edge', ['start', 'end'])
 def test_steady_window_leaves_an_unsteady_edge_out(edge):
     """A brief excursion is closed only between two steady stretches.

@@ -1366,6 +1366,11 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     ground speed the AAM sphere is labeled with; the tracking data carries no
     airspeed.
 
+    ``atmosphere``, if not given, is the ground stations' at the time of the run
+    (:func:`run_atmosphere`).  A run whose day has no usable station record (AS350B3 day 292,
+    R66 day 231) is depropagated in a 20 C, 20 % RH, 101.325 kPa standard day with a logged
+    warning, and its sphere records the air density as NaN with source ``'none'``.
+
     Returns a dict describing what was processed, so a batch caller can log and
     audit it without re-opening the output.
     """
@@ -1427,7 +1432,9 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
         try:
             atmosphere = run_atmosphere(test, run)
             density_source = 'ground stations'
-        except ValueError:
+        except ValueError as error:
+            logging.warning('Run %s: %s; depropagating in a 20 C, 20 %% RH, 101.325 kPa standard day',
+                            run, error)
             atmosphere = fa.Atmosphere(temperature=293.15, pressure=101.325, relative_humidity=20.0)
             density_source = 'none'
     if check is not None:
