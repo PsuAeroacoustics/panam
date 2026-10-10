@@ -394,6 +394,10 @@ def scattering(frequencies, elevations, azimuths, sound_speed, flow_resistance=g
     return pd_out, pr_out
 
 
+#: Points of :func:`field` this close to the plate's surface (ft, about 3 nm) are on it.
+SURFACE_TOLERANCE_FT = 1e-8
+
+
 def field(frequency, elevation, azimuth, sound_speed, points, flow_resistance=gp.FLOW_RESISTANCE, ground=None,
           segments_per_wavelength=10, max_segment=0.02, extra_modes=10, gauss=6, n_phi_uniform=None,
           **geometry):
@@ -405,7 +409,10 @@ def field(frequency, elevation, azimuth, sound_speed, points, flow_resistance=gp
     ground (z = 0).  Unlike :func:`scattering`, P_d and P_r are NOT normalized by the direct
     wave at each point: they are the complex fields per unit direct plane wave of phase zero at
     the origin, so the total field over the ground is P_d + Q P_r and the free field is
-    exp(i k . x).  Points inside the plate are NaN.  ``geometry`` as in :func:`scattering`.
+    exp(i k . x).  Points inside the plate are NaN.  Points on its surface (within
+    :data:`SURFACE_TOLERANCE_FT`) take the surface value 2 (p_inc + K p), as the flush
+    microphone does in :func:`scattering`; at the profile's corners, where the surface is
+    not smooth, that is approximate.  ``geometry`` as in :func:`scattering`.
     """
     pts = np.atleast_2d(np.asarray(points, float))
     radius = geometry.get('radius', gp.PLATE_RADIUS_FT)
@@ -414,13 +421,20 @@ def field(frequency, elevation, azimuth, sound_speed, points, flow_resistance=gp
     el, az = np.radians(float(elevation)), np.radians(float(azimuth))
     r_t = np.hypot(pts[:, 0], pts[:, 1])
     phi_t = np.arctan2(pts[:, 1], pts[:, 0])
-    z_t = pts[:, 2]
+    z_t = pts[:, 2].copy()
     # Below the plate's own profile (flat top, taper, rim), not its bounding
     # cylinder: the air over the taper is outside.
     edge_thickness = geometry.get('edge_thickness', gp.PLATE_EDGE_THICKNESS_FT)
     taper_length = geometry.get('taper_length', gp.PLATE_TAPER_LENGTH_FT)
     top = (np.interp(r_t, [radius - taper_length, radius], [thickness, edge_thickness])
-           if taper_length > 0.0 else thickness)
+           if taper_length > 0.0 else np.full(r_t.shape, thickness))
+    # Points on the surface are put exactly on it, where the kernel's
+    # principal value holds; just off it the quadrature cannot resolve them.
+    on_top = (r_t <= radius) & (np.abs(z_t - top) <= SURFACE_TOLERANCE_FT)
+    on_rim = ~on_top & (np.abs(r_t - radius) <= SURFACE_TOLERANCE_FT) & (z_t <= edge_thickness)
+    z_t[on_top] = top[on_top]
+    r_t = np.where(on_rim, radius, r_t)
+    on_surface = on_top | on_rim
     inside = (r_t < radius) & (z_t < top)
     extent = lambda segment: (max(2.0 * radius, float(r_t.max()) + radius) * 1.02 + 2 * segment,
                               max(2.0 * thickness, float(z_t.max()) + thickness) * 1.05)
@@ -444,8 +458,9 @@ def field(frequency, elevation, azimuth, sound_speed, points, flow_resistance=gp
     h = np.exp(1j * kappa * r_t[ok] * np.cos(phi_t[ok] - az))
     P_d = np.full(pts.shape[0], np.nan + 0j)
     P_r = np.full(pts.shape[0], np.nan + 0j)
-    P_d[ok] = h * np.exp(-1j * kz * z_t[ok]) + scat_d
-    P_r[ok] = h * np.exp(+1j * kz * z_t[ok]) + scat_r
+    surface_factor = np.where(on_surface[ok], 2.0, 1.0)
+    P_d[ok] = surface_factor * (h * np.exp(-1j * kz * z_t[ok]) + scat_d)
+    P_r[ok] = surface_factor * (h * np.exp(+1j * kz * z_t[ok]) + scat_r)
     return P_d, P_r
 
 

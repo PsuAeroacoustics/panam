@@ -129,6 +129,24 @@ def test_field_matches_scattering_at_the_microphone():
     assert Pr[0] / inc == pytest.approx(pr[0, 0, 0], rel=1e-5)
 
 
+def test_field_on_the_surface_is_the_surface_value():
+    # On the plate p = 2 (p_inc + K p), not the principal value p_inc + K p =
+    # p / 2: field() on the top and on the taper reproduces scattering()'s
+    # flush microphone there, and so does a point a nanometer off the top.
+    f, el, az = 3000.0, 25.0, 40.0
+    rm, t = gp.PLATE_MIC_OFFSET_FT, gp.PLATE_THICKNESS_FT
+    segs, _ = ab.plate_generator()
+    taper = segs[(segs[:, 1] > segs[:, 3]) & (segs[:, 0] < segs[:, 2])][3]
+    r_taper, z_taper = 0.5 * (taper[0] + taper[2]), 0.5 * (taper[1] + taper[3])
+    Pd, Pr = ab.field(f, el, az, C, [[0.0, rm, t], [0.0, rm, t + 3e-9], [0.0, r_taper, z_taper]])
+    k = 2 * np.pi * f / C
+    for i, (r, z, kw) in enumerate(((rm, t, {}), (rm, t, {}), (r_taper, z_taper, dict(mic_rz=(r_taper, z_taper))))):
+        pd, pr = ab.scattering([f], [el], [az], C, mic=(0.0, r), **kw)
+        inc = np.exp(1j * k * (np.cos(np.radians(el)) * r * np.sin(np.radians(az)) - np.sin(np.radians(el)) * z))
+        assert Pd[i] / inc == pytest.approx(pd[0, 0, 0], rel=1e-4)
+        assert Pr[i] / inc == pytest.approx(pr[0, 0, 0], rel=1e-4)
+
+
 def test_field_inside_the_plate_is_nan_and_far_field_tends_to_the_bare_ground():
     f, el = 2000.0, 30.0
     pts = [[0.0, 0.0, 0.5 * THIN["thickness"]], [0.0, 0.0, 30.0]]
