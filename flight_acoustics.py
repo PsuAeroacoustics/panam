@@ -974,7 +974,7 @@ def hann_power(offset):
     """|W(d)|^2 of a Hann window, normalized to 1 at d = 0, d in bins."""
     d = np.asarray(offset, dtype=float)
     s = np.sinc(d)
-    out = np.where(np.abs(np.abs(d) - 1.0) < 1e-9, 0.25, s / np.where(np.abs(1 - d ** 2) < 1e-12, 1.0, 1 - d ** 2))
+    out = np.where(np.abs(np.abs(d) - 1.0) < 1e-9, 0.5, s / np.where(np.abs(1 - d ** 2) < 1e-12, 1.0, 1 - d ** 2))
     return out ** 2
 
 
