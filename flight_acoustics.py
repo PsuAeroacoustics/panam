@@ -3020,7 +3020,9 @@ def write_norah2_hemisphere(
         filename: Path to the output ``.hem`` file.
         hemisphere: Output dict from :func:`depropagate_hemisphere` with
             ``third_octave=True``.
-        speed_knots: ``ACSPEED``, indicated airspeed (knots).
+        speed_knots: ``ACSPEED`` (knots).  The format labels it indicated airspeed,
+            but NORAH2 looks hemispheres up by ground speed, which is what panam's
+            tracks provide and what :func:`noise_abatement_2017.build_sphere` passes.
         flight_path_angle_deg: ``GAMM`` (deg), negative in descent.
         title: First line of the file. Default: the file name without extension.
         test_point: Written after the title, as the shipped files carry their
@@ -3243,8 +3245,9 @@ def write_norah2_triangulation(filename, hemispheres, *, corrections=NORAH2_DEFA
     Args:
         filename: Path to the output ``.int`` file; NORAH2 looks for it next to
             the hemispheres.
-        hemispheres: iterable of (hem file name, speed_knots, flight_path_angle_deg).
-            File names are written as given, relative to the hemisphere folder.
+        hemispheres: iterable of (hem file name, speed_knots, flight_path_angle_deg),
+            at least three conditions not all on one line.  File names are written as
+            given, relative to the hemisphere folder.
         corrections: (dB, operation) rows of the third table. The default is
             the table every shipped file carries.
         overwrite: If False, raises when filename exists.
@@ -3263,6 +3266,10 @@ def write_norah2_triangulation(filename, hemispheres, *, corrections=NORAH2_DEFA
     if np.unique(np.round(points, 6), axis=0).shape[0] != points.shape[0]:
         raise ValueError('two hemispheres share a flight condition; NORAH2 merges repeat runs '
                          'into one hemisphere per condition, so average them first')
+    if np.ptp(points[:, 0]) == 0.0 or np.ptp(points[:, 1]) == 0.0 or \
+            _conditions_are_collinear(points[:, 0], points[:, 1]):
+        raise ValueError('the conditions lie on one line in (speed, flight path angle); '
+                         'NORAH2 needs at least one triangle')
     triangles = Delaunay(points).simplices
 
     lines = ['&HEMISPHERES', f'\tNGAD = {len(hemispheres)}', '&END', '',

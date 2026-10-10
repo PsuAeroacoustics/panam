@@ -172,6 +172,21 @@ def test_triangulation_file(tmp_path):
         fa.write_norah2_triangulation(str(tmp_path / 'dup.int'), hemispheres + [('F.hem', 80.0, 0.0)])
 
 
+@pytest.mark.parametrize('conditions', [
+    [(40.0, 0.0), (60.0, 0.0), (80.0, 0.0)],          # level runs at one flight path angle
+    [(60.0, -6.0), (60.0, 0.0), (60.0, 6.0)],         # one speed
+    [(40.0, -3.0), (60.0, 0.0), (80.0, 3.0)],         # a sloping line
+])
+def test_triangulation_refuses_collinear_conditions(tmp_path, conditions):
+    """A ValueError, which build_directory reports as a warning, not scipy's QhullError,
+    which would abort it before its manifest is written."""
+    path = tmp_path / 'line.int'
+    entries = [(f'{i}.hem', speed, angle) for i, (speed, angle) in enumerate(conditions)]
+    with pytest.raises(ValueError, match='one line'):
+        fa.write_norah2_triangulation(str(path), entries)
+    assert not path.exists()
+
+
 @pytest.mark.data
 @needs_norah2
 def test_reads_every_shipped_flight_condition_hemisphere():
