@@ -972,8 +972,11 @@ def image_integrals(k, beta, rho, z_sum, n=10):
     The integrand peaks near q = rho, singularly so as Z -> 0, which the
     substitutions q = rho sin(phi) below rho and q = rho cosh(psi) above it take
     out (exactly, for Z = 0), with Gauss-Legendre segments graded toward the
-    peak on a width sqrt(2 Z / rho).  Above rho, e^{ikR_q} decays like e^{-k q},
-    so the upper limit is rho + 40/k.  Vectorized over ``rho`` and ``z_sum``.
+    peak on a width sqrt(2 Z / rho).  For rho < Z there is no such peak (R_q stays
+    about Z from zero; at rho = 0, R_q = Z + i q), and those substitutions, scaled
+    by rho, would miss the scale Z: the integral is taken directly in q, on
+    segments graded on Z.  Above rho, e^{ikR_q} decays like e^{-k q}, so the upper
+    limit is rho + 40/k.  Vectorized over ``rho`` and ``z_sum``.
 
     Needs a passive ground, Re(beta) > 0: otherwise e^{-k beta q} grows and the
     integral diverges.  Delany-Bazley-based layers are not passive at low
@@ -1005,6 +1008,9 @@ def _image_integral_nodes(k, beta, rho, z, x, w):
     big_j = np.empty(rho.size, dtype=np.complex128)
     for p in prange(rho.size):
         r0, z0 = rho[p], z[p]
+        if r0 < z0:
+            big_i[p], big_j[p] = _image_integral_in_q(k, beta, r0, z0, x, w, decay_q, r0 + q_top)
+            continue
         rho_s = max(r0, 1e-12)
         width = min(max(np.sqrt(2.0 * max(z0, 0.0) / rho_s), 1e-6), 0.25)
         # Below rho: phi in [0, pi/2], q = rho sin(phi), rho^2 - q^2 = rho^2 cos^2(phi).
@@ -1055,6 +1061,38 @@ def _image_integral_nodes(k, beta, rho, z, x, w):
         big_i[p] = acc_i
         big_j[p] = acc_j
     return big_i, big_j
+
+
+@njit(cache=True)
+def _image_integral_in_q(k, beta, r0, z0, x, w, decay_q, q_max):
+    """I and J of one point with rho < Z, integrated directly in q over [0, q_max].
+
+    R_q is then at least about Z from zero (at rho = 0, R_q = Z + i q), so the
+    integrand is smooth on the scale Z: Gauss-Legendre segments doubling from
+    Z / 8, with breakpoints on the decay scale too.
+    """
+    edges = [0.0, q_max]
+    step = 0.125 * z0
+    while step < q_max:
+        edges.append(step)
+        step *= 2.0
+    for d in decay_q:
+        if d < q_max:
+            edges.append(d)
+    e = np.array(edges)
+    e.sort()
+    acc_i = 0.0 + 0.0j
+    acc_j = 0.0 + 0.0j
+    for s in range(e.size - 1):
+        a, b = e[s], e[s + 1]
+        for g in range(x.size):
+            q = 0.5 * (b - a) * x[g] + 0.5 * (a + b)
+            wt = 0.5 * (b - a) * w[g]
+            r = np.sqrt(r0 * r0 + z0 * z0 - q * q + 2j * z0 * q)
+            term = np.exp(-k * beta * q) * np.exp(1j * k * r) / (4.0 * np.pi * r) * wt
+            acc_i += term
+            acc_j += term * (1j * k - 1.0 / r) / r
+    return acc_i, acc_j
 
 
 def exact_half_space_green(k, beta, rho, z_source, z_target, n=10):

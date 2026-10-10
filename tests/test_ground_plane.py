@@ -274,6 +274,41 @@ def test_image_integrals_converge_on_the_surface():
     assert np.all(np.isfinite(a)) and np.allclose(a, b, rtol=1e-5)
 
 
+def _image_integrals_by_brute_force(k, beta, rho, z):
+    # Directly in q, on Gauss-Legendre segments growing by 15 % from Z / 1000:
+    # fine on every scale for rho < Z, where R_q stays about Z from zero.
+    edges = [0.0]
+    while edges[-1] < rho + 60.0 / k:
+        edges.append(max(1e-3 * z, 1.15 * edges[-1]))
+    x, w = np.polynomial.legendre.leggauss(40)
+    a, b = np.array(edges[:-1])[:, None], np.array(edges[1:])[:, None]
+    q, wq = (0.5 * (b - a) * x + 0.5 * (a + b)).ravel(), (0.5 * (b - a) * w).ravel()
+    r = np.sqrt(rho ** 2 + (z + 1j * q) ** 2)
+    g = np.exp(-k * beta * q) * np.exp(1j * k * r) / (4 * np.pi * r) * wq
+    return g.sum(), (g * (1j * k - 1.0 / r) / r).sum()
+
+
+@pytest.mark.parametrize('rho_over_z', [0.0, 1e-4, 0.1, 0.9])
+@pytest.mark.parametrize('f, z', [(200.0, 1e-5), (200.0, 0.003), (1000.0, 0.05), (8000.0, 0.3)])
+def test_image_integrals_below_rho_equal_z(f, z, rho_over_z):
+    # A source above (or nearly above) the receiver: not 0 at rho = 0, and as
+    # accurate for rho << Z as near rho = Z.
+    k = 2 * np.pi * f / C; beta = _beta(f)
+    big_i, big_j = gp.image_integrals(k, beta, rho_over_z * z, z)
+    ref_i, ref_j = _image_integrals_by_brute_force(k, beta, rho_over_z * z, z)
+    assert complex(big_i[0]) == pytest.approx(ref_i, rel=1e-9)
+    assert complex(big_j[0]) == pytest.approx(ref_j, rel=1e-9)
+
+
+def test_image_integral_straight_above_is_an_exponential_integral():
+    # At rho = 0, R_q = Z + i q and I = -i e^{-i k beta Z} E1(-i k (1 + beta) Z) / (4 pi).
+    from scipy.special import exp1
+    for f, z in ((200.0, 0.003), (1000.0, 0.05), (4000.0, 2.0)):
+        k = 2 * np.pi * f / C; beta = _beta(f)
+        exact = -1j * np.exp(-1j * k * beta * z) * exp1(-1j * k * (1 + beta) * z) / (4 * np.pi)
+        assert complex(gp.image_integrals(k, beta, 0.0, z)[0][0]) == pytest.approx(exact, rel=1e-10)
+
+
 def test_image_integral_table_interpolates():
     f = 2000.0; k = 2 * np.pi * f / C; beta = _beta(f)
     table = gp.ImageIntegralTable(k, beta, 1.4, 0.06)
