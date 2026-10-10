@@ -24,8 +24,10 @@ Layout of the dataset this module expects (``root``)::
 Conventions established by checking regenerated labels against the legacy
 spheres (see :func:`steady_window`):
 
-* the tracking file's ``vz`` is positive *down* while ``z`` is positive *up*,
-  so flight path angle is ``atan2(-vz, hypot(vx, vy))``;
+* ``z`` is positive *up*, and the tracking file's ``vz`` is positive *down* in
+  every file except EC130B4 day 298's, where it is positive up; :func:`vz_sign`
+  takes the sign from dz/dt, and the flight path angle is
+  ``atan2(vz_up, hypot(vx, vy))``;
 * the sphere's ``SPEED`` is mean ground speed in knots (``VGk``);
 * both labels are means over the steady segment, and any steady sub-window
   reproduces them, so the segment need not match the legacy one exactly;
@@ -368,7 +370,7 @@ def vz_sign(track):
 def load_track(path):
     """Load a tracking CSV, making the vertical velocity positive up.
 
-    ``z`` is positive up, but whether ``vz`` is depends on the aircraft; see
+    ``z`` is positive up, but whether ``vz`` is depends on the file (test day); see
     :func:`vz_sign`.  :func:`flight_acoustics.hemigen` only takes heading from
     the horizontal components, so the sign does not corrupt the hemisphere
     geometry, but it does set the flight path angle -- which is how a descent

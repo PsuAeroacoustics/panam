@@ -218,6 +218,21 @@ def test_vz_sign_follows_each_file_not_the_dataset():
     assert na.vz_sign(_descending(vz_positive_up=True)) == 1.0
 
 
+@pytest.mark.parametrize('vz_positive_up', [False, True])
+def test_load_track_gives_a_descent_a_negative_flight_path_angle(tmp_path, vz_positive_up):
+    """fpa = atan2(vz_up, hypot(vx, vy)) whichever way the file stores vz."""
+    track = _descending(vz_positive_up)
+    path = tmp_path / 'track.csv'
+    _write_csv(path, ['utcsec', 'x', 'y', 'z', 'vx', 'vy', 'vz', 'VGk'],
+               [[t, 100.0 * t, 0.0, z, 100.0, 0.0, vz, 59.2]
+                for t, z, vz in zip(track['time'], track['z'], track['vz'])])
+    loaded = na.load_track(str(path))
+    vz_up = track['vz'] if vz_positive_up else -track['vz']
+    expected = np.degrees(np.arctan2(vz_up, 100.0))
+    np.testing.assert_allclose(loaded['fpa_deg'], expected, atol=1e-9)
+    assert np.median(loaded['fpa_deg']) < -5.0
+
+
 def test_vz_sign_on_a_level_track_falls_back_to_down():
     time = np.arange(500) * 0.02
     level = dict(time=time, z=np.full(500, 500.0), vz=np.zeros(500))
