@@ -1816,9 +1816,9 @@ def depropagate_hemisphere(
         frame_length = int(2.0 ** nextpow2(window_time * fs))
         band_frames = None
         if use_filter_bank:
+            # NaN where the record has a gap (or the band reaches Nyquist): no data
             band_frames = pa_filters.third_octave_filter_bank(
                 pressure_list[im], fs, band_centers, t_rel, frame_length) / pref_sq
-            band_frames = np.where(np.isfinite(band_frames), band_frames, 0.0)
 
         # Per-bin (and per-band) ambient reference.
         amb_lin = None
@@ -1841,7 +1841,7 @@ def depropagate_hemisphere(
             if f_amb.shape != f.shape or psd_amb_db.shape[1] < 1:
                 raise ValueError('ambient_pressure for mic {:d} did not yield a usable spectrogram on the run '
                                  'frequency grid (is the recording at least one window long?)'.format(im))
-            amb_lin = np.mean(10.0 ** (psd_amb_db[fmask, :] / 10.0), axis=1)
+            amb_lin = np.nanmean(10.0 ** (psd_amb_db[fmask, :] / 10.0), axis=1)
             if use_filter_bank:
                 amb_band = np.nanmean(pa_filters.third_octave_filter_bank(
                     amb_p, amb_fs, band_centers, t_amb, frame_length), axis=1) / pref_sq
@@ -1850,13 +1850,13 @@ def depropagate_hemisphere(
                                       t_abs <= float(ambient_time_range[1]))
             if not np.any(amb_mask):
                 raise ValueError('ambient_time_range contains no spectrogram frames')
-            amb_lin = np.mean(psd_sel_lin[:, amb_mask], axis=1)
+            amb_lin = np.nanmean(psd_sel_lin[:, amb_mask], axis=1)
             if use_filter_bank:
-                amb_band = np.mean(band_frames[:, amb_mask], axis=1)
+                amb_band = np.nanmean(band_frames[:, amb_mask], axis=1)
         elif ambient_percentile is not None:
-            amb_lin = 10.0 ** (np.percentile(psd_sel_db, float(ambient_percentile), axis=1) / 10.0)
+            amb_lin = 10.0 ** (np.nanpercentile(psd_sel_db, float(ambient_percentile), axis=1) / 10.0)
             if use_filter_bank:
-                amb_band = np.percentile(band_frames, float(ambient_percentile), axis=1)
+                amb_band = np.nanpercentile(band_frames, float(ambient_percentile), axis=1)
 
         response_bins = response_bands = None
         if receiver_response_db is not None:

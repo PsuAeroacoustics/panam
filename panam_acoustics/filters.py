@@ -83,6 +83,9 @@ def third_octave_filter_bank(signal, fs, band_centers, frame_centers, frame_leng
         frame_length: Frame length (samples at ``fs``).
         order: Butterworth order of each band-pass.
 
+    Non-finite samples (gaps in the record) are filtered as zeros, and every
+    frame whose window reaches one is returned as NaN.
+
     Returns:
         (Nbands, Nframes) mean-square band pressure, in the signal's units
         squared.  Bands reaching the Nyquist frequency are returned as NaN.
@@ -90,10 +93,13 @@ def third_octave_filter_bank(signal, fs, band_centers, frame_centers, frame_leng
     from scipy.signal import decimate, get_window, oaconvolve, sosfreqz
 
     x = np.asarray(signal, dtype=float)
-    x = x - x.mean()
+    gaps = ~np.isfinite(x)
     band_centers = np.asarray(band_centers, dtype=float).ravel()
     frame_centers = np.asarray(frame_centers, dtype=float).ravel()
     out = np.full((band_centers.size, frame_centers.size), np.nan)
+    if gaps.all():
+        return out
+    x = np.where(gaps, 0.0, x - x[~gaps].mean()) if gaps.any() else x - x.mean()
 
     decimated = {0: x}
 
@@ -136,4 +142,11 @@ def third_octave_filter_bank(signal, fs, band_centers, frame_centers, frame_leng
         smoothed = oaconvolve(squared, weights[::-1], mode='same')
         index = np.clip(np.round(frame_centers * fs_m).astype(int), 0, y.size - 1)
         out[i] = smoothed[index]
+    if gaps.any():
+        # Frames whose window reaches a gap; the window spans frame_length samples.
+        count = np.concatenate(([0], np.cumsum(gaps)))
+        center = np.round(frame_centers * fs).astype(int)
+        start = np.clip(center - frame_length // 2, 0, x.size)
+        stop = np.clip(center - frame_length // 2 + frame_length, 0, x.size)
+        out[:, count[stop] > count[start]] = np.nan
     return out

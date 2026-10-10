@@ -389,3 +389,16 @@ def test_the_measured_ambient_is_its_mean_power():
     # exp(-a/m): 0.37 for the mean, 0.5 for the median.  Interpolating between
     # frames narrows the spread, so here the two read about 0.31 and 0.45.
     assert np.sum(left) / np.sum(raw) < 0.38
+
+
+def test_a_gap_in_one_recording_leaves_the_rest_of_its_bands():
+    """The filter bank's NaN frames are missing data; mapping them to zero power
+    turned a whole microphone into -inf."""
+    scenario = _scenario(seed=7)
+    clean = _run(scenario, third_octave_method='filter_bank', return_scattered=True)['scattered']
+    scenario['pressure'] = scenario['pressure'].copy()
+    scenario['pressure'][0, 3000] = np.nan
+    gapped = _run(scenario, third_octave_method='filter_bank', return_scattered=True)['scattered']
+    bands = gapped['third_octave']['bands_db'][:, gapped['mic'] == 0]
+    assert not np.isneginf(bands).any()
+    assert np.isfinite(bands).mean() > 0.5
