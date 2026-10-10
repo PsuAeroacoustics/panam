@@ -1121,6 +1121,27 @@ def _running_integral_at(running, edge0, df, freq):
     return running[k, cols] + (x - k) * (running[k + 1, cols] - running[k, cols])
 
 
+def _running_floor(psd, size, chunk=64):
+    """Running median over ``size`` bins of each column of ``psd`` (bins x samples),
+    edges held, taken over the bins that are not zero.
+
+    Bins gated out as ambient are exactly zero; counted, they pull the median to
+    zero wherever they are the majority, and every surviving bin then stands out
+    as a tone.  Where none is zero this is ``median_filter(psd, (size, 1),
+    mode='nearest')``, element for element.
+    """
+    half = size // 2
+    padded = np.pad(psd, ((half, size - 1 - half), (0, 0)), mode='edge')
+    floor = np.zeros_like(psd)
+    for c0 in range(0, psd.shape[1], chunk):
+        windows = np.lib.stride_tricks.sliding_window_view(padded[:, c0:c0 + chunk], size, axis=0)
+        ordered = np.sort(windows, axis=-1)
+        nonzero = np.count_nonzero(windows, axis=-1)
+        rank = np.minimum(size - nonzero + nonzero // 2, size - 1)
+        floor[:, c0:c0 + chunk] = np.where(nonzero > 0, np.take_along_axis(ordered, rank[..., None], axis=-1)[..., 0], 0.0)
+    return floor
+
+
 def tone_aware_band_power(psd, f, lower, upper, doppler=None, floor_bins=15, threshold_db=6.0, lobe=2, reach=4):
     """Band power (bands x samples) from Hann-windowed PSD columns (freq x samples), tones filed whole.
 
@@ -1135,7 +1156,7 @@ def tone_aware_band_power(psd, f, lower, upper, doppler=None, floor_bins=15, thr
     the tone is filed whole in the band of its own frequency (divided by doppler when given), the
     remainder band-summed over (Doppler-scaled) edges."""
     df = f[1] - f[0]
-    floor = median_filter(psd, size=(floor_bins, 1), mode='nearest')
+    floor = _running_floor(psd, floor_bins)
     peak = (psd == maximum_filter1d(psd, size=2 * lobe + 1, axis=0, mode='nearest')) & (psd > floor * 10 ** (threshold_db / 10))
     peak[:reach] = peak[-reach:] = False
     I, J = np.nonzero(peak)
