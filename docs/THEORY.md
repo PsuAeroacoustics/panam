@@ -212,8 +212,10 @@ record, with the nose along the heading.
 
 For the layer, $Z_c = 1 + 9.08X^{-0.754} + 11.9iX^{-0.732}$ and
 $k = (2\pi f/c_0)(1 + 10.8X^{-0.70} + 10.3iX^{-0.595})$. A thin layer of low resistivity is not
-passive at low frequency, and is refused. The 2017 site ground is variable porosity with
-$\sigma_e = 200$ kPa·s/m² and $\alpha_e = 0$ (§4.6). The first term of the variable-porosity form is
+passive at low frequency ($\mathrm{Re}\,\beta < 0$). The exact Green's function used by the
+plate BEM (§4.5) refuses it; the impedance, reflection-coefficient and pole models use it
+unchecked. The 2017 site ground is variable porosity with $\sigma_e = 200$ kPa·s/m² and
+$\alpha_e = 0$ (§4.6). The first term of the variable-porosity form is
 the familiar $0.436(1+i)\sqrt{\sigma_e/f}$ with $\sigma_e$ in Pa·s/m².
 
 ### 4.2 The spherical-wave reflection coefficient
@@ -337,8 +339,9 @@ The site ground was fitted to the 2017 measurements (details in
 [`ground_plane_corrections.md`](ground_plane_corrections.md)). Pole–board pairs at elevations above
 30° constrain the turbulence strength, $\gamma_T \approx 3\times10^{-5}\ \mathrm{m}^{-2/3}$. The
 resistivity is poorly identified at steep angles. A held-out profile over resistivity selected
-variable porosity with $\sigma_e \approx 200$ kPa·s/m² and roughness of 10–15 mm, which is the
-adopted `SITE_GROUND`.
+variable porosity with $\sigma_e \approx 200$ kPa·s/m², the adopted `SITE_GROUND`. The fit also gives
+10–15 mm of roughness, which only the pole model (`pole_level`'s `roughness`) uses: `SITE_GROUND`
+carries none, and the plate BEM that builds the spheres has no roughness term.
 
 ## 5. Depropagation
 
@@ -366,7 +369,9 @@ beyond it.
 
 The 2017 release used a 10 dB gate, a 15 dB response cap, a 30 dB absorption cap, a 2000 ft
 range limit and a 2° floor on the emission elevation. These are settings of the build script in the
-validation harness; PANAM's own defaults are looser.
+validation harness. `build_sphere` and its CLI default to the same gate, absorption cap and range, a
+10° elevation floor and no response cap. `depropagate_hemisphere`'s own defaults are looser: a 3 dB
+gate, no caps, no range limit and a 0° elevation floor.
 
 ### 5.2 Range and elevation limits
 
@@ -444,7 +449,10 @@ $$
 with $\kappa = 1.3$, $d_k$ the distance to the 8th nearest sample, $d_M$ the distance to the 3rd
 nearest distinct microphone, and $\tilde{s}$ the median angular resolution of the nearest samples,
 $s = \lvert\mathbf{v}_\perp\rvert T_w/r$ (the angle the source sweeps across the line of sight in
-one frame). A radius above 60° makes the node a gap. Two options shape the kernel:
+one frame). A node whose radius exceeds 60° is retried without the $d_M$ term, i.e. with its
+$k$ nearest samples from any number of microphones; it is a gap only if that radius also exceeds
+60°. The nodes filled this way are seen by only one or two microphones, and their count is
+reported as `relaxed` in the result's `interpolation` record. Two options shape the kernel:
 
 - **Aspect** stretches the distance in azimuth, $h = \sqrt{\Delta e^2 + (\Delta\psi\cos\bar{e}/A)^2}$, so that
   samples along a flight pass (which spread in azimuth) share more than samples across it. The
@@ -519,7 +527,8 @@ database spans.
 
 Level conditions are copied to path angles of −24° and +35°, so that the condition hull covers
 steep states. The upper hemisphere, which no ground microphone sees, is completed by mirroring
-through the tip-path plane, $\phi' = 180^\circ - \phi$, and carries coverage 0. Database format
+through the sphere's horizontal plane (the level frame of §3.2), $\phi' = 180^\circ - \phi$
+wrapped into $[-180^\circ, 180^\circ)$, and carries coverage 0. Database format
 version 1 marks files with the corrected mirror (an earlier `-phi` mirror reflected the lower
 hemisphere onto itself).
 
@@ -541,8 +550,18 @@ $V_\mathrm{TAS} = V_\mathrm{IAS}\sqrt{1.225/\rho}$). A file whose levels include
 reflection (FREEFIELD = 0) is refused unless accepted explicitly.
 
 **Export.** Spheres can be written in the AAM netCDF format [11], in the variable order AAM
-3.1 reads by position, and as NORAH2 hemispheres, with the inverse of the conversion above against
-the ICAO reference atmosphere (298.15 K, 70% RH).
+3.1 reads by position, and as NORAH2 hemispheres. The NORAH2 export moves the levels to 60 m,
+takes out the absorption the sphere keeps over $r_\mathrm{ref}$ in the measurement atmosphere,
+and puts in absorption over the whole 60 m in the ICAO reference atmosphere (298.15 K, 70% RH):
+
+$$
+L(60\ \mathrm{m}) = L(r_\mathrm{ref}) - 20\lg\frac{60\ \mathrm{m}}{r_\mathrm{ref}}
++ \alpha_\mathrm{meas}(f)\,r_\mathrm{ref} - \alpha_\mathrm{ICAO}(f_c)\cdot 60\ \mathrm{m}.
+$$
+
+This is not the inverse of the import: a sphere exported and imported again comes back shifted by
+$(\alpha_\mathrm{meas} - \alpha_\mathrm{ICAO})\,r_\mathrm{ref}$ ([`norah2_import.md`](norah2_import.md)).
+A sphere built without absorption depropagation is written with spreading only.
 
 ## 9. Metrics
 
