@@ -167,6 +167,47 @@ def plot_reference_hemisphere(AAM_path, AAM_sphere, freqs, SPL_range=None):
     fig, ax, cs = fa.nc_lambert_ea(os.path.join(AAM_path,AAM_sphere), freqs, SPL_range=SPL_range)
     return fig
 
+def oaspl_grids(band_centers, bands_db, freq_range):
+    """OASPL and A-weighted SPL grids summed from third-octave band levels.
+
+    Parameters
+    ----------
+    band_centers : array_like
+        Band center frequencies (Hz), shape (n_bands,)
+    bands_db : ndarray
+        Band levels (dB), shape (n_bands, ...)
+    freq_range : tuple of float
+        (fmin, fmax) in Hz; the band-limited levels sum the bands whose
+        centers lie in it.
+
+    Returns
+    -------
+    dict
+        ``oaspl_db`` and ``spla_db``: OASPL and A-weighted SPL of the bands in
+        ``freq_range``; ``oaspl_fullband_db``: OASPL of every band;
+        ``oaspl_fmax_hz``: ``freq_range[1]``; ``oaspl_fullband_fmax_hz``: the
+        highest band center.  A -inf band (no energy) adds nothing to a sum,
+        and a cell with no data (NaN) stays NaN.
+    """
+    band_centers = np.asarray(band_centers, dtype=float)
+    band_mask = np.logical_and(band_centers >= float(freq_range[0]), band_centers <= float(freq_range[1]))
+    if not np.any(band_mask):
+        raise ValueError('No third-octave bands fall within hemisphere_freq_range_hz')
+
+    P_plot = np.power(10.0, bands_db[band_mask, ...] / 10.0)
+    Aweight = np.array([fa.dBAw(f) for f in band_centers[band_mask]], dtype=float)
+    Aweight = Aweight.reshape((-1,) + (1,) * (np.ndim(bands_db) - 1))
+    P_plot_A = np.power(10.0, (bands_db[band_mask, ...] + Aweight) / 10.0)
+    P_full = np.power(10.0, bands_db / 10.0)
+    return dict(
+        oaspl_db=fa.power_to_db(np.sum(P_plot, axis=0)),
+        spla_db=fa.power_to_db(np.sum(P_plot_A, axis=0)),
+        oaspl_fullband_db=fa.power_to_db(np.sum(P_full, axis=0)),
+        oaspl_fmax_hz=float(freq_range[1]),
+        oaspl_fullband_fmax_hz=float(np.max(band_centers)),
+    )
+
+
 def save_figures(figs, outdir, names):
     os.makedirs(outdir, exist_ok=True)
     for fig, name in zip(figs, names):
@@ -296,28 +337,12 @@ def main():
             third_octave_band_centers_hz=export_band_centers_hz,
         )
 
-        band_centers = hemi['third_octave']['band_centers_hz']
+        band_centers = np.asarray(hemi['third_octave']['band_centers_hz'], dtype=float)
         hemi_bands_db = hemi['third_octave']['bands_db']
-
-        # Compute OASPL/SPLA grids by summing band powers.
-        # For plotting/metrics: use only the requested frequency range.
-        # For export/full-band: use all available bands.
-        # A -inf band (no energy) adds nothing to a sum, and a cell with no data
-        # (NaN) stays NaN rather than becoming a -3076 dB level.
-        band_centers = np.asarray(band_centers, dtype=float)
-        band_mask_plot = np.logical_and(band_centers >= float(hemisphere_freq_range_hz[0]), band_centers <= float(hemisphere_freq_range_hz[1]))
-        if not np.any(band_mask_plot):
-            raise ValueError('No third-octave bands fall within hemisphere_freq_range_hz')
-
-        P_plot = np.power(10.0, hemi_bands_db[band_mask_plot, :, :] / 10.0)
-        hemi_oaspl_db = fa.power_to_db(np.sum(P_plot, axis=0))
-
-        Aweight_plot = np.array([fa.dBAw(f) for f in band_centers[band_mask_plot]], dtype=float)
-        P_plot_A = np.power(10.0, (hemi_bands_db[band_mask_plot, :, :] + Aweight_plot[:, None, None]) / 10.0)
-        hemi_spl_a_db = fa.power_to_db(np.sum(P_plot_A, axis=0))
-
-        P_full = np.power(10.0, hemi_bands_db / 10.0)
-        hemi_oaspl_full_db = fa.power_to_db(np.sum(P_full, axis=0))
+        levels = oaspl_grids(band_centers, hemi_bands_db, hemisphere_freq_range_hz)
+        hemi_oaspl_db = levels['oaspl_db']
+        hemi_spl_a_db = levels['spla_db']
+        hemi_oaspl_full_db = levels['oaspl_fullband_db']
 
         azi_grid = hemi['azi_grid_deg']
         elv_grid = hemi['elv_grid_deg']
@@ -326,9 +351,6 @@ def main():
         # Coverage plot (uses scattered az/el from hemisphere samples)
         figs.append(plot_array_coverage(hemi['scattered']['azi_deg'], hemi['scattered']['elv_deg']))
         names.append('array_coverage_lambert')
-
-        oaspl_fmax = float(hemisphere_freq_range_hz[1])
-        oaspl_ref_fmax = float(hemisphere_freq_range_hz[1])
 
         # Plot OASPL integrated below 2 kHz using flight_acoustics plotting helper
         fig_oaspl, ax_oaspl, _ = fa.plot_lambert_ea(
@@ -351,7 +373,7 @@ def main():
         figs.append(fig_oaspl_art)
         names.append('hemisphere_oaspl_lt2khz_lambert_art_grid')
 
-        # Plot full-band OASPL (kept for compatibility; same band as above in this demo)
+        # Plot full-band OASPL (every exported band)
         fig_oaspl_full, ax_oaspl_full, _ = fa.plot_lambert_ea(
             np.deg2rad(AZI_GRID),
             np.deg2rad(ELV_GRID),
@@ -371,7 +393,7 @@ def main():
             if radius_ref_ft <= 0.0:
                 raise ValueError('Reference sphere radius is non-positive')
 
-            # Match frequency band for comparison (plot/metrics range)
+            # Match frequency band for comparison (plot/metrics range, as hemi_oaspl_db)
             fmask_ref = np.logical_and(f_ref >= freqs[0], f_ref <= freqs[1])
             amp_ref = amp_ref[:, :, fmask_ref]
 
@@ -398,14 +420,14 @@ def main():
             P_ref_ext = np.concatenate((P_ref_pts, P_ref_pts, P_ref_pts))
 
             P_ref_grid = fa.shepIDW(ELV_GRID, AZI_GRID, felv_ref_ext, fazi_ref_ext, P_ref_ext, rmax=float(hemisphere_rmax))
-            ref_oaspl_full_db = fa.power_to_db(P_ref_grid)
-            if ref_oaspl_full_db.shape[1] > 1:
-                ref_oaspl_full_db[:, -1] = ref_oaspl_full_db[:, 0]
+            ref_oaspl_db = fa.power_to_db(P_ref_grid)
+            if ref_oaspl_db.shape[1] > 1:
+                ref_oaspl_db[:, -1] = ref_oaspl_db[:, 0]
 
             fig_ref_on_grid, ax_ref_on_grid, _ = fa.plot_lambert_ea(
                 np.deg2rad(AZI_GRID),
                 np.deg2rad(ELV_GRID),
-                ref_oaspl_full_db.copy(),
+                ref_oaspl_db.copy(),
                 SPL_range=hemisphere_spl_range,
             )
             figs.append(fig_ref_on_grid)
@@ -413,12 +435,12 @@ def main():
 
             # Delta plot (custom, diverging colormap) and summary stats
             # Compare in the plotting band range.
-            delta_db = hemi_oaspl_db - ref_oaspl_full_db
+            delta_db = hemi_oaspl_db - ref_oaspl_db
             finite = np.isfinite(delta_db)
             if np.any(finite):
                 med = float(np.median(delta_db[finite]))
                 mad = float(np.median(np.abs(delta_db[finite] - med)))
-                logging.info(f'Hemisphere - reference (full-band) median={med:+.2f} dB, MAD={mad:.2f} dB (on regular grid)')
+                logging.info(f'Hemisphere - reference (<{levels["oaspl_fmax_hz"] / 1000:g} kHz) median={med:+.2f} dB, MAD={mad:.2f} dB (on regular grid)')
 
             lat = np.deg2rad(ELV_GRID)
             lon = fa.lambert_lon(np.deg2rad(AZI_GRID))
@@ -455,8 +477,8 @@ def main():
                 rmax_deg=hemisphere_rmax,
                 point_stride=hemisphere_point_stride,
                 absorption_deprop=apply_absorption_deprop,
-                oaspl_fmax_hz=oaspl_fmax,
-                oaspl_fullband_fmax_hz=oaspl_ref_fmax,
+                oaspl_fmax_hz=levels['oaspl_fmax_hz'],
+                oaspl_fullband_fmax_hz=levels['oaspl_fullband_fmax_hz'],
             )
             logging.info(f"Saved gridded hemisphere to {out_npz}")
 
