@@ -578,10 +578,19 @@ has no noys either way. With `masked=True` every band below SPL(d) is treated so
 NICE-OPS's `below_noy_floor` masking. A NaN band is a missing level: noys, PNL, $C$ and PNLT are
 NaN, and EPNL refuses the history.
 
-**Aural nondetectability.** MIL-STD-1474E Table C-1 [40] gives, per one-third-octave
-band, the level at which a sound is undetectable at each distance. A spectrum normalized to 10 m,
-$L_{10} = L + 20\lg(d/10)$, is shifted to each of the table's measurement distances and
-interpolated in $\lg$ distance. The nondetectability distance is the largest over the bands.
+**Aural nondetectability.** MIL-STD-1474E Table C-I [40] gives, per one-third-octave
+band, the limit at each nondetectability distance $D_j$ (5 m to 6 km), measured at 2, 10 or 30 m
+$m_j$; a distance is met when no band exceeds its limit (§C.5.1.2). A spectrum normalized to 10 m,
+$L_{10} = L + 20\lg(d/10)$, is taken to each column's measurement distance by spherical
+spreading, giving the exceedance $e_j = L_{10} + 20\lg(10/m_j) - L_{\lim,j}$. A band's distance is
+where $e$, interpolated linearly in $\lg D$ between adjacent columns, falls to zero for the last
+time. Within a measurement-distance group this is the reading of Figures C-1 to C-5; across the
+30–100 m and 400–500 m group boundaries it rests on the same spreading that shifts the spectrum.
+The nondetectability distance is the largest over the bands, every band counting. A band under
+every column gives 5 m, an upper bound; one over the 6 km column gives 6 km, a lower bound that
+wins and flags the result; an NA entry (no limit listed) counts as met, so a band over its last
+listed column is bracketed by that column and the next. Table bands more than half a band outside
+the input spectrum are not evaluated rather than extrapolated.
 
 ## 10. Auxiliary models
 
