@@ -402,3 +402,15 @@ def test_a_gap_in_one_recording_leaves_the_rest_of_its_bands():
     bands = gapped['third_octave']['bands_db'][:, gapped['mic'] == 0]
     assert not np.isneginf(bands).any()
     assert np.isfinite(bands).mean() > 0.5
+
+
+def test_an_ambient_window_of_the_run_gates_like_a_recording():
+    """ambient_time_range takes the ambient from a signal-free stretch of the run."""
+    scenario = _scenario(seed=10, duty=0.4)
+    window = _run(scenario, ambient_time_range=(0.0, 0.8), band_snr_gate_db=10.0)
+    recording = _run(scenario, ambient_pressure=_scenario(noise_only=True, seed=11)['pressure'],
+                     band_snr_gate_db=10.0)
+    a, b = window['oaspl_db'], recording['oaspl_db']
+    both = np.isfinite(a) & np.isfinite(b) & (a > -100.0) & (b > -100.0)
+    assert both.sum() > 0.5 * a.size
+    assert abs(float(np.median(a[both] - b[both]))) < 1.0
