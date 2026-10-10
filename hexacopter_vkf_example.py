@@ -31,12 +31,14 @@ HIGHPASS_CUTOFF_HZ = 100
 
 # VKF settings
 MIC_RANGE = 16
+# Blade-passage-frequency harmonics k x BPF; the first (45-90 Hz on this
+# record) lies below the 100 Hz high-pass.
 VKF_ORDERS = list(range(2, 31))
 VKF_P = 1
 VKF_MIN_BW = 3
 VKF_MAX_BW = 9
 VKF_BW_PERCENT = 0.05
-VKF_SOLVER = "auto"  # UMFPACK if scikits.umfpack is installed, else SuperLU
+VKF_SOLVER = "auto"  # banded Cholesky; sparse UMFPACK/SuperLU when needed
 VKF_USE_COUPLING = True  # False is faster but less accurate
 VKF_N_JOBS = None  # defaults to CPU count
 
@@ -176,14 +178,14 @@ def process_segment_serial(seg_idx, spacing, cutoff, xo, to, rpmo, orders, no_bl
         xo: Original signal array, shape (n_samples, n_mics).
         to: Time vector.
         rpmo: RPM array, shape (n_samples, 6_rotors).
-        orders: Iterable of shaft orders to extract.
+        orders: Iterable of blade-passage-frequency harmonics (k x BPF) to extract.
         no_blade: Number of blades per rotor.
         fs: Sampling frequency in Hz.
         bw_percent: Bandwidth as percentage of frequency.
         min_bw: Minimum bandwidth in Hz.
         max_bw: Maximum bandwidth in Hz.
         p: VK filter order.
-        solver: Sparse solver backend.
+        solver: VKF solver (see vold_kalman_filter).
         use_coupling: Whether to include cross-order coupling.
         total_spacing: Total number of segments.
         total_start: Start time for progress tracking.
@@ -237,14 +239,14 @@ def _process_segment(
         x_src: Source signal array, shape (n_samples, n_mics).
         t: Time vector for segment.
         rpm: RPM array, shape (n_samples, 6_rotors).
-        orders: Tuple of shaft orders to extract.
+        orders: Tuple of blade-passage-frequency harmonics (k x BPF) to extract.
         no_blade: Number of blades per rotor.
         fs: Sampling frequency in Hz.
         bw_percent: Bandwidth as percentage of frequency.
         min_bw: Minimum bandwidth in Hz.
         max_bw: Maximum bandwidth in Hz.
         p: VK filter order.
-        solver: Sparse solver backend.
+        solver: VKF solver (see vold_kalman_filter).
         use_coupling: Whether to include cross-order coupling.
         cutoff: Number of samples to exclude at boundaries.
         
@@ -302,7 +304,10 @@ def separate_hexacopter_acoustics(mat_file_path, mic_range=16,
     mic_range : int, optional
         Microphone index to process (1-based to match MATLAB), default 16
     orders : iterable, optional
-        Shaft orders to extract, default range(2, 31)
+        Blade-passage-frequency harmonics k x BPF to extract (order k is at
+        k * no_blade times the shaft frequency), default range(2, 31).  The
+        first harmonic is left out because on the example record (BPF 45-90 Hz)
+        it lies below the 100 Hz high-pass.
     p : int, optional
         VK filter order, default 1
     min_bw : float, optional
@@ -312,7 +317,8 @@ def separate_hexacopter_acoustics(mat_file_path, mic_range=16,
     bw_percent : float, optional
         Bandwidth as percentage of frequency, default 0.05 (5%)
     solver : {"auto", "umfpack", "superlu"}, optional
-        Sparse solver backend for VKF (see vold_kalman_filter), default "auto"
+        VKF solver (see vold_kalman_filter), default "auto": banded Cholesky,
+        with the sparse solvers when it does not apply
     use_coupling : bool, optional
         Whether to include cross-order coupling (B_U) terms, default True
     n_jobs : int or None, optional
