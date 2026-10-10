@@ -477,7 +477,7 @@ def build_parser() -> argparse.ArgumentParser:
 					  help='Optional path to depropagated hemisphere .npz (if omitted, plots coverage only).')
 	p_ov.add_argument(
 		'--field',
-		choices=['oaspl_fullband', 'oaspl_lt2khz', 'splA_lt2khz', 'third_octave'],
+		choices=[*_NPZ_LEVEL_FIELDS, 'third_octave'],
 		default='oaspl_fullband',
 		help='Hemisphere field to plot. Default: oaspl_fullband.',
 	)

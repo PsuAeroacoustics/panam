@@ -44,3 +44,14 @@ def test_min_elevation_is_measured_in_the_target_elv_plane(capsys):
     with pytest.raises(SystemExit):
         array_planner.main(['design', '--help'])
     assert 'measured in the --target-elv plane' in ' '.join(capsys.readouterr().out.split())
+
+
+def test_overlay_field_choices_come_from_the_level_table(monkeypatch):
+    """--field repeated the table's keys by hand, so a field added to the table
+    was refused on the command line."""
+    fields = dict(array_planner._NPZ_LEVEL_FIELDS, oaspl_lt1khz=('hemisphere_oaspl_lt1khz_db', 'OASPL (<1 kHz), dB'))
+    monkeypatch.setattr(array_planner, '_NPZ_LEVEL_FIELDS', fields)
+    args = array_planner.build_parser().parse_args(['overlay', '--altitude', '150', '--field', 'oaspl_lt1khz'])
+    assert args.field == 'oaspl_lt1khz'
+    for field in ('oaspl_fullband', 'oaspl_lt2khz', 'splA_lt2khz', 'third_octave'):
+        assert array_planner.build_parser().parse_args(['overlay', '--altitude', '1', '--field', field]).field == field
