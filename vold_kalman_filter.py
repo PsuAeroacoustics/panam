@@ -8,7 +8,7 @@ This module is adapted from a MATLAB implementation by Joel Sundar Rachaprolu at
 
 Functions
 ---------
-vold_kalman_filter(x, freq, fs, bandwidth, p, r=None)
+vold_kalman_filter(x, freq, fs, bandwidth, p, r=None, solver="auto", use_coupling=True)
     Extract complex envelopes and phasors from acoustic signal using Vold-Kalman filtering.
 """
 
@@ -45,13 +45,7 @@ _AUGMENTED_MAX_CONDITION = 1e14
 #: Far enough out r overflows, which gave NaN output or an OverflowError.
 _AUGMENTED_SINGULAR_CONDITION = 1.0 / np.finfo(float).eps
 
-# Optional faster sparse solvers (if installed)
-try:
-    from pypardiso import spsolve as _pardiso_spsolve  # type: ignore
-    _HAVE_PARDISO = True
-except Exception:  # pragma: no cover - optional dependency
-    _HAVE_PARDISO = False
-
+# Optional faster sparse solver (if installed)
 try:
     import scikits.umfpack  # type: ignore
     _HAVE_UMFPACK = True
@@ -276,8 +270,10 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None, solver="auto", use_cou
     solver_choice = (solver or "auto").lower()
     if solver_choice not in ("auto", "pardiso", "umfpack", "superlu"):
         raise ValueError(f"Unknown solver '{solver}'")
-    if solver_choice == "pardiso" and not _HAVE_PARDISO:
-        raise RuntimeError("pypardiso is not installed")
+    if solver_choice == "pardiso":
+        # Accepted by name so that asking for it says why it cannot be used.
+        raise TypeError("pypardiso solves only real systems, and the Vold-Kalman systems are complex; "
+                        "use solver='auto', 'umfpack' or 'superlu'")
     if solver_choice == "umfpack" and not _HAVE_UMFPACK:
         # SciPy would quietly use SuperLU instead.
         raise RuntimeError("scikits.umfpack is not installed")
@@ -382,24 +378,12 @@ def _per_sample_and_order(value, n_x, n_ord, name):
 
 
 def _solve_sparse(A, b, solver_choice):
-    """Solve A z = b with the selected sparse backend (A in CSC).
-
-    pypardiso solves only real systems.  The Vold-Kalman systems are complex,
-    so "auto" never hands them to it, and "pardiso" refuses them rather than
-    risk a silent cast to real.
-    """
-    complex_system = np.iscomplexobj(A) or np.iscomplexobj(b)
-    if solver_choice == "pardiso" and complex_system:
-        raise TypeError("pypardiso solves only real systems, and this one is complex; "
-                        "use solver='auto', 'umfpack' or 'superlu'")
-    use_pardiso = _HAVE_PARDISO and solver_choice in ("auto", "pardiso") and not complex_system
+    """Solve A z = b with the selected sparse backend (A in CSC)."""
     use_umfpack = _HAVE_UMFPACK and solver_choice in ("auto", "umfpack")
     try:
-        if use_pardiso:
-            return _pardiso_spsolve(A, b)
         return spsolve(A, b, use_umfpack=use_umfpack)
     except Exception:
-        if solver_choice != "auto" or not (use_pardiso or use_umfpack):
+        if solver_choice != "auto" or not use_umfpack:
             raise
         # Fall back to SuperLU, never to a dense solve (n_tot**2 memory).
         return spsolve(A, b, use_umfpack=False)

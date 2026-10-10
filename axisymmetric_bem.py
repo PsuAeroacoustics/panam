@@ -43,24 +43,9 @@ def _table_bilinear(rho, z, u0, du, nu, v0, dv, nv, offset, i_red, j_red):
     return ir, jr
 
 
-@njit(cache=True, fastmath=False)
-def _table_lookup(rho, z, u0, du, nu, v0, dv, nv, offset, k, i_red, j_red):
-    """Bilinear lookup of the exact image integrals I, J (see gp.ImageIntegralTable)."""
-    ir, jr = _table_bilinear(rho, z, u0, du, nu, v0, dv, nv, offset, i_red, j_red)
-    r2 = max(np.sqrt(rho * rho + z * z), offset)
-    ph = np.exp(1j * k * r2)
-    return ir * ph / (4 * np.pi * r2), jr * ph / (4 * np.pi * r2 * r2)
-
-
-@njit(cache=True)
-def _dgdn(xr, xz, yr, yz, phi, nr, nz, k, beta, tab, skip_direct):
-    """dG/dn_y for target x = (xr, 0, xz) and source y = (yr cos phi, yr sin phi, yz), normal (nr, nz) at y."""
-    return _dgdn_cs(xr, xz, yr, yz, np.cos(phi), np.sin(phi), nr, nz, k, beta, tab, skip_direct)
-
-
 @njit(cache=True)
 def _dgdn_cs(xr, xz, yr, yz, c, s, nr, nz, k, beta, tab, skip_direct):
-    """:func:`_dgdn` given c = cos(phi) and s = sin(phi)."""
+    """dG/dn_y for target x = (xr, 0, xz) and source y = (yr c, yr s, yz), normal (nr, nz) at y; c, s = cos, sin phi."""
     u0, du, nu, v0, dv, nv, offset, i_red, j_red = tab
     dx = yr * c - xr
     dy = yr * s
@@ -76,7 +61,7 @@ def _dgdn_cs(xr, xz, yr, yz, c, s, nr, nz, k, beta, tab, skip_direct):
     r2 = np.sqrt(rho * rho + zs * zs)
     e2 = np.exp(1j * k * r2)
     g2 = e2 / (4 * np.pi * r2)
-    # I and J (_table_lookup), sharing e^{ikR2} unless R2 is below the table's offset.
+    # I and J by bilinear lookup in the table (gp.ImageIntegralTable), sharing e^{ikR2} unless R2 is below the table's offset.
     ir, jr = _table_bilinear(rho, zs, u0, du, nu, v0, dv, nv, offset, i_red, j_red)
     r2c = max(r2, offset)
     ph = e2 if r2c == r2 else np.exp(1j * k * r2c)

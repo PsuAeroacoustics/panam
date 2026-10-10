@@ -109,6 +109,10 @@ PLATE_TABLE_SOUND_SPEED_STEP = 0.005
 #: Legacy sphere reference radius, feet.
 DEFAULT_R_REF_FT = 100.0
 
+#: build_sphere's rim elevation, deg below the horizon, when max_rim_range_ft
+#: is given without rim_elevation_deg.
+DEFAULT_RIM_ELEVATION_DEG = 14.0
+
 #: Threads used to warm the cloud-storage cache ahead of each run.
 PREFETCH_WORKERS = 24
 
@@ -244,9 +248,8 @@ class NoiseAbatementTest:
         :func:`is_steady_flight_card`.  This is what determines which runs get
         a source sphere at all: turns and accelerating/decelerating passes
         smear directivity across azimuth in a way depropagation does not
-        correct for.  It reproduces the legacy Be407 sphere set exactly (113
-        of 113, no extras, no omissions) and adds a handful of duplicate-speed
-        runs the legacy build happened to skip.
+        correct for.  Against the legacy Be407 sphere set, see
+        :func:`is_steady_flight_card`.
         """
         out = []
         for row in self.reference:
@@ -327,8 +330,8 @@ def _open_csv(path):
     """Open a dataset CSV tolerantly.
 
     ``R66FullRefList.csv`` carries a stray non-UTF-8 byte (0x89 at offset
-    36283) in a comment field.  Latin-1 decodes every byte, so the run index
-    still reads rather than the whole aircraft failing to load.
+    36283) in a comment field.  It decodes as U+FFFD (``errors='replace'``),
+    so the run index still reads rather than the whole aircraft failing to load.
     """
     return open(path, encoding='utf-8-sig', errors='replace', newline='')
 
@@ -347,7 +350,7 @@ def vz_sign(track):
     """
     dz = np.gradient(track['z'], track['time'])
     vz = track['vz']
-    # Uncenterd, so a steady descent -- constant dz/dt, no variance to
+    # Uncentered, so a steady descent -- constant dz/dt, no variance to
     # correlate -- still decides: vz . dz/dt is +|dz|^2 when they agree.
     rms = lambda x: np.sqrt(np.mean(np.square(x)))
     if rms(vz) < 0.5 or rms(dz) < 0.5:                 # ft/s
@@ -452,11 +455,11 @@ def steady_window(track, speed_tolerance_knots=4.0, fpa_tolerance_deg=2.0,
     29 -- the tolerances are the knob for that trade.
 
     ``max_array_range``, when given, additionally restricts the window to
-    where the vehicle is within that distance of the array centroid (same
-    units as the track).  That bounds the vehicle, not the propagation path --
-    this array spans over 6000 ft, so a microphone at the far end is still
-    5000+ ft away from a vehicle sitting on top of the centroid.  Bounding the
-    path is what straight-ray validity actually asks for, and
+    where the vehicle is within that distance of the run's reference point,
+    the track frame's origin (same units as the track).  That bounds the
+    vehicle, not the propagation path -- this array spans over 6000 ft, so a
+    microphone at the far end is still 5000+ ft away from a vehicle sitting
+    over the reference point.  Bounding the path is what straight-ray validity actually asks for, and
     ``depropagate_hemisphere(max_range=)`` does it per emission point and
     microphone; this is the blunter instrument, off by default because it
     also throws away whole runs and, on a steep descent, selects the flare.
@@ -963,7 +966,7 @@ def wind_components(wind, reference_east_north, ground_velocity_east_north_ft_s)
     along, cross = float(w @ reference), float(w @ starboard)
     w_ft_s = w * fa.WIND_SPEED_UNITS[wind['units']] / 0.3048
     ground = np.asarray(ground_velocity_east_north_ft_s, dtype=float).reshape(-1, 2)
-    airspeed_knots = float(np.mean(np.hypot(*(ground - w_ft_s).T))) * 0.3048 / 0.514444
+    airspeed_knots = float(np.mean(np.hypot(*(ground - w_ft_s).T))) * 0.3048 / fa.KNOT_MPS
     return along, cross, airspeed_knots
 
 
@@ -1566,7 +1569,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
         ray_model=ray_model,
         interpolation=interpolation,
         rim_range=(None if max_rim_range_ft is None else
-                   (14.0 if rim_elevation_deg is None else rim_elevation_deg, max_rim_range_ft)),
+                   (DEFAULT_RIM_ELEVATION_DEG if rim_elevation_deg is None else rim_elevation_deg, max_rim_range_ft)),
         remove_doppler=remove_doppler,
         tone_aware=tone_aware,
         return_scattered=samples_path is not None,
@@ -1641,7 +1644,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
                                    dict(fa.ADAPTIVE_INTERPOLATION, **interpolation).items()))),
                 gaps=(hemisphere.get('interpolation', {}).get('gaps', 0)),
                 rim_range='' if max_rim_range_ft is None else '{:g} ft below {:g} deg'.format(
-                    max_rim_range_ft, 14.0 if rim_elevation_deg is None else rim_elevation_deg),
+                    max_rim_range_ft, DEFAULT_RIM_ELEVATION_DEG if rim_elevation_deg is None else rim_elevation_deg),
                 board_correction=board_correction if board_correction == 'flat' else
                 'plate_bem ' + ' '.join('{}={}'.format(k, v) for k, v in
                                          sorted((ground or SITE_GROUND).items())))
@@ -1655,7 +1658,7 @@ def _run_file_paths(test, run, gate_ambient=True):
     """Every acoustic file one run needs, its ambient recording included
     unless ``gate_ambient`` is False (:func:`build_sphere` then reads none)."""
     mics = test.ground_board_mics(run)
-    paths = [test.acoustic_files[run][m] for m in mics if m in test.acoustic_files.get(run, {})]
+    paths = [test.acoustic_files[run][m] for m in mics]
     ambient = test.ambient_run(run) if gate_ambient else None
     if ambient:
         paths += [path for mic, path in test.acoustic_files.get(ambient, {}).items()
@@ -1989,7 +1992,7 @@ def main(argv=None):
                              'impedance dominates (default 10)')
     parser.add_argument('--max-array-range-ft', type=float, default=None,
                         help='additionally restrict the track to within this distance of '
-                             'the array centroid; off by default, since capping the '
+                             "the run's reference point; off by default, since capping the "
                              'propagation path bounds the ray directly and this also '
                              'drops whole runs and biases descents toward the flare')
     parser.add_argument('--max-propagation-range-ft', type=float, default=2000.0,

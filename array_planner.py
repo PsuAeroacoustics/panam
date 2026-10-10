@@ -7,15 +7,14 @@ and visualize how well a design covers a *depropagated acoustic hemisphere*
 
 It wires together three core utilities in `flight_acoustics`:
 - `linear_array_plan`: compute sideline microphone positions for a target elevation spacing
-- `array_coverage`: compute (azimuth, elevation) coverage on an overflight trajectory
-- `array_coverage_plot`: plot coverage points using Lambert equal-area projection
+- `hemigen`: the (azimuth, elevation) each microphone samples along an overflight trajectory
+- `lambert_ea_points`: the Lambert equal-area axes the coverage points are drawn on
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 from dataclasses import dataclass
 from typing import Optional
 
@@ -178,54 +177,49 @@ class HemisphereGrid:
 _OLD_NO_DATA_FLOOR_DB = -1000.0
 
 
+#: --field choices stored as a single (Nelv, Nazi) level map: their npz key and label.
+_NPZ_LEVEL_FIELDS = {
+	'oaspl_fullband': ('hemisphere_oaspl_fullband_db', 'OASPL (full band), dB'),
+	'oaspl_lt2khz': ('hemisphere_oaspl_lt2khz_db', 'OASPL (<2 kHz), dB'),
+	'splA_lt2khz': ('hemisphere_splA_lt2khz_db', 'Overall A-weighted (<2 kHz), dBA'),
+}
+
+
 def _load_depropagated_hemisphere_npz(path: str, *, field: str, fc_hz: Optional[float]) -> HemisphereGrid:
 	"""Load a depropagated hemisphere product saved as .npz.
 
 	Supports the keys written by `AS350_289108_demo.py`.
 	"""
-	npz = np.load(path)
-	required = {'azi_grid_deg', 'elv_grid_deg'}
-	missing = sorted([k for k in required if k not in npz])
-	if missing:
-		raise ValueError(f"{path} is missing required keys: {missing}")
+	with np.load(path) as npz:
+		required = {'azi_grid_deg', 'elv_grid_deg'}
+		missing = sorted([k for k in required if k not in npz])
+		if missing:
+			raise ValueError(f"{path} is missing required keys: {missing}")
 
-	azi_grid_deg = np.asarray(npz['azi_grid_deg'], dtype=float)
-	elv_grid_deg = np.asarray(npz['elv_grid_deg'], dtype=float)
+		azi_grid_deg = np.asarray(npz['azi_grid_deg'], dtype=float)
+		elv_grid_deg = np.asarray(npz['elv_grid_deg'], dtype=float)
 
-	if field == 'oaspl_fullband':
-		key = 'hemisphere_oaspl_fullband_db'
-		if key not in npz:
-			raise ValueError(f"{path} does not contain '{key}'")
-		spl = np.asarray(npz[key], dtype=float)
-		label = 'OASPL (full band), dB'
-	elif field == 'oaspl_lt2khz':
-		key = 'hemisphere_oaspl_lt2khz_db'
-		if key not in npz:
-			raise ValueError(f"{path} does not contain '{key}'")
-		spl = np.asarray(npz[key], dtype=float)
-		label = 'OASPL (<2 kHz), dB'
-	elif field == 'splA_lt2khz':
-		key = 'hemisphere_splA_lt2khz_db'
-		if key not in npz:
-			raise ValueError(f"{path} does not contain '{key}'")
-		spl = np.asarray(npz[key], dtype=float)
-		label = 'Overall A-weighted (<2 kHz), dBA'
-	elif field == 'third_octave':
-		if fc_hz is None:
-			raise ValueError('field=third_octave requires --fc')
-		key_bands = 'hemisphere_bands_db'
-		key_fc = 'band_centers_hz'
-		if key_bands not in npz or key_fc not in npz:
-			raise ValueError(f"{path} does not contain '{key_bands}' and '{key_fc}'")
-		band_centers = np.asarray(npz[key_fc], dtype=float)
-		bands_db = np.asarray(npz[key_bands], dtype=float)
-		if bands_db.ndim != 3:
-			raise ValueError(f"{key_bands} must have shape (Nb, Nelv, Nazi)")
-		idx = int(np.argmin(np.abs(band_centers - float(fc_hz))))
-		spl = bands_db[idx, :, :]
-		label = f'Third-octave band @ {band_centers[idx]:.0f} Hz, dB'
-	else:
-		raise ValueError(f'Unknown hemisphere field: {field}')
+		if field in _NPZ_LEVEL_FIELDS:
+			key, label = _NPZ_LEVEL_FIELDS[field]
+			if key not in npz:
+				raise ValueError(f"{path} does not contain '{key}'")
+			spl = np.asarray(npz[key], dtype=float)
+		elif field == 'third_octave':
+			if fc_hz is None:
+				raise ValueError('field=third_octave requires --fc')
+			key_bands = 'hemisphere_bands_db'
+			key_fc = 'band_centers_hz'
+			if key_bands not in npz or key_fc not in npz:
+				raise ValueError(f"{path} does not contain '{key_bands}' and '{key_fc}'")
+			band_centers = np.asarray(npz[key_fc], dtype=float)
+			bands_db = np.asarray(npz[key_bands], dtype=float)
+			if bands_db.ndim != 3:
+				raise ValueError(f"{key_bands} must have shape (Nb, Nelv, Nazi)")
+			idx = int(np.argmin(np.abs(band_centers - float(fc_hz))))
+			spl = bands_db[idx, :, :]
+			label = f'Third-octave band @ {band_centers[idx]:.0f} Hz, dB'
+		else:
+			raise ValueError(f'Unknown hemisphere field: {field}')
 
 	# Basic shape sanity check: grid is (Nelv, Nazi)
 	if spl.ndim != 2:

@@ -96,7 +96,7 @@ Examples:
     
     # Output
     parser.add_argument('-o', '--output', type=str, default='demo_plots/ega_plot.pdf',
-                        help='Output filename (default: ega_plot.pdf)')
+                        help='Output filename (default: demo_plots/ega_plot.pdf)')
     
     args = parser.parse_args()
     
@@ -165,8 +165,8 @@ Examples:
         cbar.set_label('Excess Attenuation (dB)')
     
         # Contour lines
-        c = ax.contour(X, Y, Z, colors='k', linewidths=0.5, alpha=0.4)
-        ax.clabel(c, fontsize=9, fmt='%.1f')
+        lines = ax.contour(X, Y, Z, colors='k', linewidths=0.5, alpha=0.4)
+        ax.clabel(lines, fontsize=9, fmt='%.1f')
     else:
         ax.plot(X, Z, '-b')
         ax.grid(True)

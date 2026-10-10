@@ -63,7 +63,7 @@ SPLA = np.apply_along_axis(OASPL, 2, amplitude + Aweight)
 Uses `fivethirtyeight` style globally with `matplotlib.rcParams` adjustments. Custom colormap helper `get_ylorrd_cmap(num_levels)` prefers palettable discrete maps but falls back to continuous.
 
 ### Spherical Interpolation
-Modified Shepard's IDW used for hemispheric data (`shepIDW`, `IDWweights`). Uses geodesic distances (`geodist`) and Franke-Nielson radius-based weighting.
+Modified Shepard's IDW used for hemispheric data (`shepIDW`, or `adaptive_idw_weights` in `depropagate_hemisphere`). Uses geodesic distances (`geodist`) and Franke-Nielson radius-based weighting.
 
 ## Development Workflows
 

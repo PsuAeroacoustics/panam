@@ -18,7 +18,7 @@ import simplekml
 # Colormap helper will import palettable lazily
 import matplotlib
 from matplotlib import tri
-from matplotlib.pyplot import subplots, colorbar, contourf, show
+from matplotlib.pyplot import subplots, colorbar
 from netCDF4 import Dataset
 from pymap3d import geodetic2enu, enu2geodetic
 
@@ -29,6 +29,12 @@ from panam_acoustics.signal_io import (
 )
 
 from panam_acoustics.plotting import acoustic_plot_style
+
+#: Reference sound pressure, Pa (20 uPa).
+P_REF = 2.0e-5
+
+#: One knot in m/s.
+KNOT_MPS = 0.514444
 
 
 def psd(signal, sampling_rate, cal=0.0):
@@ -48,9 +54,8 @@ def psd(signal, sampling_rate, cal=0.0):
     kcal = 10 ** (cal / 20)
     frequency, power_spectral_density = scipy.signal.periodogram(kcal * signal, sampling_rate)
     df = frequency[1] - frequency[0]
-    pref = 2.0e-5
-    psd_db = 10.0 * np.log10(power_spectral_density / (pref ** 2))
-    level = 20.0 * np.log10(np.sqrt(np.sum(power_spectral_density * df)) / pref)
+    psd_db = 10.0 * np.log10(power_spectral_density / (P_REF ** 2))
+    level = 20.0 * np.log10(np.sqrt(np.sum(power_spectral_density * df)) / P_REF)
     return frequency, psd_db, level
 
 
@@ -92,12 +97,11 @@ def psd_welch(signal, sampling_rate, cal=0.0, window_time=1.0, window_type='hann
         # medfilter is a width in Hz; medfilt wants an odd number of bins.
         medfilter_width = 2 * int(round(0.5 * float(medfilter) / df)) + 1
         power_spectral_density = scipy.signal.medfilt(power_spectral_density, medfilter_width)
-    pref = 2.0e-5
-    psd_db = 10.0 * np.log10(power_spectral_density / (pref ** 2))
-    level = 20.0 * np.log10(np.sqrt(np.sum(power_spectral_density * df)) / pref)
+    psd_db = 10.0 * np.log10(power_spectral_density / (P_REF ** 2))
+    level = 20.0 * np.log10(np.sqrt(np.sum(power_spectral_density * df)) / P_REF)
     # dBAw is a level (dB), so the weight on a power spectral density is 10**(dB/10).
     weight = 10**(dBAw(frequency) / 10)
-    level_A = 20.0 * np.log10(np.sqrt(np.sum(weight * power_spectral_density * df)) / pref)
+    level_A = 20.0 * np.log10(np.sqrt(np.sum(weight * power_spectral_density * df)) / P_REF)
     return frequency, psd_db, level, level_A
 
 
@@ -197,14 +201,13 @@ def third_octave_band_levels(signal, sampling_rate, cal=0.0, fmin=20.0, fmax=200
         _bands_within(BASE2_BAND_CENTERS, 0.0, 0.5 * sampling_rate))]
     # Compute PSD
     frequency, psd_db, _ = psd(signal, sampling_rate, cal)
-    pref = 2.0e-5
-    psd_linear = (pref ** 2) * 10.0 ** (psd_db / 10.0)
+    psd_linear = (P_REF ** 2) * 10.0 ** (psd_db / 10.0)
     df = frequency[1] - frequency[0]
     band_levels = np.zeros_like(band_centers)
     for i, (f_lower, f_upper) in enumerate(zip(*third_octave_band_edges(band_centers))):
         band_indices = np.where(np.logical_and(frequency >= f_lower, frequency < f_upper))
         band_power = np.sum(psd_linear[band_indices] * df)
-        band_levels[i] = 10.0 * np.log10(band_power / (pref ** 2))
+        band_levels[i] = 10.0 * np.log10(band_power / (P_REF ** 2))
     return band_centers, band_levels
 
 
@@ -464,7 +467,7 @@ def effective_perceived_noise_level(band_level_history, dt=0.5,
     pnltm = float(pnlt[k_m])
     if bandshare_adjustment:
         # A36.4.4.2: if C at PNLTM is below the average of the five
-        # consecutive intervals centerd there, tone suppression by band
+        # consecutive intervals centered there, tone suppression by band
         # sharing is suspected; recompute PNLTM with the average C.
         lo, hi = max(0, k_m - 2), min(len(pnlt), k_m + 3)
         c_avg = float(np.mean(c_max[lo:hi]))
@@ -848,7 +851,7 @@ def plot_spectrogram(signal, sampling_rate, window_time=1.0, window_type="hann",
 
 
 def dedopplerize(time, pressure, speed_of_sound, track_time, position, observers,
-                 radius=None, output_sample_rate=None, time_offset=0.0):
+                 radius=None, output_sample_rate=None):
     """
     Time domain de-Dopplerization of an acoustic signal
     Args:
@@ -924,7 +927,7 @@ def hemigen(time, source, velocity, observers, speed_of_sound, nose=None):
 
     Returns: tuple (azimuth, elevation, r, t_observer, mach_r)
     WHERE
-    azimith are the azimuth angles on the sphere for each emission time
+    azimuth are the azimuth angles on the sphere for each emission time
     elevation are the elevation angles on the sphere for each emission time
     r are the propagation distances for each emission time
     t_observer are the observer times associated with each emission time
@@ -1500,14 +1503,13 @@ def depropagate_hemisphere(
 
     psd_power_lists = []
     f_sel_master = None
-    Aweight_db = None
 
     # Precompute absorption reference range (meters)
     r_ref_m = None
     if apply_absorption_deprop:
         r_ref_m = float(unit_conversion.len_conv(r_ref, from_units=length_units, to_units='m'))
 
-    pref_sq = (20e-6) ** 2
+    pref_sq = P_REF ** 2
 
     def _depropagate(lin, amb, r_v, alpha, response=None, r_path=None):
         """Gate against ambient, subtract it, then undo spreading and absorption.
@@ -1572,8 +1574,6 @@ def depropagate_hemisphere(
                 f_sel_master = f_sel
             elif f_sel_master.shape != f_sel.shape or not np.allclose(f_sel_master, f_sel, rtol=0.0, atol=0.0):
                 raise ValueError('narrowband=True requires identical frequency grids for all microphones')
-        elif f_sel_master is None:
-            f_sel_master = f_sel
 
         df = float(f_sel[1] - f_sel[0])
 
@@ -1649,16 +1649,13 @@ def depropagate_hemisphere(
                                  .format(im, amb_fs, fs))
             # Same window settings as the run, so the ambient lands on the
             # identical frequency grid and can be applied bin by bin.
-            f_amb, _, psd_amb_db = spectrogram(amb_p, amb_fs, window_time=window_time,
-                                               window_overlap=window_overlap)
+            f_amb, t_amb, psd_amb_db = spectrogram(amb_p, amb_fs, window_time=window_time,
+                                                   window_overlap=window_overlap)
             if f_amb.shape != f.shape or psd_amb_db.shape[1] < 1:
                 raise ValueError('ambient_pressure for mic {:d} did not yield a usable spectrogram on the run '
                                  'frequency grid (is the recording at least one window long?)'.format(im))
             amb_lin = 10.0 ** (np.median(psd_amb_db[fmask, :], axis=1) / 10.0)
             if use_filter_bank:
-                _, t_amb, _ = scipy.signal.spectrogram(
-                    amb_p, amb_fs, scipy.signal.get_window('hann', frame_length),
-                    noverlap=round(window_overlap * frame_length), mode='psd')
                 amb_band = np.nanmedian(pa_filters.third_octave_filter_bank(
                     amb_p, amb_fs, band_centers, t_amb, frame_length), axis=1) / pref_sq
         elif ambient_time_range is not None:
@@ -1957,7 +1954,7 @@ def array_coverage(ymics, altitude, xmin=-1000.0, xmax=1000.0, speed=100.0, rate
 
     Returns: tuple (azimuth, elevation, r)
     WHERE
-    azimith are the azimuth angles on the sphere for each emission time
+    azimuth are the azimuth angles on the sphere for each emission time
     elevation are the elevation angles on the sphere for each emission time
     r are the propagation distances for each emission time
     """
@@ -2200,7 +2197,7 @@ AZIMUTH_REFERENCES = ('track', 'heading')
 #: metadata, and their size in m/s.  The unit is stored as declared; it is converted only
 #: to form the airspeed.  No unit is assumed, even where one is known (the 2017 LIDAR's
 #: is knots: the harness's docs/lidar_units.md).
-WIND_SPEED_UNITS = {'kt': 0.514444, 'm/s': 1.0, 'ft/s': 0.3048, 'mph': 0.44704}
+WIND_SPEED_UNITS = {'kt': KNOT_MPS, 'm/s': 1.0, 'ft/s': 0.3048, 'mph': 0.44704}
 
 #: Where a run's wind at the aircraft came from.  Several may be joined with '+', e.g.
 #: 'lidar+balloon' for a profile pieced together from both.
@@ -2335,6 +2332,8 @@ def _sample_hemisphere_levels(hemisphere, mode, azi_q_deg, elv_q_deg, minimum_le
 
     # Determine export spectrum (frequency + band levels) from hemisphere.
     selected_mode = str(mode).lower()
+    if selected_mode not in ('auto', 'third_octave', 'narrowband'):
+        raise ValueError("mode must be 'auto', 'third_octave' or 'narrowband', not {!r}".format(mode))
     if selected_mode == 'auto':
         if 'third_octave' in hemisphere:
             selected_mode = 'third_octave'
@@ -2522,6 +2521,11 @@ def write_aam_hemisphere_netcdf(
     if azimuth_reference is not None and azimuth_reference not in AZIMUTH_REFERENCES:
         raise ValueError('azimuth_reference must be one of {}, not {!r}'.format(
             AZIMUTH_REFERENCES, azimuth_reference))
+    if float(doppler_shift_removed) not in (0.0, 1.0):
+        raise ValueError('doppler_shift_removed must be 0 or 1, not {!r}'.format(doppler_shift_removed))
+    xyz = np.asarray(xyz_ft, dtype=np.float32).ravel()
+    if xyz.size != 3:
+        raise ValueError('xyz_ft must be a 3-element iterable (x, y, z) in feet')
     metadata = None
     if run_metadata is not None:
         unknown = set(run_metadata) - {key for _, _, key in RUN_METADATA_VARIABLES} - set(RUN_METADATA_ATTRIBUTES)
@@ -2649,9 +2653,6 @@ def write_aam_hemisphere_netcdf(
         vPA.assignValue(np.float32(pylon_angle_deg))
         vMT.assignValue(np.float32(masttilt_deg))
 
-        xyz = np.asarray(xyz_ft, dtype=np.float32).ravel()
-        if xyz.size != 3:
-            raise ValueError('xyz_ft must be a 3-element iterable (x, y, z) in feet')
         vXYZ[:] = xyz
 
         # Match the example file's attribute naming: 'unit' (singular).
@@ -3497,7 +3498,7 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
             amplitude_full if store_spectrum else None, coverage_full))
         conditions.append(dict(source=name, speed_knots=float(speed_knots),
                                flight_path_angle_deg=flight_path_angle,
-                               advance_ratio=0.514444 * float(speed_knots) / main_rotor_tip_speed,
+                               advance_ratio=KNOT_MPS * float(speed_knots) / main_rotor_tip_speed,
                                constants=constants))
 
     # NICE-OPS refuses two spheres at one condition, and a set of two or more
@@ -3916,7 +3917,7 @@ def group_run_metadata(filename, main_rotor_area=None, main_rotor_tip_speed=None
     density = run['air_density_kg_m3']
     out = dict(gross_weight=weight_newtons, air_density=density,
                wind_along_track=run['wind_along_track'], wind_cross_track=run['wind_cross_track'],
-               advance_ratio_air=0.514444 * run['airspeed_knots'] / tip_speed,
+               advance_ratio_air=KNOT_MPS * run['airspeed_knots'] / tip_speed,
                thrust_coefficient_run=weight_newtons / (density * area * tip_speed ** 2),
                wind_source=run['wind_source'] or 'none', wind_units=run['wind_units'],
                wind_reference_direction=run['wind_reference_direction'],
@@ -4260,7 +4261,6 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     'synthesized_hover').  NICE-OPS reads none of them; they are recorded so
     that air-referenced or per-run C_T labels can be tested without a rebuild.
     """
-    # TODO pack in redimensionalization data
     # TODO add reinterpolation flag
 
     if speed_reference not in SPEED_REFERENCES:
@@ -4623,8 +4623,7 @@ def add_sphere_group(ncdatabase, groupname, phi, theta, radius, SPLA, EAA, speed
     this_group.variables['rotor_scale'][:] = main_rotor_radius
     # Define flight condition
     this_group.createVariable("advance_ratio", 'f8', ("condition",))
-    knots_to_meters = 0.514444
-    this_group.variables['advance_ratio'][:] = knots_to_meters * speed / main_rotor_tip_speed
+    this_group.variables['advance_ratio'][:] = KNOT_MPS * speed / main_rotor_tip_speed
     this_group.createVariable("flight_path_angle", 'f8', ("condition",))
     this_group.variables['flight_path_angle'][:] = flight_path_angle
     this_group.createVariable("thrust_coefficient", 'f8', ("condition",))
@@ -4770,8 +4769,7 @@ def read_vehicle_data(directory_name, runs=None, speeds=None, flight_path_angles
         # read drag value and then open Excel reflist file for individual conditions
         nondimensional_flat_plate_drag = float(config['Option']['fbar'])
         reference_list = config['Option']['reflist']
-        local_path_to_list = os.path.abspath(os.path.expanduser(directory_name) + '/' + reference_list)
-        absolute_path_to_list = os.path.abspath(local_path_to_list)
+        absolute_path_to_list = os.path.abspath(os.path.expanduser(directory_name) + '/' + reference_list)
         wb = openpyxl.load_workbook(absolute_path_to_list, read_only=True, data_only=True)
         try:
             ws = wb.active
@@ -4792,9 +4790,10 @@ def read_vehicle_data(directory_name, runs=None, speeds=None, flight_path_angles
         advance_ratios = np.array([row[33] for row in selected])
         weight_coefficients = np.array([row[34] for row in selected])
         hover_tip_mach_numbers = np.array([row[35] for row in selected])
+        # The reflist's indicated airspeeds replace the caller's speeds.
         speeds = np.array([row[22] for row in selected])
-        main_rotor_tip_speed = np.mean(0.514444 * speeds / advance_ratios)
-        # Check on populating these?
+        main_rotor_tip_speed = np.mean(KNOT_MPS * speeds / advance_ratios)
+        # The reflist gives no rotor geometry.
         main_rotor_radius = None
         main_rotor_area = None
         tail_rotor_radius = None
@@ -4824,7 +4823,7 @@ def read_vehicle_data(directory_name, runs=None, speeds=None, flight_path_angles
         advance_ratios = None
         alphas = None
         if speeds is not None:
-            ground_speed_meters_per_sec = 0.514444 * speeds
+            ground_speed_meters_per_sec = KNOT_MPS * speeds
             advance_ratios = ground_speed_meters_per_sec / main_rotor_tip_speed
             hover_tip_mach_numbers = hover_tip_mach_numbers * np.ones_like(advance_ratios)
             drag_to_weight_ratio = 0.5 * nondimensional_flat_plate_drag * advance_ratios ** 2 / weight_coefficients
@@ -4884,48 +4883,6 @@ def project_directory(directory_name, altitude=500, cutoff=30, input_frequencies
             nondimensional_flat_plate_drag, main_rotor_tip_speed)
 
 
-def expand_if_single(x, r):
-    """
-    Expand a scalar or single-element array to match the shape of a reference array.
-
-    This function takes a value (scalar or array) and expands it to match the shape
-    of a reference array if it's a scalar or contains only one element. If the input
-    already has multiple elements, it's returned unchanged.
-
-    Args:
-        x (scalar or array-like): The value to potentially expand. Can be a scalar
-            or an array-like object.
-        r (array-like): The reference array whose shape will be used for expansion.
-
-    Returns:
-        array-like: If x is a scalar or single-element array, returns an array of
-            the same shape as r with all elements equal to x. Otherwise, returns x
-            unchanged.
-    """
-    if np.isscalar(x) or len(x) == 1:
-        x = x * np.ones_like(r)
-    return x
-
-
-def plot_fried_eggs(directory_names, metric='mean', dimensionless=False, altitude=500, cutoff=30,
-                    input_frequencies=None, fpa_climb_cutoff=5,
-                    atmosphere=Atmosphere(temperature=293.15, pressure=101.325,
-                                          relative_humidity=20.0),
-                    climb_rates=False, duration_correction=None, threshold=0.65, cull_noisy_fpa=None, xlim=(35, 140),
-                    ylim=(-2000, 750), save_figures=False):
-    for directory_name in directory_names:
-        fig, ax, cs = fried_egg_plot(directory_name, metric, dimensionless, altitude, cutoff, input_frequencies,
-                                     fpa_climb_cutoff, atmosphere, climb_rates, duration_correction, threshold,
-                                     cull_noisy_fpa)
-        ax.set_xlim(xlim)
-        ax.set_ylim(ylim)
-        mgr = getattr(fig.canvas, "manager", None)
-        if mgr is not None and hasattr(mgr, "set_window_title"):
-            mgr.set_window_title(directory_name)
-        if save_figures:
-            save_name = os.path.basename(directory_name) + '_fried_egg.pdf'
-            fig.savefig(save_name)
-    show(block=True)
 
 
 @acoustic_plot_style
@@ -5040,43 +4997,6 @@ def extract_SPL(filename, infreqs=None, distance=1000,
     return azi, elv, phi, theta, radius, SPLO, SPLA, EAA, speed, flight_path_angle, frequency, amplitude
 
 
-def nc_unwrapped(filename, infreqs=None, weight=None):
-    """
-    Generate an unwrapped noise contour plot from a netCDF acoustic sphere.
-
-    This function extracts sound pressure level (SPL) data from a file and creates
-    a filled contour plot showing the acoustic field distribution in azimuth-elevation
-    coordinates.
-
-    Parameters
-    ----------
-    filename : str
-        Path to the file containing netCDF formatted acoustic sphere data.
-    infreqs : array-like, optional
-        Input frequencies for SPL extraction. Default is None.
-    weight : str, optional
-        Frequency weighting to apply. If 'A', uses A-weighted SPL (SPLA),
-        otherwise uses overall SPL (SPLO). Default is None.
-
-    Returns
-    -------
-    None
-
-    """
-    azi, elv, phi, theta, radius, SPLO, SPLA, EAA, speed, flight_path_angle, _, _ = extract_SPL(filename, infreqs)
-    if weight == 'A':
-        SPL = SPLA
-    else:
-        SPL = SPLO
-    # Directions with no energy (-inf) are left blank and do not set the scale.
-    SPL = np.ma.masked_invalid(SPL)
-    minSPL = np.min(SPL)
-    maxSPL = np.max(SPL)
-    num_levels = 9
-    levels = np.round(np.linspace(minSPL, maxSPL, num_levels))
-    color_map = get_ylorrd_cmap(num_levels)
-    contourf(phi, theta, np.transpose(SPL), levels=levels, cmap=color_map)
-    colorbar()
 
 
 @acoustic_plot_style
@@ -5738,7 +5658,7 @@ def get_ylorrd_cmap(num_levels=9):
 
 def atmosorb(freq, temp, humid, pstat):
     """
-    Atmospheric absorption using acoustics.atmosphere module
+    Atmospheric absorption, ISO 9613-1, via panam_acoustics.atmosphere.Atmosphere.
 
     Args:
         freq: Array-like of frequencies in Hz.
@@ -5755,7 +5675,7 @@ def atmosorb(freq, temp, humid, pstat):
     rh_pct = np.asarray(humid, dtype=float)
     f = np.asarray(freq, dtype=float)
 
-    # Scalar case: fast path
+    # Scalar atmosphere: plain floats, result shaped like freq
     if tempK.ndim == 0 and pres_kpa.ndim == 0 and rh_pct.ndim == 0:
         atm = Atmosphere(
             temperature=float(tempK),
@@ -5809,57 +5729,6 @@ def geodist(elv1, azi1, elv2, azi2):
     return arclength
 
 
-def IDWweights(ielv, iazi, felv, fazi, rmax):
-    """
-    Inverse Distance Weights (Shepard) with Franke & Nielson adjustments.
-
-    Mirrors the MATLAB implementation:
-        function wi = IDWweights(ielv,iazi,felv,fazi,rmax)
-
-    Args:
-        ielv: Interpolation point elevation (deg)
-        iazi: Interpolation point azimuth (deg)
-        felv: Field elevations (deg), array-like
-        fazi: Field azimuths (deg), array-like (same shape/broadcastable with felv)
-        rmax: Maximum radius (deg) for weighting neighborhood
-
-    Returns:
-        numpy.ndarray of weights with the same broadcasted shape as felv/fazi.
-    """
-    felv = np.asarray(felv, dtype=float)
-    fazi = np.asarray(fazi, dtype=float)
-    # Broadcast to common shape if needed
-    felv, fazi = np.broadcast_arrays(felv, fazi)
-
-    # Build arrays for the interpolation point to match shape
-    ielv_arr = np.full(felv.shape, float(ielv))
-    iazi_arr = np.full(fazi.shape, float(iazi))
-
-    # Geodesic distances (degrees)
-    hi = geodist(ielv_arr, iazi_arr, felv, fazi)
-
-    # Threshold exact data points to avoid division by zero
-    eps = np.finfo(float).eps
-    if np.any(hi <= 10.0 * eps):
-        wi = np.zeros_like(hi, dtype=float)
-        b = np.argmin(hi)
-        wi.flat[b] = 1.0
-        return wi
-
-    # Neighborhood mask within rmax (up to 2D as in MATLAB)
-    mask = hi <= float(rmax)
-    m = np.zeros_like(hi, dtype=float)
-    # Franke & Nielson measure
-    m[mask] = ((float(rmax) - hi[mask]) / (float(rmax) * hi[mask])) ** 2
-
-    # Normalization
-    M = m.sum()
-    if M > 0.0:
-        wi = m / M
-    else:
-        # No neighbors within rmax — return zeros (matches safe behavior)
-        wi = m
-    return wi
 
 
 #: Defaults for depropagate_hemisphere(interpolation={...}); see adaptive_idw_weights.
@@ -6072,11 +5941,12 @@ def shepIDW_weights(ielv, iazi, felv, fazi, rmax):
     ielv_flat = ielv_arr.ravel()
     iazi_flat = iazi_arr.ravel()
 
-    # IDWweights for a block of interpolants at a time, by broadcasting.  The
-    # arithmetic is geodist's, element by element, with the sines and cosines
-    # of each point's elevation taken once rather than once per pair, and the
-    # arc cosine only where a pair can be within rmax (the rest get no weight
-    # either way); so the weights are the ones IDWweights gives, to the bit.
+    # Franke & Nielson weights ((rmax - h) / (rmax h))^2 for a block of
+    # interpolants at a time, by broadcasting.  The arithmetic is geodist's,
+    # element by element, with the sines and cosines of each point's elevation
+    # taken once rather than once per pair, and the arc cosine only where a
+    # pair can be within rmax (the rest get no weight either way); so h is
+    # geodist's, to the bit.
     rmax = float(rmax)
     eps = np.finfo(float).eps
     r_elv1, r_azi1 = np.deg2rad(ielv_flat), np.deg2rad(iazi_flat)
@@ -6224,8 +6094,8 @@ def spherical_reflection_coefficient(cos_grazing, image_range, f, a, flores,
 
     Q = Rp + F(w) (1 - Rp): the plane-wave coefficient Rp with Chessell's
     boundary-loss factor F, over a Delany-Bazley ground of flow resistance
-    ``flores`` (kPa s/m^2).  ``cos_grazing`` is the cosine of the angle from the
-    surface normal at the specular point, ``image_range`` the image-source path
+    ``flores`` (kPa s/m^2).  ``cos_grazing`` is, despite its name, the cosine of
+    the angle from the surface normal at the specular point, ``image_range`` the image-source path
     length, ``a`` the sound speed (lengths and speed in matching units).  This is
     the coefficient :func:`ega` uses; it is exposed so that models needing the
     complex coefficient itself (impedance discontinuities, ground planes) use the
@@ -6238,21 +6108,23 @@ def spherical_reflection_coefficient(cos_grazing, image_range, f, a, flores,
     f = np.asarray(f, dtype=float)
     if admittance is None:
         flores = np.asarray(flores, dtype=float)
-        freq_resistance_ratio = f / flores  # Normalized frequency-to-resistance ratio
-        inv_freq_ratio = freq_resistance_ratio ** (-0.73)  # Inverse frequency ratio (Delany-Bazley)
-        impedance_ratio = 1.0 / (1.0 + 9.08 * inv_freq_ratio / (freq_resistance_ratio ** 0.02) + 1j * 11.9 * inv_freq_ratio)
+        # Delany-Bazley admittance beta = 1/Z in X = f / flores; X^-0.73 / X^0.02
+        # is ground_plane.surface_admittance's X^-0.75, kept in this form.
+        x = f / flores
+        x_073 = x ** (-0.73)
+        beta = 1.0 / (1.0 + 9.08 * x_073 / (x ** 0.02) + 1j * 11.9 * x_073)
     else:
-        impedance_ratio = np.asarray(admittance, dtype=complex)
+        beta = np.asarray(admittance, dtype=complex)
 
-    plane_wave_coeff = (cos_grazing - impedance_ratio) / (cos_grazing + impedance_ratio)  # Plane wave reflection coefficient
+    plane_wave_coeff = (cos_grazing - beta) / (cos_grazing + beta)  # Plane wave reflection coefficient
     if not boundary_loss_correction:
         return plane_wave_coeff
 
     # Compute numerical distance (simplified: 0.5*k1 = π*f/a).  This is the
     # root z of the numerical distance w = z^2.
     ground_effect_param = np.sqrt(
-        1j * np.pi * f * image_range / a / (1.0 + impedance_ratio * cos_grazing)
-    ) * (cos_grazing + impedance_ratio)
+        1j * np.pi * f * image_range / a / (1.0 + beta * cos_grazing)
+    ) * (cos_grazing + beta)
 
     # Boundary loss factor F = 1 + i sqrt(pi w) exp(-w) erfc(-i sqrt(w)), with
     # exp(-z^2) erfc(-i z) as the Faddeeva function: accurate at any |w|, where
@@ -6271,6 +6143,14 @@ def spherical_reflection_coefficient(cos_grazing, image_range, f, a, flores,
 
     # Combined reflection + boundary loss
     return plane_wave_coeff + boundary_loss * (1.0 - plane_wave_coeff)
+
+
+#: Chessell's band-average constants: averaging cos(2 pi f' tau + arg Q) uniformly over a
+#: one-third-octave band [f 2^-1/6, f 2^1/6] gives cos(eta f tau + arg Q) sin(mu f tau)/(mu f tau),
+#: with eta = pi (2^1/6 + 2^-1/6) (the band's arithmetic center) and mu = pi (2^1/6 - 2^-1/6)
+#: (its width).  They are not a spreading or a reflection coefficient.
+CHESSELL_MU = 0.727477
+CHESSELL_ETA = 6.325159
 
 
 def ega(hs, hr, d2, f, a, flores, pt=True, cturb=0.0, boundary_loss_correction=True):
@@ -6337,19 +6217,13 @@ def ega(hs, hr, d2, f, a, flores, pt=True, cturb=0.0, boundary_loss_correction=T
     a = np.asarray(a, dtype=float)
     flores = np.asarray(flores, dtype=float)
     cturb = np.asarray(cturb, dtype=float)
-    
-    # Chessell's band-average constants: averaging cos(2 pi f' tau + arg Q) uniformly over a
-    # one-third-octave band [f 2^-1/6, f 2^1/6] gives cos(eta f tau + arg Q) sin(mu f tau)/(mu f tau),
-    # with eta = pi (2^1/6 + 2^-1/6) (the band's arithmetic center) and mu = pi (2^1/6 - 2^-1/6)
-    # (its width).  They are not a spreading or a reflection coefficient.
-    mu = 0.727477
-    eta = 6.325159
+
 
     # Calculate geometric values
     direct_range = np.sqrt(d2**2 + (hs - hr)**2)  # Direct acoustic path distance
     image_range = np.sqrt(d2**2 + (hs + hr)**2)  # Image source acoustic path distance
     # The image path's angle from the ground normal (cos = (hs + hr)/R2), i.e. 90 deg less the
-    # grazing angle: the angle spherical_reflection_coefficient's cos_theta wants.
+    # grazing angle: the angle whose cosine spherical_reflection_coefficient's cos_grazing wants.
     incidence_angle = np.arccos((hs + hr) / image_range)
     path_delay = (image_range - direct_range) / a  # Time delay between direct and image paths
     range_ratio = image_range / direct_range  # Ratio of distances
@@ -6376,8 +6250,8 @@ def ega(hs, hr, d2, f, a, flores, pt=True, cturb=0.0, boundary_loss_correction=T
         turbulence_factor = np.exp(-(0.5 * cturb * f * np.sqrt(direct_range))**2) if np.any(cturb > 0.0) else 1.0
         
         # Combine attenuation computation
-        ground_phase_term = eta * freq_path_delay + image_source_phase  # interference phase at the band center
-        spherical_phase_term = mu * freq_path_delay  # the band-width sinc's argument
+        ground_phase_term = CHESSELL_ETA * freq_path_delay + image_source_phase  # interference phase at the band center
+        spherical_phase_term = CHESSELL_MU * freq_path_delay  # the band-width sinc's argument
         cosine_factor = np.cos(ground_phase_term) * turbulence_factor
         
         attn = 1.0 + normalized_image_mag_sq + 2.0 * normalized_image_mag * cosine_factor
@@ -6400,6 +6274,6 @@ def ega(hs, hr, d2, f, a, flores, pt=True, cturb=0.0, boundary_loss_correction=T
     if np.all(attn > 0.0):
         attenuation_db = 10.0 * np.log10(attn)
     else:
-        raise ValueError('Error in EGA: negative attenuation magnitude encountered')
+        raise ValueError('Error in EGA: non-positive attenuation magnitude encountered')
     
     return attenuation_db, phase

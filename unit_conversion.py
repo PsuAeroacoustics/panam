@@ -48,20 +48,7 @@
 Convert between various units.
 """
 
-try:
-    from default_units import *
-except ImportError:
-    default_area_units = 'ft**2'
-    default_power_units = 'hp'
-    default_speed_units = 'kt'
-    default_temp_units = 'C'
-    default_weight_units = 'lb'
-    default_press_units = 'in HG'
-    default_density_units = 'lb/ft**3'
-    default_length_units = 'ft'
-    default_alt_units = default_length_units
-    default_avgas_units = 'lb'
-    default_vol_units = 'ft**3'
+from default_units import *
 
 
 def area_conv(A, from_units=default_area_units,
@@ -123,7 +110,7 @@ def area_conv(A, from_units=default_area_units,
         return A * (0.3048 / 1852) ** 2
     else:
         raise ValueError(
-            'from_units must be "ft**2" or "in**2" or "m**2" or "km**2" or "sm**2" (square statute miles) or "nm**2" (square nautical miles).')
+            'to_units must be "ft**2" or "in**2" or "m**2" or "km**2" or "sm**2" (square statute miles) or "nm**2" (square nautical miles).')
 
 
 def density_conv(D, from_units, to_units):
@@ -247,7 +234,7 @@ def len_conv(L, from_units=default_length_units,
     elif to_units == 'in':
         return L * 12.
     else:
-        raise ValueError('from_units must be "ft", "in", "m", "km", "sm" (statute miles) or "nm" (nautical miles).')
+        raise ValueError('to_units must be "ft", "in", "m", "km", "sm" (statute miles) or "nm" (nautical miles).')
 
 
 def power_conv(P, from_units=default_power_units,
@@ -668,7 +655,7 @@ def avgas_conv(
     elif from_units == 'l':
         AG *= vol_conv(lb_per_USG, from_units='l', to_units='USG')
     else:
-        raise ValueError('from_units must be one of "lb", "USG", "Imp Gal", "l", or "kg".')
+        raise ValueError('from_units must be one of "lb", "USG", "ImpGal", "l", or "kg".')
 
     if to_units == 'lb':
         pass
@@ -681,6 +668,6 @@ def avgas_conv(
     elif to_units == 'l':
         AG /= vol_conv(lb_per_USG, from_units='l', to_units='USG')
     else:
-        raise ValueError('from_units must be one of "lb", "USG", "Imp Gal", "l", or "kg".')
+        raise ValueError('to_units must be one of "lb", "USG", "ImpGal", "l", or "kg".')
 
     return AG

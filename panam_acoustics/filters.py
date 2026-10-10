@@ -72,7 +72,7 @@ def third_octave_filter_bank(signal, fs, band_centers, frame_centers, frame_leng
 
     The squared output is averaged with the same Hann-squared weighting a
     Hann-windowed PSD frame applies, so for a frame of ``frame_length``
-    samples centerd at ``frame_centers`` the result is directly comparable
+    samples centered at ``frame_centers`` the result is directly comparable
     with a PSD summed over the band: only the filter shape differs.
 
     Args:

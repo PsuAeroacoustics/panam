@@ -474,14 +474,14 @@ def pole_level(bands, source_height, ground_distance, pole_height, sound_speed,
         f, hs * 0.3048, hr * 0.3048, direct * 0.3048, gamma_t, sound_speed * 0.3048)
     fd = f * delay
     with np.errstate(divide='ignore', invalid='ignore'):
-        sinc = np.where(fd > 0.0, np.sin(0.727477 * fd) / (0.727477 * fd), 1.0)
+        sinc = np.where(fd > 0.0, np.sin(fa.CHESSELL_MU * fd) / (fa.CHESSELL_MU * fd), 1.0)
     a_d = 1.0 if response_direct is None else 10.0 ** (0.05 * np.asarray(response_direct))
     a_r = 1.0 if response_reflected is None else 10.0 ** (0.05 * np.asarray(response_reflected))
     if roughness > 0.0:
         k = 2.0 * np.pi * f / sound_speed
         a_r = a_r * np.exp(-2.0 * (k * roughness * cos_theta) ** 2)
     energy = (a_d ** 2 + (a_r * np.abs(q) * ratio) ** 2
-              + 2.0 * a_d * a_r * np.abs(q) * ratio * np.cos(6.325159 * fd + np.angle(q)) * sinc
+              + 2.0 * a_d * a_r * np.abs(q) * ratio * np.cos(fa.CHESSELL_ETA * fd + np.angle(q)) * sinc
               * coherence)
     return 10.0 * np.log10(energy)
 
@@ -658,7 +658,7 @@ def fresnel_disc_weight(bands, source_height, ground_distance, sound_speed,
     surface counts in proportion to the share of the Fresnel ellipse it covers.
     The ellipse is the ground section of the zone where the path via the
     ground exceeds the specular path by less than ``zone_fraction`` of a
-    wavelength; the plate is a disc of ``radius`` centerd under the
+    wavelength; the plate is a disc of ``radius`` centered under the
     microphone.
 
     The overlap is integrated on an area-uniform polar grid (``samples`` =
@@ -1119,7 +1119,7 @@ class ImageIntegralTable:
 
 
 def disc_mesh(radius, cell):
-    """Polar mesh of a disc: centroids, areas and cell bounds, the first cell centerd at the origin.
+    """Polar mesh of a disc: centroids, areas and cell bounds, the first cell centered at the origin.
 
     A central disc of diameter ``cell`` holds the microphone; rings of width
     about ``cell`` are split into annular sectors about ``cell`` long.  Returns

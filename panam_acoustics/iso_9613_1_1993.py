@@ -14,7 +14,7 @@ TRIPLE_TEMPERATURE = 273.16
 
 
 def soundspeed(temperature, reference_temperature: float = REFERENCE_TEMPERATURE):
-    return 343.2 * np.sqrt(temperature / reference_temperature)
+    return SOUNDSPEED * np.sqrt(temperature / reference_temperature)
 
 
 def saturation_pressure(

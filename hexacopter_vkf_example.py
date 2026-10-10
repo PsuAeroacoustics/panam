@@ -311,8 +311,8 @@ def separate_hexacopter_acoustics(mat_file_path, mic_range=16,
         Bandwidth ceiling in Hz, default 9
     bw_percent : float, optional
         Bandwidth as percentage of frequency, default 0.05 (5%)
-    solver : {"auto", "pardiso", "umfpack", "superlu"}, optional
-        Sparse solver backend for VKF, default "auto"
+    solver : {"auto", "umfpack", "superlu"}, optional
+        Sparse solver backend for VKF (see vold_kalman_filter), default "auto"
     use_coupling : bool, optional
         Whether to include cross-order coupling (B_U) terms, default True
     n_jobs : int or None, optional
