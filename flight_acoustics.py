@@ -336,7 +336,7 @@ def noys(band_levels):
     Implements 14 CFR 36 Appendix A, A36.4.7.3 with Table A36-3.
     Args:
         band_levels: (..., 24) SPL in dB for the bands 50 Hz..10 kHz
-    Returns: array of noys, same shape (0 below SPL(d))
+    Returns: array of noys, same shape (0 below SPL(d), NaN for a NaN band)
     """
     spl = np.asarray(band_levels, dtype=float)
     if spl.shape[-1] != 24:
@@ -350,7 +350,7 @@ def noys(band_levels):
     n = np.where(region_b, 10.0 ** (_NOY_M_B * (spl - _NOY_SPL_B)), n)
     n = np.where(region_e, 0.3 * 10.0 ** (_NOY_M_E * (spl - _NOY_SPL_E)), n)
     n = np.where(region_d, 0.1 * 10.0 ** (_NOY_M_D * (spl - _NOY_SPL_D)), n)
-    return n
+    return np.where(np.isnan(spl), np.nan, n)
 
 
 def perceived_noise_level(band_levels):
@@ -360,7 +360,7 @@ def perceived_noise_level(band_levels):
     Args:
         band_levels: (..., 24) SPL in dB for the bands 50 Hz..10 kHz
     Returns: PNL in PNdB (shape band_levels.shape[:-1]); -inf where the
-        spectrum produces zero total noisiness
+        spectrum produces zero total noisiness, NaN where a band is NaN
     """
     n = noys(band_levels)
     total = 0.85 * n.max(axis=-1) + 0.15 * n.sum(axis=-1)
@@ -368,17 +368,38 @@ def perceived_noise_level(band_levels):
         return 40.0 + (10.0 / np.log10(2.0)) * np.log10(total)
 
 
-def tone_correction(band_levels):
+def tone_correction(band_levels, masked=False):
     """
     Tone correction factor C(k), 14 CFR 36 Appendix A, A36.4.3.1 steps 1-10.
 
+    For finite band levels and ``masked=False`` this is the regulation's
+    procedure as written.  A band of -inf (zero energy) has no slope, and
+    taken literally it makes the background of step 7 infinite or NaN: the
+    band next to it then reads as a full 20/3 dB tone, or, when the -inf band
+    is band 3 (the background's anchor), every tone in the spectrum is lost.
+    A -inf band therefore enters steps 1-7 at its noy threshold SPL(d) of
+    Table A36-3 (the level below which it contributes no noys, so PNL is
+    unchanged) and carries no tone correction itself.  With ``masked=True``
+    every band below SPL(d) is treated so, which keeps an inaudible band
+    rising out of a steep high-frequency fall from reading as a tone -- the
+    prediction's counterpart of excluding tones in masked bands (FAA AC 36-4,
+    Appendix 2) and NICE-OPS's ToneMasking::below_noy_floor.
+
     Args:
         band_levels: (n_times, 24) or (24,) SPL in dB, bands 50 Hz..10 kHz
+        masked: treat every band below SPL(d), not only -inf ones, as masked
     Returns: tuple (c_max, tone_band_index)
-        c_max: (n_times,) largest tone correction factor, dB
-        tone_band_index: (n_times,) band index (0-23) it occurred in
+        c_max: (n_times,) largest tone correction factor, dB; NaN for a
+            spectrum with a NaN band
+        tone_band_index: (n_times,) band index (0-23) it occurred in (0 when
+            there is no tone); -1 where c_max is NaN
     """
-    spl = np.atleast_2d(np.asarray(band_levels, dtype=float))
+    levels = np.atleast_2d(np.asarray(band_levels, dtype=float))
+    if np.isposinf(levels).any():
+        raise ValueError('positive infinite band levels are invalid')
+    missing = np.isnan(levels).any(axis=1)
+    masked_bands = (levels < _NOY_SPL_D) if masked else np.isneginf(levels)
+    spl = np.where(masked_bands, _NOY_SPL_D, levels)
     nt = spl.shape[0]
 
     # Step 1: slopes; band 3 (index 2) has no value -- comparisons that need
@@ -441,30 +462,32 @@ def tone_correction(band_levels):
                               np.where(F >= 1.5, 2.0 * F / 3.0 - 1.0, 0.0)))
     c[:, :] = np.where(low, c_low, c_mid)
     c[:, :2] = 0.0                               # bands 1-2 not eligible
+    c[masked_bands] = 0.0                        # masked bands carry no tone
 
     # Step 10
-    c_max = c.max(axis=1)
-    tone_band = np.argmax(c, axis=1)
+    c_max = np.where(missing, np.nan, c.max(axis=1))
+    tone_band = np.where(missing, -1, np.argmax(c, axis=1))
     if np.ndim(band_levels) == 1:
         return float(c_max[0]), int(tone_band[0])
     return c_max, tone_band
 
 
-def tone_corrected_perceived_noise_level(band_levels):
+def tone_corrected_perceived_noise_level(band_levels, masked=False):
     """
     PNLT(k) = PNL(k) + C(k), 14 CFR 36 Appendix A, A36.4.3.
 
     Args:
         band_levels: (n_times, 24) or (24,) SPL in dB, bands 50 Hz..10 kHz
+        masked: passed to :func:`tone_correction`
     Returns: tuple (pnlt, pnl, c_max, tone_band_index)
     """
     pnl = perceived_noise_level(band_levels)
-    c_max, tone_band = tone_correction(band_levels)
+    c_max, tone_band = tone_correction(band_levels, masked=masked)
     return pnl + c_max, pnl, c_max, tone_band
 
 
 def effective_perceived_noise_level(band_level_history, dt=0.5,
-                                    bandshare_adjustment=True):
+                                    bandshare_adjustment=True, masked=False):
     """
     EPNL of a noise event, 14 CFR 36 Appendix A, A36.4.
 
@@ -474,6 +497,7 @@ def effective_perceived_noise_level(band_level_history, dt=0.5,
         dt: time increment, s (the regulation prescribes 0.5 s)
         bandshare_adjustment: apply the A36.4.4.2 five-interval check for
             tone suppression by band sharing at PNLTM
+        masked: passed to :func:`tone_correction`
 
     Returns: dict with
         epnl: EPNL in EPNdB
@@ -488,7 +512,9 @@ def effective_perceived_noise_level(band_level_history, dt=0.5,
     rounding of this (difference 0.01 dB).
     """
     spl = np.asarray(band_level_history, dtype=float)
-    pnlt, pnl, c_max, tone_band = tone_corrected_perceived_noise_level(spl)
+    if np.isnan(spl).any():
+        raise ValueError("NaN band levels in the history")
+    pnlt, pnl, c_max, tone_band = tone_corrected_perceived_noise_level(spl, masked=masked)
     if not np.isfinite(pnlt).any():
         raise ValueError("no finite PNLT values in the history")
 

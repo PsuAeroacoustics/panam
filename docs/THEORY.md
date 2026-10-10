@@ -558,6 +558,13 @@ regulation's −13 for 0.5 s records is that value rounded). Where readings of t
 differ, PANAM puts 500 Hz in the middle range of Table A36-2 and takes the duration as one
 contiguous interval. NICE-OPS's EPNL is ported from this implementation.
 
+The regulation's tone correction is defined for finite band levels. A band of $-\infty$ (zero
+energy) would make the step-7 background infinite or undefined, so it enters steps 1–7 at its
+noy threshold SPL(d) of Table A36-3 and carries no tone itself; PNL is unchanged, since the band
+has no noys either way. With `masked=True` every band below SPL(d) is treated so, as in
+NICE-OPS's `below_noy_floor` masking. A NaN band is a missing level: noys, PNL, $C$ and PNLT are
+NaN, and EPNL refuses the history.
+
 **Aural nondetectability.** MIL-STD-1474E Table C-1 [40] gives, per one-third-octave
 band, the level at which a sound is undetectable at each distance. A spectrum normalized to 10 m,
 $L_{10} = L + 20\lg(d/10)$, is shifted to each of the table's measurement distances and

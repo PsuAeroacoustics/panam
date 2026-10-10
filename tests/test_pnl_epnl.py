@@ -81,6 +81,96 @@ def test_tone_correction_low_band_range():
     assert c == pytest.approx(10.0 / 6.0, abs=1e-6)
 
 
+def test_nan_band_propagates():
+    """A NaN band is a missing level: noys, PNL and C are NaN, not 0 noy and no tone."""
+    spl = FLAT.copy()
+    spl[K1000] = np.nan
+    assert np.isnan(fa.noys(spl)[K1000])
+    assert np.isnan(fa.perceived_noise_level(spl))
+    c, band = fa.tone_correction(spl)
+    assert np.isnan(c) and band == -1
+    hist = np.tile(FLAT, (3, 1))
+    hist[1, K1000] = np.nan
+    c, band = fa.tone_correction(hist)
+    assert c[0] == 0.0 and np.isnan(c[1]) and c[2] == 0.0
+    np.testing.assert_array_equal(band, [0, -1, 0])
+    pnlt, _, _, _ = fa.tone_corrected_perceived_noise_level(hist)
+    assert np.isnan(pnlt[1]) and np.isfinite(pnlt[[0, 2]]).all()
+    with pytest.raises(ValueError, match='NaN'):
+        fa.effective_perceived_noise_level(hist)
+
+
+def test_positive_infinite_band_is_rejected():
+    spl = FLAT.copy()
+    spl[K1000] = np.inf
+    with pytest.raises(ValueError, match='infinite'):
+        fa.tone_correction(spl)
+
+
+def test_silent_band_3_keeps_the_tones():
+    """Band 3 (80 Hz) anchors the background (step 7); at -inf it was -inf
+    everywhere, F was NaN and a 10 dB 1 kHz tone got no correction.  Entering
+    at SPL(d) = 39 dB it is the foot of a 31 dB rise, which steps 3-4 encircle
+    and smooth: F = 15.5 at 100 Hz (C = F/6 = 2.58) and the tone keeps F = 10.
+    """
+    spl = FLAT.copy()
+    spl[2] = -np.inf
+    spl[K1000] += 10.0
+    c, band = fa.tone_correction(spl)
+    assert band == K1000
+    assert c == pytest.approx(10.0 / 3.0, abs=1e-12)
+    spl[K1000] -= 10.0
+    c, band = fa.tone_correction(spl)
+    assert band == 3
+    assert c == pytest.approx(15.5 / 6.0, abs=1e-12)
+
+
+def test_silent_top_band_is_not_a_tone_in_its_neighbor():
+    """A 10 kHz band of -inf after a falling spectrum near its noy floor.
+
+    Taken literally its slope is -inf, the 8 kHz band's background is -inf
+    and the 8 kHz band read as a full 10/3 dB tone.  At SPL(d) = 21 dB it
+    continues the 2 dB-a-band fall exactly: no tone anywhere.
+    """
+    spl = 67.0 - 2.0 * np.arange(24.0)               # 67 dB falling to 21 dB
+    spl[23] = -np.inf
+    assert fa.tone_correction(spl) == (0.0, 0)
+    spl[23] = 21.0                                   # the same as SPL(d)
+    assert fa.tone_correction(spl) == (0.0, 0)
+
+
+def test_finite_spectra_are_unchanged_by_the_minus_inf_rule():
+    """Only -inf bands are substituted unless masked=True: a finite band far
+    below its threshold keeps the literal procedure's tone."""
+    spl = 67.0 - 2.0 * np.arange(24.0)
+    spl[23] = -200.0
+    c, band = fa.tone_correction(spl)
+    assert band == 22 and c == pytest.approx(10.0 / 3.0)
+    c, band = fa.tone_correction(spl, masked=True)
+    assert (c, band) == (0.0, 0)
+
+
+def test_masked_tone_correction_excludes_inaudible_tones():
+    """masked=True: bands below SPL(d) enter at SPL(d) and carry no tone.
+
+    A 2 dB-a-band fall (25 dB at 6.3 kHz) whose 8 and 10 kHz bands are 5 and
+    0 dB, below their thresholds of 17 and 21 dB.  Masked, they enter at 17
+    and 21: slopes -2, -8, +4, so step 3 encircles 10 kHz and step 4 puts it
+    at 17 - 8 = 9.  The background falls 27, 23, 17, 9: F = 2 at 6.3 kHz
+    (C = 2/3 - 1/2 = 1/6), 0 at 8 kHz, and 12 at 10 kHz, which as a masked
+    band carries no tone.  Literally the plunge gives 6.3 kHz C = 1.
+    """
+    spl = 67.0 - 2.0 * np.arange(24.0)
+    spl[22:] = [5.0, 0.0]
+    c, band = fa.tone_correction(spl)
+    assert band == 21 and c == pytest.approx(1.0)
+    c, band = fa.tone_correction(spl, masked=True)
+    assert band == 21 and c == pytest.approx(1.0 / 6.0, abs=1e-12)
+    pnlt, pnl, c_max, _ = fa.tone_corrected_perceived_noise_level(np.stack([spl, FLAT]), masked=True)
+    np.testing.assert_allclose(c_max, [1.0 / 6.0, 0.0], atol=1e-12)
+    np.testing.assert_allclose(pnlt - pnl, c_max)
+
+
 def test_epnl_constant_history():
     """Constant PNLT for 20 s: EPNL = PNLTM + 10 log10(duration/10)."""
     hist = np.tile(FLAT, (40, 1))
