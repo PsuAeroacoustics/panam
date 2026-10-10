@@ -4321,8 +4321,8 @@ def mirror_phi_to_upper_surface(phi_list):
     Sphere data covers only the lower half of the roll circle, phi in
     [-90, 90] degrees with phi = 0 straight down.  The upper half is the
     reflection through the horizontal plane, phi -> 180 - phi wrapped into
-    [-180, 180):  0 (down) -> 180 (up), and +/-90 map to themselves because the
-    horizontal plane belongs to both halves.
+    [-180, 180):  0 (down) -> -180 (up; the same direction as 180), and +/-90
+    map to themselves because the horizontal plane belongs to both halves.
 
     Returns (mirror_phi, source_index): the azimuths of the reflected rows
     and the indices of the source rows they came from, so that every data array
@@ -4381,12 +4381,18 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     Pass ``load_factors=None`` to write each condition once, at the LF=1
     reference only, and let NICE-OPS scale levels (and, for a spectral
     database, every band) to the queried load factor analytically instead of
-    from stored samples.  This is exact, not an approximation: every load
-    factor this function would otherwise materialise is the *same* spectrum
-    offset by a uniform ``20*log10(load_factor)`` -- add_sphere_group does not
-    scale ``amplitude``, only ``dBA`` and ``thrust_coefficient`` -- so writing
-    eight copies of it (the shipped databases' load factor count) stores no
-    information the reader could not derive from one. It shrinks a database
+    from stored samples.  It carries the same information: every load factor
+    this function would otherwise materialise is the *same* spectrum offset by
+    a uniform ``20*log10(load_factor)`` -- add_sphere_group does not scale
+    ``amplitude``, only ``dBA`` and ``thrust_coefficient`` -- so eight copies
+    of it (the shipped databases' load factor count) store nothing the reader
+    could not derive from one.  The results are not identical, though.  The
+    fixed database gets the 20*log10 law exactly at every load factor above
+    1 g and leaves lower ones unscaled; a ladder reproduces the law only at
+    its stored load factors, NICE-OPS interpolating linearly in C_T between
+    them (at 4 g between stored 3 and 5 g, 11.76 dB rather than 12.04), and
+    scales the entries below 1 g it stores (0.7 g: -3.1 dB) except LF=0,
+    which is stored unscaled.  It shrinks a database
     roughly in proportion to the load factor count (measured on Be407: 547.9
     MB -> well under 100 MB). The database is written with a root
     ``fixed_load_factor`` flag so NICE-OPS knows the scaling is safe to apply
@@ -4422,10 +4428,12 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     left as it falls out, -inf included; see :func:`_finite_sphere_levels`.
 
     store_spectrum keeps the source spectrum (frequency + amplitude) in each
-    sphere group, so a database can be re-reduced -- different weighting, a
-    different propagation distance -- without the original sphere files.  It
-    accounts for roughly seven eighths of the file size and no consumer reads it
-    today, so turn it off for databases that only need levels.
+    sphere group.  NICE-OPS's spectral evaluation reads it, with the per-band
+    coverage; without it only the broadband dBA/EAA path is available.  It also
+    lets a database be re-reduced -- different weighting, a different
+    propagation distance -- without the original sphere files.  It accounts for
+    roughly seven eighths of the file size, so turn it off only for databases
+    that will be used for broadband levels alone.
 
     The database records what it was built against, so NICE-OPS can refuse a
     mismatch instead of passing it silently.  Root attributes: speed_reference
@@ -6265,8 +6273,13 @@ def load_NASA_track(trackfile):
             'heading': numpy.ndarray of heading in degrees  
             'pitch': numpy.ndarray of pitch in degrees
             'roll': numpy.ndarray of roll in degrees
-            'x', 'y', 'z': numpy.ndarray of position in feet (local coordinates)
-            'vx', 'vy', 'vz': numpy.ndarray of velocity in feet/second (local coordinates)
+            'x', 'y', 'z': numpy.ndarray of position in feet (local coordinates,
+                z positive up)
+            'vx', 'vy', 'vz': numpy.ndarray of velocity in feet/second, as
+                stored.  vz is not in z's sense in most files: the 2017 tracks
+                store it positive DOWN, except EC130B4 test day 298, which
+                stores it positive up.  Take its sign from
+                :func:`noise_abatement_2017.vz_sign`.
     """    
     data = np.genfromtxt(trackfile, delimiter=',', names=True)
     time = data['utcsec']
