@@ -115,6 +115,22 @@ def test_board_level_averages_over_the_tables_own_sub_frequencies():
         ab.board_level([1000.0], [100.0], [200.0], C, table, sub_bands=5)
 
 
+def test_board_level_takes_q_at_the_plates_top():
+    # P_d = 0, P_r = 1: the level is |Q|^2, Q at the image geometry of the
+    # plate's top even for an inverted microphone's table.
+    bands = np.array([2000.0])
+    frequencies = bands * gp.sub_band_factors(2)
+    ones = np.ones((2, 2, 2), dtype=complex)
+    t, hs, d2 = gp.PLATE_THICKNESS_FT, 0.5, 20.0
+    table = dict(frequencies=frequencies, elevations=np.array([0.0, 90.0]), azimuths=np.array([0.0, 180.0]),
+                 P_d=0.0 * ones, P_r=ones, thickness=t, mic_height=gp.INVERTED_MIC_HEIGHT_FT,
+                 flow_resistance=gp.FLOW_RESISTANCE, ground=None, sub_bands=2)
+    r2 = np.hypot(d2, hs + t)
+    q = gp.fa.spherical_reflection_coefficient((hs + t) / r2, r2, frequencies, C, gp.FLOW_RESISTANCE)
+    level = ab.board_level(bands, [hs], [d2], C, table)[0, 0]
+    assert level == pytest.approx(10 * np.log10(np.mean(np.abs(q) ** 2)), abs=1e-9)
+
+
 def test_field_matches_scattering_at_the_microphone():
     """field() off the surface reproduces scattering() at an inverted mic 7 mm above the plate."""
     f, el, az = 3000.0, 25.0, 40.0

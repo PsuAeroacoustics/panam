@@ -490,12 +490,17 @@ def table(bands, sound_speed, flow_resistance=gp.FLOW_RESISTANCE, ground=None, s
 
 def board_level(bands, source_height, ground_distance, sound_speed, table, sub_bands=None,
                 source_dx=None, source_dy=None, mirror_y=False):
-    """The flush microphone on the plate lying on the ground, band averaged, dB re free field.
+    """The microphone on the plate lying on the ground (flush or inverted, per the table),
+    band averaged, dB re free field.
 
     |P_d + Q P_r|^2 averaged over the band's sub-frequencies, with P_d, P_r
     interpolated (real and imaginary parts, bilinear in elevation and azimuth)
-    from ``table`` and Q from each frame's geometry, at the plate's top.
-    Azimuth, ``mirror_y`` and NaN for bands not in the table as in
+    from ``table`` and Q from each frame's geometry, at the plate's top whatever
+    the table's ``mic_height``: Q scales the reflected wave that the whole plate
+    scatters, not a reflected path to the microphone alone (as in
+    :func:`ground_plane.board_disc_bem`, which takes Q at the microphone's
+    height), and an inverted microphone's few millimeters change it
+    negligibly for distant sources.  Azimuth, ``mirror_y`` and NaN for bands not in the table as in
     :func:`ground_plane.table_frames`.  ``sub_bands`` is the table's own; a
     different count would pick frequencies the table does not hold.
     """
