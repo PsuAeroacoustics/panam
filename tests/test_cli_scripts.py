@@ -63,3 +63,13 @@ def test_spectrogram_frequency_option_sets_display_range(tmp_path):
     assert mocked.call_args.kwargs['flim'] == (100, 200)
     assert np.array_equal(mocked.call_args.args[0], np.sin(np.arange(4096)))
     plt.close('all')
+
+
+def test_vold_kalman_filter_demo_runs(tmp_path):
+    """The demo's crossing chirp fell to negative frequency over its 5 s record."""
+    result = _run('vold_kalman_filter.py', cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert 'Spectrogram generation skipped' not in result.stdout
+    plots = tmp_path / 'demo_plots'
+    assert (plots / 'vkf_example.png').stat().st_size > 0
+    assert len(list(plots.glob('vkf_spectrogram_*.png'))) == 10

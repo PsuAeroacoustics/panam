@@ -543,23 +543,24 @@ if __name__ == "__main__":
     
     error_const = np.mean((x_filtered_const - x_clean_const)**2)
     print(f"\nCase 1 - Constant Frequency (100 Hz):")
-    print(f"  Extracted signal: RMS = {np.sqrt(np.mean(x_filtered_const**2)):.3f} (target: 0.8)")
+    print(f"  Extracted signal: RMS = {np.sqrt(np.mean(x_filtered_const**2)):.3f} (target: {0.8 / np.sqrt(2):.3f})")
     print(f"  MSE = {error_const:.2e}")
     
     # ========================================================================
     
-    # Case 2: TIME-VARYING frequency (50-150 Hz chirp)
-    freq1_chirp = 50. + 100*t  # Hz (sweeps from 50 to 150)
+    # Case 2: TIME-VARYING frequency (50-150 Hz chirp over the record)
+    freq1_chirp = 50. + 100*t/duration  # Hz (sweeps from 50 to 150)
     phase_chirp = 2 * np.pi * np.cumsum(freq1_chirp) / fs
     x_clean_chirp = 0.8 * np.sin(phase_chirp)
     
     # Add noise and crossing interference chirp (sweeps opposite direction: 150 to 50 Hz)
     np.random.seed(42)
     x_noisy_chirp = x_clean_chirp + 0.05 * np.random.randn(len(t))
-    phase_interference = 2 * np.pi * np.cumsum(150. - 100*t) / fs
+    freq_interference_chirp = 150. - 100*t/duration  # Hz (sweeps from 150 to 50)
+    phase_interference = 2 * np.pi * np.cumsum(freq_interference_chirp) / fs
     x_noisy_chirp += 0.3 * np.sin(phase_interference)
 
-    # Track both orders with fixed bandwidth (for comparison)
+    # Track the main chirp alone with a fixed bandwidth (for comparison)
     bandwidth_fixed = 20  # Hz
     y_wrong, phasor_wrong, _ = vold_kalman_filter(x_noisy_chirp, freq1_chirp, fs, bandwidth_fixed, p)
     x_filtered_wrong = np.real(y_wrong[:, 0] * phasor_wrong[:, 0])
@@ -567,7 +568,7 @@ if __name__ == "__main__":
     # Track both the main chirp and the crossing interference with adaptive bandwidth
     freq_chirp_multi = np.zeros((len(t), 2))
     freq_chirp_multi[:, 0] = freq1_chirp  # Main chirp: 50-150 Hz
-    freq_chirp_multi[:, 1] = 150. - 100*t  # Crossing interference: 150-50 Hz
+    freq_chirp_multi[:, 1] = freq_interference_chirp  # Crossing interference: 150-50 Hz
     
     bandwidth_adaptive = 0.10 * freq_chirp_multi  # 10% of instantaneous frequency
     
@@ -577,8 +578,8 @@ if __name__ == "__main__":
     
     error_correct = np.mean((x_filtered_correct - x_clean_chirp)**2)
     print(f"\nCase 2 - Time-Varying Frequencies (50-150 Hz chirp + crossing interference):")
-    print(f"  Main chirp extracted: RMS = {np.sqrt(np.mean(x_filtered_correct**2)):.3f} (target: 0.8), MSE = {error_correct:.2e}")
-    print(f"  Interference extracted: RMS = {np.sqrt(np.mean(x_filtered_interference**2)):.3f} (target: 0.3)")
+    print(f"  Main chirp extracted: RMS = {np.sqrt(np.mean(x_filtered_correct**2)):.3f} (target: {0.8 / np.sqrt(2):.3f}), MSE = {error_correct:.2e}")
+    print(f"  Interference extracted: RMS = {np.sqrt(np.mean(x_filtered_interference**2)):.3f} (target: {0.3 / np.sqrt(2):.3f})")
     
     # ========================================================================
     
@@ -639,10 +640,10 @@ if __name__ == "__main__":
     
     print(f"\nCase 3 - Multi-Order Tracking (rotor harmonics + crossing interference):")
     print(f"  Rotor frequency: {rotor_freq.min():.1f} - {rotor_freq.max():.1f} Hz")
-    print(f"  1x order: RMS = {np.sqrt(np.mean(x_filtered_1x**2)):.3f} (target: {amp_1x:.1f}), MSE = {error_1x:.2e}")
-    print(f"  2x order: RMS = {np.sqrt(np.mean(x_filtered_2x**2)):.3f} (target: {amp_2x:.1f}), MSE = {error_2x:.2e}")
-    print(f"  3x order: RMS = {np.sqrt(np.mean(x_filtered_3x**2)):.3f} (target: {amp_3x:.1f}), MSE = {error_3x:.2e}")
-    print(f"  Interference (70-30 Hz): RMS = {np.sqrt(np.mean(x_filtered_interference_multi**2)):.3f} (target: 0.3)")
+    print(f"  1x order: RMS = {np.sqrt(np.mean(x_filtered_1x**2)):.3f} (target: {amp_1x / np.sqrt(2):.3f}), MSE = {error_1x:.2e}")
+    print(f"  2x order: RMS = {np.sqrt(np.mean(x_filtered_2x**2)):.3f} (target: {amp_2x / np.sqrt(2):.3f}), MSE = {error_2x:.2e}")
+    print(f"  3x order: RMS = {np.sqrt(np.mean(x_filtered_3x**2)):.3f} (target: {amp_3x / np.sqrt(2):.3f}), MSE = {error_3x:.2e}")
+    print(f"  Interference (70-30 Hz): RMS = {np.sqrt(np.mean(x_filtered_interference_multi**2)):.3f} (target: {0.3 / np.sqrt(2):.3f})")
     
     
     # ========================================================================
@@ -660,19 +661,19 @@ if __name__ == "__main__":
     ax.set_title('Case 1: Constant Frequency - Works Well with Fixed Bandwidth')
     ax.legend(loc='upper right')
     ax.grid(True, alpha=0.3)
-    ax.set_xlim(0, 5)
+    ax.set_xlim(0, duration)
     
     # Case 2: Time-varying frequency
     ax = axes[1]
     ax.plot(t, x_clean_chirp, 'g-', label='Clean Signal (50-150 Hz chirp)', linewidth=2, alpha=0.7)
     ax.plot(t, x_noisy_chirp, 'gray', label='Noisy Signal', linewidth=0.5, alpha=0.5)
-    ax.plot(t, x_filtered_wrong, 'r--', label='Problem: Fixed BW=20Hz (narrows to 13%)', linewidth=1.5, alpha=0.8)
-    ax.plot(t, x_filtered_correct, 'b-', label='Solution: Adaptive BW=10%*freq (constant 10%)', linewidth=2, alpha=0.8)
+    ax.plot(t, x_filtered_wrong, 'r--', label='Fixed BW=20 Hz, main chirp tracked alone', linewidth=1.5, alpha=0.8)
+    ax.plot(t, x_filtered_correct, 'b-', label='BW=10%*freq, both chirps tracked', linewidth=2, alpha=0.8)
     ax.set_ylabel('Amplitude')
     ax.set_title('Case 2: Time-Varying Frequency, Bandwidth Proportional to Frequency')
     ax.legend(loc='upper right')
     ax.grid(True, alpha=0.3)
-    ax.set_xlim(0, 5)
+    ax.set_xlim(0, duration)
     
     # Case 3: Multi-order tracking
     ax = axes[2]
