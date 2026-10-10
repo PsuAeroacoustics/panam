@@ -873,9 +873,10 @@ def fit_two_path(frequency, level_db, dR_guess, sound_speed, receiver_height, fi
 
     The window runs from ``fmin`` (default 0.2 c / dR_guess) to ``fmax`` (default
     2.2 c / dR_guess, just below the guess's third null), so the first two nulls lie
-    inside.  A grid over dR (0.4-2.2 times the guess, zero phase) finds the basin; a
-    robust (soft-L1) least-squares fit then frees C, A, the roll-off, dR and the phase
-    (bounded by +-``phase_bound`` rad, or held at ``fix_phase``).  Use narrowband data
+    inside.  A grid over dR (0.4-2.2 times the guess, zero phase) finds the basin and
+    the offset; a robust (soft-L1) least-squares fit then frees C (within 40 dB of that
+    start, so an absolute level in dB re 20 uPa fits too), A, the roll-off, dR and the
+    phase (bounded by +-``phase_bound`` rad, or held at ``fix_phase``).  Use narrowband data
     (a few Hz) averaged over frames at nearly the same geometry: third-octave bands smear
     the nulls.
 
@@ -906,11 +907,11 @@ def fit_two_path(frequency, level_db, dR_guess, sound_speed, receiver_height, fi
     _, r0, a00, c0 = best
     if fix_phase is None:
         p0 = [c0, a00, 3000.0, r0, 0.0]
-        lo, hi = [-40, 0.05, 100.0, 0.02 * r0, -phase_bound], [40, 0.999, 1e6, 2 * hr, phase_bound]
+        lo, hi = [c0 - 40, 0.05, 100.0, 0.02 * r0, -phase_bound], [c0 + 40, 0.999, 1e6, 2 * hr, phase_bound]
         fun = lambda p: two_path_db(f, *p, sound_speed) - y
     else:
         p0 = [c0, a00, 3000.0, r0]
-        lo, hi = [-40, 0.05, 100.0, 0.02 * r0], [40, 0.999, 1e6, 2 * hr]
+        lo, hi = [c0 - 40, 0.05, 100.0, 0.02 * r0], [c0 + 40, 0.999, 1e6, 2 * hr]
         fun = lambda p: two_path_db(f, *p, fix_phase, sound_speed) - y
     res = least_squares(fun, p0, bounds=(lo, hi), loss='soft_l1', f_scale=2.0)
     p = res.x

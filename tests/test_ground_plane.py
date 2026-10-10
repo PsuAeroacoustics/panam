@@ -370,6 +370,20 @@ def test_fit_two_path_recovers_the_path_difference():
     assert held['dR'] == pytest.approx(true['dR'], rel=0.01) and held['phase_se'] == 0.0
 
 
+def test_fit_two_path_fits_an_absolute_level():
+    # A pole spectrum in dB re 20 uPa: the same shape 75 dB up fits to the same
+    # path difference, with the offset carried along.
+    rng = np.random.default_rng(0)
+    f = np.arange(50.0, 6000.0, 4.0)
+    y = gp.two_path_db(f, -5.0, 0.85, 4000.0, 0.62, 0.05, C) + rng.normal(0.0, 0.8, f.size)
+    for fix_phase in (None, 0.05):
+        low = gp.fit_two_path(f, y, dR_guess=0.45, sound_speed=C, receiver_height=4.0, fix_phase=fix_phase)
+        high = gp.fit_two_path(f, y + 75.0, dR_guess=0.45, sound_speed=C, receiver_height=4.0,
+                               fix_phase=fix_phase)
+        assert high['dR'] == pytest.approx(low['dR'], rel=1e-6)
+        assert high['offset_db'] == pytest.approx(low['offset_db'] + 75.0, abs=1e-4)
+
+
 def test_reflection_phase_is_zero_over_rigid_ground_and_small_over_stiff():
     rigid = gp.reflection_phase([500.0, 2000.0], 100.0, 300.0, 4.0, C, flow_resistance=gp.RIGID_FLOW_RESISTANCE)
     assert np.allclose(rigid, 0.0, atol=1e-6)
