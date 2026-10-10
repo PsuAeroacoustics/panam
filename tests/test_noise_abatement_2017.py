@@ -530,3 +530,54 @@ def test_the_cli_help_states_the_point_stride_defaults(capsys):
     help_text = ' '.join(capsys.readouterr().out.split())
     assert '--point-stride' in help_text
     assert 'default 10' in help_text and 'default to 1' in help_text
+
+
+def _reference_index(rows, without_acoustics=()):
+    """A NoiseAbatementTest over ``rows`` (run, condition, layout, seconds) with no files behind it."""
+    test = object.__new__(na.NoiseAbatementTest)
+    test.reference = [dict(combined=run, test_cond=condition, layout=layout, utc_secs_from_mid_start=seconds)
+                      for run, condition, layout, seconds in rows]
+    test.by_run = {row['combined']: row for row in test.reference}
+    test.acoustic_files = {row['combined']: {1: 'x'} for row in test.reference
+                           if row['combined'] not in without_acoustics}
+    return test
+
+
+AMBIENT_ROWS = [
+    ('289101', 'AMB', 'A', '30000'),
+    ('289150', 'AMB', 'A', '40000'),
+    ('289160', 'AMB', 'A', '41000'),       # nearest to 289120, but has no acoustic files
+    ('289170', 'AMB', 'B', '40500'),
+    ('290101', 'AMB', 'A', '40900'),
+    ('290102', 'AMB', 'C', '40000'),
+    ('289120', 'L1', 'A', '40800'),
+    ('289121', 'L1', 'B', '30000'),
+    ('290120', 'L1', 'C', ''),
+    ('291120', 'L1', 'A', '30100'),
+    ('291121', 'L1', 'D', '30100'),
+]
+
+
+def test_ambient_run_prefers_the_same_day_and_layout_nearest_in_time():
+    test = _reference_index(AMBIENT_ROWS, without_acoustics={'289160'})
+    # 290101 is nearer in time-of-day, and 289160 nearer on the same day, but
+    # 290101 is another day and 289160 has nothing to gate against.
+    assert test.ambient_run('289120') == '289150'
+
+
+def test_ambient_run_falls_back_to_another_day_on_the_same_layout():
+    test = _reference_index(AMBIENT_ROWS, without_acoustics={'289160'})
+    assert test.ambient_run('291120') == '289101'                # nearest time, any day
+    assert test.ambient_run('290120') == '290102'                # no time: the only candidate
+
+
+def test_ambient_run_does_not_cross_layouts():
+    test = _reference_index(AMBIENT_ROWS)
+    assert test.ambient_run('289121') == '289170'                # its own layout, not A's 289101
+    assert test.ambient_run('291121') is None
+    assert _reference_index(AMBIENT_ROWS, without_acoustics={'289170'}).ambient_run('289121') is None
+
+
+def test_ambient_run_refuses_an_unknown_run():
+    with pytest.raises(KeyError):
+        _reference_index(AMBIENT_ROWS).ambient_run('999999')
