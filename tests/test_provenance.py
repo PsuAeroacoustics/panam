@@ -1,0 +1,133 @@
+"""The provenance stamp (provenance.py) and the writers that carry it."""
+
+import hashlib
+import json
+import os
+import pathlib
+import subprocess
+
+import numpy as np
+from netCDF4 import Dataset
+
+import flight_acoustics as fa
+import provenance
+import sphere_helpers
+from panam_acoustics.atmosphere import Atmosphere
+from test_norah2_import import VEHICLE, three_hems
+
+
+def _every_attribute(dataset):
+    """Every attribute value of a netCDF file, its groups and variables, as text."""
+    values = [str(dataset.getncattr(name)) for name in dataset.ncattrs()]
+    for variable in dataset.variables.values():
+        values += [str(variable.getncattr(name)) for name in variable.ncattrs()]
+    for group in dataset.groups.values():
+        values += _every_attribute(group)
+    return values
+
+
+def _assert_no_machine_path(path, *directories):
+    with Dataset(str(path)) as dataset:
+        text = '\n'.join(_every_attribute(dataset))
+    for directory in directories + (os.path.expanduser('~'),):
+        for spelling in {str(directory), os.path.realpath(str(directory))}:
+            assert spelling not in text, spelling
+
+
+def _assert_stamp(path, tool):
+    with Dataset(str(path)) as dataset:
+        stamp = {name: dataset.getncattr(name) for name in provenance.PROVENANCE_ATTRIBUTES}
+    assert stamp['panam_tool'] == tool
+    assert stamp['panam_version']
+    assert stamp['panam_created_utc'].endswith('Z')
+    assert stamp['panam_settings_sha256'] == hashlib.sha256(stamp['panam_settings'].encode()).hexdigest()
+    return json.loads(stamp['panam_settings'])
+
+
+def test_the_hash_is_the_same_for_equal_settings():
+    first = dict(b=np.float64(2.5), a=np.array([1.0, 2.0]), c=dict(y=1, x=(3, 4)))
+    second = dict(c=dict(x=[3, 4], y=1), a=[1.0, 2.0], b=2.5)
+    one, two = provenance.build_provenance('t', first), provenance.build_provenance('t', second)
+    assert one['panam_settings'] == two['panam_settings']
+    assert one['panam_settings_sha256'] == two['panam_settings_sha256']
+    assert one['panam_settings'] == '{"a":[1.0,2.0],"b":2.5,"c":{"x":[3,4],"y":1}}'
+    changed = provenance.build_provenance('t', dict(second, b=2.6))
+    assert changed['panam_settings_sha256'] != one['panam_settings_sha256']
+
+
+def test_paths_callables_and_objects_are_reduced():
+    def correction(phi, theta, frequency):
+        return 0.0
+    correction.description = 'blend'
+    settings = provenance.canonical_settings(dict(
+        absolute='/Users/someone/data/run.nc', windows='C:\\data\\spheres\\', home='~/x/y.hem',
+        path=pathlib.Path('/tmp/z/out.nod'), units='m/s', name='AS350B3',
+        function=correction, atmosphere=Atmosphere(293.15, 101.325, 20.0)))
+    assert settings['absolute'] == 'run.nc'
+    assert settings['windows'] == 'spheres'
+    assert settings['home'] == 'y.hem'
+    assert settings['path'] == 'out.nod'
+    assert settings['units'] == 'm/s' and settings['name'] == 'AS350B3'
+    assert settings['function'].endswith('correction: blend')
+    assert settings['atmosphere']['type'] == 'Atmosphere'
+    assert settings['atmosphere']['temperature'] == 293.15
+
+
+def test_the_code_version_falls_back_to_unknown(monkeypatch):
+    def missing(*args, **kwargs):
+        raise FileNotFoundError('git')
+    monkeypatch.setattr(subprocess, 'run', missing)
+    assert provenance.code_version() == 'unknown'
+    assert provenance.build_provenance('t', {})['panam_version'] == 'unknown'
+
+
+def test_the_sphere_writer_stamps_its_arguments_without_paths(tmp_path):
+    path = tmp_path / 'deep' / 'X101.nc'
+    path.parent.mkdir()
+    fa.write_aam_hemisphere_netcdf(str(path), sphere_helpers.minimal_hemisphere(), mode='third_octave',
+                                   radius_ft=100.0, speed_knots=60.0, title='t')
+    settings = _assert_stamp(path, 'flight_acoustics.write_aam_hemisphere_netcdf')
+    assert settings['filename'] == 'X101.nc' and settings['speed_knots'] == 60.0
+    _assert_no_machine_path(path, tmp_path)
+
+    stamp = provenance.build_provenance('caller', dict(band_snr_gate_db=10.0))
+    fa.write_aam_hemisphere_netcdf(str(path), sphere_helpers.minimal_hemisphere(), mode='third_octave',
+                                   radius_ft=100.0, provenance=stamp)
+    assert _assert_stamp(path, 'caller') == dict(band_snr_gate_db=10.0)
+
+
+def test_the_empirical_database_records_its_build(tmp_path, monkeypatch):
+    hemisphere = sphere_helpers.minimal_hemisphere()
+    spheres = sphere_helpers.write_sphere_directory(tmp_path / 'spheres',
+                                                    [(hemisphere, 60.0, 0.0), (hemisphere, 80.0, -6.0)])
+    # A relative output path: its directory must not reach the stamp either.
+    monkeypatch.chdir(tmp_path)
+    os.makedirs('out')
+    fa.build_empirical_database(str(spheres), os.path.join('out', 'db.nod'),
+                                load_factors=[1.0, 2.0], extended_flight_path_angles=(-24.0, 35.0),
+                                hover_source=str(spheres / 'X101.nc'))
+    path = tmp_path / 'out' / 'db.nod'
+    settings = _assert_stamp(path, 'flight_acoustics.build_empirical_database')
+    assert settings['directory_name'] == 'spheres' and settings['database_filename'] == 'db.nod'
+    assert settings['hover_source'] == 'X101.nc'
+    assert settings['load_factors'] == [1.0, 2.0]
+    with Dataset(str(path)) as database:
+        np.testing.assert_array_equal(database.load_factors, [1.0, 2.0])
+        np.testing.assert_array_equal(database.extended_flight_path_angles_deg, [-24.0, 35.0])
+    _assert_no_machine_path(path, tmp_path)
+
+    fixed = tmp_path / 'fixed.nod'
+    fa.build_empirical_database(str(spheres), str(fixed), load_factors=None)
+    with Dataset(str(fixed)) as database:
+        assert 'load_factors' not in database.ncattrs()
+        assert 'extended_flight_path_angles_deg' not in database.ncattrs()
+
+
+def test_the_norah2_database_records_its_build(tmp_path):
+    files = three_hems(tmp_path)
+    path = tmp_path / 'norah2.nod'
+    fa.build_database_from_norah2(files, str(path), speed_mapping='ground_speed', **VEHICLE)
+    settings = _assert_stamp(path, 'flight_acoustics.build_database_from_norah2')
+    assert settings['hem_files'] == ['X_0.hem', 'X_1.hem', 'X_2.hem']
+    assert settings['speed_mapping'] == 'ground_speed'
+    _assert_no_machine_path(path, tmp_path)

@@ -583,3 +583,36 @@ def test_ambient_run_does_not_cross_layouts():
 def test_ambient_run_refuses_an_unknown_run():
     with pytest.raises(KeyError):
         _reference_index(AMBIENT_ROWS).ambient_run('999999')
+
+
+def test_the_sphere_build_records_its_settings(tmp_path):
+    """The record, the manifest and the sphere's provenance stamp carry the settings,
+    and the stamp names no directory of this machine."""
+    import csv
+    import hashlib
+    import json
+    from netCDF4 import Dataset
+    _archive(tmp_path)
+    manifest = tmp_path / 'manifest.csv'
+    records, failures = na.build_all('AS350B3', str(tmp_path / 'out'), root=str(tmp_path),
+                                     prefetch=False, manifest_path=str(manifest),
+                                     board_correction='flat', band_snr_gate_db=6.0,
+                                     third_octave_method='filter_bank', point_stride=2)
+    assert failures == []
+    record = records[0]
+    assert (record['band_snr_gate_db'], record['third_octave_method'], record['point_stride']) == \
+        (6.0, 'filter_bank', 2)
+    assert record['max_absorption_correction_db'] == 30.0 and record['tone_aware'] is False
+    with open(manifest, newline='') as handle:
+        row = next(csv.DictReader(handle))
+    assert set(na.RECORDED_SETTINGS) | {'panam_version', 'settings_sha256'} <= set(row)
+    assert (row['band_snr_gate_db'], row['gate_ambient'], row['remove_doppler']) == ('6.0', 'True', 'False')
+    with Dataset(record['output']) as sphere:
+        text = sphere.panam_settings
+        assert sphere.panam_tool == 'noise_abatement_2017.build_sphere'
+        assert sphere.panam_settings_sha256 == row['settings_sha256'] == record['settings_sha256']
+    assert hashlib.sha256(text.encode()).hexdigest() == record['settings_sha256']
+    settings = json.loads(text)
+    assert settings['test'] == 'AS350B3' and settings['output_path'] == os.path.basename(record['output'])
+    assert settings['plate_table_directory'] is None and settings['band_snr_gate_db'] == 6.0
+    assert str(tmp_path) not in text and os.path.realpath(str(tmp_path)) not in text

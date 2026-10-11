@@ -422,8 +422,9 @@ def test_default_build_differs_from_the_old_one_only_by_the_added_items(tmp_path
     with Dataset(str(default_path)) as default, Dataset(str(explicit_path)) as explicit:
         for name in default.variables:
             np.testing.assert_array_equal(np.asarray(default[name][:]), np.asarray(explicit[name][:]))
-        assert {k: default.getncattr(k) for k in default.ncattrs()} == \
-            {k: explicit.getncattr(k) for k in explicit.ncattrs()}
+        # The provenance stamp names the output file and the time, so it differs.
+        assert {k: default.getncattr(k) for k in default.ncattrs() if not k.startswith('panam_')} == \
+            {k: explicit.getncattr(k) for k in explicit.ncattrs() if not k.startswith('panam_')}
         for group in default.groups:
             for name in default.groups[group].variables:
                 np.testing.assert_array_equal(np.asarray(default.groups[group][name][:]),

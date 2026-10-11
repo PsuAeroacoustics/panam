@@ -36,6 +36,7 @@ Instructions for AI coding tools working on PANAM. Human developers: see
 - `panam_acoustics/`: `signal_io` (loaders), `filters`, `atmosphere` and
   `iso_9613_1_1993` (ISO 9613-1), `plotting` (`acoustic_plot_style`).
 - `cli.py`: `colon_pair`, `colon_pair_or_single`, `save_or_show`.
+- `provenance.py`: the `panam_*` provenance stamp on written files.
 - `local_paths.py`: data lookup. `unit_conversion.py`, `default_units.py`:
   third-party unit conversions.
 - Tools: `noise_abatement_2017.py`, `build_empirical_database.py`,

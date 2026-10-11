@@ -60,8 +60,9 @@ run qualifies when its card's `bank_ang` and `accel_rate` both read as an explic
 approach (`A`) and hover (`H`) cards are always excluded. `--include-maneuvers` drops the
 bank and acceleration test. Each run is gated against a measured ambient run on its own
 layout, preferably from the same day. A run that fails is logged and skipped, including one
-the track check refuses. `--manifest` records every run's inputs and outcome. The main
-options:
+the track check refuses. `--manifest` records every run's inputs, settings and outcome, and
+each sphere carries its settings in its [provenance stamp](file_formats.md#provenance-stamp).
+The main options:
 
 | option | default | effect |
 | --- | --- | --- |
