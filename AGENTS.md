@@ -33,6 +33,8 @@ Instructions for AI coding tools working on PANAM. Human developers: see
 - `refracted_rays.py`: ray models for depropagation; wraps NICE-OPS's
   `niceops_ray_geometry`.
 - `vold_kalman_filter.py`: Vold-Kalman order tracking.
+- `order_tracking.py`: Doppler-predicted order tracks at a fixed microphone,
+  ridge tracking, clock offsets.
 - `sphere_statistics.py`: energy averaging of repeat-run spheres and
   band-by-band sphere comparison (CLI `sphere_diff.py`).
 - `nod_database.py`: reads `.nod` databases: `load_nod`, `validate_nod`,

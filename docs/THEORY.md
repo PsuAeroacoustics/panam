@@ -1111,6 +1111,31 @@ These are in PANAM but not used to build the databases.
 
   The function returns $y_j = 2a_j$, so $\lvert y_j\rvert$ is the order's amplitude and its
   waveform is $\mathrm{Re}(y_j\Theta_j)$. `use_coupling=False` drops the cross-order terms.
+- **Doppler-predicted order tracks** (`order_tracking.py`). A shaft turning at $f(t)$
+  revolutions per second emits order $k$ at $k f(t_e)$. A fixed microphone at $\mathbf{x}_m$
+  hears it at $t_r = t_e + \lvert\mathbf{x}_m - \mathbf{x}_s(t_e)\rvert/c$, with $t_e(t_r)$ solved
+  by fixed-point iteration (`ground_plane.emission_times`), and at the frequency
+
+  $$
+  f_\mathrm{obs}(t_r) = D\,k\,f(t_e), \qquad D = \frac{dt_e}{dt_r} = \frac{1}{1 - M_r}, \qquad
+  M_r = \frac{\mathbf{v}(t_e)\cdot\mathbf{r}}{\lvert\mathbf{r}\rvert c},
+  $$
+
+  $\mathbf{r} = \mathbf{x}_m - \mathbf{x}_s(t_e)$, as in §3.1 and §3.3 (`doppler_factor`,
+  `observed_order_track`). The track is interpolated linearly, and $\mathbf{v}$ is the central
+  difference of its samples, also interpolated linearly. These tracks are the frequencies the
+  Vold–Kalman filter needs to follow an order as received rather than as emitted.
+  `hexacopter_vkf_example.py` uses them when given a microphone position.
+- **Clock offsets** (`estimate_clock_offset`, `order_track_offset`). Two records $a$ and $b$
+  sampled at $f_s$ are compared at each integer lag $\ell$ by the Pearson correlation
+  $\rho(\ell)$ over the samples they share, NaN samples left out. The lag of the largest $\rho$
+  within $\pm$`max_lag`, among lags whose overlap keeps at least half the shorter record, is refined
+  by a parabola through $\rho(\ell-1)$, $\rho(\ell)$, $\rho(\ell+1)$:
+  $\hat\ell = \ell + \tfrac12(\rho_{-} - \rho_{+})/(\rho_{-} - 2\rho_0 + \rho_{+})$, and the
+  offset is $\hat\ell/f_s$, positive when $b(t) \approx a(t - \hat\ell/f_s)$. A clock offset
+  $\tau$ of the recorder shifts the whole received track, $f_\mathrm{obs}(t + \tau)$, so the
+  offset between a predicted track and a measured one (`ridge_track`: the largest Hann-windowed
+  spectral peak in a band, refined by a parabola through the log power) estimates $\tau$.
 - **Ground-board models** in `ground_plane.py`, from the plate study: Fresnel-zone weighting of a
   finite plate (strip [46] and disc [47]), blended in energy [48] or in dB;
   an impedance-discontinuity model after De Jong and Lam and Monazzam [49, 50]; a thin-disc
@@ -1251,6 +1276,7 @@ Functions are in `flight_acoustics.py` unless another module is named. Tests are
 | §9 Impulsiveness | `panam_acoustics.impulsiveness.crest_factor`, `kurtosis`, `pulse_peak_to_rms`, `bvi_harmonic_ratio`, `frame_signal` | `test_impulsiveness.py` |
 | §9 Loudness, sharpness | `panam_acoustics.psychoacoustics.loudness_zwicker`, `loudness_level`, `sharpness_din`, `iso_532_1_levels` | `test_psychoacoustics.py` |
 | §10 VKF | `vold_kalman_filter.vold_kalman_filter` | `test_vold_kalman_filter.py` |
+| §10 Order tracks, clock offsets | `order_tracking.doppler_factor`, `observed_order_track`, `ridge_track`, `estimate_clock_offset`, `order_track_offset`; `hexacopter_vkf_example.heard_rotor_speed` | `test_order_tracking.py`, `test_hexacopter_vkf_example.py` |
 | §10 Ground-board models, two-path fit | `ground_plane.board_*`, `disc_bem_scattered`, `raised_plate_scattering`, `fit_two_path`, `height_from_path_difference` | `test_ground_plane.py`, `test_ground_validation.py`, `test_axisymmetric_bem.py` |
 | §10 Ground impedance inversion | `ground_plane.fit_ground_impedance` | `test_ground_impedance_fit.py` |
 | §10 Array planning | `linear_array_plan` (through the `array_planner.py design` CLI); `array_coverage`, `hover_array_coverage`, `takeoff_array_coverage` (through `array_planner.py coverage`, `hover` and `takeoff`) | `test_array_coverage.py` (the coverage functions on known geometry), `test_array_planner.py` (the CLI's spacing, options and case files), `test_cli_scripts.py` (smoke) |

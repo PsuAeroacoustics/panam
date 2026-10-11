@@ -3,7 +3,11 @@
 Hexacopter Acoustic Signal Separation using Vold-Kalman Filter
 
 This script applies the Vold-Kalman filter to separate harmonic components
-of acoustic data from a reconfigurable hexacopter with 6 rotors.
+of acoustic data from a reconfigurable hexacopter with 6 rotors.  The number
+of rotors is taken from the RPM record.  By default the filter tracks the
+orders at the rotors' own speeds; with a microphone position
+(``VKF_DOPPLER_RECEIVER``) it tracks them as the microphone hears them, delayed
+and Doppler-shifted along the aircraft's track (order_tracking.py).
 
 Translated from a MATLAB script developed by Joel Sundar Rachaprolu at Penn State
 University. 
@@ -19,6 +23,7 @@ import time
 import concurrent.futures as cf
 from vold_kalman_filter import vold_kalman_filter
 from flight_acoustics import highpass
+from order_tracking import observed_order_track
 
 
 # ----------------------------
@@ -41,6 +46,11 @@ VKF_BW_PERCENT = 0.05
 VKF_SOLVER = "auto"  # banded Cholesky; sparse UMFPACK/SuperLU when needed
 VKF_USE_COUPLING = True  # False is faster but less accurate
 VKF_N_JOBS = None  # defaults to CPU count
+# Microphone position (x, y, z), m, in the aircraft position's frame.  None
+# filters at the rotors' own speeds; a position filters at the speeds the
+# microphone hears (propagation delay and Doppler shift along the track).
+VKF_DOPPLER_RECEIVER = None
+SOUND_SPEED_M_S = 343.0
 
 # Plot settings
 PLOT_INTERACTIVE = False
@@ -55,7 +65,9 @@ def load_hexacopter_data(mat_file_path, downsample_factor=8):
         downsample_factor: Factor by which to downsample acoustic data (default: 8).
         
     Returns:
-        Dictionary with keys: acoustics_T, acoustics_P, aircraft_time, aircraft_rpm, fs.
+        Dictionary with keys: acoustics_T, acoustics_P, aircraft_time, aircraft_rpm
+        (rad/s), fs (Hz), and, when the file has them, track_time (s) and
+        track_position (n, 3), m.
     """
     print("Loading data from:", mat_file_path)
     
@@ -83,13 +95,17 @@ def load_hexacopter_data(mat_file_path, downsample_factor=8):
     fs = int(np.round(1.0 / (acoustics_T[1] - acoustics_T[0])))
     print(f"Sampling frequency: {fs} Hz")
     
-    return {
+    data = {
         'acoustics_T': acoustics_T,
         'acoustics_P': acoustics_P,
         'aircraft_time': aircraft_time,
         'aircraft_rpm': aircraft_rpm,
         'fs': fs
     }
+    if 'T' in aircraft.dtype.names and 'position' in aircraft.dtype.names:
+        data['track_time'] = aircraft['T'].item()
+        data['track_position'] = np.asarray(aircraft['position'].item()).T
+    return data
 
 
 def apply_highpass_filter(acoustics_P, cutoff_freq, fs):
@@ -118,20 +134,22 @@ def interpolate_rpm_to_acoustic_time(aircraft_time, aircraft_rpm, acoustics_T):
     
     Args:
         aircraft_time: Aircraft data time vector.
-        aircraft_rpm: RPM array, shape (n_time, n_rotors) or (n_time,).
+        aircraft_rpm: Rotor speed array, rad/s, shape (n_time, n_rotors) or
+            (n_time,) for a single rotor.
         acoustics_T: Acoustic time vector to interpolate to.
         
     Returns:
-        Interpolated RPM array, shape (len(acoustics_T), 6).
+        Interpolated rotor speed array, rad/s, shape (len(acoustics_T), n_rotors).
     """
     print(f"Interpolating RPM data...")
     
     # Handle single rotor case
     if aircraft_rpm.ndim == 1:
-        aircraft_rpm = np.tile(aircraft_rpm[:, np.newaxis], (1, 6))
+        aircraft_rpm = aircraft_rpm[:, np.newaxis]
     
-    rpmo = np.zeros((len(acoustics_T), 6))
-    for rotor_idx in range(6):
+    n_rotors = aircraft_rpm.shape[1]
+    rpmo = np.zeros((len(acoustics_T), n_rotors))
+    for rotor_idx in range(n_rotors):
         interp_func = interp1d(aircraft_time, aircraft_rpm[:, rotor_idx], 
                                kind='cubic', fill_value='extrapolate')
         rpmo[:, rotor_idx] = interp_func(acoustics_T)
@@ -177,7 +195,7 @@ def process_segment_serial(seg_idx, spacing, cutoff, xo, to, rpmo, orders, no_bl
         cutoff: Number of samples to exclude at boundaries.
         xo: Original signal array, shape (n_samples, n_mics).
         to: Time vector.
-        rpmo: RPM array, shape (n_samples, 6_rotors).
+        rpmo: Rotor speed array, rad/s, shape (n_samples, n_rotors).
         orders: Iterable of blade-passage-frequency harmonics (k x BPF) to extract.
         no_blade: Number of blades per rotor.
         fs: Sampling frequency in Hz.
@@ -201,7 +219,7 @@ def process_segment_serial(seg_idx, spacing, cutoff, xo, to, rpmo, orders, no_bl
     end_idx = spacing[seg_idx + 1] + cutoff
 
     orders = tuple(orders)
-    print(f"  Processing {len(orders)} orders (all 6 rotors per call)...")
+    print(f"  Processing {len(orders)} orders (all {rpmo.shape[1]} rotors per call)...")
 
     _, tmp_P_ordLoop, t_center, rpm_center, orig_center = _process_segment(
         seg_idx, xo[start_idx:end_idx, :], to[start_idx:end_idx], rpmo[start_idx:end_idx, :],
@@ -238,7 +256,7 @@ def _process_segment(
         seg_idx: Segment index for result ordering.
         x_src: Source signal array, shape (n_samples, n_mics).
         t: Time vector for segment.
-        rpm: RPM array, shape (n_samples, 6_rotors).
+        rpm: Rotor speed array, rad/s, shape (n_samples, n_rotors).
         orders: Tuple of blade-passage-frequency harmonics (k x BPF) to extract.
         no_blade: Number of blades per rotor.
         fs: Sampling frequency in Hz.
@@ -257,7 +275,8 @@ def _process_segment(
     seg_size = len(x) - 2 * cutoff
     n_mics = x.shape[1]
 
-    tmp_P_ordLoop = np.zeros((seg_size, 6, n_mics))
+    n_rotors = rpm.shape[1]
+    tmp_P_ordLoop = np.zeros((seg_size, n_rotors, n_mics))
 
     for order in orders:
         freq_all_rotors = rpm * order * no_blade / (2 * np.pi)
@@ -275,7 +294,7 @@ def _process_segment(
             )
 
             components_full = np.real(y * ph)
-            for rotor_idx in range(6):
+            for rotor_idx in range(n_rotors):
                 tmp_P_ordLoop[:, rotor_idx, mic] += components_full[cutoff:-cutoff, rotor_idx]
             x[:, mic] -= np.sum(components_full, axis=1)
 
@@ -288,12 +307,53 @@ def _process_segment(
     )
 
 
+def heard_rotor_speed(data, acoustics_T, receiver, sound_speed):
+    """Rotor speeds as a microphone hears them, rad/s, at the acoustic times.
+
+    Args:
+        data: Dictionary from load_hexacopter_data, with track_time (s),
+            track_position (n, 3) in m, aircraft_time (s) and aircraft_rpm (rad/s).
+        acoustics_T: Acoustic time vector, s, on the track's clock.
+        receiver: Microphone position (x, y, z), m, in the track's frame.
+        sound_speed: Speed of sound, m/s.
+
+    Returns:
+        Array (len(acoustics_T), n_rotors), rad/s: each rotor's speed at the
+        emission time times the Doppler factor.  Samples outside what the track
+        can have emitted take the nearest predicted value, and emission times
+        outside the RPM record take its first or last speed.
+    """
+    if 'track_position' not in data:
+        raise ValueError('the record has no aircraft position, so the Doppler shift cannot be predicted')
+    position = np.asarray(data['track_position'], dtype=float)
+    track = {'time': data['track_time'], 'x': position[:, 0], 'y': position[:, 1], 'z': position[:, 2]}
+    rpm = np.asarray(data['aircraft_rpm'], dtype=float)
+    rpm = rpm.reshape(len(rpm), -1)
+    # The same cubic interpolation as interpolate_rpm_to_acoustic_time, at the
+    # emission times, held at the ends of the RPM record: emission precedes
+    # reception, and a cubic extrapolated over the delay runs away.
+    rpm_time = np.asarray(data['aircraft_time'], dtype=float)
+    cubic = interp1d(rpm_time, rpm, kind='cubic', axis=0)
+    speed = lambda t: cubic(np.clip(t, rpm_time[0], rpm_time[-1]))
+    heard = observed_order_track(acoustics_T, track, receiver, speed, 1, sound_speed,
+                                 speed_unit='rad/s') * (2 * np.pi)
+    known = np.isfinite(heard[:, 0])
+    if not known.any():
+        raise ValueError('no acoustic sample can have been emitted along the aircraft track')
+    if not known.all():
+        print(f"  {np.count_nonzero(~known)} samples lie outside the track; holding the nearest speed")
+        for k in range(heard.shape[1]):
+            heard[:, k] = np.interp(acoustics_T, acoustics_T[known], heard[known, k])
+    return heard
+
+
 def separate_hexacopter_acoustics(mat_file_path, mic_range=16, 
                                    orders=range(2, 31), p=1,
                                    min_bw=3, max_bw=9, bw_percent=0.05,
                                    solver="auto", use_coupling=True,
                                    n_jobs=None, downsample_factor=8,
-                                   highpass_cutoff=100):
+                                   highpass_cutoff=100, receiver=None,
+                                   sound_speed=343.0):
     """
     Separate hexacopter acoustic signals using Vold-Kalman filtering.
     
@@ -323,14 +383,25 @@ def separate_hexacopter_acoustics(mat_file_path, mic_range=16,
         Whether to include cross-order coupling (B_U) terms, default True
     n_jobs : int or None, optional
         Number of parallel workers for segment processing. Defaults to CPU count.
+    receiver : array_like or None, optional
+        Microphone position (x, y, z), m, in the frame of the file's aircraft
+        position.  None (default) tracks the orders at the rotors' own speeds.
+        A position tracks them as the microphone hears them:
+        order_tracking.observed_order_track delays and Doppler-shifts each
+        rotor's speed along the aircraft track, which must share the acoustic
+        and RPM clock.  Samples heard before the track starts or after it ends
+        take the nearest predicted speed.
+    sound_speed : float, optional
+        Speed of sound, m/s, used with ``receiver``; default 343.0.
     
     Returns
     -------
     dict
         Dictionary containing:
-        - 'P': separated pressures, shape (n_samples, 6_rotors, n_mics)
+        - 'P': separated pressures, shape (n_samples, n_rotors, n_mics)
         - 'T': time vector
-        - 'rpm': RPM for each rotor, shape (n_samples, 6)
+        - 'rpm': speed of each rotor, rad/s, shape (n_samples, n_rotors); with
+          ``receiver``, the speed as heard at the microphone
         - 'original': original signal before separation
         - 'fs': sampling frequency
     """
@@ -359,6 +430,9 @@ def separate_hexacopter_acoustics(mat_file_path, mic_range=16,
     
     # Interpolate RPM to acoustic time samples
     rpmo = interpolate_rpm_to_acoustic_time(aircraft_time, aircraft_rpm, to)
+    if receiver is not None:
+        rpmo = heard_rotor_speed(data, to, receiver, sound_speed)
+    n_rotors = rpmo.shape[1]
     
     # Set up segmentation
     spacing, cutoff, increment = setup_segmentation(len(to))
@@ -372,9 +446,9 @@ def separate_hexacopter_acoustics(mat_file_path, mic_range=16,
     total_samples = sum(spacing[i+1] - spacing[i] for i in range(len(spacing)-1))
     
     # Pre-allocate result arrays (much faster than appending lists)
-    separated_P = np.zeros((total_samples, 6, xo.shape[1]))
+    separated_P = np.zeros((total_samples, n_rotors, xo.shape[1]))
     separated_T = np.zeros(total_samples)
-    separated_rpm = np.zeros((total_samples, 6))
+    separated_rpm = np.zeros((total_samples, n_rotors))
     separated_original = np.zeros((total_samples, xo.shape[1]))
     
     if n_jobs is None:
@@ -488,8 +562,9 @@ def plot_results(
     # Extract data
     T = separated['T']
     original = separated['original'][:, mic_idx]
-    P_separated = separated['P'][:, :, mic_idx]  # (n_samples, 6_rotors)
+    P_separated = separated['P'][:, :, mic_idx]  # (n_samples, n_rotors)
     rpm = separated['rpm']
+    n_rotors = P_separated.shape[1]
 
     # Sum all rotor components
     summed_separated = np.sum(P_separated, axis=1)
@@ -521,10 +596,10 @@ def plot_results(
     
     # Figure 2: Individual rotor components (offset for visibility)
     fig2 = plt.figure(figsize=(12, 8))
-    offsets = [0.5, 0.25, 0, -0.25, -0.5, -0.75]
-    rotor_labels = ['R1', 'R2', 'R3', 'R4', 'R5', 'R6']
+    offsets = [0.5 - 0.25 * k for k in range(n_rotors)]
+    rotor_labels = [f'R{k + 1}' for k in range(n_rotors)]
     
-    for rotor_idx in range(6):
+    for rotor_idx in range(n_rotors):
         plt.plot(T, offsets[rotor_idx] + P_separated[:, rotor_idx], 
                 linewidth=1.2, label=rotor_labels[rotor_idx], alpha=0.7)
     
@@ -537,7 +612,7 @@ def plot_results(
     
     # RPM Time History
     fig3 = plt.figure(figsize=(12, 6))
-    for rotor_idx in range(6):
+    for rotor_idx in range(n_rotors):
         plt.plot(T, 60.0*rpm[:, rotor_idx]/(2*np.pi), linewidth=1.2, 
                 label=rotor_labels[rotor_idx], alpha=0.7)
     
@@ -588,6 +663,8 @@ if __name__ == "__main__":
         n_jobs=VKF_N_JOBS,
         downsample_factor=DOWNSAMPLE_FACTOR,
         highpass_cutoff=HIGHPASS_CUTOFF_HZ,
+        receiver=VKF_DOPPLER_RECEIVER,
+        sound_speed=SOUND_SPEED_M_S,
     )
     
     print("\n" + "="*70)
