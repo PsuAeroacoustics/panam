@@ -35,6 +35,8 @@ Instructions for AI coding tools working on PANAM. Human developers: see
 - `vold_kalman_filter.py`: Vold-Kalman order tracking.
 - `sphere_statistics.py`: energy averaging of repeat-run spheres and
   band-by-band sphere comparison (CLI `sphere_diff.py`).
+- `nod_database.py`: reads `.nod` databases: `load_nod`, `validate_nod`,
+  `compare_databases`, `to_frame`.
 - `panam_acoustics/`: `signal_io` (loaders), `filters`, `atmosphere` and
   `iso_9613_1_1993` (ISO 9613-1), `time_weighting` (IEC 61672-1 frequency
   and time weighting, Lmax, Leq), `plotting` (`acoustic_plot_style`).
@@ -43,7 +45,8 @@ Instructions for AI coding tools working on PANAM. Human developers: see
 - `local_paths.py`: data lookup. `unit_conversion.py`, `default_units.py`:
   third-party unit conversions.
 - Tools: `noise_abatement_2017.py`, `build_empirical_database.py`,
-  `norah2_to_nod.py`, `array_planner.py`, `sphere_diff.py`, plotting scripts. Examples and
+  `norah2_to_nod.py`, `compare_databases.py`, `array_planner.py`,
+  `sphere_diff.py`, plotting scripts. Examples and
   diagnostics: `AS350_289108_demo.py`, `hexacopter_vkf_example.py`,
   `as350_flip_check.py`.
 
@@ -84,6 +87,7 @@ Instructions for AI coding tools working on PANAM. Human developers: see
   `PANAM_REGENERATE_GOLDEN=1 python -m pytest tests/test_golden_results.py`.
 - Never regenerate `tests/data/python_acoustics_reference.npz` from PANAM.
 - Shared fixtures: `tests/sphere_helpers.py`. Tests use the `Agg` backend.
+  `tests/conftest.py` validates every database built through `fa.build_...`.
 - Skips: `@pytest.mark.data` (external datasets), NICE-OPS executables not
   configured, example data missing. CI (`.github/workflows/tests.yml`, Python
   3.11 and 3.14) has no data, so those skip there: run them locally when you

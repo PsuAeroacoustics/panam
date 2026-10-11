@@ -198,6 +198,22 @@ def test_build_empirical_database_runs(tmp_path):
         assert ds.source_spheres == 'X101.nc' and ds.excluded_spheres == 'X102.nc'
 
 
+def test_compare_databases_runs(tmp_path):
+    import flight_acoustics as fa
+    for name, offset in (('a', 0.0), ('b', 1.0)):
+        hemisphere = minimal_hemisphere()
+        hemisphere['third_octave']['bands_db'] += offset
+        write_sphere_directory(tmp_path / name, [(hemisphere, 60, -3), (hemisphere, 80, 0)])
+        fa.build_empirical_database(str(tmp_path / name), str(tmp_path / f'{name}.nod'), load_factors=None)
+    same = run_here('compare_databases.py', 'a.nod', 'a.nod', '--validate', cwd=tmp_path)
+    assert same.returncode == 0, same.stderr
+    assert 'no differences' in same.stdout
+    different = run_here('compare_databases.py', 'a.nod', 'b.nod', cwd=tmp_path)
+    assert different.returncode == 1, different.stderr
+    assert 'band energy +1 dB' in different.stdout
+    tolerated = run_here('compare_databases.py', 'a.nod', 'b.nod', '--tolerance', '1.5', cwd=tmp_path)
+    assert tolerated.returncode == 0, tolerated.stdout
+
 def test_array_planner_subcommands_run(tmp_path):
     design = ['--nmics', '6', '--altitude', '150']
     result = run_here('array_planner.py', 'design', *design, '--format', 'json', cwd=tmp_path)
