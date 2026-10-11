@@ -33,6 +33,8 @@ python nc_lambert_ea.py example_data/AS350B3108.nc -w A -o demo_plots/sphere.png
 python plot_projection.py example_data/AS350B3108.nc -a 150 -u ft -o demo_plots/footprint.png  # -a is in m; -u sets the axes
 python array_planner.py coverage --nmics 12 --altitude 150 -o demo_plots/coverage.png
 python hexacopter_vkf_example.py   # writes demo_plots/hexa_*.png
+python sphere_to_norah2.py example_data/AS350B3108.nc -o demo_plots/AS350B3108.hem \
+    --temperature 288.15 --pressure 101.325 --humidity 70   # K, kPa, % of the measurement
 ```
 
 To build a database, a directory needs spheres and a `vehicle.cfg`. One sphere
@@ -64,6 +66,7 @@ scripts take no options and run as soon as they start, `-h` included:
 | `noise_abatement_2017.py` | Build source spheres from the 2017 Noise Abatement flight test; `--check-tracks` checks the tracks without building | Yes: the 2017 archive |
 | `build_empirical_database.py` | Build a NICE-OPS database from a directory of spheres and its `vehicle.cfg` | Your spheres |
 | `norah2_to_nod.py` | Build a NICE-OPS database from NORAH2 `.hem` hemispheres | `.hem` files |
+| `sphere_to_norah2.py` | Convert an AAM sphere to a NORAH2 `.hem` hemisphere; the measurement atmosphere is required | No (bundled sphere) |
 | `nc_lambert_ea.py` | Plot a sphere's levels on a Lambert equal-area projection | No (bundled sphere) |
 | `plot_projection.py` | Project a sphere onto flat ground and contour the footprint | No (bundled sphere) |
 | `fried_egg_plot.py` | Contour ground levels of a directory of spheres over flight condition | Your spheres and `vehicle.cfg` |

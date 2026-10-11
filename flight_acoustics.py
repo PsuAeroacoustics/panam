@@ -3076,26 +3076,91 @@ def write_norah2_hemisphere(
         measurement_atmosphere = Atmosphere(temperature=recorded['temperature_k'],
                                             pressure=recorded['pressure_kpa'],
                                             relative_humidity=recorded['relative_humidity'])
-    reference_atmosphere = Atmosphere(temperature=NORAH2_REFERENCE_TEMPERATURE_K,
-                                      pressure=NORAH2_REFERENCE_PRESSURE_PA / 1000.0,
-                                      relative_humidity=NORAH2_REFERENCE_RELATIVE_HUMIDITY)
 
     PH, TH = np.meshgrid(NORAH2_PHI_DEG, NORAH2_THETA_DEG, indexing='ij')
     azi_rad, elv_rad = norah2umapr(np.deg2rad(PH), np.deg2rad(TH))
     # Resample before the unit conversion; minimum_level_db applies at 60 m.
     frequency_hz, sampled_db = _sample_hemisphere_levels(
         hemisphere, 'third_octave', np.degrees(azi_rad), np.degrees(elv_rad), -np.inf)
+    return write_norah2_levels(
+        filename, frequency_hz, sampled_db, r_ref_m=r_ref_m,
+        measurement_atmosphere=measurement_atmosphere,
+        apply_absorption_deprop=meta.get('apply_absorption_deprop', True),
+        speed_knots=speed_knots, flight_path_angle_deg=flight_path_angle_deg, title=title,
+        test_point=test_point, rotor_rpm_percent=rotor_rpm_percent,
+        total_wind_knots=total_wind_knots, cross_wind_knots=cross_wind_knots,
+        pitch_deg=pitch_deg, roll_deg=roll_deg, head_wind_knots=head_wind_knots,
+        minimum_level_db=minimum_level_db)
+
+
+def write_norah2_levels(
+        filename,
+        frequency_hz,
+        levels_db,
+        *,
+        r_ref_m: float,
+        measurement_atmosphere: Atmosphere,
+        apply_absorption_deprop: bool = True,
+        speed_knots: float,
+        flight_path_angle_deg: float,
+        title: Optional[str] = None,
+        test_point: str = '',
+        rotor_rpm_percent: float = 100.0,
+        total_wind_knots: float = 0.0,
+        cross_wind_knots: float = 0.0,
+        pitch_deg: Optional[float] = None,
+        roll_deg: Optional[float] = None,
+        head_wind_knots: Optional[float] = None,
+        minimum_level_db: float = -100.0,
+        overwrite: bool = True,
+):
+    """Write band levels already on the NORAH2 grid as a NORAH2 ``.hem`` file.
+
+    The writer behind :func:`write_norah2_hemisphere`, for levels that are on the
+    NORAH2 (phi, theta) grid already, such as an AAM sphere sampled there
+    (``sphere_to_norah2.py``).  It does the unit conversion that function
+    describes: spreading from ``r_ref_m`` to 60 m, the measured absorption over
+    ``r_ref_m`` out and the ICAO reference absorption over 60 m in, the match to
+    NORAH2's 31 nominal bands, and -999 for every missing level.
+
+    Args:
+        filename: Path to the output ``.hem`` file.
+        frequency_hz: (Nf,) band centers of ``levels_db`` (Hz).
+        levels_db: (19, 19, Nf) unweighted band levels (dB re 20 uPa) at
+            ``r_ref_m``, indexed (``NORAH2_PHI_DEG``, ``NORAH2_THETA_DEG``, band);
+            -inf or NaN where missing.
+        r_ref_m: Distance the levels are referred to (m).
+        measurement_atmosphere: The atmosphere whose absorption over ``r_ref_m``
+            the levels keep. Written as Tm/RHm/Pm.
+        apply_absorption_deprop: False if the levels keep the absorption of each
+            measured path instead; then only spreading is applied, with a warning.
+        Others: as :func:`write_norah2_hemisphere`.
+
+    Returns:
+        levels_db: (phi, theta, band) levels as written at 60 m (dB), -inf where -999.
+    """
+    if not overwrite and os.path.exists(filename):
+        raise FileExistsError(f'Output file already exists: {filename}')
+    sampled_db = np.asarray(levels_db, dtype=float)
+    frequency_hz = np.asarray(frequency_hz, dtype=float)
+    expected_shape = (NORAH2_PHI_DEG.size, NORAH2_THETA_DEG.size, frequency_hz.size)
+    if sampled_db.shape != expected_shape:
+        raise ValueError(f'levels_db must be {expected_shape} (phi, theta, band), not {sampled_db.shape}')
+    sampled_db = np.where(np.isnan(sampled_db), -np.inf, sampled_db)
+    reference_atmosphere = Atmosphere(temperature=NORAH2_REFERENCE_TEMPERATURE_K,
+                                      pressure=NORAH2_REFERENCE_PRESSURE_PA / 1000.0,
+                                      relative_humidity=NORAH2_REFERENCE_RELATIVE_HUMIDITY)
 
     band_index = _norah2_band_index(frequency_hz)
-    levels_db = np.full(PH.shape + (NORAH2_BAND_CENTERS_HZ.size,), -np.inf, dtype=float)
+    levels_db = np.full(expected_shape[:2] + (NORAH2_BAND_CENTERS_HZ.size,), -np.inf, dtype=float)
     present = band_index >= 0
     levels_db[:, :, present] = sampled_db[:, :, band_index[present]]
 
     offset_db = 20.0 * np.log10(r_ref_m / NORAH2_REFERENCE_DISTANCE_M)
-    if meta.get('apply_absorption_deprop', True):
+    if apply_absorption_deprop:
         # Use the bands' own centers for the measured absorption, the nominal
         # ones for NORAH2's: those are what NORAH2 will remove it at.
-        measured_centers = np.where(present, np.asarray(frequency_hz, dtype=float)[band_index],
+        measured_centers = np.where(present, frequency_hz[band_index],
                                     NORAH2_BAND_CENTERS_HZ)
         offset_db = (offset_db
                      + measurement_atmosphere.attenuation_coefficient(measured_centers) * r_ref_m

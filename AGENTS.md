@@ -40,7 +40,7 @@ Instructions for AI coding tools working on PANAM. Human developers: see
 - `local_paths.py`: data lookup. `unit_conversion.py`, `default_units.py`:
   third-party unit conversions.
 - Tools: `noise_abatement_2017.py`, `build_empirical_database.py`,
-  `norah2_to_nod.py`, `array_planner.py`, plotting scripts. Examples and
+  `norah2_to_nod.py`, `sphere_to_norah2.py`, `array_planner.py`, plotting scripts. Examples and
   diagnostics: `AS350_289108_demo.py`, `hexacopter_vkf_example.py`,
   `as350_flip_check.py`.
 

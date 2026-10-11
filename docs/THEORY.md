@@ -776,6 +776,17 @@ as −999. This is not the inverse of the import: a sphere exported and imported
 shifted by $(\alpha_\mathrm{meas} - \alpha_\mathrm{ICAO})\,r_\mathrm{ref}$. A sphere built without
 absorption depropagation is written with spreading only, with a warning.
 
+A sphere file already written is converted the same way (`sphere_to_norah2.py`,
+`sphere_to_norah2`, through `write_norah2_levels`). Sphere files and NORAH2 share the ART angles,
+so the levels are interpolated bilinearly in linear power over (PHI, THETA) straight onto the
+NORAH2 grid (`sphere_levels_on_norah2_grid`); on the build's default grid (PHI every 10°, THETA
+every 5°) every NORAH2 direction is a sphere node and the levels pass through unchanged. The
+sphere's missing levels (−999, NaN) carry no weight, and a direction weighted mostly by them, or
+off the sphere's grid, is written as −999. $r_\mathrm{ref}$ is the sphere's `RADIUS`, and ACSPEED
+and GAMM default to its `SPEED` and `FLIGHT_PATH_ANGLE`. A sphere file does not record its
+measurement atmosphere, so $\alpha_\mathrm{meas}$ has to be given (`--temperature`, `--pressure`,
+`--humidity`).
+
 `write_norah2_triangulation` writes the `.int` file through which NORAH2 interpolates between an
 aircraft's hemispheres: the Delaunay triangulation of the raw (knots, degrees) conditions, and by
 default the correction table every shipped file carries (+8 dB out-of-ground hover, −10 dB reduced
@@ -989,7 +1000,8 @@ Functions are in `flight_acoustics.py` unless another module is named. Tests are
 | §7.3 Load factor | `add_sphere_group` | `test_load_factor_scaling.py`, `test_write_aam_hemisphere_netcdf.py` |
 | §7.4 Hover | `average_fore_and_aft`, `_fore_aft_measured` | `test_hover_averaging.py`, `test_sphere_completion_integration.py`, `test_empirical_database_hover_selection.py`, `test_database_provenance.py` |
 | §7.5 Completion | `mirror_phi_to_upper_surface`, `_complete_sphere_with_coverage` | `test_mirror_phi.py`, `test_sphere_completion_integration.py` |
-| §8 NORAH2 | `build_database_from_norah2`, `norah2_levels_at_radius`, `norah2_speed_knots`, `humid_air_density`, `fill_norah2_empty_cells`, `write_norah2_hemisphere`, `write_norah2_triangulation`, `norah2umapr` | `test_norah2_import.py`, `test_write_norah2_hemisphere.py` |
+| §8 NORAH2 | `build_database_from_norah2`, `norah2_levels_at_radius`, `norah2_speed_knots`, `humid_air_density`, `fill_norah2_empty_cells`, `write_norah2_hemisphere`, `write_norah2_levels`, `write_norah2_triangulation`, `norah2umapr` | `test_norah2_import.py`, `test_write_norah2_hemisphere.py` |
+| §8 Sphere to NORAH2 | `sphere_to_norah2.sphere_to_norah2`, `sphere_levels_on_norah2_grid` (through the `sphere_to_norah2.py` CLI) | `test_sphere_to_norah2.py`, `test_cli_scripts.py` (smoke) |
 | §9 Metrics | `sound_exposure_level`, `ten_db_down_interval`, `noys`, `perceived_noise_level`, `tone_correction`, `effective_perceived_noise_level`, `mil_std_1474e_nondetectability_distance` | `test_sound_exposure_level.py`, `test_pnl_epnl.py`, `test_mil_std_nondetectability.py` |
 | §9 Loudness, sharpness | `panam_acoustics.psychoacoustics.loudness_zwicker`, `loudness_level`, `sharpness_din` | `test_psychoacoustics.py` |
 | §10 VKF | `vold_kalman_filter.vold_kalman_filter` | `test_vold_kalman_filter.py` |

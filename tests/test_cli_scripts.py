@@ -200,3 +200,19 @@ def test_array_planner_subcommands_run(tmp_path):
                   '--kmz', 'array.kmz', cwd=tmp_path)
     assert result.returncode == 0, result.stderr
     assert (tmp_path / 'array.kmz').stat().st_size > 0
+
+
+def test_sphere_to_norah2_runs(tmp_path):
+    import flight_acoustics as fa
+    atmosphere = ['--temperature', '288.15', '--pressure', '101.325', '--humidity', '70']
+    result = run_here('sphere_to_norah2.py', str(EXAMPLE_SPHERE), '-o', 'sphere.hem', *atmosphere,
+                      cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    hem = fa.load_norah2_hemisphere(str(tmp_path / 'sphere.hem'))
+    assert hem['levels_db'].shape == (19, 19, 31)
+    assert hem['constants']['Tm'] == 15.0
+    result = run_here('sphere_to_norah2.py', str(EXAMPLE_SPHERE), '-o', 'sphere.hem', *atmosphere,
+                      cwd=tmp_path)
+    assert result.returncode == 1 and 'exists' in result.stderr
+    result = run_here('sphere_to_norah2.py', str(EXAMPLE_SPHERE), '-o', 'other.hem', cwd=tmp_path)
+    assert result.returncode == 2 and '--temperature' in result.stderr

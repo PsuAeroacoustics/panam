@@ -2,8 +2,9 @@
 
 `flight_acoustics.build_database_from_norah2` and the script `norah2_to_nod.py` turn a set of
 NORAH2 (HELENA, ECAC Doc 32) `.hem` hemispheres into a NICE-OPS `.nod` database, with one
-condition per file. PANAM already writes `.hem` files (`write_norah2_hemisphere`) and reads
-them (`load_norah2_hemisphere`). The importer is the path from them to NICE-OPS. The
+condition per file. PANAM already writes `.hem` files (`write_norah2_hemisphere`, and
+`sphere_to_norah2.py` from a sphere file already written) and reads them
+(`load_norah2_hemisphere`). The importer is the path from them to NICE-OPS. The
 equations it applies are in [THEORY §8](THEORY.md#8-norah2-and-aam-interchange). The
 database it writes is described in [`file_formats.md`](file_formats.md).
 

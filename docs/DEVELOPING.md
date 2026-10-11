@@ -60,7 +60,7 @@ read the sphere files back.
 | `unit_conversion.py`, `default_units.py` | Aerospace unit conversions (third-party, BSD-style license in the file headers) |
 
 Scripts with a command line: `noise_abatement_2017.py` (the main pipeline),
-`build_empirical_database.py`, `norah2_to_nod.py`, `array_planner.py`, and the
+`build_empirical_database.py`, `norah2_to_nod.py`, `sphere_to_norah2.py`, `array_planner.py`, and the
 plotting scripts `nc_lambert_ea.py`, `plot_projection.py`, `fried_egg_plot.py`,
 `spectrogram_plot.py`, `atmomap.py`, `ega_plot.py` and `board_field_plot.py`.
 `AS350_289108_demo.py`, `hexacopter_vkf_example.py`, `as350_flip_check.py` and
