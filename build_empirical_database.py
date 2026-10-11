@@ -12,7 +12,7 @@ import argparse
 import os
 import sys
 
-from panam_acoustics.atmosphere import Atmosphere
+from panam_acoustics.atmosphere import Atmosphere, BAND_ABSORPTION_METHODS
 
 import cli
 import flight_acoustics
@@ -111,13 +111,8 @@ def make_parser():
                         help='propagation distance of the broadband EAA, m (default %(default)g)')
     parser.add_argument('--frequency-range', type=cli.colon_pair, default=None, metavar='LO:HI',
                         help='keep only bands from LO to HI, Hz (default: every band)')
-    parser.add_argument('--build-temperature', type=float, default=293.15,
-                        help='atmosphere of the broadband EAA: temperature, K (default %(default)g)')
-    parser.add_argument('--build-pressure', type=float, default=101.325,
-                        help='... pressure, kPa (default %(default)g)')
-    parser.add_argument('--build-humidity', type=float, default=20.0,
-                        help='... relative humidity, percent (default %(default)g)')
-    parser.add_argument('--absorption-band-method', choices=('center', 'arp5534', 'integrated'),
+    cli.add_build_atmosphere_options(parser)
+    parser.add_argument('--absorption-band-method', choices=BAND_ABSORPTION_METHODS,
                         default='center',
                         help='how band absorption over --distance enters the EAA: center (ISO 9613-1 '
                              'at the band center), arp5534 (SAE ARP 5534) or integrated (ISO 9613-1 '
@@ -157,8 +152,7 @@ def build_options(args):
     options = dict(
         distance=args.distance,
         infreqs=args.frequency_range,
-        atmosphere=Atmosphere(temperature=args.build_temperature, pressure=args.build_pressure,
-                              relative_humidity=args.build_humidity),
+        atmosphere=cli.build_atmosphere(args),
         extended_flight_path_angles=args.extended_fpa,
         level_flight_tolerance=args.level_flight_tolerance,
         store_spectrum=not args.no_spectrum,

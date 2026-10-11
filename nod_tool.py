@@ -5,7 +5,7 @@ import math
 import sys
 
 import nod_database as nd
-from cli import colon_pair, save_or_show
+from cli import add_output_options, colon_pair, save_or_show
 
 
 def build_parser():
@@ -48,18 +48,14 @@ def build_parser():
     plot.add_argument('-r', '--range', type=colon_pair, default=None,
                       help='Color range "low:high" in the quantity\'s unit (default: the data range; '
                            '0:1 for coverage)')
-    plot.add_argument('-o', '--output', default=None,
-                      help='Image file (format from its extension); default: open a window')
-    plot.add_argument('-p', '--plot', action='store_true', help='Also open the figure in a window')
+    add_output_options(plot)
 
     envelope = commands.add_parser(
         'envelope', description='Scatter the conditions in speed (kt) and flight path angle (deg), '
                                 'colored by condition_origin.',
         help='plot the conditions in speed and flight path angle')
     envelope.add_argument('database', help='NICE-OPS database (.nod)')
-    envelope.add_argument('-o', '--output', default=None,
-                          help='Image file (format from its extension); default: open a window')
-    envelope.add_argument('-p', '--plot', action='store_true', help='Also open the figure in a window')
+    add_output_options(envelope)
 
     check = commands.add_parser(
         'check', description='Check the database against docs/file_formats.md and print each '

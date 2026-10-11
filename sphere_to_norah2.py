@@ -13,7 +13,7 @@ import sys
 
 import numpy as np
 
-from panam_acoustics.atmosphere import Atmosphere
+from panam_acoustics.atmosphere import Atmosphere, BAND_ABSORPTION_METHODS
 
 import flight_acoustics as fa
 
@@ -158,7 +158,7 @@ def parse_arguments(argv=None):
     parser.add_argument('--spreading-only', action='store_true',
                         help='the sphere was built without absorption depropagation: apply '
                              'spreading only (default: take out the absorption over RADIUS)')
-    parser.add_argument('--absorption-band-method', choices=('center', 'arp5534', 'integrated'),
+    parser.add_argument('--absorption-band-method', choices=BAND_ABSORPTION_METHODS,
                         default='center',
                         help='how the sphere build formed the band absorption over RADIUS that is '
                              'taken out: center (ISO 9613-1 at the band center), arp5534 (SAE ARP '

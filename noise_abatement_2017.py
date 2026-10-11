@@ -2722,7 +2722,7 @@ def make_parser():
                              '(default: no cap)')
     parser.add_argument('--no-absorption-deprop', action='store_true',
                         help='do not undo atmospheric absorption (default: undo it)')
-    parser.add_argument('--absorption-band-method', choices=('center', 'arp5534', 'integrated'),
+    parser.add_argument('--absorption-band-method', choices=fa.BAND_ABSORPTION_METHODS,
                         default='center',
                         help="band absorption for --third-octave-method filter_bank: 'center' (ISO "
                              "9613-1 at the band center), 'arp5534' or 'integrated' (default %(default)s)")

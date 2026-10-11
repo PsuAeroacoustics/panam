@@ -12,6 +12,12 @@ import os
 
 import matplotlib.pyplot as plt
 
+from panam_acoustics.atmosphere import Atmosphere
+
+#: The default atmosphere of a database's broadband EAA (Atmosphere arguments:
+#: K, kPa, percent), as flight_acoustics' database builders default to it.
+BUILD_ATMOSPHERE = dict(temperature=293.15, pressure=101.325, relative_humidity=20.0)
+
 
 def colon_pair(value):
     """argparse type for a "low:high" pair of floats, quoted or not."""
@@ -61,6 +67,26 @@ def add_output_options(parser, default=None, *, directory=False, aliases=(), plo
                             help=f'Image file to write; the format follows the extension (default {where})')
         parser.add_argument(*plot_flags, dest='plot', action='store_true',
                             help='With -o, also open the figure in a window')
+
+
+def add_build_atmosphere_options(parser):
+    """Add ``--build-temperature``, ``--build-pressure`` and ``--build-humidity``.
+
+    They set the atmosphere of a database's broadband EAA (K, kPa, percent),
+    defaulting to ``BUILD_ATMOSPHERE``; :func:`build_atmosphere` forms it.
+    """
+    parser.add_argument('--build-temperature', type=float, default=BUILD_ATMOSPHERE['temperature'],
+                        help='atmosphere of the broadband EAA: temperature, K (default %(default)g)')
+    parser.add_argument('--build-pressure', type=float, default=BUILD_ATMOSPHERE['pressure'],
+                        help='... pressure, kPa (default %(default)g)')
+    parser.add_argument('--build-humidity', type=float, default=BUILD_ATMOSPHERE['relative_humidity'],
+                        help='... relative humidity, percent (default %(default)g)')
+
+
+def build_atmosphere(args):
+    """The :class:`Atmosphere` (K, kPa, percent) of :func:`add_build_atmosphere_options`' options."""
+    return Atmosphere(temperature=args.build_temperature, pressure=args.build_pressure,
+                      relative_humidity=args.build_humidity)
 
 
 def save_or_show(fig, output=None, plot=False, **savefig_kwargs):

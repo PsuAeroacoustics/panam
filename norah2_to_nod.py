@@ -14,8 +14,9 @@ import argparse
 import os
 import sys
 
-from panam_acoustics.atmosphere import Atmosphere
+from panam_acoustics.atmosphere import BAND_ABSORPTION_METHODS
 
+import cli
 import flight_acoustics
 
 SPEED_CHOICES = {'ias-to-tas': 'ias_to_tas', 'ground-speed': 'ground_speed'}
@@ -44,13 +45,8 @@ def parse_arguments(argv=None):
                               "the vehicle file's, or 1.225 without one)")
     parser.add_argument('--radius', type=float, default=flight_acoustics.DATABASE_SPHERE_RADIUS_M,
                         help='sphere radius, m (default %(default)g)')
-    parser.add_argument('--build-temperature', type=float, default=293.15,
-                        help='atmosphere of the broadband EAA: temperature, K (default %(default)g)')
-    parser.add_argument('--build-pressure', type=float, default=101.325,
-                        help='... pressure, kPa (default %(default)g)')
-    parser.add_argument('--build-humidity', type=float, default=20.0,
-                        help='... relative humidity, percent (default %(default)g)')
-    parser.add_argument('--absorption-band-method', choices=('center', 'arp5534', 'integrated'),
+    cli.add_build_atmosphere_options(parser)
+    parser.add_argument('--absorption-band-method', choices=BAND_ABSORPTION_METHODS,
                         default='center',
                         help='how band absorption is formed, in the move from POLDIST to the sphere '
                              'radius and in the EAA: center (ISO 9613-1 at the band center), '
@@ -112,8 +108,7 @@ def main(argv=None):
         thrust_air_density=thrust_density,
         tas_air_density=args.tas_density,
         radius_m=args.radius,
-        atmosphere=Atmosphere(temperature=args.build_temperature, pressure=args.build_pressure,
-                              relative_humidity=args.build_humidity),
+        atmosphere=cli.build_atmosphere(args),
         accept_ground_included=args.accept_ground_included,
         mirror_rotor=args.mirror_rotor,
         fill_empty=args.fill_empty,
