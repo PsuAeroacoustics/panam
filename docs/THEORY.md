@@ -157,6 +157,21 @@ $$
    integral, and the tone is added whole to the band containing $f_I + \delta\Delta f$ (divided by
    $D$ when the Doppler shift is removed).
 
+**Tonal and broadband parts** (`decompose_tonal=True`, `tone_split=True`; off by default). The
+two terms of step 4 are kept apart: the tonal part $P_b^\mathrm{t}$ is the sum of the located
+tones filed in band $b$, the broadband part $P_b^\mathrm{bb}$ the banded remainder, and
+$P_b = P_b^\mathrm{t} + P_b^\mathrm{bb}$ in energy (bit for bit where a band holds at most one
+tone per sample, to rounding otherwise). `tone_aware_band_power(..., return_parts=True)` returns
+the pair. `depropagate_hemisphere(decompose_tonal=True)` forms them from the depropagated
+spectrum, marks the same samples missing, and grids each with the total's weights, so the parts
+sum to the total in energy at every node. `noise_abatement_2017.build_sphere(tone_split=True)`
+writes them as spheres of their own. The split is set by the detector, not by the physics:
+`threshold_db` (6 dB) decides what counts as a tone, `lobe` (±2 bins) how close two peaks may sit,
+and `floor_bins` (15) what floor a tone stands on. A tone weaker than the threshold, or a
+harmonic that sweeps several bins within one window (a fast pass overhead), stays broadband; a
+noise peak standing above the threshold is taken for a tone, which puts roughly a quarter of
+white noise's band power in the tonal part.
+
 **Filter bank** (`third_octave_method='filter_bank'`; the default is the FFT). Each band is an
 order-3 Butterworth band-pass between $f_c 2^{\mp1/6}$ about the band's given center (nominal or
 exact), so its edges are not the base-10 edges the FFT path uses
@@ -929,7 +944,7 @@ Functions are in `flight_acoustics.py` unless another module is named. Tests are
 | Section | Functions | Tests |
 | --- | --- | --- |
 | §2.1 Short-time spectra | `spectrogram`, `frame_length`, `psd`, `psd_welch`, `overall_SPL`, `level_history` | `test_acoustics.py`, `test_generate_hemisphere.py` |
-| §2.2 Bands | `third_octave_band_edges`, `third_octave_band_levels`, `tone_aware_band_power`, `hann_power`, `panam_acoustics.filters.third_octave_filter_bank` | `test_third_octave_band_edges.py`, `test_third_octave_band_levels.py`, `test_band_selection.py`, `test_tone_aware_band_power.py`, `test_third_octave_filter_bank.py` |
+| §2.2 Bands | `third_octave_band_edges`, `third_octave_band_levels`, `tone_aware_band_power` (`return_parts`), `hann_power`, `depropagate_hemisphere` (`decompose_tonal`), `noise_abatement_2017.build_sphere` (`tone_split`), `panam_acoustics.filters.third_octave_filter_bank` | `test_third_octave_band_edges.py`, `test_third_octave_band_levels.py`, `test_band_selection.py`, `test_tone_aware_band_power.py`, `test_generate_hemisphere.py`, `test_noise_abatement_2017.py`, `test_third_octave_filter_bank.py` |
 | §2.3 A-weighting | `dBAw` | `test_acoustics.py` |
 | §3.1–3.2 Geometry | `hemigen`, `art2umapr`; `noise_abatement_2017.local_east_north_ft`, `east_north_to_frame`, `frame_bearing_deg` | `test_lambert_geometry.py`, `test_hemisphere_geometry_accuracy.py`, `test_azimuth_reference.py`, `test_track_check.py` |
 | §3.3 Doppler | `depropagate_hemisphere` (`remove_doppler`) | `test_generate_hemisphere.py`, `test_tone_aware_band_power.py` |
