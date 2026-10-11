@@ -113,6 +113,8 @@ Attributes:
 | `build_temperature_K`, `build_pressure_kPa`, `build_relative_humidity_percent` | the atmosphere the EAA was computed in (default 293.15 K, 101.325 kPa, 20%) |
 | `hover_correction` | when one was applied: its `description`, or `applied` |
 | `hover_source` | when given: the hover source sphere's file name |
+| `source_spheres` | the file names of the spheres used, one per line, sorted (no directory); always written by `build_empirical_database` |
+| `excluded_spheres` | when `exclude` was given: the file names it left out, one per line |
 
 A NORAH2 import adds the attributes `source_format`, `norah2_speed_mapping`,
 `norah2_mirror_rotor`, `norah2_ground_included_accepted`, `norah2_fill_empty` and

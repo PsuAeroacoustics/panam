@@ -1850,6 +1850,42 @@ def write_manifest(path, records, failures):
             writer.writerow(failure)
 
 
+def select_from_manifest(manifest_path, *, skip_flagged=False, conditions=None):
+    """The sphere file names a build manifest (:func:`write_manifest`) lists as built.
+
+    Returns the file names (no directory), in manifest order, of every run that
+    produced a sphere; failed runs are left out.  The result is meant for
+    ``flight_acoustics.build_empirical_database(spheres=)``, which takes each
+    name relative to the sphere directory, so the database is built from what
+    this build wrote and from nothing else left in the directory.
+
+    skip_flagged leaves out runs whose track check raised a flag (a non-empty
+    ``track_flags`` other than ``not checked``).  conditions, when given, keeps
+    only runs whose ``condition`` (the test card) is in it.  By default every
+    built sphere is returned.
+    """
+    path = os.path.abspath(os.path.expanduser(manifest_path))
+    names = []
+    with open(path, encoding='utf-8-sig', newline='') as handle:
+        reader = csv.DictReader(handle)
+        if 'output' not in (reader.fieldnames or []):
+            raise ValueError('{}: a build manifest needs an output column'.format(manifest_path))
+        wanted = None if conditions is None else {str(c) for c in conditions}
+        for entry in reader:
+            entry = {k: (v or '').strip() for k, v in entry.items() if k is not None}
+            if not entry['output'] or entry.get('error'):
+                continue
+            if skip_flagged and entry.get('track_flags', '') not in ('', 'not checked'):
+                continue
+            if wanted is not None and entry.get('condition', '') not in wanted:
+                continue
+            # Basename on either separator: the manifest may come from another machine.
+            name = entry['output'].replace('\\', '/').rsplit('/', 1)[-1]
+            if name not in names:
+                names.append(name)
+    return names
+
+
 def read_winds(path):
     """Per-run winds at the aircraft from a CSV file, as ``{run: wind}`` for :func:`build_all`.
 

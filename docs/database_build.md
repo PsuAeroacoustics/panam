@@ -95,16 +95,37 @@ coefficient.
 python build_empirical_database.py ~/panam_out/spheres/Be407 ~/panam_out/Be407.nod
 ```
 
-The script takes every `.nc` file in the directory, so the directory must hold only this
-build's spheres. It calls `build_empirical_database` with that function's defaults:
+By default the script takes every `.nc` file in the directory. To build from exactly the
+spheres a build wrote, pass its manifest; `--exclude` then leaves out named spheres:
 
-- load factors of 0.7, 1.1, 1.5, 1.9 and 2.3 g;
-- no extended flight path angles;
-- a hover synthesized from the slowest sphere within 2° of level flight, as built;
-- spectra stored.
+```sh
+python build_empirical_database.py ~/panam_out/spheres/Be407 ~/panam_out/Be407.nod \
+    --manifest ~/panam_out/spheres/Be407/manifest.csv --exclude Be407285236.nc
+```
 
-To use the release's choices, call the function from Python (see
-[the 2017 release settings](#the-2017-release-settings)).
+`--manifest` takes the file names of the runs the manifest lists as built and looks for them
+in the sphere directory (`noise_abatement_2017.select_from_manifest`); `--skip-flagged` also
+leaves out runs whose track check raised a flag. `--sphere FILE` names spheres one at a time
+instead, and `--exclude` takes shell patterns as well as names. The database's root attribute
+`source_spheres` lists the file names used, and `excluded_spheres` those `--exclude` left out.
+
+Every other option of `build_empirical_database` that takes a plain value has a flag, and
+each flag defaults to the function's default (`python build_empirical_database.py -h` lists
+them with their units):
+
+- load factors of 0.7, 1.1, 1.5, 1.9 and 2.3 g (`--load-factors`, or `--fixed-load-factor`
+  for one 1 g reference that NICE-OPS scales);
+- no extended flight path angles (`--extended-fpa LO:HI`, deg);
+- a hover synthesized from the slowest sphere within 2° of level flight, as built
+  (`--hover-source`, `--level-flight-tolerance`; the `--hover-source` path is taken
+  relative to the current directory, not the sphere directory);
+- spectra stored (`--no-spectrum` leaves them out);
+- the EAA computed at 1000 m in 293.15 K, 101.325 kPa and 20% relative humidity
+  (`--distance`, `--build-temperature`, `--build-pressure`, `--build-humidity`).
+
+The script refuses to replace an existing database without `--overwrite`. The hover
+correction is a Python callable and has no flag; see
+[the 2017 release settings](#the-2017-release-settings).
 
 ### 6. Load it in NICE-OPS
 
@@ -326,10 +347,9 @@ The command line does not expose these settings:
 - tone-aware banding;
 - the ray model;
 - the adaptive gridding;
-- the hover source;
-- the database options.
+- the hover correction.
 
-A release build therefore calls the functions from Python:
+A release build therefore builds its spheres from Python:
 
 ```python
 import flight_acoustics as fa
@@ -352,6 +372,20 @@ fa.build_empirical_database(f'{OUT}/spheres/Be407', f'{OUT}/Be407_ambient_gated.
                             store_spectrum=False)
 ```
 
+The database call has a command-line equivalent except for the hover correction. Without
+it, this builds the release database's spheres and settings with an uncorrected hover:
+
+```sh
+python build_empirical_database.py $OUT/spheres/Be407 $OUT/Be407_ambient_gated.nod \
+    --manifest $OUT/spheres/Be407/manifest.csv \
+    --load-factors 0,1,1.1,1.2,1.5,2,3,5 --extended-fpa=-24:35 \
+    --hover-source $HOVER_SOURCE_SPHERE --no-spectrum
+```
+
+`--extended-fpa=-24:35` is written with `=` so that the leading minus sign is not read as an
+option. For `ambient_gated_spectral` leave out `--no-spectrum`; for `fixed_load_factor`
+replace `--load-factors` with `--fixed-load-factor`.
+
 The names in capitals are the caller's:
 
 - `OUT`: an output directory outside the checkout.
@@ -371,7 +405,8 @@ The names in capitals are the caller's:
 
 The code is in `noise_abatement_2017.py` (`build_all`, `build_sphere`, `check_tracks`,
 `check_track`, `steady_window`, `frame_bearing_deg`, `ground_microphone_positions`,
-`read_winds`) and `flight_acoustics.py` (`build_empirical_database`,
+`read_winds`, `select_from_manifest`) and `flight_acoustics.py` (`build_empirical_database`,
 `write_aam_hemisphere_netcdf`, `read_vehicle_data`). The tests are
 `tests/test_noise_abatement_2017.py`, `tests/test_track_check.py`,
-`tests/test_run_metadata.py` and `tests/test_azimuth_reference.py`.
+`tests/test_run_metadata.py`, `tests/test_azimuth_reference.py` and
+`tests/test_build_empirical_database_cli.py`.

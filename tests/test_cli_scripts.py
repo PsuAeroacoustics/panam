@@ -187,6 +187,15 @@ def test_build_empirical_database_runs(tmp_path):
     assert result.returncode == 0, result.stderr
     with Dataset(str(tmp_path / 'database.nod')) as ds:
         assert len(ds.groups) >= 2
+    # The output exists now: it is replaced only with --overwrite.
+    result = run_here('build_empirical_database.py', 'spheres', 'database.nod', '--fixed-load-factor',
+                      '--exclude', 'X102.nc', cwd=tmp_path)
+    assert result.returncode == 2 and '--overwrite' in result.stderr
+    result = run_here('build_empirical_database.py', 'spheres', 'database.nod', '--fixed-load-factor',
+                      '--exclude', 'X102.nc', '--extended-fpa=-24:35', '--overwrite', cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    with Dataset(str(tmp_path / 'database.nod')) as ds:
+        assert ds.source_spheres == 'X101.nc' and ds.excluded_spheres == 'X102.nc'
 
 
 def test_array_planner_subcommands_run(tmp_path):
