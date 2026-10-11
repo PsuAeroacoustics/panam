@@ -54,6 +54,7 @@ read the sphere files back.
 | `axisymmetric_bem.py` | The axisymmetric BEM of the plate on the ground (`scattering`, `table`, `board_level`, `field`, `write_netcdf` for NICE-OPS). Numba-compiled |
 | `refracted_rays.py` | The ray-model interface for depropagation: `straight_ray_model`, and `external_ray_model`, which runs NICE-OPS's `niceops_ray_geometry` |
 | `vold_kalman_filter.py` | The multi-shaft Vold-Kalman order-tracking filter |
+| `order_tracking.py` | Order tracks as a fixed microphone hears them (propagation delay and Doppler shift along a track), ridge tracking, and clock offsets by cross-correlation |
 | `panam_acoustics/` | `signal_io` (recording loaders), `filters` (Butterworth helpers, the one-third-octave filter bank), `atmosphere` and `iso_9613_1_1993` (ISO 9613-1 absorption), `plotting` (`acoustic_plot_style`). See its `THIRD_PARTY_NOTICES.md` for the parts derived from python-acoustics |
 | `cli.py` | Argument types and figure output shared by the scripts: `colon_pair`, `colon_pair_or_single`, `save_or_show` |
 | `local_paths.py` | `data_path(name)`: where this machine keeps external data and the NICE-OPS executables |

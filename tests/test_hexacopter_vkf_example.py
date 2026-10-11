@@ -41,3 +41,40 @@ def test_serial_and_parallel_processing_agree(synthetic):
     parallel = _separate([2, 3], n_jobs=2)
     for key in ('P', 'T', 'rpm', 'original'):
         np.testing.assert_array_equal(serial[key], parallel[key])
+
+
+def _record(monkeypatch, n_rotors, track=None):
+    """Steady rotors at 200-215 rad/s, two blades, two microphones; optional track (m)."""
+    n = 4000
+    t = np.arange(n) / FS
+    rpm = np.tile(200.0 + 5.0 * np.arange(n_rotors), (n, 1))
+    phase = np.cumsum(rpm * 2 / (2 * np.pi), axis=0) / FS
+    tones = np.cos(2 * np.pi * 2 * phase).sum(axis=1)
+    data = dict(acoustics_T=t, acoustics_P=np.column_stack([tones, tones]), aircraft_time=t[::10],
+                aircraft_rpm=rpm[::10], fs=FS)
+    if track is not None:
+        data.update(track)
+    monkeypatch.setattr(hexa, 'load_hexacopter_data', lambda path, downsample_factor=8: dict(data))
+    return rpm
+
+
+def test_the_number_of_rotors_comes_from_the_rpm_record(monkeypatch):
+    _record(monkeypatch, 4)
+    result = _separate([2], n_jobs=1)
+    assert result['P'].shape[1:] == (4, 1)
+    assert result['rpm'].shape[1] == 4
+    assert np.abs(result['P']).max() > 0.1
+
+
+def test_a_receiver_filters_at_the_doppler_shifted_speeds(monkeypatch):
+    # The aircraft flies straight away from the microphone at 20 m/s: every
+    # rotor is heard at 1 / (1 + 20/343) of its speed.
+    t = np.linspace(-1.0, 3.0, 41)
+    position = np.column_stack([100.0 + 20.0 * t, np.zeros_like(t), np.full_like(t, 30.0)])
+    rpm = _record(monkeypatch, 3, dict(track_time=t, track_position=position))
+    receiver = (0.0, 0.0, 30.0)
+    result = hexa.separate_hexacopter_acoustics('unused.mat', mic_range=2, orders=[2], n_jobs=1,
+                                                highpass_cutoff=100, receiver=receiver, sound_speed=343.0)
+    np.testing.assert_allclose(result['rpm'], rpm[:len(result['rpm'])] / (1 + 20.0 / 343.0), rtol=1e-9)
+    default = _separate([2], n_jobs=1)
+    np.testing.assert_allclose(default['rpm'], rpm[:len(default['rpm'])], rtol=1e-9)
