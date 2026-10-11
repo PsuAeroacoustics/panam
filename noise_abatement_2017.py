@@ -2231,8 +2231,8 @@ def make_parser():
                              'override it (default: none)')
     parser.add_argument('--hover-source', action='store_true',
                         help="with --recipe: build with the recipe's [hover_source] settings over its "
-                             '[spheres] ones, the rebuild the database synthesizes its hover from '
-                             '(default off)')
+                             '[spheres] ones, the rebuild the database synthesizes its hover from; '
+                             'needs --runs (default off)')
     parser.add_argument('--plate-table-directory', default=None,
                         help='where computed ground-plate tables are cached (default: '
                              '~/.cache/panam/plate_tables)')
@@ -2329,7 +2329,8 @@ def make_parser():
     parser.add_argument('--point-stride', type=int, default=10,
                         help='depropagate every Nth sample of the steady track (default %(default)s, '
                              "the 2017 release's setting; build_sphere and build_all default to 1, "
-                             'every sample, which is about N times slower and does not reproduce it)')
+                             'every sample, which is about N times slower and does not reproduce it; '
+                             'with --recipe, a recipe without point_stride takes 1)')
     parser.add_argument('--min-elevation-deg', type=float, default=10.0,
                         help='drop emission points below this elevation, where ground '
                              'impedance dominates (default 10)')
@@ -2445,8 +2446,17 @@ def main(argv=None):
             recipe_options = recipe.sphere_options(hover_source=args.hover_source)
         except (ValueError, LookupError, OSError) as error:
             parser.error(str(error))
-        options = build_recipe.merge(recipe_options, options,
-                                     build_recipe.explicit_keywords(parser, argv, CLI_KEYWORDS))
+        explicit = build_recipe.explicit_keywords(parser, argv, CLI_KEYWORDS)
+        options = build_recipe.merge(recipe_options, options, explicit)
+        # A keyword neither in the recipe nor on the command line takes the function's
+        # default, so that a recipe builds the same spheres here as from Python.  Only
+        # point_stride has a command-line default (10) other than the function's (1).
+        for key, value in build_recipe.function_defaults('spheres').items():
+            if key in options and key not in explicit and key not in recipe_options:
+                options[key] = value
+        if args.hover_source and not options['runs']:
+            parser.error('--hover-source needs --runs: the hover source run (a sphere built with '
+                         'remove_doppler must not be read as flight)')
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
     if args.plate_cache:

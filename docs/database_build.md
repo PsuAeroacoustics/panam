@@ -82,7 +82,7 @@ The main options:
 `--band-snr-gate-db`, `--max-absorption-correction-db`, `--min-elevation-deg`,
 `--max-propagation-range-ft`, `--point-stride`, `--board-correction` and
 `--third-octave-method`. Every keyword of `build_sphere` that has a command-line form has an
-option, with the function's default except `--point-stride`. `--recipe FILE.toml` reads
+option, with the function's default except `--point-stride` (10, the function's 1). `--recipe FILE.toml` reads
 settings from a [build recipe](#build-recipes); options given on the command line override
 it. [The 2017 release settings](#the-2017-release-settings) are a recipe.
 
@@ -446,20 +446,30 @@ objects or None:
 - `winds`: the path of a winds CSV (`read_winds`);
 - ray models: only `ray_profiles`, a directory of per-run atmosphere CSVs
   (`profile_ray_models`; stratified refraction, plate receivers, each run's frame bearing);
-- `fixed_load_factor = true` in `[database]`: `load_factors=None`.
+- `fixed_load_factor = true` in `[database]`: `load_factors=None`;
+- `tone_split = true` also sets `tone_aware = true`, as `--tone-split` does; a recipe with
+  `tone_split = true` and `tone_aware = false` is refused.
 
 A recipe refuses the dataset (`aircraft`), the outputs (output directory, `manifest_path`,
 `norah2_directory`, `samples_path`, the database file), per-run arguments and Python-only
-objects (`ground`, a ray model callable). An omitted key keeps the function's default.
+objects (`ground`, a ray model callable). An omitted key keeps the function's default, from
+Python and on the command line alike.
 
 A path value may name a `local_paths` entry as `${name}`, for example
-`"${b407_legacy_spheres}"`. The rest of the path is taken relative to the current directory.
-Each name is looked up only when its section is used, so a database build does not need
-the sphere build's data.
+`"${b407_legacy_spheres}"`. A relative path without a `${name}` is taken relative to the
+recipe's own directory, the directory a `hover_correction` module is imported from, so a
+recipe works from any current directory. Each name is looked up only when its section is
+used, so a database build does not need the sphere build's data.
 
 With `--recipe`, an option given on the command line overrides the recipe, and the recipe
 overrides the command line's defaults. This holds even for an option given at its default
-value: `--band-snr-gate-db 10` overrides a recipe's 12.
+value: `--band-snr-gate-db 10` overrides a recipe's 12. A keyword neither in the recipe nor
+on the command line takes the function's default, so a recipe builds the same spheres from
+the command line as from Python. The only sphere option this changes is `--point-stride`:
+10 without a recipe, 1 with a recipe that omits `point_stride`. `--build-temperature`,
+`--build-pressure` and `--build-humidity` each replace only their own field of a recipe's
+`atmosphere`. `--hover-source` needs `--runs`, so that a sphere built at emitted
+frequencies is never built for every flight run.
 
 ## Code and tests
 

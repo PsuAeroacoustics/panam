@@ -26,23 +26,30 @@ objects or None:
 - ``winds`` is the path of a CSV file :func:`noise_abatement_2017.read_winds` reads;
 - ray models come only from a directory of per-run atmospheric profiles,
   ``ray_profiles`` (:func:`noise_abatement_2017.profile_ray_models`);
-- ``fixed_load_factor = true`` in ``[database]`` is ``load_factors=None``.
+- ``fixed_load_factor = true`` in ``[database]`` is ``load_factors=None``;
+- ``tone_split = true`` sets ``tone_aware = true`` too, as ``--tone-split`` does; a
+  recipe that gives ``tone_split = true`` with ``tone_aware = false`` is refused.
 
 The dataset (``aircraft``), outputs (``output_directory``, ``manifest_path``,
 ``norah2_directory``, ``samples_path``, the database file), per-run arguments and
 Python-only objects (``ground``, a ray model callable) are refused: they belong to the
-caller.  An omitted key keeps the function's
-default; a recipe cannot set a keyword back to None.
+caller.  An omitted key keeps the function's default, from Python and on the command
+line alike; a recipe cannot set a keyword back to None.
 
 Path values (``root``, ``reference_directory``, ``plate_table_directory``,
 ``ray_profiles``, ``winds``, ``hover_source``) may name a :mod:`local_paths` entry as
-``${name}``, e.g. ``"${b407_legacy_spheres}"``; the rest of the path is relative to the
-current directory, after ``~`` is expanded.  Names are looked up only when a section's
+``${name}``, e.g. ``"${b407_legacy_spheres}"``.  After ``~`` is expanded, a relative path
+without a ``${name}`` is relative to the recipe's own directory, the directory a
+``hover_correction`` module is imported from.  Names are looked up only when a section's
 options are formed, so a ``[database]`` build does not need the sphere build's data.
 
 On the command line (``--recipe FILE.toml`` of ``noise_abatement_2017.py`` and
 ``build_empirical_database.py``) an option given explicitly overrides the recipe, and the
-recipe overrides the command line's defaults.
+recipe overrides the command line's defaults.  A keyword neither in the recipe nor on the
+command line takes the function's default; of the sphere build's options only
+``--point-stride`` has another default (10, the function's 1).  A ``--build-temperature``,
+``--build-pressure`` or ``--build-humidity`` option replaces only its own field of a
+recipe's ``atmosphere``.
 """
 
 import argparse
@@ -90,6 +97,15 @@ def _keywords(*functions):
     return {name for function in functions
             for name, parameter in inspect.signature(function).parameters.items()
             if parameter.kind not in (parameter.VAR_KEYWORD, parameter.VAR_POSITIONAL)}
+
+
+def function_defaults(section):
+    """The defaults of the keywords a recipe section feeds, from the function signatures."""
+    functions = ((fa.build_empirical_database,) if section == 'database'
+                 else (na.build_sphere, na.build_all))
+    return {name: parameter.default for function in functions
+            for name, parameter in inspect.signature(function).parameters.items()
+            if parameter.default is not inspect.Parameter.empty}
 
 
 def allowed_keys(section):
@@ -142,10 +158,18 @@ def _check_section(path, section, values):
             raise ValueError('{}: [database] give load_factors or fixed_load_factor, not both'.format(path))
 
 
-def resolve_path(value):
-    """A recipe path: ``${name}`` replaced by the :mod:`local_paths` entry, made absolute."""
-    expanded = re.sub(r'\$\{([A-Za-z0-9_]+)\}', lambda match: local_paths.data_path(match.group(1)), value)
-    return os.path.abspath(os.path.expanduser(expanded))
+def resolve_path(value, directory=None):
+    """A recipe path: ``${name}`` replaced by the :mod:`local_paths` entry, made absolute.
+
+    A relative path without a ``${name}`` is taken relative to ``directory`` (the
+    recipe's), or to the current directory when ``directory`` is None.
+    """
+    named = re.search(r'\$\{[A-Za-z0-9_]+\}', value) is not None
+    expanded = os.path.expanduser(
+        re.sub(r'\$\{([A-Za-z0-9_]+)\}', lambda match: local_paths.data_path(match.group(1)), value))
+    if directory is not None and not named:
+        expanded = os.path.join(directory, expanded)
+    return os.path.abspath(expanded)
 
 
 def resolve_callable(text, directory=None):
@@ -179,17 +203,22 @@ class Recipe:
     hover_source: dict = field(default_factory=dict)
     database: dict = field(default_factory=dict)
 
+    @property
+    def directory(self):
+        """The recipe's directory: relative paths and hover_correction modules start here."""
+        return os.path.dirname(os.path.abspath(self.path))
+
     def _convert(self, values):
         options = {}
         for key, value in values.items():
             if key in PATH_KEYS:
-                value = resolve_path(value)
+                value = resolve_path(value, self.directory)
             if key == 'atmosphere':
                 value = fa.Atmosphere(**value)
             elif key == 'winds':
                 value = na.read_winds(value)
             elif key == 'hover_correction':
-                value = resolve_callable(value, os.path.dirname(os.path.abspath(self.path)))
+                value = resolve_callable(value, self.directory)
             elif key == 'interpolation':
                 value = dict(value)
             options[key] = value
@@ -201,6 +230,8 @@ class Recipe:
         values = dict(self.spheres)
         if hover_source:
             values.update(self.hover_source)
+        if values.get('tone_split') and 'tone_aware' not in values:
+            values['tone_aware'] = True          # as --tone-split does
         return self._convert(values)
 
     def database_options(self):
@@ -228,6 +259,12 @@ def load_recipe(path):
             path, unknown, '], ['.join(SECTIONS)))
     for section in SECTIONS:
         _check_section(path, section, content.get(section, {}))
+    spheres = content.get('spheres', {})
+    for section, values in (('spheres', spheres),
+                            ('hover_source', {**spheres, **content.get('hover_source', {})})):
+        if values.get('tone_split') and values.get('tone_aware') is False:
+            raise ValueError('{}: [{}] tone_split = true needs tone_aware = true (or no tone_aware: '
+                             'tone_split sets it)'.format(path, section))
     return Recipe(path=str(path), **{section: content.get(section, {}) for section in SECTIONS})
 
 

@@ -146,6 +146,17 @@ def test_paths_name_local_paths_entries(tmp_path, monkeypatch):
         rmax = 20.0
         '''))
     assert recipe.sphere_options() == dict(reference_directory=str(tmp_path / 'data' / 'legacy'), rmax=20.0)
+    # A relative path without ${name} starts at the recipe's directory, not the current one.
+    (tmp_path / 'recipes').mkdir()
+    relative = build_recipe.load_recipe(_write(tmp_path / 'recipes' / 'r.toml', '''
+        [spheres]
+        reference_directory = "legacy"
+        ray_profiles = "../profiles"
+        '''))
+    (tmp_path / 'elsewhere').mkdir()
+    monkeypatch.chdir(tmp_path / 'elsewhere')
+    assert relative.sphere_options() == dict(reference_directory=str(tmp_path / 'recipes' / 'legacy'),
+                                             ray_profiles=str(tmp_path / 'profiles'))
     monkeypatch.delenv('PANAM_RECIPE_TEST_DATA')
     monkeypatch.setattr(build_recipe.local_paths, 'CONFIG_FILE', str(tmp_path / 'absent.toml'))
     with pytest.raises(LookupError, match='recipe_test_data'):
@@ -204,6 +215,63 @@ def test_explicit_options_override_the_recipe_and_the_recipe_overrides_defaults(
     options = calls.pop()
     assert options['remove_doppler'] is True and options['point_stride'] == 1
     assert options['band_snr_gate_db'] == 12.0 and options['runs'] == ['285101']
+
+
+def test_tone_split_in_a_recipe_sets_tone_aware_as_the_flag_does(tmp_path, monkeypatch):
+    calls = _captured_build_all(monkeypatch)
+    recipe = _write(tmp_path / 'r.toml', '[spheres]\ntone_split = true\n')
+    assert na.main(['B407', str(tmp_path / 'out'), '--recipe', str(recipe)]) == 0
+    options = calls.pop()
+    assert options['tone_split'] is True and options['tone_aware'] is True
+    assert build_recipe.load_recipe(recipe).sphere_options() == dict(tone_split=True, tone_aware=True)
+    # Only in [hover_source]: the hover source rebuild sets it, the flight build does not.
+    recipe = _write(tmp_path / 'h.toml', '[hover_source]\ntone_split = true\n')
+    assert build_recipe.load_recipe(recipe).sphere_options(hover_source=True)['tone_aware'] is True
+    assert build_recipe.load_recipe(recipe).sphere_options() == {}
+    for text, section in (('[spheres]\ntone_split = true\ntone_aware = false\n', 'spheres'),
+                          ('[spheres]\ntone_aware = false\n[hover_source]\ntone_split = true\n',
+                           'hover_source')):
+        with pytest.raises(ValueError, match=r'\[{}\] tone_split = true needs tone_aware'.format(section)):
+            build_recipe.load_recipe(_write(tmp_path / 'bad.toml', text))
+
+
+def test_a_key_the_recipe_omits_takes_the_functions_default_on_the_command_line(tmp_path, monkeypatch):
+    calls = _captured_build_all(monkeypatch)
+    recipe = _write(tmp_path / 'r.toml', '[spheres]\nrmax = 20.0\n')
+    assert na.main(['B407', str(tmp_path / 'out')]) == 0
+    assert calls.pop()['point_stride'] == 10              # the command line's default
+    assert na.main(['B407', str(tmp_path / 'out'), '--recipe', str(recipe)]) == 0
+    options = calls.pop()
+    assert options['point_stride'] == 1                   # build_all's, as from Python
+    assert options['rmax'] == 20.0
+    assert na.main(['B407', str(tmp_path / 'out'), '--recipe', str(recipe), '--point-stride', '10']) == 0
+    assert calls.pop()['point_stride'] == 10
+
+
+def test_hover_source_needs_runs(tmp_path, monkeypatch, capsys):
+    calls = _captured_build_all(monkeypatch)
+    recipe = _write(tmp_path / 'r.toml', '[hover_source]\nremove_doppler = true\n')
+    with pytest.raises(SystemExit):
+        na.main(['B407', str(tmp_path / 'out'), '--recipe', str(recipe), '--hover-source'])
+    assert '--hover-source needs --runs' in capsys.readouterr().err
+    assert calls == []
+
+
+def test_a_build_option_replaces_only_its_field_of_the_recipes_atmosphere(tmp_path):
+    recipe = _write(tmp_path / 'r.toml', '''
+        [database]
+        atmosphere = {temperature = 283.15, pressure = 90.0, relative_humidity = 80.0}
+        ''')
+    parser = database_cli.make_parser()
+
+    def atmosphere(*extra):
+        argv = [str(tmp_path), str(tmp_path / 'db.nod'), '--recipe', str(recipe), *extra]
+        value = database_cli.recipe_options(database_cli.parse_arguments(argv, parser), parser, argv)['atmosphere']
+        return value.temperature, value.pressure, value.relative_humidity
+
+    assert atmosphere() == (283.15, 90.0, 80.0)
+    assert atmosphere('--build-temperature', '300') == (300.0, 90.0, 80.0)
+    assert atmosphere('--build-pressure', '100', '--build-humidity', '20') == (283.15, 100.0, 20.0)
 
 
 def test_the_database_command_line_overrides_its_recipe(tmp_path):

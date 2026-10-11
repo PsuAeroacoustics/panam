@@ -34,6 +34,10 @@ CLI_KEYWORDS = dict(
     build_humidity=('atmosphere',), no_spectrum=('store_spectrum',),
     no_clamp_empty=('clamp_empty_directions',))
 
+#: The --build-* destinations and the Atmosphere field each sets (K, kPa, percent).
+ATMOSPHERE_FIELDS = dict(build_temperature='temperature', build_pressure='pressure',
+                         build_humidity='relative_humidity')
+
 
 def _float_list(value):
     """argparse type for a comma-separated list of floats."""
@@ -167,13 +171,25 @@ def build_options(args):
 
 
 def recipe_options(args, parser, argv=None):
-    """build_options(args) with the recipe's [database] settings where no option was given."""
+    """build_options(args) with the recipe's [database] settings where no option was given.
+
+    A --build-temperature, --build-pressure or --build-humidity option replaces only its
+    own field of a recipe's ``atmosphere``; the recipe's other fields stay.
+    """
     options = build_options(args)
     if args.recipe is None:
         return options
     import build_recipe
     recipe = build_recipe.load_recipe(args.recipe).database_options()
-    return build_recipe.merge(recipe, options, build_recipe.explicit_keywords(parser, argv, CLI_KEYWORDS))
+    merged = build_recipe.merge(recipe, options, build_recipe.explicit_keywords(parser, argv, CLI_KEYWORDS))
+    explicit = build_recipe.explicit_destinations(parser, argv)
+    given = {field: getattr(args, destination) for destination, field in ATMOSPHERE_FIELDS.items()
+             if destination in explicit}
+    if 'atmosphere' in recipe and given:
+        fields = {field: getattr(recipe['atmosphere'], field) for field in ATMOSPHERE_FIELDS.values()}
+        fields.update(given)
+        merged['atmosphere'] = Atmosphere(**fields)
+    return merged
 
 
 def main(argv=None):
