@@ -3841,7 +3841,8 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
                                atmosphere=Atmosphere(temperature=293.15, pressure=101.325,
                                                      relative_humidity=20.0),
                                accept_ground_included=False, mirror_rotor=False,
-                               fill_empty=False, store_spectrum=True, overwrite=True,
+                               fill_empty=False, synthesize_hover=False,
+                               scale_tip_speed_by_rmomega=False, store_spectrum=True, overwrite=True,
                                absorption_band_method='center'):
     """Build a NICE-OPS database from NORAH2 (HELENA, ECAC Doc 32) ``.hem`` hemispheres.
 
@@ -3863,6 +3864,15 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
       coverage 0 (:func:`mirror_phi_to_upper_surface`);
     - the speed mapped by ``speed_mapping`` (:func:`norah2_speed_knots`), and the
       flight path angle taken from GAMM (negative in descent) as stored.
+
+    With ``synthesize_hover``, a hover is added as :func:`build_empirical_database`
+    makes one (THEORY 7.4): the slowest converted condition within
+    :data:`LEVEL_FLIGHT_TOLERANCE` degrees of level flight (the slowest overall,
+    with a warning, if none is) is averaged fore to aft in energy, a cell keeps
+    coverage 1 only where both partners were measured, and the result is written
+    at advance ratio 0 and flight path angles -12, 0 and +12 deg
+    (:data:`HOVER_FLIGHT_PATH_ANGLES`).  Its groups carry ``condition_origin =
+    'synthesized_hover'`` and the source file's ``norah2_source`` and constants.
 
     The root records ``speed_reference`` from the mapping,
     ``azimuth_reference = 'track'`` (NORAH2 hemispheres are filed against the
@@ -3902,6 +3912,16 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
             (:func:`fill_norah2_empty_cells`), as NORAH2 does at use time.  The
             filled cells keep coverage 0.  Off by default: NICE-OPS then reads
             them as unmeasured, silent where no neighbor has data.
+        synthesize_hover: add a hover synthesized from the slowest level
+            condition (above).  Off by default: NICE-OPS then clamps every state
+            slower than the slowest file to it.  The theta grid must be
+            symmetric about 90 deg, so that theta and 180 - theta are both on it.
+        scale_tip_speed_by_rmomega: form each file's advance ratio with the tip
+            speed its rotor ran at, ``main_rotor_tip_speed_mps * RmOmega / 100``
+            (RmOmega in percent of nominal), instead of the nominal tip speed.
+            A file without RmOmega, or with one outside 50-130 %, is refused.
+            The thrust coefficient and the root's tip speed stay nominal.  Off
+            by default.
         store_spectrum: keep the band levels in each group, as NICE-OPS's
             spectral path needs.  Without them only dBA and EAA are written.
         overwrite: if False, refuse an existing ``database_filename``.
@@ -3917,7 +3937,9 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
     database by name in ``panam_inputs``.
 
     Returns: list of dicts, one per written condition, in group order: source
-        file, speed_knots, flight_path_angle_deg, advance_ratio.
+        file, speed_knots, flight_path_angle_deg, advance_ratio,
+        main_rotor_tip_speed_mps (the tip speed the advance ratio is formed
+        with, m/s) and condition_origin ('measured' or 'synthesized_hover').
     """
     # File identity apart from the hashed settings; paths by file name only (a relative
     # path's directories name this machine's layout too).
@@ -3965,6 +3987,7 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
     # file leaves no half-written database behind.
     pending_groups = []
     conditions = []
+    hover_sources = []
     grid = None
     for index, filename in enumerate(hem_files):
         name = os.path.basename(filename)
@@ -4003,6 +4026,11 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
             raise ValueError(f'{name}: PHIOBSAC must increase within [-90, 90] deg')
         if np.any(theta_deg < -1e-9) or np.any(theta_deg > 180.0 + 1e-9) or np.any(np.diff(theta_deg) <= 0.0):
             raise ValueError(f'{name}: THETAOBSAC must increase within [0, 180] deg')
+        if synthesize_hover and not np.allclose(theta_deg, 180.0 - theta_deg[::-1]):
+            # average_fore_and_aft pairs theta index i with n-1-i, a fore-aft
+            # pair only on a grid symmetric about 90 deg.
+            raise ValueError(f'{name}: THETAOBSAC is not symmetric about 90 deg, so a hover '
+                             'cannot be averaged fore and aft from it; leave out synthesize_hover')
         if np.any(frequency <= 0.0) or np.any(np.diff(frequency) <= 0.0):
             raise ValueError(f'{name}: band centers must be positive and increasing')
         if grid is None:
@@ -4026,6 +4054,9 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
         flight_path_angle = float(constants['GAMM'])
         if not (np.isfinite(flight_path_angle) and abs(flight_path_angle) < 90.0):
             raise ValueError(f'{name}: GAMM = {flight_path_angle:g} is not a flight path angle')
+        tip_speed = main_rotor_tip_speed
+        if scale_tip_speed_by_rmomega:
+            tip_speed = main_rotor_tip_speed * _norah2_rotor_speed_fraction(constants, name)
 
         spla, eaa = spla_and_eaa_from_spectrum(amplitude, frequency, 1000.0, atmosphere,
                                                absorption_band_method)
@@ -4045,8 +4076,33 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
             amplitude_full if store_spectrum else None, coverage_full))
         conditions.append(dict(source=name, speed_knots=float(speed_knots),
                                flight_path_angle_deg=flight_path_angle,
-                               advance_ratio=KNOT_MPS * float(speed_knots) / main_rotor_tip_speed,
-                               constants=constants))
+                               advance_ratio=KNOT_MPS * float(speed_knots) / tip_speed,
+                               main_rotor_tip_speed_mps=tip_speed,
+                               condition_origin='measured', constants=constants))
+        if synthesize_hover:
+            # What the hover is synthesized from: the levels as converted (and
+            # filled), and the coverage taken before any fill.
+            hover_sources.append((phi_list, theta_deg, frequency, amplitude, measured))
+
+    if synthesize_hover:
+        source = _hover_source_index([(c['speed_knots'], c['flight_path_angle_deg']) for c in conditions])
+        phi_list, theta_deg, frequency, amplitude, measured = hover_sources[source]
+        phi_full, theta_full, spla_full, eaa_full, amplitude_full, coverage_full = (
+            _synthesized_hover_sphere(phi_list, theta_deg, amplitude, measured, frequency,
+                                      1000.0, atmosphere,
+                                      absorption_band_method=absorption_band_method))
+        source_condition = conditions[source]
+        for flight_path_angle in _hover_flight_path_angles():
+            pending_groups.append(_SphereCondition(
+                f'sphere{len(pending_groups)}', phi_full, theta_full, float(radius_m), spla_full,
+                eaa_full, 0.0, float(flight_path_angle), 1.0,
+                frequency if store_spectrum else None,
+                amplitude_full if store_spectrum else None, coverage_full))
+            conditions.append(dict(source=source_condition['source'], speed_knots=0.0,
+                                   flight_path_angle_deg=float(flight_path_angle), advance_ratio=0.0,
+                                   main_rotor_tip_speed_mps=source_condition['main_rotor_tip_speed_mps'],
+                                   condition_origin='synthesized_hover',
+                                   constants=source_condition['constants']))
 
     # NICE-OPS refuses two spheres at one condition, and a set of two or more
     # that does not span both axes it triangulates over; say so here, naming
@@ -4054,12 +4110,15 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
     keys = {}
     for condition in conditions:
         key = (round(condition['advance_ratio'], 9), round(condition['flight_path_angle_deg'], 9))
+        label = condition['source']
+        if condition['condition_origin'] == 'synthesized_hover':
+            label = f'the hover synthesized from {label}'
         if key in keys:
             raise ValueError('{} and {} have the same flight condition ({:.4g} kt, {:.4g} deg); '
                              'NICE-OPS takes one sphere per condition, so merge or drop one'
-                             .format(keys[key], condition['source'], condition['speed_knots'],
+                             .format(keys[key], label, condition['speed_knots'],
                                      condition['flight_path_angle_deg']))
-        keys[key] = condition['source']
+        keys[key] = label
     if len(conditions) >= 2:
         mus = np.array([c['advance_ratio'] for c in conditions])
         gammas = np.array([c['flight_path_angle_deg'] for c in conditions])
@@ -4097,6 +4156,7 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
                                mirror_rotor=mirror_rotor,
                                accept_ground_included=accept_ground_included,
                                fill_empty=fill_empty,
+                               scale_tip_speed_by_rmomega=scale_tip_speed_by_rmomega,
                                provenance=_provenance.build_provenance(
                                    'flight_acoustics.build_database_from_norah2', settings,
                                    inputs=inputs))
@@ -4106,6 +4166,23 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
             os.remove(temporary_path)
         raise
     return [{k: v for k, v in c.items() if k != 'constants'} for c in conditions]
+
+
+def _norah2_rotor_speed_fraction(constants, filename):
+    """A .hem's main rotor speed as a fraction of nominal, from RmOmega (percent).
+
+    Refuses a file without RmOmega, or with one outside 50-130 %: shipped A109,
+    EC120, EC135 and R66 files carry values such as -999, -479, 44 or (most
+    EC120 files) 337-410, which look like rpm.
+    """
+    if 'RmOmega' not in constants:
+        raise ValueError(f'{filename}: no RmOmega in the table constants, so its tip speed cannot '
+                         'be scaled; leave out scale_tip_speed_by_rmomega or the file')
+    percent = float(constants['RmOmega'])
+    if not (np.isfinite(percent) and 50.0 <= percent <= 130.0):
+        raise ValueError(f'{filename}: RmOmega = {percent:g} is not a rotor speed in percent of '
+                         'nominal (expected 50-130; a value near 400 may be rpm)')
+    return percent / 100.0
 
 
 def _conditions_are_collinear(mus, gammas):
@@ -4145,7 +4222,8 @@ def _check_build_atmosphere(atmosphere):
 def _write_norah2_database(path, pending_groups, conditions, *, speed_mapping, atmosphere,
                            main_rotor_radius, main_rotor_tip_speed, vehicle_weight_newtons,
                            weight_coefficient, thrust_air_density, mirror_rotor,
-                           accept_ground_included, fill_empty, provenance=None):
+                           accept_ground_included, fill_empty, scale_tip_speed_by_rmomega,
+                           provenance=None):
     """Write the checked conditions of :func:`build_database_from_norah2` to ``path``."""
     ncdatabase = Dataset(path, 'w')
     try:
@@ -4161,17 +4239,25 @@ def _write_norah2_database(path, pending_groups, conditions, *, speed_mapping, a
         ncdatabase.norah2_ground_included_accepted = int(bool(accept_ground_included))
         ncdatabase.norah2_fill_empty = 'nearest' if fill_empty else 'none'
         ncdatabase.norah2_thrust_air_density_kg_m3 = thrust_air_density
+        hovers = [c['source'] for c in conditions if c['condition_origin'] == 'synthesized_hover']
+        ncdatabase.norah2_hover_source = hovers[0] if hovers else 'none'
+        ncdatabase.norah2_scale_tip_speed_by_rmomega = int(bool(scale_tip_speed_by_rmomega))
         shared = _write_shared_grid_and_frequency(ncdatabase, pending_groups)
         for group, condition in zip(pending_groups, conditions):
+            # The advance ratio is formed with the condition's own tip speed
+            # (the nominal one unless scaled by RmOmega); C_T keeps the nominal.
             add_sphere_group(ncdatabase, group.name, group.phi, group.theta, group.radius,
                              group.SPLA, group.EAA, group.speed, group.flight_path_angle,
-                             group.load_factor, main_rotor_radius, main_rotor_tip_speed,
+                             group.load_factor, main_rotor_radius,
+                             condition['main_rotor_tip_speed_mps'],
                              weight_coefficient, group.frequency, group.amplitude,
                              write_grid_and_frequency=not shared, doppler_shift_removed=0,
                              coverage=group.coverage)
             # Provenance: what the file said, before any mapping.
             written = ncdatabase[group.name]
             written.norah2_source = condition['source']
+            if condition['condition_origin'] != 'measured':
+                written.condition_origin = condition['condition_origin']
             for constant in ('POLDIST', 'FREEFIELD', 'TAMB', 'RELHUM', 'PAMB', 'ACSPEED', 'GAMM',
                              'RmOmega', 'Tm', 'RHm', 'Pm', 'PITCH', 'ROLL', 'TW', 'CW', 'HW'):
                 if constant in condition['constants']:
@@ -4669,6 +4755,101 @@ def _fore_aft_measured(measured):
     return averaged
 
 
+#: Flight path angles, degrees, a synthesized hover is written at when no
+#: extended angles are given (see :func:`_hover_flight_path_angles`).
+HOVER_FLIGHT_PATH_ANGLES = (-12, 0, 12)
+
+
+def _hover_flight_path_angles(extended_flight_path_angles=None):
+    """Flight path angles, degrees, a synthesized hover is written at.
+
+    0 and each of ``extended_flight_path_angles`` (degrees) when given, sorted;
+    otherwise :data:`HOVER_FLIGHT_PATH_ANGLES`.  A hover has no flight path, so
+    the copies only keep the condition hull from clamping a steep, slow state.
+    """
+    if extended_flight_path_angles is not None:
+        return sorted({0.0, *extended_flight_path_angles})
+    return list(HOVER_FLIGHT_PATH_ANGLES)
+
+
+def _hover_source_index(conditions, level_flight_tolerance=LEVEL_FLIGHT_TOLERANCE):
+    """Index of the condition a hover is synthesized from.
+
+    ``conditions`` is a sequence of (speed in knots, flight path angle in
+    degrees).  The slowest condition within ``level_flight_tolerance`` degrees
+    of level flight is picked, the first on a tie; if none is that close, the
+    slowest overall, with a warning (the further from level flight, the rougher
+    the hover approximation).
+    """
+    if len(conditions) == 0:
+        raise ValueError('no conditions to synthesize a hover from')
+    min_speed, min_index = np.inf, None
+    slowest_speed, slowest_index = np.inf, None
+    for index, (speed, flight_path_angle) in enumerate(conditions):
+        if speed < min_speed and np.abs(flight_path_angle) < level_flight_tolerance:
+            min_speed, min_index = speed, index
+        if speed < slowest_speed:
+            slowest_speed, slowest_index = speed, index
+    if min_index is None:
+        warnings.warn('No sphere within {:g} degrees of level flight; synthesizing hover from the '
+                      'slowest available at {:.1f} knots.'.format(level_flight_tolerance, slowest_speed))
+        return slowest_index
+    return min_index
+
+
+def _synthesized_hover_sphere(phi_list, theta_list, amplitude, measured, frequency, distance,
+                              atmosphere, hover_correction=None, clamp_empty_directions=True,
+                              absorption_band_method='center'):
+    """Synthesize a completed hover sphere from a slow flight sphere's band levels (THEORY 7.4).
+
+    Shared by :func:`build_empirical_database` and :func:`build_database_from_norah2`.
+    The spectrum is averaged fore to aft in energy (:func:`average_fore_and_aft`),
+    a cell is measured only where both partners were (:func:`_fore_aft_measured`),
+    ``hover_correction`` (dB; see :func:`build_empirical_database`) is added,
+    SPLA and EAA are recomputed from the result (:func:`spla_and_eaa_from_spectrum`),
+    and the sphere is completed onto its upper surface.
+
+    Args:
+        phi_list, theta_list: the lower-hemisphere axes, degrees.
+        amplitude: (phi, theta, band) levels at the sphere radius, dB, -inf where missing.
+        measured: (phi, theta, band) bool, True where the source bin is measured.
+        frequency: band centers, Hz.
+        distance: the EAA distance, m.
+        atmosphere: the atmosphere of the EAA.
+        hover_correction: None, or a callable as in :func:`build_empirical_database`.
+        clamp_empty_directions: zero the EAA of a direction with no energy
+            (:func:`_finite_sphere_levels`).
+        absorption_band_method: how each band's attenuation over ``distance``
+            enters the EAA (:func:`spla_and_eaa_from_spectrum`).
+
+    Returns: ``(phi, theta, SPLA, EAA, amplitude, coverage)`` of the completed sphere,
+        as :func:`_complete_sphere_with_coverage` returns them (dB, dB per ``distance``).
+    """
+    # The averaging below gives a gated bin the level of its partner, so the
+    # hover's coverage is measured only where both partners were.
+    measured = _fore_aft_measured(measured)
+    # Average the SPECTRUM fore-to-aft on an energy basis, then derive SPLA and
+    # EAA from the averaged spectrum.  Averaging the broadband dB levels instead
+    # (a) is not an energy average, and (b) leaves EAA untouched, so level and
+    # excess attenuation end up describing different spheres.
+    amplitude = average_fore_and_aft(amplitude)
+    if hover_correction is not None:
+        theta_grid, phi_grid = np.meshgrid(np.asarray(theta_list, dtype=float),
+                                           np.asarray(phi_list, dtype=float))
+        correction = np.asarray(hover_correction(phi_grid, theta_grid, np.asarray(frequency, dtype=float)),
+                                dtype=float)
+        if correction.shape != amplitude.shape:
+            raise ValueError('hover_correction returned shape {}, the sphere is {}'.format(
+                correction.shape, amplitude.shape))
+        amplitude = amplitude + correction
+    SPLA, EAA = spla_and_eaa_from_spectrum(amplitude, frequency, distance, atmosphere,
+                                           absorption_band_method)
+    if clamp_empty_directions:
+        SPLA, EAA = _finite_sphere_levels(SPLA, EAA)
+    # Complete the sphere onto its upper surface
+    return _complete_sphere_with_coverage(phi_list, theta_list, SPLA, EAA, amplitude, measured)
+
+
 def mirror_phi_to_upper_surface(phi_list):
     """Complete a lower-hemisphere sphere onto its upper surface.
 
@@ -4934,10 +5115,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     if exclude is not None:
         ncdatabase.excluded_spheres = '\n'.join(os.path.basename(f) for f in excluded)
 
-    min_speed = np.inf
-    min_speed_file = None
-    slowest_speed = np.inf
-    slowest_file = None
+    source_conditions = []
     sphere_index = 0
     level_conditions = []
     # Every condition to write, collected rather than written immediately, so
@@ -4955,14 +5133,8 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
         measured = _measured_bins(amplitude, EAA)
         if clamp_empty_directions:
             SPLA, EAA = _finite_sphere_levels(SPLA, EAA)
-        # Find the lowest speed file near level flight
-        if speed < min_speed and np.abs(flight_path_angle) < level_flight_tolerance:
-            min_speed = speed
-            min_speed_file = filename
-        # ...and the slowest overall, as a fallback when nothing is near level
-        if speed < slowest_speed:
-            slowest_speed = speed
-            slowest_file = filename
+        # Remembered for picking the hover source (_hover_source_index).
+        source_conditions.append((speed, flight_path_angle))
         # Complete the sphere onto its upper surface
         phi_full, theta_full, SPLA_full, EAA_full, amplitude_full, coverage_full = (
             _complete_sphere_with_coverage(phi_list, theta_list, SPLA, EAA, amplitude, measured))
@@ -4982,17 +5154,9 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                 frequency if store_spectrum else None,
                 amplitude_full if store_spectrum else None, coverage_full, measured_metadata))
 
-    if min_speed_file is None:
-        # No sphere within level_flight_tolerance of level flight.  The hover
-        # sphere is synthesized by averaging the slowest one fore-to-aft, so
-        # fall back to the slowest available rather than failing with an
-        # unbound name -- the further it is from level flight, the rougher the
-        # hover approximation.
-        if slowest_file is None:
-            raise ValueError('No sphere files found in ' + str(directory_name))
-        warnings.warn('No sphere within {:g} degrees of level flight; synthesizing hover from the '
-                      'slowest available at {:.1f} knots.'.format(level_flight_tolerance, slowest_speed))
-        min_speed_file = slowest_file
+    if not file_list:
+        raise ValueError('No sphere files found in ' + str(directory_name))
+    min_speed_file = file_list[_hover_source_index(source_conditions, level_flight_tolerance)]
 
     if hover_source is not None:
         # Its DOPPLER_SHIFT_REMOVED does not enter the database's flag: a hover
@@ -5003,37 +5167,15 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     (_, _, phi_list, theta_list, radius, _, _, eaa_source, _, _,
      frequency, amplitude) = extract_SPL(min_speed_file, infreqs, distance, atmosphere,
                                        absorption_band_method)
-    # The averaging below gives a gated bin the level of its partner, so the
-    # hover's coverage is measured only where both partners were.
-    measured = _fore_aft_measured(_measured_bins(amplitude, eaa_source))
-    # Average the SPECTRUM fore-to-aft on an energy basis, then derive SPLA and
-    # EAA from the averaged spectrum.  Averaging the broadband dB levels instead
-    # (a) is not an energy average, and (b) leaves EAA untouched, so level and
-    # excess attenuation end up describing different spheres.
-    amplitude = average_fore_and_aft(amplitude)
-    if hover_correction is not None:
-        theta_grid, phi_grid = np.meshgrid(np.asarray(theta_list, dtype=float),
-                                           np.asarray(phi_list, dtype=float))
-        correction = np.asarray(hover_correction(phi_grid, theta_grid, np.asarray(frequency, dtype=float)),
-                                dtype=float)
-        if correction.shape != amplitude.shape:
-            raise ValueError('hover_correction returned shape {}, the sphere is {}'.format(
-                correction.shape, amplitude.shape))
-        amplitude = amplitude + correction
-    SPLA, EAA = spla_and_eaa_from_spectrum(amplitude, frequency, distance, atmosphere,
-                                           absorption_band_method)
-    if clamp_empty_directions:
-        SPLA, EAA = _finite_sphere_levels(SPLA, EAA)
-    # Complete the sphere onto its upper surface
-    phi_full, theta_full, SPLA_full, EAA_full, amplitude_full, coverage_full = (
-        _complete_sphere_with_coverage(phi_list, theta_list, SPLA, EAA, amplitude, measured))
+    phi_full, theta_full, SPLA_full, EAA_full, amplitude_full, coverage_full = _synthesized_hover_sphere(
+        phi_list, theta_list, amplitude, _measured_bins(amplitude, eaa_source), frequency,
+        distance, atmosphere, hover_correction=hover_correction,
+        clamp_empty_directions=clamp_empty_directions,
+        absorption_band_method=absorption_band_method)
     # Set hover conditions.  Hover is a near-level condition, so it is written
     # at the extended angles as well as level flight.
     speed = 0
-    if extended_flight_path_angles is not None:
-        flight_path_angles = sorted({0.0, *extended_flight_path_angles})
-    else:
-        flight_path_angles = [-12, 0, 12]
+    flight_path_angles = _hover_flight_path_angles(extended_flight_path_angles)
     # Augment load factor data
     hover_metadata = run_metadata(min_speed_file, 'synthesized_hover')
     for load_factor in load_factors_to_write:

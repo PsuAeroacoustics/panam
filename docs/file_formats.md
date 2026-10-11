@@ -123,8 +123,10 @@ Attributes:
 [provenance stamp](#provenance-stamp).
 
 A NORAH2 import adds the attributes `source_format`, `norah2_speed_mapping`,
-`norah2_mirror_rotor`, `norah2_ground_included_accepted`, `norah2_fill_empty` and
-`norah2_thrust_air_density_kg_m3`.
+`norah2_mirror_rotor`, `norah2_ground_included_accepted`, `norah2_fill_empty`,
+`norah2_thrust_air_density_kg_m3`, `norah2_hover_source` (the file a synthesized hover was
+made from, or `none`) and `norah2_scale_tip_speed_by_rmomega` (1 when each advance ratio
+was formed with the file's RmOmega).
 
 ### Condition groups
 
@@ -187,7 +189,9 @@ The text attributes are `wind_source`, `wind_units`, `wind_reference_direction`,
 
 R and V_tip come from `vehicle.cfg`. A NORAH2 import writes none of these attributes.
 Instead, each of its groups carries `norah2_source` and the file's constants as
-`norah2_<NAME>`.
+`norah2_<NAME>`. Its synthesized hover groups (`synthesize_hover`) also carry
+`condition_origin = 'synthesized_hover'`, with the source file's `norah2_source` and
+constants.
 
 ### DATABASE_FORMAT_VERSION
 

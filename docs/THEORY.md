@@ -876,6 +876,21 @@ reasons:
 - Every group carries `DOPPLER_SHIFT_REMOVED = 0`, an inference: NORAH2 describes no step that
   removes the shift. The root carries `azimuth_reference = 'track'`.
 - The upper hemisphere is completed as in §7.5, with coverage 0.
+- `synthesize_hover` (off by default) adds the hover of §7.4, from the slowest converted file
+  within 2° of level flight (the slowest overall, with a warning, if none is), averaged fore
+  and aft from its levels at $r$ (after any fill; coverage before it). It is written at
+  $\mu = 0$ and at −12°, 0° and +12°, with `condition_origin = 'synthesized_hover'`
+  (`_synthesized_hover_sphere`, shared with `build_empirical_database`).
+- `scale_tip_speed_by_rmomega` (off by default) forms each file's advance ratio with the tip
+  speed its rotor ran at, from RmOmega (percent of nominal):
+
+$$
+\mu = \frac{0.514444\,V}{V_\mathrm{tip}\,\mathrm{RmOmega}/100},
+$$
+
+  with $V_\mathrm{tip}$ the nominal tip speed. $C_W$ and the root's tip speed stay nominal,
+  because NICE-OPS forms the trajectory's $C_T$ with its vehicle file's nominal tip speed. A
+  file without RmOmega, or with one outside 50–130%, is refused.
 
 **Export.** Spheres can be written in the AAM netCDF format [11], in the variable order AAM 3.1
 reads by position, and as NORAH2 hemispheres (`write_norah2_hemisphere`). The NORAH2 export
@@ -1267,9 +1282,9 @@ Functions are in `flight_acoustics.py` unless another module is named. Tests are
 | §6.3 Output grids | `write_aam_hemisphere_netcdf`, `_sample_hemisphere_levels`, `mask_missing_levels`, `lambert_ea`, `lambert_lon` | `test_write_aam_hemisphere_netcdf.py`, `test_hemisphere_sampling.py`, `test_no_data.py`, `test_lambert_geometry.py` |
 | §7.1–7.2 Condition, EAA | `build_empirical_database`, `read_vehicle_data`, `add_sphere_group`, `extract_SPL`, `spla_and_eaa_from_spectrum`, `_finite_sphere_levels`, `_measured_bins` | `test_spla_and_eaa.py`, `test_database_provenance.py`, `test_vehicle_data.py` |
 | §7.3 Load factor | `add_sphere_group` | `test_load_factor_scaling.py`, `test_write_aam_hemisphere_netcdf.py` |
-| §7.4 Hover | `average_fore_and_aft`, `_fore_aft_measured` | `test_hover_averaging.py`, `test_sphere_completion_integration.py`, `test_empirical_database_hover_selection.py`, `test_database_provenance.py` |
+| §7.4 Hover | `average_fore_and_aft`, `_fore_aft_measured`, `_synthesized_hover_sphere`, `_hover_source_index`, `_hover_flight_path_angles` | `test_hover_averaging.py`, `test_sphere_completion_integration.py`, `test_empirical_database_hover_selection.py`, `test_database_provenance.py`, `test_norah2_import.py` |
 | §7.5 Completion | `mirror_phi_to_upper_surface`, `_complete_sphere_with_coverage` | `test_mirror_phi.py`, `test_sphere_completion_integration.py` |
-| §8 NORAH2 | `build_database_from_norah2`, `norah2_levels_at_radius`, `norah2_speed_knots`, `humid_air_density`, `fill_norah2_empty_cells`, `write_norah2_hemisphere`, `write_norah2_levels`, `write_norah2_triangulation`, `norah2umapr` | `test_norah2_import.py`, `test_write_norah2_hemisphere.py` |
+| §8 NORAH2 | `build_database_from_norah2`, `norah2_levels_at_radius`, `norah2_speed_knots`, `humid_air_density`, `fill_norah2_empty_cells`, `_norah2_rotor_speed_fraction`, `write_norah2_hemisphere`, `write_norah2_levels`, `write_norah2_triangulation`, `norah2umapr` | `test_norah2_import.py`, `test_write_norah2_hemisphere.py` |
 | §8 Sphere to NORAH2 | `sphere_to_norah2.sphere_to_norah2`, `sphere_levels_on_norah2_grid` (through the `sphere_to_norah2.py` CLI) | `test_sphere_to_norah2.py`, `test_cli_scripts.py` (smoke) |
 | §9 Metrics | `sound_exposure_level`, `ten_db_down_interval`, `noys`, `perceived_noise_level`, `tone_correction`, `effective_perceived_noise_level`, `mil_std_1474e_nondetectability_distance` | `test_sound_exposure_level.py`, `test_pnl_epnl.py`, `test_mil_std_nondetectability.py` |
 | §9 Time-weighted levels | `panam_acoustics.time_weighting.frequency_weighting_sos`, `apply_frequency_weighting`, `time_weighted_square`, `time_weighted_level`, `leq` | `test_time_weighting.py` |
