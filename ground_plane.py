@@ -953,6 +953,118 @@ def reflection_phase(frequency, source_height, ground_distance, receiver_height,
 
 
 # --------------------------------------------------------------------------
+# Ground impedance inversion
+# --------------------------------------------------------------------------
+
+#: Bounds of :func:`fit_ground_impedance`: sigma_e (kPa s/m^2) and alpha_e (1/m).
+FIT_SIGMA_E_BOUNDS = (1.0, 1.0e5)
+FIT_ALPHA_E_BOUNDS = (1.0e-2, 1.0e3)
+
+
+def fit_ground_impedance(frequency, source_height, ground_distance, pole_height, sound_speed,
+                         level_difference, weights=None, target='pole', sigma_e=200.0,
+                         alpha_e=None, f_scale=1.0, **pole_options):
+    """Fit the variable-porosity ground's sigma_e and alpha_e to pole microphone levels.
+
+    ``target='pole'`` (the only one so far) fits the level of a pole microphone
+    re free field, L_pole - L_free in dB, with :func:`pole_level` and
+    ``model='variable_porosity'``.  That is the quantity the forward model
+    returns, so the fit adds no model of its own.  A pole-minus-pole
+    difference would be two :func:`pole_level` calls and a pole-minus-plate one
+    would need a plate model; neither is implemented.  The caller forms
+    L_free, for example from a co-located plate microphone and its modeled
+    transfer function.  :func:`measured_board_transfer` does the reverse: it
+    models the pole and measures the plate.
+
+    The parameters are fitted as ln sigma_e and ln alpha_e with
+    ``scipy.optimize.least_squares``, ``loss='soft_l1'`` and ``f_scale`` (dB),
+    within :data:`FIT_SIGMA_E_BOUNDS` and :data:`FIT_ALPHA_E_BOUNDS`.  The fit
+    starts from the best of a coarse grid in sigma_e and the given
+    ``sigma_e``.  ``alpha_e=None`` (the default) fits alpha_e from 10 1/m; a
+    number holds alpha_e there (0 is allowed, the 2017 site ground) and fits
+    sigma_e alone.
+
+    Parameters
+    ----------
+    frequency : (band,) band center frequencies, Hz.
+    source_height, ground_distance : (frame,) source height above the ground
+        and horizontal source-to-pole distance, ft.
+    pole_height : microphone height above the ground, ft.
+    sound_speed : ft/s.
+    level_difference : (band, frame) measured L_pole - L_free, dB.  NaN or
+        infinite entries are left out.
+    weights : (band, frame) or broadcastable, optional relative weights of the
+        squared residuals (for example 1/variance, dB^-2); default 1.
+    pole_options : passed to :func:`pole_level` (``gamma_t``, ``roughness``,
+        ``response_direct``, ``response_reflected``).
+
+    Returns
+    -------
+    dict with ``sigma_e`` (kPa s/m^2) and ``alpha_e`` (1/m); ``covariance``
+    of (sigma_e, alpha_e) and ``log_covariance`` of their logarithms, both
+    s^2 (J^T J)^-1 from the weighted Jacobian at the solution (1x1 when
+    alpha_e is held), with s^2 the weighted residual sum of squares over the
+    degrees of freedom; ``standard_error`` (same units as the parameters,
+    from the log covariance by the delta method); ``prediction`` (band, frame)
+    dB; ``residual`` (band, frame) prediction minus measurement, dB, NaN
+    where left out; ``band_rms`` (band,) rms residual, dB; ``rms``, dB;
+    ``n`` (points used); ``fitted`` (parameter names); ``at_bound`` and
+    ``success``.  The covariance ignores the robust loss and any correlation
+    between bands and frames: use it for ranking, and scatter over independent
+    runs for intervals.
+    """
+    from scipy.optimize import least_squares
+    if target != 'pole':
+        raise ValueError("target must be 'pole', not {!r}".format(target))
+    f = np.atleast_1d(np.asarray(frequency, dtype=float))
+    hs = np.atleast_1d(np.asarray(source_height, dtype=float))
+    d2 = np.atleast_1d(np.asarray(ground_distance, dtype=float))
+    y = np.asarray(level_difference, dtype=float).reshape(f.size, hs.size)
+    w = np.broadcast_to(np.ones(1) if weights is None else np.asarray(weights, dtype=float), y.shape)
+    use = np.isfinite(y) & np.isfinite(w) & (w > 0.0)
+    if not use.any():
+        raise ValueError('no finite level differences to fit')
+    root_w = np.sqrt(w[use])
+    fit_alpha = alpha_e is None
+    names = ('sigma_e', 'alpha_e') if fit_alpha else ('sigma_e',)
+    bounds = [FIT_SIGMA_E_BOUNDS, FIT_ALPHA_E_BOUNDS][:len(names)]
+    lo, hi = np.log(np.array(bounds)).T
+
+    def predict(log_p):
+        p = np.exp(log_p)
+        alpha = p[1] if fit_alpha else alpha_e
+        return pole_level(f, hs, d2, pole_height, sound_speed, 'variable_porosity',
+                          sigma_e=p[0], alpha_e=alpha, **pole_options)
+
+    def residuals(log_p):
+        return root_w * (predict(log_p) - y)[use]
+
+    alpha0 = [np.log(10.0)] if fit_alpha else []
+    starts = [np.log(np.clip(sigma_e, *FIT_SIGMA_E_BOUNDS))] + list(np.log([10.0, 30.0, 100.0, 300.0,
+                                                                          1000.0, 3000.0]))
+    start = min(starts, key=lambda s: np.sum(residuals(np.array([s] + alpha0)) ** 2))
+    res = least_squares(residuals, np.array([start] + alpha0), bounds=(lo, hi), loss='soft_l1',
+                        f_scale=f_scale)
+    p = np.exp(res.x)
+    prediction = predict(res.x)
+    residual = np.where(use, prediction - y, np.nan)
+    dof = max(1, int(use.sum()) - p.size)
+    s2 = float(np.sum((root_w * residual[use]) ** 2) / dof)
+    log_cov = np.linalg.pinv(res.jac.T @ res.jac) * s2
+    cov = log_cov * np.outer(p, p)
+    counts = use.sum(axis=1)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        band_rms = np.sqrt(np.sum(np.where(use, residual, 0.0) ** 2, axis=1) / counts)
+    return dict(sigma_e=float(p[0]), alpha_e=float(p[1]) if fit_alpha else float(alpha_e),
+                covariance=cov, log_covariance=log_cov,
+                standard_error=np.sqrt(np.clip(np.diag(cov), 0.0, None)),
+                prediction=prediction, residual=residual, band_rms=band_rms,
+                rms=float(np.sqrt(np.mean(residual[use] ** 2))), n=int(use.sum()), fitted=names,
+                at_bound=bool(np.any((res.x <= lo + 1e-6) | (res.x >= hi - 1e-6))),
+                success=bool(res.success))
+
+
+# --------------------------------------------------------------------------
 # Exact Green's function of a locally reacting plane (complex image)
 # --------------------------------------------------------------------------
 
