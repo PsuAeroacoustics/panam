@@ -1263,6 +1263,7 @@ def depropagate_hemisphere(
         remove_doppler=False,
         tone_aware=False,
         track_nose=None,
+        air_relative_doppler=False,
 ):
     """Generate an acoustic hemisphere from microphone time series and vehicle tracking data.
 
@@ -1369,6 +1370,13 @@ def depropagate_hemisphere(
     arrival angle).  Pairs it marks invalid (no ray arrives) are skipped.
     ``min_elevation_deg`` then applies to the filing angle; ``max_range``
     stays on the straight-line distance.  Without one the result is unchanged.
+    A ray model that also returns ``emission_direction`` (a uniform wind's,
+    :func:`refracted_rays.uniform_wind_ray_model`) refiles the azimuth along it
+    as well, turned from the straight line's by the horizontal angle between them.
+    ``air_relative_doppler`` (with ``remove_doppler``) takes the Doppler factor
+    along that direction in the moving air, D = 1 / (1 - v.n / (c + W.n)), from
+    the model's ``emission_direction`` and ``doppler_speed`` (length units per
+    second); default False, the straight line's factor in still air.
 
     ``rim_range``, if given as (elevation_deg, range), lets samples filed less than
     ``elevation_deg`` below the horizon come from as far as ``range`` instead of
@@ -1469,6 +1477,10 @@ def depropagate_hemisphere(
             NICE-OPS reads must keep received frequencies, since NICE-OPS applies no shift.
             A band whose scaled edges reach past ``freq_range`` is missing for that sample
             rather than integrated over part of its width.
+        air_relative_doppler: if True (with remove_doppler and a ray model that returns
+            ``emission_direction`` and ``doppler_speed``), the Doppler factor is the moving
+            air's, D = 1 / (1 - v.n / (c + W.n)), n the wavefront normal the sound left
+            along and W the wind, instead of the straight line's in still air.  Default False.
         third_octave_method: how band levels are formed when third_octave=True.
             'fft' (default) sums the PSD bins between each band's edges, a
             brick-wall band.  'filter_bank' uses a true one-third octave
@@ -1637,6 +1649,30 @@ def depropagate_hemisphere(
         if flip_y_for_geometry:
             ray_offset[..., 1] *= -1.0
         ray_valid = np.asarray(rays['valid'], dtype=bool) & np.all(np.isfinite(ray_offset), axis=-1)
+        if 'emission_direction' in rays:
+            # Turn the straight line's azimuth by the horizontal angle from it to the
+            # direction the sound left along (a crosswind's drift).
+            emitted = np.array(rays['emission_direction'], dtype=float)
+            if emitted.shape != shape + (3,):
+                raise ValueError('ray_model emission_direction must be shaped {}'.format(shape + (3,)))
+            if flip_y_for_geometry:
+                emitted[..., 1] *= -1.0
+            toward = np.asarray(mic_geom, dtype=float)[None, :, :] - np.asarray(pos_geom, dtype=float)[tidx][:, None, :]
+            turn = np.degrees(np.arctan2(emitted[..., 1], emitted[..., 0])
+                              - np.arctan2(toward[..., 1], toward[..., 0]))
+            az_deg = np.array(az_deg, dtype=float)
+            az_deg[tidx] = np.remainder(az_deg[tidx] + turn, 360.0)
+            ray_valid &= np.all(np.isfinite(emitted), axis=-1)
+        if air_relative_doppler:
+            if not remove_doppler:
+                raise ValueError('air_relative_doppler applies to remove_doppler, which is off')
+            if 'emission_direction' not in rays or 'doppler_speed' not in rays:
+                raise ValueError('air_relative_doppler needs a ray model that returns emission_direction '
+                                 'and doppler_speed (refracted_rays.uniform_wind_ray_model)')
+            speed_along = np.sum(np.asarray(vel_geom, dtype=float)[tidx][:, None, :] * emitted, axis=2)
+            doppler_geom[tidx] = 1.0 / (1.0 - speed_along / np.asarray(rays['doppler_speed'], dtype=float))
+    elif air_relative_doppler:
+        raise ValueError('air_relative_doppler needs a ray model that returns emission_direction and doppler_speed')
 
     # Regular hemisphere grid (degrees) with seam closure at 360
     azi_grid_deg = np.arange(0.0, 360.0 + 1e-9, float(azi_step))

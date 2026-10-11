@@ -243,7 +243,12 @@ $[f_l, f_u]$ over $[D f_l, D f_u]$ of the received spectrum (with `tone_aware` a
 are located and filed whole at $f_\mathrm{peak}/D$); a band whose scaled edges leave the analyzed range is missing for that
 sample. Only frequencies are rescaled: no convective amplification factor $D^n$ is applied to the
 levels. A sphere built this way is meant as the source of a synthesized hover (§7.4), not as a
-flight sphere, since NICE-OPS applies no shift.
+flight sphere, since NICE-OPS applies no shift. With a uniform wind $\mathbf{W}$ (§5.3),
+`air_relative_doppler=True` takes the factor in the moving air instead,
+$D = 1/\left(1 - \mathbf{v}\cdot\hat{\mathbf{n}}/(c + \mathbf{W}\cdot\hat{\mathbf{n}})\right)$,
+with $\hat{\mathbf{n}}$ the wavefront normal the sound leaves along: the source's and the
+receiver's velocities relative to the air are $\mathbf{v} - \mathbf{W}$ and $-\mathbf{W}$. It is
+off by default, also under the wind ray model.
 
 ### 3.4 Steady segments
 
@@ -505,6 +510,36 @@ absorption coefficient stays uniform along the ray. `refracted_rays.straight_ray
 straight-line answer in the same form. Without a ray model (`ray_model=None`, the default) the
 paths are straight lines. The 2017 release's ray model is in
 [`database_build.md`](database_build.md#the-2017-release-settings).
+
+**Uniform wind** (`refracted_rays.uniform_wind_ray_model`, `build_sphere(ray_model='wind')`).
+In air moving at a uniform $\mathbf{W}$, $\lvert\mathbf{W}\rvert < c$, sound travels straight
+lines at $c$ in the air's frame. A wavefront normal $\hat{\mathbf{n}}$ that reaches the
+microphone at $\mathbf{r} = \mathbf{x}_m - \mathbf{x}_s$ after $\tau$ satisfies
+$\mathbf{r} = (c\hat{\mathbf{n}} + \mathbf{W})\tau$, so
+
+$$
+\lvert\mathbf{r} - \mathbf{W}\tau\rvert = c\tau, \qquad
+\tau = \frac{\lvert\mathbf{r}\rvert / c}{\mu + \sqrt{\mu^2 + 1 - M_W^2}}, \qquad
+\mu = \frac{\mathbf{W}\cdot\mathbf{r}}{\lvert\mathbf{r}\rvert c}, \quad
+M_W = \frac{\lvert\mathbf{W}\rvert}{c},
+$$
+
+the positive root, and $\hat{\mathbf{n}} = (\mathbf{r} - \mathbf{W}\tau)/(c\tau)$. The travel
+time is $\tau$; spreading and absorption are undone over $c\tau$, the wavefront's radius in the
+moving air. This is not the whole field. The convective factor relative to the air,
+$1 - (\mathbf{v} - \mathbf{W})\cdot\hat{\mathbf{n}}/c$, is not applied (§3.3, §11), so it stays in
+the source sphere, which is filed by the direction $\hat{\mathbf{n}}$ relative to the air. Even for a
+source fixed to the ground the full field goes as $1/R_*$ with
+$R_* = c\tau\,(1 + \mathbf{W}\cdot\hat{\mathbf{n}}/c)$: downwind $R_* = \lvert\mathbf{r}\rvert$
+while the model undoes $\lvert\mathbf{r}\rvert/(1 + M_W)$, about 0.4 dB apart at 30 kt. A sample is filed along $\hat{\mathbf{n}}$: its elevation is the normal's depression,
+and its azimuth turns from the straight line's by the horizontal angle from $\mathbf{r}$ to
+$\hat{\mathbf{n}}$ (the model's `emission_direction`). The normal does not turn on the way, so
+the plate sees the same direction. Downwind, $\tau = \lvert\mathbf{r}\rvert/(c + W)$; upwind,
+$\lvert\mathbf{r}\rvert/(c - W)$; across, $\lvert\mathbf{r}\rvert/\sqrt{c^2 - W^2}$, with the
+sound leaving $\arcsin(W/c)$ upwind of the line. With $\mathbf{W} = 0$ it is the straight-line
+model exactly. The 2017 build takes $\mathbf{W}$ as the run's horizontal wind at the aircraft
+(`--winds`), turned into the track frame by the frame bearing, and applies it over the whole path:
+it is not a wind profile, and the wind's shear near the ground is not modeled.
 
 ### 5.4 The atmosphere
 
@@ -968,7 +1003,9 @@ These are in PANAM but not used to build the databases.
 - **Tip-path-plane orientation.** Spheres are filed in a level frame (§3.2).
 - **Convective amplification.** Doppler removal rescales frequency only (§3.3).
 - **Wind on straight rays.** Depropagation along straight lines ignores wind; only a ray model
-  (§5.3) sees it. A wind given to `build_sphere` is recorded as metadata only.
+  (§5.3) sees it. A wind given to `build_sphere` is recorded as metadata only, unless
+  `ray_model='wind'` carries the rays with it, uniform over the path (§5.3). Its shear near the
+  ground is not modeled.
 - **A stratified atmosphere without rays.** Absorption and timing use one uniform atmosphere; only
   the optional ray model sees the profile (§5.3).
 - **Band-integrated absorption.** ISO 9613-1 is evaluated at single frequencies.
@@ -985,7 +1022,7 @@ Functions are in `flight_acoustics.py` unless another module is named. Tests are
 | §2.2 Bands | `third_octave_band_edges`, `third_octave_band_levels`, `tone_aware_band_power`, `hann_power`, `panam_acoustics.filters.third_octave_filter_bank` | `test_third_octave_band_edges.py`, `test_third_octave_band_levels.py`, `test_band_selection.py`, `test_tone_aware_band_power.py`, `test_third_octave_filter_bank.py` |
 | §2.3 A-weighting | `dBAw` | `test_acoustics.py` |
 | §3.1–3.2 Geometry | `hemigen`, `art2umapr`; `noise_abatement_2017.local_east_north_ft`, `east_north_to_frame`, `frame_bearing_deg` | `test_lambert_geometry.py`, `test_hemisphere_geometry_accuracy.py`, `test_azimuth_reference.py`, `test_track_check.py` |
-| §3.3 Doppler | `depropagate_hemisphere` (`remove_doppler`) | `test_generate_hemisphere.py`, `test_tone_aware_band_power.py` |
+| §3.3 Doppler | `depropagate_hemisphere` (`remove_doppler`, `air_relative_doppler`) | `test_generate_hemisphere.py`, `test_tone_aware_band_power.py`, `test_refracted_rays.py` |
 | §3.4 Steady segments | `noise_abatement_2017.steady_window`, `flight_condition` | `test_noise_abatement_2017.py` |
 | §4.1 Impedance | `ground_plane.surface_admittance` | `test_ground_validation.py` |
 | §4.2 Reflection coefficient | `spherical_reflection_coefficient` | `test_reflection_coefficient.py` |
@@ -994,7 +1031,7 @@ Functions are in `flight_acoustics.py` unless another module is named. Tests are
 | §4.5 Plate BEM | `axisymmetric_bem.scattering`, `table`, `board_level`, `write_netcdf`; `ground_plane.exact_half_space_green`, `image_integrals`, `ImageIntegralTable`, `sub_band_factors`, `table_frames`; `noise_abatement_2017.plate_table`, `plate_response` | `test_axisymmetric_bem.py`, `test_ground_validation.py` |
 | §4.6 Site ground | `noise_abatement_2017.SITE_GROUND` | (none) |
 | §5.1–5.2 Depropagation | `depropagate_hemisphere`; `noise_abatement_2017.build_sphere` | `test_ambient_gating.py`, `test_generate_hemisphere.py`, `test_golden_results.py` |
-| §5.3 Rays | `refracted_rays.external_ray_model`, `straight_ray_model` | `test_refracted_rays.py` |
+| §5.3 Rays | `refracted_rays.external_ray_model`, `straight_ray_model`, `uniform_wind_ray_model`; `noise_abatement_2017.wind_in_frame_ft_s` (`build_sphere(ray_model='wind')`) | `test_refracted_rays.py`, `test_run_metadata.py` |
 | §5.4 Atmosphere | `panam_acoustics.iso_9613_1_1993`, `panam_acoustics.atmosphere.Atmosphere`, `atmosorb`; `noise_abatement_2017.run_atmosphere`, `air_density_kg_m3` | `test_acoustics.py`, `test_python_acoustics_equivalence.py`, `test_run_metadata.py`, `test_noise_abatement_2017.py` |
 | §6.1 Fixed radius | `shepIDW`, `shepIDW_weights`, `shepIDW_apply`, `geodist` | `test_shep_idw.py`, `test_no_data.py`, `test_hemisphere_geometry_accuracy.py` |
 | §6.2 Adaptive radius | `adaptive_idw_weights`, `ADAPTIVE_INTERPOLATION` | `test_adaptive_interpolation.py`, `test_hemisphere_geometry_accuracy.py` |

@@ -69,7 +69,8 @@ The main options:
 | `--runs RUN ...` | every steady run | build only these run ids (the reference list's `combined`) |
 | `--reference-directory DIR` | none | take each sphere's PHI, THETA and FREQUENCY grid from the legacy sphere of the same name |
 | `--norah2-directory DIR` | none | also write each sphere as a NORAH2 `.hem`, and `<prefix>_Triangulation.int` |
-| `--winds FILE` | none | the wind at the aircraft per run, recorded only (see [per-run metadata](#per-run-metadata)) |
+| `--winds FILE` | none | the wind at the aircraft per run, recorded (see [per-run metadata](#per-run-metadata)) |
+| `--ray-model` | `straight` | `straight`, or `wind`: depropagate along straight rays carried by each run's wind from `--winds`, uniform over the path; a run without a wind fails |
 | `--azimuth-reference` | `track` | `track` or `heading` (see [the heading frame](#the-heading-frame)) |
 | `--no-track-check`, `--min-height-above-array-ft` | check on, 10 ft | see [options](#options) |
 
@@ -275,7 +276,10 @@ reads the file's columns `run`, `units` and `source`, plus either `east`/`north`
 Every wind declares its units (`kt`, `m/s`, `ft/s` or `mph`) and its source (`lidar`,
 `balloon`, `station`, several joined with `+`, or `none`). Nothing is assumed: a wind
 without declared units is refused, and so is an unknown source. The components are stored
-in the declared unit; only the airspeed calculation converts it.
+in the declared unit; only the airspeed calculation converts it. By default the wind
+changes no level. With `--ray-model wind` (`build_sphere(ray_model='wind')`) it also carries
+the rays (`refracted_rays.uniform_wind_ray_model`, [THEORY §5.3](THEORY.md#53-refracted-rays)),
+turned into the track frame by the run's frame bearing.
 
 For the 2017 data, declare a LIDAR wind in `kt`; its direction is taken as true north,
 which is a working reading, not documented (the evidence is in

@@ -52,7 +52,7 @@ read the sphere files back.
 | `noise_abatement_2017.py` | The 2017 Noise Abatement build: dataset layout, tracks and the track check, steady windows, atmosphere per run, plate tables, `build_sphere`, `build_all`, and its CLI |
 | `ground_plane.py` | Ground impedance models, pole microphones, co-located pole and board pairs, ground-plate models, the exact half-space Green's function, the two-path fit, `emission_times`. Numba-compiled |
 | `axisymmetric_bem.py` | The axisymmetric BEM of the plate on the ground (`scattering`, `table`, `board_level`, `field`, `write_netcdf` for NICE-OPS). Numba-compiled |
-| `refracted_rays.py` | The ray-model interface for depropagation: `straight_ray_model`, and `external_ray_model`, which runs NICE-OPS's `niceops_ray_geometry` |
+| `refracted_rays.py` | The ray-model interface for depropagation: `straight_ray_model`, `uniform_wind_ray_model`, and `external_ray_model`, which runs NICE-OPS's `niceops_ray_geometry` |
 | `vold_kalman_filter.py` | The multi-shaft Vold-Kalman order-tracking filter |
 | `sphere_statistics.py` | Energy averaging of repeat-run spheres (`average_spheres`, `write_averaged_sphere`) and band-by-band sphere comparison (`compare_spheres`, `plot_sphere_difference`) |
 | `nod_database.py` | Reading NICE-OPS databases: `load_nod`, `validate_nod` (the rules of [file_formats.md](file_formats.md#checking-a-database)), `compare_databases`, `to_frame` (needs pandas) |

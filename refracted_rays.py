@@ -25,11 +25,21 @@ z up.  The dict holds:
                      which depropagation then skips
 
 The azimuth is left as hemigen gives it: a ray in a stratified atmosphere stays in
-the vertical plane of its endpoints.
+the vertical plane of its endpoints.  A model whose rays leave that plane (a
+crosswind) may add
 
-:func:`straight_ray_model` gives the straight-line answer in this form, and
-:func:`external_ray_model` runs NICE-OPS's ``niceops_ray_geometry`` on a profile
-file.  Any other ray tracer can be wrapped the same way.
+    emission_direction  (Npts, Nmics, 3): the direction the sound leaves the
+                     source along (its wavefront normal), which then sets the
+                     sample's azimuth as well
+    doppler_speed    length units per second: the speed c + W.n the wavefront
+                     moves at along that direction relative to the ground, for
+                     the air-relative Doppler factor
+                     (``depropagate_hemisphere(air_relative_doppler=True)``)
+
+:func:`straight_ray_model` gives the straight-line answer in this form,
+:func:`uniform_wind_ray_model` the straight rays of uniform air carried by a uniform
+wind, and :func:`external_ray_model` runs NICE-OPS's ``niceops_ray_geometry`` on a
+profile file.  Any other ray tracer can be wrapped the same way.
 """
 import csv
 import os
@@ -38,7 +48,7 @@ import tempfile
 
 import numpy as np
 
-__all__ = ['straight_ray_model', 'external_ray_model']
+__all__ = ['straight_ray_model', 'uniform_wind_ray_model', 'external_ray_model']
 
 
 def straight_ray_model(speed_of_sound):
@@ -53,6 +63,58 @@ def straight_ray_model(speed_of_sound):
                     travel_time=r / float(speed_of_sound), spreading_range=r, path_length=r,
                     offset=offset, valid=np.ones(r.shape, dtype=bool))
     model.description = 'straight'
+    return model
+
+
+def uniform_wind_ray_model(speed_of_sound, wind):
+    """Straight rays in uniform air that moves with a uniform wind.
+
+    ``speed_of_sound`` is c in the depropagation's length units per second (ft/s for
+    the 2017 build); ``wind`` is the air's velocity W in the same frame and units, as
+    (Wx, Wy) or (Wx, Wy, Wz), with |W| < c.  In the air's frame the sound travels a
+    straight line at c, so a wavefront normal n that reaches the microphone after tau
+    seconds satisfies d = (c n + W) tau, d the source-to-microphone vector, and
+
+        |d - W tau| = c tau,
+        tau = (|d| / c) / (mu + sqrt(mu^2 + 1 - M^2)),   mu = W.d / (|d| c),  M = |W| / c,
+
+    the positive root.  The spreading range and the path length are c tau, the radius
+    of the wavefront in the moving air; the sample is filed along the wavefront normal
+    n = (d - W tau) / (c tau): its depression below the horizontal and, through
+    ``emission_direction``, its azimuth.  The normal does not turn on the way, so the
+    receiver sees the same direction: ``offset`` is -c tau n.  ``doppler_speed`` is
+    c + W.n.  With W = 0 every output equals :func:`straight_ray_model`'s.
+    """
+    c = float(speed_of_sound)
+    w = np.zeros(3)
+    given = np.asarray(wind, dtype=float).ravel()
+    if given.size not in (2, 3):
+        raise ValueError('wind must be (Wx, Wy) or (Wx, Wy, Wz), not {} values'.format(given.size))
+    w[:given.size] = given
+    if not (c > 0.0 and np.all(np.isfinite(w))):
+        raise ValueError('the speed of sound must be positive and the wind finite')
+    mach = float(np.sqrt(w @ w)) / c
+    if not mach < 1.0:
+        raise ValueError('the wind ({:g}) must be slower than the speed of sound ({:g})'.format(mach * c, c))
+
+    def model(source_positions, mic_locations):
+        source = np.asarray(source_positions, dtype=float)[:, None, :]
+        mic = np.asarray(mic_locations, dtype=float)[None, :, :]
+        offset = source - mic                                   # -d
+        ground = np.hypot(offset[..., 0], offset[..., 1])
+        r = np.sqrt(ground ** 2 + offset[..., 2] ** 2)
+        with np.errstate(invalid='ignore', divide='ignore'):
+            mu = np.where(r > 0.0, -(offset @ w) / (r * c), 0.0)
+        radius = r / (mu + np.sqrt(mu ** 2 + (1.0 - mach ** 2)))  # c tau
+        tau = radius / c
+        normal_offset = offset + w * tau[..., None]             # -(d - W tau) = -c tau n
+        with np.errstate(invalid='ignore', divide='ignore'):
+            n = -normal_offset / radius[..., None]
+        return dict(depression_deg=np.degrees(np.arctan2(normal_offset[..., 2],
+                                                         np.hypot(normal_offset[..., 0], normal_offset[..., 1]))),
+                    travel_time=tau, spreading_range=radius, path_length=radius, offset=normal_offset,
+                    valid=np.ones(r.shape, dtype=bool), emission_direction=n, doppler_speed=c + n @ w)
+    model.description = 'uniform wind ({:.6g}, {:.6g}, {:.6g})'.format(*w)
     return model
 
 
