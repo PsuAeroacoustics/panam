@@ -33,6 +33,8 @@ Instructions for AI coding tools working on PANAM. Human developers: see
 - `refracted_rays.py`: ray models for depropagation; wraps NICE-OPS's
   `niceops_ray_geometry`.
 - `vold_kalman_filter.py`: Vold-Kalman order tracking.
+- `synthetic_flyover.py`: synthetic straight-line passes of a source of known
+  directivity (`synthesize_pass`, `source_level_db`); the golden results' input.
 - `panam_acoustics/`: `signal_io` (loaders), `filters`, `atmosphere` and
   `iso_9613_1_1993` (ISO 9613-1), `plotting` (`acoustic_plot_style`).
 - `cli.py`: `colon_pair`, `colon_pair_or_single`, `save_or_show`.
@@ -40,8 +42,8 @@ Instructions for AI coding tools working on PANAM. Human developers: see
   third-party unit conversions.
 - Tools: `noise_abatement_2017.py`, `build_empirical_database.py`,
   `norah2_to_nod.py`, `array_planner.py`, plotting scripts. Examples and
-  diagnostics: `AS350_289108_demo.py`, `hexacopter_vkf_example.py`,
-  `as350_flip_check.py`.
+  diagnostics: `depropagation_tutorial.py`, `AS350_289108_demo.py`,
+  `hexacopter_vkf_example.py`, `as350_flip_check.py`.
 
 ## Conventions
 
@@ -117,7 +119,7 @@ Instructions for AI coding tools working on PANAM. Human developers: see
 
 ## Never do
 
-- Never commit data, results or machine paths: no `local_paths.toml`, no flight-test recordings, spheres or databases, no absolute paths from your machine, no credentials. Never `git add -f` an ignored file (`example_data/*.mat` and `mil_std_1474e_table_c1_full.csv` are tracked on purpose; add no others).
+- Never commit data, results or machine paths: no `local_paths.toml`, no flight-test recordings, spheres or databases, no absolute paths from your machine, no credentials. Never `git add -f` an ignored file (`example_data/*.mat`, `example_data/vehicle.cfg` and `mil_std_1474e_table_c1_full.csv` are tracked on purpose; add no others).
 - Never commit flight-test data or results from the private validation repository, or cite its file paths. PANAM is public: restate the fact inline.
 - Never prefix commands with `PYTHONPATH=.`; run from the repository root.
 - Never change behavior or results without a test; never regenerate the golden results to make a refactor pass.

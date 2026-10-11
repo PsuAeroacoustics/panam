@@ -54,6 +54,7 @@ read the sphere files back.
 | `axisymmetric_bem.py` | The axisymmetric BEM of the plate on the ground (`scattering`, `table`, `board_level`, `field`, `write_netcdf` for NICE-OPS). Numba-compiled |
 | `refracted_rays.py` | The ray-model interface for depropagation: `straight_ray_model`, and `external_ray_model`, which runs NICE-OPS's `niceops_ray_geometry` |
 | `vold_kalman_filter.py` | The multi-shaft Vold-Kalman order-tracking filter |
+| `synthetic_flyover.py` | Synthetic recordings of a straight, level pass of a source of known directivity (`synthesize_pass`), its true level at the reference radius (`source_level_db`), and the recovered-minus-true Lambert map (`plot_level_difference`). The golden results and the depropagation tutorial use it |
 | `panam_acoustics/` | `signal_io` (recording loaders), `filters` (Butterworth helpers, the one-third-octave filter bank), `atmosphere` and `iso_9613_1_1993` (ISO 9613-1 absorption), `plotting` (`acoustic_plot_style`). See its `THIRD_PARTY_NOTICES.md` for the parts derived from python-acoustics |
 | `cli.py` | Argument types and figure output shared by the scripts: `colon_pair`, `colon_pair_or_single`, `save_or_show` |
 | `local_paths.py` | `data_path(name)`: where this machine keeps external data and the NICE-OPS executables |
@@ -63,8 +64,8 @@ Scripts with a command line: `noise_abatement_2017.py` (the main pipeline),
 `build_empirical_database.py`, `norah2_to_nod.py`, `array_planner.py`, and the
 plotting scripts `nc_lambert_ea.py`, `plot_projection.py`, `fried_egg_plot.py`,
 `spectrogram_plot.py`, `atmomap.py`, `ega_plot.py` and `board_field_plot.py`.
-`AS350_289108_demo.py`, `hexacopter_vkf_example.py`, `as350_flip_check.py` and
-the `__main__` block of `vold_kalman_filter.py` are examples and diagnostics,
+`depropagation_tutorial.py`, `AS350_289108_demo.py`, `hexacopter_vkf_example.py`,
+`as350_flip_check.py` and the `__main__` block of `vold_kalman_filter.py` are examples and diagnostics,
 not tools.
 
 ### Where new code goes
@@ -180,8 +181,8 @@ of the selected interval. `-inf` means zero energy.
 `build_empirical_database` needs a `vehicle.cfg` in the sphere directory: rotor
 blades, radii and tip speeds, the atmosphere, weight and drag, in SI units. Its
 format, including the optional `[Option]` section, is in
-[file_formats.md](file_formats.md). `tests/sphere_helpers.VEHICLE_CFG` is a
-minimal example.
+[file_formats.md](file_formats.md). `example_data/vehicle.cfg` is a
+minimal example (AS350-like rotors); `tests/sphere_helpers.VEHICLE_CFG` reads it.
 
 For another aircraft of the 2017 test, the dataset directory name is the
 `noise_abatement_2017.py` argument. Add it to `AIRCRAFT_SPHERE_PREFIX` only
@@ -250,7 +251,9 @@ Shared fixtures (a minimal hemisphere, a sphere directory with its
 ### Golden results
 
 `tests/data/golden_results.npz` pins depropagation and a database built from
-it, over the main options, to 1e-6 dB. A refactor must leave them unchanged.
+it, over the main options, to 1e-6 dB. Their input is the seeded pass from
+`synthetic_flyover.synthesize_pass`, so a change to its defaults or to the
+order it draws random numbers in changes them. A refactor must leave them unchanged.
 A commit that changes results on purpose regenerates them and says so:
 
 ```bash

@@ -940,7 +940,7 @@ Functions are in `flight_acoustics.py` unless another module is named. Tests are
 | §4.4 Pole microphones | `ground_plane.pole_level`, `turbulence_coherence`, `free_field_microphone_response`, `pole_incidence`, `certification_axis` | `test_ground_plane.py`, `test_ground_validation.py` |
 | §4.5 Plate BEM | `axisymmetric_bem.scattering`, `table`, `board_level`, `write_netcdf`; `ground_plane.exact_half_space_green`, `image_integrals`, `ImageIntegralTable`, `sub_band_factors`, `table_frames`; `noise_abatement_2017.plate_table`, `plate_response` | `test_axisymmetric_bem.py`, `test_ground_validation.py` |
 | §4.6 Site ground | `noise_abatement_2017.SITE_GROUND` | (none) |
-| §5.1–5.2 Depropagation | `depropagate_hemisphere`; `noise_abatement_2017.build_sphere` | `test_ambient_gating.py`, `test_generate_hemisphere.py`, `test_golden_results.py` |
+| §5.1–5.2 Depropagation | `depropagate_hemisphere`; `noise_abatement_2017.build_sphere` | `test_ambient_gating.py`, `test_generate_hemisphere.py`, `test_golden_results.py`, `test_synthetic_flyover.py` |
 | §5.3 Rays | `refracted_rays.external_ray_model`, `straight_ray_model` | `test_refracted_rays.py` |
 | §5.4 Atmosphere | `panam_acoustics.iso_9613_1_1993`, `panam_acoustics.atmosphere.Atmosphere`, `atmosorb`; `noise_abatement_2017.run_atmosphere`, `air_density_kg_m3` | `test_acoustics.py`, `test_python_acoustics_equivalence.py`, `test_run_metadata.py`, `test_noise_abatement_2017.py` |
 | §6.1 Fixed radius | `shepIDW`, `shepIDW_weights`, `shepIDW_apply`, `geodist` | `test_shep_idw.py`, `test_no_data.py`, `test_hemisphere_geometry_accuracy.py` |

@@ -6,7 +6,7 @@ This page describes the files PANAM writes and reads at its boundaries:
   reads;
 - the NICE-OPS database (`.nod`), which `build_empirical_database` and
   `build_database_from_norah2` write;
-- `vehicle.cfg`, which the user writes.
+- `vehicle.cfg`, which the user writes (`example_data/vehicle.cfg` is an example).
 
 How the files are made is in [`database_build.md`](database_build.md) and
 [`norah2_import.md`](norah2_import.md). The equations behind the values are in
