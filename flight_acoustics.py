@@ -1,4 +1,5 @@
 # coding=UTF-8
+import contextlib
 import fnmatch
 import os
 import re
@@ -2794,6 +2795,31 @@ def _sample_hemisphere_levels(hemisphere, mode, azi_q_deg, elv_q_deg, minimum_le
     return frequency_hz, levels_db.reshape(query_shape + (nfreq,))
 
 
+@contextlib.contextmanager
+def _atomic_output(path):
+    """Write a file in full or not at all.
+
+    Yields a temporary path beside ``path``, named ``.<name>.<pid>.tmp`` so
+    that a ``*.nc`` or ``*.nod`` glob (and a sphere directory listing) does not
+    match it, and moves it onto ``path`` with :func:`os.replace` when the
+    ``with`` block finishes.  If the block raises, the temporary file is
+    removed and ``path`` is left as it was: an existing file is kept, and no
+    partial file appears.  The writer must close the temporary file inside the
+    block.  The process id keeps parallel workers writing the same name apart.
+    (Not mkstemp: its file is private, 0600, and os.replace would keep that.)
+    """
+    path = os.path.abspath(os.path.expanduser(os.fspath(path)))
+    temporary = os.path.join(os.path.dirname(path), '.{}.{}.tmp'.format(
+        os.path.basename(path), os.getpid()))
+    try:
+        yield temporary
+        os.replace(temporary, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(temporary)
+        raise
+
+
 def write_aam_hemisphere_netcdf(
         filename,
         hemisphere,
@@ -3016,8 +3042,8 @@ def write_aam_hemisphere_netcdf(
     # Write netCDF (match AAM naming conventions).
     # Use NETCDF3_CLASSIC for broad interoperability with legacy AAM/RNM tooling
     # and to avoid HDF5 backend dependency issues on some CI platforms.
-    ds = Dataset(filename, mode='w', format='NETCDF3_CLASSIC')
-    try:
+    with _atomic_output(filename) as temporary, \
+            Dataset(temporary, mode='w', format='NETCDF3_CLASSIC') as ds:
         # Dimensions and variables in AAM_VARIABLE_ORDER, which AAM checks by
         # position; legacy AAM/RNM spheres give every scalar a singleton dimension
         # of its own name, declared in the same order.  MASTTILT, which AAM does
@@ -3124,8 +3150,6 @@ def write_aam_hemisphere_netcdf(
                 variable[:, :, :] = values
             variable.unit = str(unit)
         _provenance.write_provenance(ds, provenance)
-    finally:
-        ds.close()
 
 
 # NORAH2 hemispheres (EASA's rotorcraft noise model) are ASCII "generic acoustic
@@ -4141,12 +4165,9 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
 
     # Written to a temporary file beside the output and moved into place only
     # when complete, so a failure while writing neither leaves a partial
-    # database nor destroys an existing one.
-    # (Not mkstemp: its file is private, 0600, and os.replace would keep that.)
-    temporary_path = os.path.join(os.path.dirname(database_path), '.{}.{}.tmp'.format(
-        os.path.basename(database_path), os.getpid()))
-    try:
-        _write_norah2_database(temporary_path, pending_groups, conditions,
+    # database nor destroys an existing one (_atomic_output).
+    with _atomic_output(database_path) as temporary:
+        _write_norah2_database(temporary, pending_groups, conditions,
                                speed_mapping=speed_mapping, atmosphere=atmosphere,
                                main_rotor_radius=main_rotor_radius,
                                main_rotor_tip_speed=main_rotor_tip_speed,
@@ -4160,11 +4181,6 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
                                provenance=_provenance.build_provenance(
                                    'flight_acoustics.build_database_from_norah2', settings,
                                    inputs=inputs))
-        os.replace(temporary_path, database_path)
-    except BaseException:
-        if os.path.exists(temporary_path):
-            os.remove(temporary_path)
-        raise
     return [{k: v for k, v in c.items() if k != 'constants'} for c in conditions]
 
 
@@ -5091,143 +5107,142 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     doppler = _resolve_doppler_shift_removed(file_list, doppler_shift_removed)
     azimuth = _resolve_azimuth_reference(file_list, azimuth_reference)
 
-    # Set up database
-    ncdatabase = Dataset(os.path.abspath(os.path.expanduser(database_filename)), 'w')
-    _write_database_root(ncdatabase, fixed_load_factor=fixed_load_factor,
-                         speed_reference=speed_reference, atmosphere=atmosphere,
-                         main_rotor_radius=main_rotor_radius,
-                         main_rotor_tip_speed=main_rotor_tip_speed,
-                         vehicle_weight_newtons=read_vehicle_weight_newtons(directory_name),
-                         azimuth_reference=azimuth,
-                         provenance=_provenance.build_provenance(
-                             'flight_acoustics.build_empirical_database', settings,
-                             inputs=inputs))
-    if not fixed_load_factor:
-        ncdatabase.load_factors = np.asarray(load_factors, dtype=np.float64).ravel()
-    if extended_flight_path_angles is not None:
-        ncdatabase.extended_flight_path_angles_deg = np.asarray(
-            extended_flight_path_angles, dtype=np.float64).ravel()
-    if hover_correction is not None:
-        ncdatabase.hover_correction = str(getattr(hover_correction, 'description', 'applied'))
-    if hover_source is not None:
-        ncdatabase.hover_source = os.path.basename(str(hover_source))
-    ncdatabase.source_spheres = '\n'.join(os.path.basename(f) for f in file_list)
-    if exclude is not None:
-        ncdatabase.excluded_spheres = '\n'.join(os.path.basename(f) for f in excluded)
+    # Set up the database.  Written to a temporary file and moved into place
+    # only when complete (_atomic_output); the with block closes it explicitly,
+    # since a failed flush on a close left to the garbage collector is swallowed.
+    with _atomic_output(database_filename) as temporary, Dataset(temporary, 'w') as ncdatabase:
+        _write_database_root(ncdatabase, fixed_load_factor=fixed_load_factor,
+                             speed_reference=speed_reference, atmosphere=atmosphere,
+                             main_rotor_radius=main_rotor_radius,
+                             main_rotor_tip_speed=main_rotor_tip_speed,
+                             vehicle_weight_newtons=read_vehicle_weight_newtons(directory_name),
+                             azimuth_reference=azimuth,
+                             provenance=_provenance.build_provenance(
+                                 'flight_acoustics.build_empirical_database', settings,
+                                 inputs=inputs))
+        if not fixed_load_factor:
+            ncdatabase.load_factors = np.asarray(load_factors, dtype=np.float64).ravel()
+        if extended_flight_path_angles is not None:
+            ncdatabase.extended_flight_path_angles_deg = np.asarray(
+                extended_flight_path_angles, dtype=np.float64).ravel()
+        if hover_correction is not None:
+            ncdatabase.hover_correction = str(getattr(hover_correction, 'description', 'applied'))
+        if hover_source is not None:
+            ncdatabase.hover_source = os.path.basename(str(hover_source))
+        ncdatabase.source_spheres = '\n'.join(os.path.basename(f) for f in file_list)
+        if exclude is not None:
+            ncdatabase.excluded_spheres = '\n'.join(os.path.basename(f) for f in excluded)
 
-    source_conditions = []
-    sphere_index = 0
-    level_conditions = []
-    # Every condition to write, collected rather than written immediately, so
-    # that whether phi/theta/frequency can be deduplicated (see
-    # _grid_and_frequency_are_shared) is known before the first group is
-    # written -- not discovered partway through and left to redo.
-    pending_groups = []
-    for filename in file_list:
-        # Load the sphere data
-        (_, _, phi_list, theta_list, radius, _, SPLA, EAA, speed, flight_path_angle,
-         frequency, amplitude) = extract_SPL(filename, infreqs, distance, atmosphere,
-                                                      absorption_band_method)
-        # Which bins carry a measurement.  Taken before the clamp, and before the
-        # completion fills the upper surface, so a gated bin is recorded as such.
-        measured = _measured_bins(amplitude, EAA)
-        if clamp_empty_directions:
-            SPLA, EAA = _finite_sphere_levels(SPLA, EAA)
-        # Remembered for picking the hover source (_hover_source_index).
-        source_conditions.append((speed, flight_path_angle))
-        # Complete the sphere onto its upper surface
-        phi_full, theta_full, SPLA_full, EAA_full, amplitude_full, coverage_full = (
-            _complete_sphere_with_coverage(phi_list, theta_list, SPLA, EAA, amplitude, measured))
-        # Remember near-level conditions; they are the ones re-emitted at the
-        # extended flight path angles below.
-        if extended_flight_path_angles is not None and np.abs(flight_path_angle) < level_flight_tolerance:
-            level_conditions.append((phi_full, theta_full, radius, SPLA_full, EAA_full,
-                                     speed, frequency, amplitude_full, coverage_full, filename))
+        source_conditions = []
+        sphere_index = 0
+        level_conditions = []
+        # Every condition to write, collected rather than written immediately, so
+        # that whether phi/theta/frequency can be deduplicated (see
+        # _grid_and_frequency_are_shared) is known before the first group is
+        # written -- not discovered partway through and left to redo.
+        pending_groups = []
+        for filename in file_list:
+            # Load the sphere data
+            (_, _, phi_list, theta_list, radius, _, SPLA, EAA, speed, flight_path_angle,
+             frequency, amplitude) = extract_SPL(filename, infreqs, distance, atmosphere,
+                                                          absorption_band_method)
+            # Which bins carry a measurement.  Taken before the clamp, and before the
+            # completion fills the upper surface, so a gated bin is recorded as such.
+            measured = _measured_bins(amplitude, EAA)
+            if clamp_empty_directions:
+                SPLA, EAA = _finite_sphere_levels(SPLA, EAA)
+            # Remembered for picking the hover source (_hover_source_index).
+            source_conditions.append((speed, flight_path_angle))
+            # Complete the sphere onto its upper surface
+            phi_full, theta_full, SPLA_full, EAA_full, amplitude_full, coverage_full = (
+                _complete_sphere_with_coverage(phi_list, theta_list, SPLA, EAA, amplitude, measured))
+            # Remember near-level conditions; they are the ones re-emitted at the
+            # extended flight path angles below.
+            if extended_flight_path_angles is not None and np.abs(flight_path_angle) < level_flight_tolerance:
+                level_conditions.append((phi_full, theta_full, radius, SPLA_full, EAA_full,
+                                         speed, frequency, amplitude_full, coverage_full, filename))
+            # Augment load factor data
+            measured_metadata = run_metadata(filename)
+            for load_factor in load_factors_to_write:
+                groupname = "sphere" + str(sphere_index)
+                sphere_index = sphere_index + 1
+                pending_groups.append(_SphereCondition(
+                    groupname, phi_full, theta_full, radius, SPLA_full, EAA_full,
+                    speed, flight_path_angle, load_factor,
+                    frequency if store_spectrum else None,
+                    amplitude_full if store_spectrum else None, coverage_full, measured_metadata))
+
+        if not file_list:
+            raise ValueError('No sphere files found in ' + str(directory_name))
+        min_speed_file = file_list[_hover_source_index(source_conditions, level_flight_tolerance)]
+
+        if hover_source is not None:
+            # Its DOPPLER_SHIFT_REMOVED does not enter the database's flag: a hover
+            # has no Doppler shift, so its emitted and received frequencies are one
+            # and the group is received-frame like the flight spheres around it.
+            min_speed_file = os.path.abspath(os.path.expanduser(hover_source))
+        # Now, adapt the lowest speed sphere to a hover sphere by averaging from fore to aft
+        (_, _, phi_list, theta_list, radius, _, _, eaa_source, _, _,
+         frequency, amplitude) = extract_SPL(min_speed_file, infreqs, distance, atmosphere,
+                                           absorption_band_method)
+        phi_full, theta_full, SPLA_full, EAA_full, amplitude_full, coverage_full = _synthesized_hover_sphere(
+            phi_list, theta_list, amplitude, _measured_bins(amplitude, eaa_source), frequency,
+            distance, atmosphere, hover_correction=hover_correction,
+            clamp_empty_directions=clamp_empty_directions,
+            absorption_band_method=absorption_band_method)
+        # Set hover conditions.  Hover is a near-level condition, so it is written
+        # at the extended angles as well as level flight.
+        speed = 0
+        flight_path_angles = _hover_flight_path_angles(extended_flight_path_angles)
         # Augment load factor data
-        measured_metadata = run_metadata(filename)
+        hover_metadata = run_metadata(min_speed_file, 'synthesized_hover')
         for load_factor in load_factors_to_write:
-            groupname = "sphere" + str(sphere_index)
-            sphere_index = sphere_index + 1
-            pending_groups.append(_SphereCondition(
-                groupname, phi_full, theta_full, radius, SPLA_full, EAA_full,
-                speed, flight_path_angle, load_factor,
-                frequency if store_spectrum else None,
-                amplitude_full if store_spectrum else None, coverage_full, measured_metadata))
+            for flight_path_angle in flight_path_angles:
+                groupname = "sphere" + str(sphere_index)
+                sphere_index = sphere_index + 1
+                pending_groups.append(_SphereCondition(
+                    groupname, phi_full, theta_full, radius, SPLA_full, EAA_full,
+                    speed, flight_path_angle, load_factor,
+                    frequency if store_spectrum else None,
+                    amplitude_full if store_spectrum else None, coverage_full, hover_metadata))
 
-    if not file_list:
-        raise ValueError('No sphere files found in ' + str(directory_name))
-    min_speed_file = file_list[_hover_source_index(source_conditions, level_flight_tolerance)]
+        # Widen the flight-path-angle envelope: re-emit each near-level condition at
+        # the extended angles, keeping its own airspeed and directivity.  Hover is
+        # already covered above, so skip any condition at zero airspeed.
+        if extended_flight_path_angles is not None:
+            for (phi_full, theta_full, radius, SPLA_full, EAA_full,
+                 level_speed, frequency, amplitude_full, coverage_full, source_file) in level_conditions:
+                if level_speed == 0:
+                    continue
+                extended_metadata = run_metadata(source_file, 'extended_flight_path_angle')
+                for extended_angle in extended_flight_path_angles:
+                    for load_factor in load_factors_to_write:
+                        groupname = "sphere" + str(sphere_index)
+                        sphere_index = sphere_index + 1
+                        pending_groups.append(_SphereCondition(
+                            groupname, phi_full, theta_full, radius, SPLA_full, EAA_full,
+                            level_speed, extended_angle, load_factor,
+                            frequency if store_spectrum else None,
+                            amplitude_full if store_spectrum else None, coverage_full, extended_metadata))
 
-    if hover_source is not None:
-        # Its DOPPLER_SHIFT_REMOVED does not enter the database's flag: a hover
-        # has no Doppler shift, so its emitted and received frequencies are one
-        # and the group is received-frame like the flight spheres around it.
-        min_speed_file = os.path.abspath(os.path.expanduser(hover_source))
-    # Now, adapt the lowest speed sphere to a hover sphere by averaging from fore to aft
-    (_, _, phi_list, theta_list, radius, _, _, eaa_source, _, _,
-     frequency, amplitude) = extract_SPL(min_speed_file, infreqs, distance, atmosphere,
-                                       absorption_band_method)
-    phi_full, theta_full, SPLA_full, EAA_full, amplitude_full, coverage_full = _synthesized_hover_sphere(
-        phi_list, theta_list, amplitude, _measured_bins(amplitude, eaa_source), frequency,
-        distance, atmosphere, hover_correction=hover_correction,
-        clamp_empty_directions=clamp_empty_directions,
-        absorption_band_method=absorption_band_method)
-    # Set hover conditions.  Hover is a near-level condition, so it is written
-    # at the extended angles as well as level flight.
-    speed = 0
-    flight_path_angles = _hover_flight_path_angles(extended_flight_path_angles)
-    # Augment load factor data
-    hover_metadata = run_metadata(min_speed_file, 'synthesized_hover')
-    for load_factor in load_factors_to_write:
-        for flight_path_angle in flight_path_angles:
-            groupname = "sphere" + str(sphere_index)
-            sphere_index = sphere_index + 1
-            pending_groups.append(_SphereCondition(
-                groupname, phi_full, theta_full, radius, SPLA_full, EAA_full,
-                speed, flight_path_angle, load_factor,
-                frequency if store_spectrum else None,
-                amplitude_full if store_spectrum else None, coverage_full, hover_metadata))
+        # phi/theta (and frequency, for a spectral database) are usually the same
+        # on every condition -- panam completes every sphere onto a common grid
+        # and reduces every condition to the same frequency bands -- but that is
+        # checked here, not assumed: a mixed microphone layout or a per-file
+        # frequency resolution would make it false, and writing the shared form
+        # anyway would silently lose whatever a later condition's grid disagreed
+        # on. See the root shared_grid_and_frequency flag this sets.
+        shared_grid_and_frequency = _write_shared_grid_and_frequency(ncdatabase, pending_groups)
 
-    # Widen the flight-path-angle envelope: re-emit each near-level condition at
-    # the extended angles, keeping its own airspeed and directivity.  Hover is
-    # already covered above, so skip any condition at zero airspeed.
-    if extended_flight_path_angles is not None:
-        for (phi_full, theta_full, radius, SPLA_full, EAA_full,
-             level_speed, frequency, amplitude_full, coverage_full, source_file) in level_conditions:
-            if level_speed == 0:
-                continue
-            extended_metadata = run_metadata(source_file, 'extended_flight_path_angle')
-            for extended_angle in extended_flight_path_angles:
-                for load_factor in load_factors_to_write:
-                    groupname = "sphere" + str(sphere_index)
-                    sphere_index = sphere_index + 1
-                    pending_groups.append(_SphereCondition(
-                        groupname, phi_full, theta_full, radius, SPLA_full, EAA_full,
-                        level_speed, extended_angle, load_factor,
-                        frequency if store_spectrum else None,
-                        amplitude_full if store_spectrum else None, coverage_full, extended_metadata))
-
-    # phi/theta (and frequency, for a spectral database) are usually the same
-    # on every condition -- panam completes every sphere onto a common grid
-    # and reduces every condition to the same frequency bands -- but that is
-    # checked here, not assumed: a mixed microphone layout or a per-file
-    # frequency resolution would make it false, and writing the shared form
-    # anyway would silently lose whatever a later condition's grid disagreed
-    # on. See the root shared_grid_and_frequency flag this sets.
-    shared_grid_and_frequency = _write_shared_grid_and_frequency(ncdatabase, pending_groups)
-
-    for condition in pending_groups:
-        add_sphere_group(ncdatabase, condition.name, condition.phi, condition.theta,
-                         condition.radius, condition.SPLA, condition.EAA,
-                         condition.speed, condition.flight_path_angle, condition.load_factor,
-                         main_rotor_radius, main_rotor_tip_speed, weight_coefficient,
-                         condition.frequency, condition.amplitude,
-                         write_grid_and_frequency=not shared_grid_and_frequency,
-                         doppler_shift_removed=doppler, coverage=condition.coverage,
-                         run_metadata=condition.run_metadata)
-    # Close explicitly: left to the garbage collector, a failed flush on close
-    # is swallowed and the file can stay open (locked) while a traceback lives.
-    ncdatabase.close()
+        for condition in pending_groups:
+            add_sphere_group(ncdatabase, condition.name, condition.phi, condition.theta,
+                             condition.radius, condition.SPLA, condition.EAA,
+                             condition.speed, condition.flight_path_angle, condition.load_factor,
+                             main_rotor_radius, main_rotor_tip_speed, weight_coefficient,
+                             condition.frequency, condition.amplitude,
+                             write_grid_and_frequency=not shared_grid_and_frequency,
+                             doppler_shift_removed=doppler, coverage=condition.coverage,
+                             run_metadata=condition.run_metadata)
 
 
 def _select_sphere_files(directory_name, spheres=None, exclude=None):

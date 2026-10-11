@@ -8,6 +8,11 @@ This page describes the files PANAM writes and reads at its boundaries:
   `build_database_from_norah2` write;
 - `vehicle.cfg`, which the user writes (`example_data/vehicle.cfg` is an example).
 
+PANAM writes each sphere and database to a temporary file beside the output, named
+`.<name>.<pid>.tmp`, and moves it into place only when it is complete. A failed or interrupted
+write leaves neither a partial file nor a damaged earlier one, and a `*.nc` or `*.nod` glob
+never matches the temporary file.
+
 How the files are made is in [`database_build.md`](database_build.md) and
 [`norah2_import.md`](norah2_import.md). The equations behind the values are in
 [`THEORY.md`](THEORY.md).
