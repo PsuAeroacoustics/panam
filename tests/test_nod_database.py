@@ -118,7 +118,7 @@ def test_a_ladder_needs_the_weight_coefficient_for_its_load_factors(tmp_path):
 def test_a_hand_written_ladder_with_the_zero_floor_keeps_the_contract(tmp_path):
     """Groups written by add_sphere_group, as test_load_factor_scaling writes them,
     behind the root every database carries."""
-    theta, phi = np.meshgrid([0.0, 90.0, 180.0], [-90.0, 0.0, 90.0, 180.0])
+    theta, phi = np.meshgrid([0.0, 90.0, 180.0], [-180.0, -90.0, 0.0, 90.0])
     path = tmp_path / 'ladder.nod'
     with Dataset(str(path), 'w') as db:
         fa._write_database_root(db, fixed_load_factor=False, speed_reference='ground',
@@ -182,6 +182,23 @@ def _empty_direction(nc):
     nc['sphere0']['amplitude'][:] = amplitude
 
 
+def _empty_direction_with_eaa(nc):
+    """An emptied direction whose dBA is -inf but whose EAA is not 0."""
+    _empty_direction(nc)
+    channel = 20 * nc['sphere0'].dimensions['THETA'].size + 3
+    dba = np.array(nc['sphere0']['dBA'][:])
+    dba[channel] = -np.inf
+    nc['sphere0']['dBA'][:] = dba
+    eaa = np.array(nc['sphere0']['EAA'][:])
+    eaa[channel] = 1.0
+    nc['sphere0']['EAA'][:] = eaa
+
+
+def _phi_in_umapr_range(nc):
+    """The shared phi shifted by +180 deg, as a sign or convention mix-up leaves it."""
+    nc['phi'][:] = np.array(nc['phi'][:]) + 180.0
+
+
 CORRUPTIONS = {
     'same_grid false': (_set('same_grid', 0, group=None), {'R1'}),
     'no same_grid': (_rename_variable('same_grid', group=None), {'R1'}),
@@ -195,17 +212,35 @@ CORRUPTIONS = {
     'future version': (_set('database_version', fa.DATABASE_FORMAT_VERSION + 1, group=None), {'C1'}),
     'unknown speed reference': (_set_attribute('speed_reference', 'sea'), {'C2'}),
     'group phi contradicts the root': (_add_group_phi, {'C3'}),
-    'unsorted grid': (_set('phi', 1000.0, 0, group=None), {'C4'}),
+    'unsorted grid': (_set('phi', 170.0, 0, group=None), {'C4'}),
+    'phi in UMAPR range': (_phi_in_umapr_range, {'C13'}),
+    'theta past the tail': (_set('theta', 181.0, 1, group=None), {'C4', 'C13'}),
     'NaN band': (_set('amplitude', np.nan, (20, 3, 0)), {'C5', 'C6'}),
     'coverage 2': (_set('coverage', 2, (20, 3, 0)), {'C6'}),
     'coverage of a missing band': (_set('amplitude', -np.inf, (20, 3, 0)), {'C6'}),
     'energy in an empty direction': (_empty_direction, {'C6', 'C7'}),
+    'EAA in an empty direction': (_empty_direction_with_eaa, {'C6', 'C7'}),
     'fixed load factor, two C_T': (_set('thrust_coefficient', 0.01), {'C8'}),
     'two Doppler flags': (_set('DOPPLER_SHIFT_REMOVED', 1), {'C9'}),
     'rotor radius differs': (_set('main_rotor_radius_meters', 5.0, group=None), {'C10'}),
     'group renamed': (lambda nc: nc.renameGroup('sphere1', 'extra'), {'C11'}),
     'unknown origin': (_set_attribute('condition_origin', 'guessed', group='sphere1'), {'C12'}),
 }
+
+
+def test_the_eaa_corruption_leaves_dba_alone(shared, tmp_path):
+    """'EAA in an empty direction' breaks C7 through EAA only: with EAA restored to 0
+    the emptied direction keeps C7."""
+    path = tmp_path / 'corrupt.nod'
+    path.write_bytes(shared.read_bytes())
+    with Dataset(str(path), 'a') as nc:
+        nc.set_auto_mask(False)
+        _empty_direction_with_eaa(nc)
+        channel = 20 * nc['sphere0'].dimensions['THETA'].size + 3
+        eaa = np.array(nc['sphere0']['EAA'][:])
+        eaa[channel] = 0.0
+        nc['sphere0']['EAA'][:] = eaa
+    assert {v.rule for v in nd.validate_nod(path)} == {'C6'}
 
 
 @pytest.mark.parametrize('corruption', sorted(CORRUPTIONS))

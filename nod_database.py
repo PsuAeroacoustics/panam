@@ -356,6 +356,13 @@ def validate_nod(path):
                     violate('R4', name, f'{variable} has {values.size} values for {n_channels} channels')
                     continue
                 directions[variable] = values
+            # C13: ART angles, deg.
+            for variable, outside in (('phi', lambda a: ~((a >= -180.0) & (a < 180.0))),
+                                      ('theta', lambda a: ~((a >= 0.0) & (a <= 180.0)))):
+                if variable in directions and np.any(outside(directions[variable])):
+                    interval = '[-180, 180)' if variable == 'phi' else '[0, 180]'
+                    violate('C13', name, f'{variable} is outside {interval} deg (ART) in '
+                                         f'{np.sum(outside(directions[variable]))} channels')
 
             # C4, C5: the spectrum's grid and values.
             amplitude = None
@@ -395,6 +402,8 @@ def validate_nod(path):
                         empty = ~np.isfinite(amplitude).any(axis=2).reshape(-1)
                         if np.any(np.isfinite(levels['dBA'][empty])):
                             violate('C7', name, 'a direction with no finite band has a finite dBA')
+                        if 'EAA' in levels and np.any(levels['EAA'][empty] != 0):
+                            violate('C7', name, 'a direction with no finite band has a nonzero EAA')
 
             # C6: coverage marks measured cells only.
             if 'coverage' in variables:

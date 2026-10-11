@@ -204,12 +204,13 @@ which the writers keep; a reader may rely on them.
 11. **C5.** `amplitude` is finite or -inf, never NaN or +inf.
 12. **C6.** `coverage` is 0 or 1, over the dimensions given above, and is 1 only where the
     level it marks (the band, or `dBA` without spectra) is finite.
-13. **C7.** A direction with no finite band has `dBA` = -inf.
+13. **C7.** A direction with no finite band has `dBA` = -inf and `EAA` = 0.
 14. **C8.** With `fixed_load_factor` set, `thrust_coefficient` is the same in every group.
 15. **C9.** `DOPPLER_SHIFT_REMOVED`, when present, is 0 or 1 and the same in every group.
 16. **C10.** Every `rotor_scale` equals `main_rotor_radius_meters`, when present.
 17. **C11.** The groups are named `sphere0` to `sphere<N-1>`.
 18. **C12.** `condition_origin`, when present, is one of the three values above.
+19. **C13.** `phi` is in [-180, 180) deg and `theta` is in [0, 180] deg (ART angles, above).
 
 ### Reading a database
 
