@@ -514,17 +514,15 @@ if __name__ == "__main__":
     # Example usage demonstrating filter with constant vs. time-varying frequencies
     import argparse
     import matplotlib.pyplot as plt
-    import os
+    import cli
 
     parser = argparse.ArgumentParser(
         description='Vold-Kalman filter examples on synthetic signals: a constant tone, a chirp '
                     'with a crossing interferer, and three orders at once. Writes a comparison '
                     'plot and spectrograms (PNG).')
-    parser.add_argument('-o', '--output-dir', default='demo_plots',
-                        help='Directory to write the figures to, created if needed (default demo_plots '
-                             'in the current directory)')
-    output_dir = parser.parse_args().output_dir
-    os.makedirs(output_dir, exist_ok=True)
+    cli.add_output_options(parser, 'demo_plots', directory=True)
+    args = parser.parse_args()
+    figures = {}
     fs = 5000  # Sampling frequency
     duration = 5  # seconds
     t = np.arange(0, duration, 1 / fs)
@@ -700,8 +698,7 @@ if __name__ == "__main__":
     ax.set_xlim(0, 1.0)
     
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'vkf_example.png'), dpi=150)
-    print(f"  Comparison plot: {os.path.join(output_dir, 'vkf_example.png')}")
+    figures['vkf_example'] = fig
     
     # ========================================================================
     # Spectrogram plots
@@ -713,59 +710,40 @@ if __name__ == "__main__":
         print("\nGenerating spectrograms...")
         
         # Spectrogram of clean signal
-        plot_spectrogram(x_clean_chirp, fs, window_time=0.2, title='Spectrogram: Clean Chirp Signal (50-150 Hz)', clim=[20, 80], flim=[0, 400])
-        plt.savefig(os.path.join(output_dir, 'vkf_spectrogram_clean.png'), dpi=150)
-        plt.close()
+        figures['vkf_spectrogram_clean'] = plot_spectrogram(x_clean_chirp, fs, window_time=0.2, title='Spectrogram: Clean Chirp Signal (50-150 Hz)', clim=[20, 80], flim=[0, 400])[0]
         
         # Spectrogram of noisy signal
-        plot_spectrogram(x_noisy_chirp, fs, window_time=0.2, title='Spectrogram: Noisy Signal', clim=[20, 80], flim=[0, 400])
-        plt.savefig(os.path.join(output_dir, 'vkf_spectrogram_noisy.png'), dpi=150)
-        plt.close()
+        figures['vkf_spectrogram_noisy'] = plot_spectrogram(x_noisy_chirp, fs, window_time=0.2, title='Spectrogram: Noisy Signal', clim=[20, 80], flim=[0, 400])[0]
         
         # Spectrogram of filtered signal (with correct adaptive bandwidth)
-        plot_spectrogram(x_filtered_correct, fs, window_time=0.2, title='Spectrogram: Filtered Signal (Adaptive BW=10%*freq)', clim=[20, 80], flim=[0, 400])
-        plt.savefig(os.path.join(output_dir, 'vkf_spectrogram_filtered.png'), dpi=150)
-        plt.close()
+        figures['vkf_spectrogram_filtered'] = plot_spectrogram(x_filtered_correct, fs, window_time=0.2, title='Spectrogram: Filtered Signal (Adaptive BW=10%*freq)', clim=[20, 80], flim=[0, 400])[0]
         
         # Clean multi-order signal (sum of all three orders)
-        plot_spectrogram(x_clean_multi, fs, window_time=0.2, title='Clean Multi-Order Signal (1x+2x+3x)', clim=[20, 80], flim=[0, 400])
-        plt.savefig(os.path.join(output_dir, 'vkf_spectrogram_multiorder_clean.png'), dpi=150)
-        plt.close()
+        figures['vkf_spectrogram_multiorder_clean'] = plot_spectrogram(x_clean_multi, fs, window_time=0.2, title='Clean Multi-Order Signal (1x+2x+3x)', clim=[20, 80], flim=[0, 400])[0]
         
         # Noisy input signal with all orders plus noise and interference
-        plot_spectrogram(x_noisy_multi, fs, window_time=0.2, title='Noisy Multi-Order Signal (1x+2x+3x+noise+interference)', clim=[20, 80], flim=[0, 400])
-        plt.savefig(os.path.join(output_dir, 'vkf_spectrogram_multiorder_noisy.png'), dpi=150)
-        plt.close()
+        figures['vkf_spectrogram_multiorder_noisy'] = plot_spectrogram(x_noisy_multi, fs, window_time=0.2, title='Noisy Multi-Order Signal (1x+2x+3x+noise+interference)', clim=[20, 80], flim=[0, 400])[0]
         
         # Reconstructed signal (sum of all filtered orders)
         x_reconstructed_multi = x_filtered_1x + x_filtered_2x + x_filtered_3x
-        plot_spectrogram(x_reconstructed_multi, fs, window_time=0.2, title='Reconstructed Multi-Order Signal (filtered 1x+2x+3x)', clim=[20, 80], flim=[0, 400])
-        plt.savefig(os.path.join(output_dir, 'vkf_spectrogram_multiorder_filtered.png'), dpi=150)
-        plt.close()
+        figures['vkf_spectrogram_multiorder_filtered'] = plot_spectrogram(x_reconstructed_multi, fs, window_time=0.2, title='Reconstructed Multi-Order Signal (filtered 1x+2x+3x)', clim=[20, 80], flim=[0, 400])[0]
         
         # Individual extracted orders
-        plot_spectrogram(x_filtered_1x, fs, window_time=0.2, title='Extracted: 1x Order', clim=[20, 80], flim=[0, 400])
-        plt.savefig(os.path.join(output_dir, 'vkf_spectrogram_multiorder_1x.png'), dpi=150)
-        plt.close()
+        figures['vkf_spectrogram_multiorder_1x'] = plot_spectrogram(x_filtered_1x, fs, window_time=0.2, title='Extracted: 1x Order', clim=[20, 80], flim=[0, 400])[0]
         
-        plot_spectrogram(x_filtered_2x, fs, window_time=0.2, title='Extracted: 2x Order', clim=[20, 80], flim=[0, 400])
-        plt.savefig(os.path.join(output_dir, 'vkf_spectrogram_multiorder_2x.png'), dpi=150)
-        plt.close()
+        figures['vkf_spectrogram_multiorder_2x'] = plot_spectrogram(x_filtered_2x, fs, window_time=0.2, title='Extracted: 2x Order', clim=[20, 80], flim=[0, 400])[0]
         
-        plot_spectrogram(x_filtered_3x, fs, window_time=0.2, title='Extracted: 3x Order', clim=[20, 80], flim=[0, 400])
-        plt.savefig(os.path.join(output_dir, 'vkf_spectrogram_multiorder_3x.png'), dpi=150)
-        plt.close()
+        figures['vkf_spectrogram_multiorder_3x'] = plot_spectrogram(x_filtered_3x, fs, window_time=0.2, title='Extracted: 3x Order', clim=[20, 80], flim=[0, 400])[0]
         
         # Extracted interference order
-        plot_spectrogram(x_filtered_interference_multi, fs, window_time=0.2, title='Extracted: Interference Order (70-30 Hz)', clim=[20, 80], flim=[0, 400])
-        plt.savefig(os.path.join(output_dir, 'vkf_spectrogram_multiorder_interference.png'), dpi=150)
-        plt.close()
+        figures['vkf_spectrogram_multiorder_interference'] = plot_spectrogram(x_filtered_interference_multi, fs, window_time=0.2, title='Extracted: Interference Order (70-30 Hz)', clim=[20, 80], flim=[0, 400])[0]
         
-        print(f"  Spectrograms: {os.path.join(output_dir, 'vkf_spectrogram_*.png')}")
         
     except Exception as e:
         print(f"  Spectrogram generation skipped: {e}")
     
-    print(f"\nAll plots saved to {output_dir}")
+    paths = cli.save_all_or_show(figures, args.output_dir, args.plot, dpi=150)
+    if paths:
+        print(f"\n{len(paths)} plots saved to {args.output_dir}")
     print("="*70)
 

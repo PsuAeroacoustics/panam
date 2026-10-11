@@ -86,6 +86,7 @@ def test_spectrogram_frequency_option_sets_display_range(tmp_path):
 
 def test_vold_kalman_filter_demo_runs(tmp_path):
     """The demo's crossing chirp fell to negative frequency over its 5 s record."""
+    from unittest.mock import patch
     result = run_here('vold_kalman_filter.py', cwd=tmp_path)
     assert result.returncode == 0, result.stderr
     assert 'Spectrogram generation skipped' not in result.stdout
@@ -95,6 +96,12 @@ def test_vold_kalman_filter_demo_runs(tmp_path):
     result = run_here('vold_kalman_filter.py', '-o', 'elsewhere', cwd=tmp_path)
     assert result.returncode == 0, result.stderr
     assert len(list((tmp_path / 'elsewhere').glob('vkf_*.png'))) == 11
+    # -p/--plot also opens the figures (a no-op under Agg) and still writes all 11.
+    with patch('matplotlib.pyplot.show') as show:
+        result = run_here('vold_kalman_filter.py', '-p', '-o', 'shown', cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert len(list((tmp_path / 'shown').glob('vkf_*.png'))) == 11
+    show.assert_called_once()
 
 
 def _spectrogram_call(path, *options):
@@ -381,7 +388,7 @@ def test_example_scripts_take_help_without_running(tmp_path):
     """hexacopter_vkf_example.py, vold_kalman_filter.py and as350_flip_check.py
     had no options and ran as soon as they started, -h included."""
     expected = {'hexacopter_vkf_example.py': ['--mat-file', '--output-dir', '--plot'],
-                'vold_kalman_filter.py': ['--output-dir'],
+                'vold_kalman_filter.py': ['--output-dir', '--plot'],
                 'as350_flip_check.py': ['--basepath'],
                 'AS350_289108_demo.py': ['--output-dir', '--outdir', '--plot', '--show', '--basepath']}
     for script, options in expected.items():

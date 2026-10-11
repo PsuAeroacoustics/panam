@@ -59,10 +59,13 @@ jobs:
           print('hdf5 (netCDF4):', getattr(netCDF4, '__hdf5libversion__', 'n/a'))
           PY
 
-      # Numba keys a cached function on its source file's modification time,
-      # which a fresh checkout sets to now; a fixed time lets the restored cache
-      # match.  The cache also keys each function on its bytecode, so an edit
-      # still recompiles it.
+      # Numba treats a cache as stale only when its source file's modification
+      # time or size changes; a fresh checkout sets the time to now, and a fixed
+      # time lets the restored cache match.  That is safe only for byte-identical
+      # sources: Numba's per-function key hashes the bytecode alone, not its
+      # constants, the globals or the njit functions it calls.  So the cache is
+      # restored on an exact hash match only (no restore-keys), and any edit to
+      # either file compiles from scratch.
       - name: Pin the Numba sources' timestamps
         run: touch -t 202001010000 ground_plane.py axisymmetric_bem.py
 
@@ -71,8 +74,6 @@ jobs:
         with:
           path: ${{ env.NUMBA_CACHE_DIR }}
           key: numba-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('ground_plane.py', 'axisymmetric_bem.py', 'requirements.txt') }}
-          restore-keys: |
-            numba-${{ runner.os }}-py${{ matrix.python-version }}-
 
       - name: Run tests
         run: |

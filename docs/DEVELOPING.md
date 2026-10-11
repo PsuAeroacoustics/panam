@@ -316,9 +316,13 @@ tests, which is where to look when CI slows down. The workflow sets
 between runs with `actions/cache`, keyed on the OS, the Python version and the
 contents of `ground_plane.py`, `axisymmetric_bem.py` and `requirements.txt`.
 Numba treats a cached function as stale when its source file's modification
-time changes, which a fresh checkout always does, so the workflow first sets
-both files to a fixed time; Numba also keys each function on its bytecode, so
-an edited function still recompiles. To run the same command locally, install
+time or size changes, and a fresh checkout always changes the time, so the
+workflow first sets both files to a fixed time. The cache is restored only on
+an exact match of that key, so it is reused only when `ground_plane.py` and
+`axisymmetric_bem.py` are byte-identical to the run that saved it; any edit
+to either file compiles from scratch. (Numba's own per-function key hashes
+only the bytecode, not its constants, module globals or the jitted functions
+it calls, so a stale cache could survive an edit of the same size.) To run the same command locally, install
 `pytest-cov` (`pip install pytest-cov`); it is not in `requirements.txt`.
 
 CI has no external data and no NICE-OPS executables, so the data and NICE-OPS

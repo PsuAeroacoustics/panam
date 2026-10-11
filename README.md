@@ -113,8 +113,8 @@ and `board_field_plot.py` always write a file (defaults
 the current directory) and open it too with `--plot`; in the first two `-p`
 means something else (`--pressure`, `--plot-type`). The examples that write
 several files take `-o/--output-dir` (default `demo_plots/` in the current
-directory; `AS350_289108_demo.py` still accepts `--outdir`) and, except
-`vold_kalman_filter.py`, `-p/--plot` to also open the figures. The examples find `example_data/` beside the script, so
+directory; `AS350_289108_demo.py` still accepts `--outdir`) and `-p/--plot`
+to also open the figures. The examples find `example_data/` beside the script, so
 they run from any directory.
 
 Loudness and sharpness of a one-third-octave spectrum are library functions, not a
