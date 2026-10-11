@@ -187,6 +187,20 @@ def test_build_empirical_database_runs(tmp_path):
         assert len(ds.groups) >= 2
 
 
+def test_noise_abatement_plate_cache_lists_and_clears(tmp_path):
+    (tmp_path / 'tables').mkdir()
+    (tmp_path / 'tables' / 'old.pkl').write_bytes(b'')
+    result = run_here('noise_abatement_2017.py', '--plate-cache', 'list', '--plate-table-directory', 'tables',
+                      cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert 'old format' in result.stdout and '1 plate tables' in result.stdout
+    result = run_here('noise_abatement_2017.py', '--plate-cache', 'clear', '--plate-table-directory', 'tables',
+                      cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert not list((tmp_path / 'tables').iterdir())
+    assert run_here('noise_abatement_2017.py', cwd=tmp_path).returncode != 0     # aircraft still required
+
+
 def test_array_planner_subcommands_run(tmp_path):
     design = ['--nmics', '6', '--altitude', '150']
     result = run_here('array_planner.py', 'design', *design, '--format', 'json', cwd=tmp_path)

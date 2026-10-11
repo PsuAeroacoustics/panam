@@ -61,7 +61,7 @@ scripts take no options and run as soon as they start, `-h` included:
 
 | Script | Purpose | Needs external data? |
 |---|---|---|
-| `noise_abatement_2017.py` | Build source spheres from the 2017 Noise Abatement flight test; `--check-tracks` checks the tracks without building | Yes: the 2017 archive |
+| `noise_abatement_2017.py` | Build source spheres from the 2017 Noise Abatement flight test; `--check-tracks` checks the tracks without building; `--plate-cache list` or `clear` inspects or empties the plate-table cache | Yes: the 2017 archive (not for `--plate-cache`) |
 | `build_empirical_database.py` | Build a NICE-OPS database from a directory of spheres and its `vehicle.cfg` | Your spheres |
 | `norah2_to_nod.py` | Build a NICE-OPS database from NORAH2 `.hem` hemispheres | `.hem` files |
 | `nc_lambert_ea.py` | Plot a sphere's levels on a Lambert equal-area projection | No (bundled sphere) |

@@ -1093,48 +1093,100 @@ def default_plate_table_directory():
     return os.path.join(os.path.expanduser('~'), '.cache', 'panam', 'plate_tables')
 
 
-def plate_table(instrument, sound_speed_ft_s, bands, ground=None, directory=None):
+def plate_table(instrument, sound_speed_ft_s, bands, ground=None, directory=None, **options):
     """The axisymmetric BEM table (:func:`axisymmetric_bem.table`) for one board type.
 
-    Computed at ``sound_speed_ft_s`` rounded to :data:`PLATE_TABLE_SOUND_SPEED_STEP`
+    ``sound_speed_ft_s`` in ft/s, ``bands`` the band center frequencies in Hz.
+    Computed at the sound speed rounded to :data:`PLATE_TABLE_SOUND_SPEED_STEP`
     and cached in memory and in ``directory`` (default
     :func:`default_plate_table_directory`); a table takes 15-45 s.
+    ``options`` (mesh, quadrature, directions; see
+    :func:`axisymmetric_bem.table_settings`) go to :func:`axisymmetric_bem.table`.
+
+    The cache key holds :data:`axisymmetric_bem.PLATE_TABLE_VERSION`, the
+    microphone height, the ground, the rounded sound speed, every band and
+    every setting of :func:`axisymmetric_bem.table_settings`.  Each table is an
+    .npz file (no pickle) that stores its key; one whose key differs, or that
+    cannot be read, is recomputed and replaced.  Files from before the version
+    (.pkl) are ignored.
     """
-    import pickle
     import axisymmetric_bem as ab
+    import hashlib
+    import json
     ground = dict(SITE_GROUND if ground is None else ground)
     step = np.log1p(PLATE_TABLE_SOUND_SPEED_STEP)
     speed = float(np.exp(np.round(np.log(sound_speed_ft_s) / step) * step))
     bands = np.asarray(bands, dtype=float)
-    ground_key = '_'.join('{}{}'.format(k, ground[k]) for k in sorted(ground))
+    mic_height = BOARD_MIC_HEIGHT_FT[instrument]
     # Keyed on what the table depends on, not the instrument's name.
-    key = 'h{:.2f}mm_{}_c{:.2f}_b{}-{:g}-{:g}'.format(BOARD_MIC_HEIGHT_FT[instrument] * 304.8, ground_key,
-                                                      speed, bands.size, bands[0], bands[-1])
-    # The key holds only the ends of the band set, so check the bands, as for
-    # a table read from disk.
+    key = json.dumps(dict(version=ab.PLATE_TABLE_VERSION, ground=ground, sound_speed_ft_s=speed,
+                          bands=bands.tolist(), settings=ab.table_settings(**options, mic_height=mic_height)),
+                     sort_keys=True, default=lambda value: value.tolist())     # numpy values
     table = _PLATE_TABLES.get(key)
-    if table is not None and np.array_equal(table.get('bands'), bands):
+    if table is not None:
         return table
+    # The name is for people; the hash makes it unique and the stored key decides.
+    ground_name = '_'.join('{}{}'.format(k, ground[k]) for k in sorted(ground))
+    name = 'h{:.2f}mm_{}_c{:.2f}_b{}-{:g}-{:g}_v{}_{}.npz'.format(
+        mic_height * 304.8, ground_name, speed, bands.size, bands[0], bands[-1], ab.PLATE_TABLE_VERSION,
+        hashlib.sha256(key.encode()).hexdigest()[:12])
     directory = os.path.abspath(os.path.expanduser(directory or default_plate_table_directory()))
-    path = os.path.join(directory, key + '.pkl')
+    path = os.path.join(directory, name)
     table = None
     if os.path.exists(path):
-        with open(path, 'rb') as handle:
-            table = pickle.load(handle)
-        if not np.array_equal(table.get('bands'), bands):
+        try:
+            table, stored_key = ab.read_table_npz(path)
+        except (OSError, ValueError) as error:
+            logging.warning('Ignoring the unreadable plate table %s: %s', path, error)
+            stored_key = None
+        if stored_key != key:
             table = None
     if table is None:
-        logging.info('Computing the plate table %s', key)
+        logging.info('Computing the plate table %s', name)
         flow = ground.get('sigma', ground.get('sigma_e'))
-        table = ab.table(bands, speed, flow_resistance=flow, ground=ground,
-                         mic_height=BOARD_MIC_HEIGHT_FT[instrument])
+        table = ab.table(bands, speed, flow_resistance=flow, ground=ground, mic_height=mic_height, **options)
         os.makedirs(directory, exist_ok=True)
         temporary = path + '.{}.tmp'.format(os.getpid())
         with open(temporary, 'wb') as handle:
-            pickle.dump(table, handle)
+            ab.write_table_npz(handle, table, key)
         os.replace(temporary, path)             # parallel builds may race; either copy is right
     _PLATE_TABLES[key] = table
     return table
+
+
+def plate_table_cache(directory=None):
+    """The files in the plate-table cache ``directory`` (default
+    :func:`default_plate_table_directory`): one dict per file, sorted by name,
+    with ``path``, ``size`` (bytes) and ``status``: 'current' (an .npz of
+    this :data:`axisymmetric_bem.PLATE_TABLE_VERSION`), 'old version N',
+    'old format' (a .pkl from before versioning) or 'unreadable'."""
+    import axisymmetric_bem as ab
+    import json
+    directory = os.path.abspath(os.path.expanduser(directory or default_plate_table_directory()))
+    records = []
+    for path in sorted(glob.glob(os.path.join(directory, '*.npz')) + glob.glob(os.path.join(directory, '*.pkl'))):
+        if path.endswith('.pkl'):
+            status = 'old format'
+        else:
+            try:
+                version = json.loads(ab.read_table_npz(path)[1])['version']
+                status = 'current' if version == ab.PLATE_TABLE_VERSION else 'old version {}'.format(version)
+            except (OSError, ValueError, KeyError, TypeError):
+                status = 'unreadable'
+        records.append(dict(path=path, size=os.path.getsize(path), status=status))
+    return records
+
+
+def clear_plate_table_cache(directory=None):
+    """Delete the plate tables (.npz, old .pkl and leftover .tmp files) in
+    ``directory`` (default :func:`default_plate_table_directory`), but not the
+    directory or any other file.  Returns the number of files deleted."""
+    directory = os.path.abspath(os.path.expanduser(directory or default_plate_table_directory()))
+    paths = [path for pattern in ('*.npz', '*.pkl', '*.npz.*.tmp', '*.pkl.*.tmp')
+             for path in glob.glob(os.path.join(directory, pattern))]
+    for path in paths:
+        os.remove(path)
+    return len(paths)
 
 
 def plate_response(tables, mirror, sound_speed_ft_s):
@@ -1953,10 +2005,17 @@ def main(argv=None):
 
     parser = argparse.ArgumentParser(
         description='Rebuild 2017 Noise Abatement source spheres with ambient gating.')
-    parser.add_argument('aircraft', help='dataset directory name under --root: AS350B3, B206L3, B407, '
-                                         'EC130B4, R44 or R66')
+    parser.add_argument('aircraft', nargs='?', default=None,
+                        help='dataset directory name under --root: AS350B3, B206L3, B407, '
+                             'EC130B4, R44 or R66 (not needed with --plate-cache)')
     parser.add_argument('output_directory', nargs='?', default=None,
-                        help='where the spheres go (not needed with --check-tracks)')
+                        help='where the spheres go (not needed with --check-tracks or --plate-cache)')
+    parser.add_argument('--plate-table-directory', default=None,
+                        help='where computed ground-plate tables are cached (default: '
+                             '~/.cache/panam/plate_tables)')
+    parser.add_argument('--plate-cache', choices=('list', 'clear'), default=None,
+                        help='do not build: list the cached plate tables (size in MB and whether '
+                             'each is current), or delete them; default: neither')
     parser.add_argument('--check-tracks', action='store_true',
                         help='do not build: check every steady run\'s track as the build would '
                              '(heights above the ground boards, altitude consistency, decelerations, '
@@ -2039,6 +2098,20 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+    if args.plate_cache:
+        directory = os.path.abspath(os.path.expanduser(args.plate_table_directory
+                                                       or default_plate_table_directory()))
+        if args.plate_cache == 'clear':
+            print('Deleted {} plate tables from {}'.format(clear_plate_table_cache(directory), directory))
+            return 0
+        records = plate_table_cache(directory)
+        for record in records:
+            print('{:8.1f} MB  {:<14s} {}'.format(record['size'] / 1e6, record['status'],
+                                                   os.path.basename(record['path'])))
+        print('{} plate tables in {}'.format(len(records), directory))
+        return 0
+    if args.aircraft is None:
+        parser.error('aircraft is required unless --plate-cache is given')
     if args.check_tracks:
         checks = check_tracks(args.aircraft, root=args.root, runs=args.runs,
                               steady_only=not args.include_maneuvers, hovers=args.hovers,
@@ -2067,6 +2140,7 @@ def main(argv=None):
         norah2_directory=args.norah2_directory,
         third_octave_method=args.third_octave_method,
         board_correction=args.board_correction,
+        plate_table_directory=args.plate_table_directory,
         band_snr_gate_db=args.band_snr_gate_db,
         max_absorption_correction_db=args.max_absorption_correction_db,
         point_stride=args.point_stride, gate_ambient=not args.no_ambient_gate,

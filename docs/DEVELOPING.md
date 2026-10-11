@@ -281,10 +281,18 @@ the database writers or the NORAH2 import.
   (`cache=True`). The first call after a change compiles, and the compiled
   code is cached in `__pycache__`.
 - `noise_abatement_2017.plate_table` caches plate tables in memory and in
-  `~/.cache/panam/plate_tables`, one pickle per microphone height, ground,
-  sound speed (rounded to 0.5% steps) and band set. A table takes 15-45 s to
-  compute. Delete the directory after changing the plate model; the cache key
-  does not include the code version.
+  `~/.cache/panam/plate_tables` (`--plate-table-directory` on the command
+  line, `plate_table_directory` in `build_sphere`). A table takes 15-45 s to
+  compute. Each table is an `.npz` file, without pickle, that stores its key:
+  `axisymmetric_bem.PLATE_TABLE_VERSION`, the microphone height, the ground,
+  the sound speed (rounded to 0.5% steps), every band, and the mesh,
+  quadrature, direction and plate settings of
+  `axisymmetric_bem.table_settings`. A file whose stored key differs is
+  recomputed and replaced; `.pkl` files from the older cache are ignored.
+  Bump `PLATE_TABLE_VERSION` in any commit that changes the numbers
+  `axisymmetric_bem.table` returns for the same arguments (the comment above
+  it lists what counts). `noise_abatement_2017.py --plate-cache list` lists the
+  cached tables and whether each is current; `--plate-cache clear` deletes them.
 - A 2017 build reads the archive from wherever `local_paths` points; on a
   cloud drive, `build_all` prefetches each run's files in threads.
 
@@ -303,7 +311,8 @@ The code contract:
   gate and before spreading. `noise_abatement_2017.plate_response` builds the
   callable from the plate tables, and the pressures then go in unscaled.
 - **The cache.** `plate_table` caches tables in `~/.cache/panam/plate_tables`
-  (see above). Delete it after changing the plate model.
+  (see above). Bump `axisymmetric_bem.PLATE_TABLE_VERSION` after changing the
+  plate model, and the cached tables are recomputed.
 - **NICE-OPS.** `axisymmetric_bem.write_netcdf` exports a plate table for
   NICE-OPS's `--plate_table` option: band x sub-frequency x elevation x
   azimuth, metric, with the ground it was computed on, which NICE-OPS checks
