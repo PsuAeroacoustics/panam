@@ -406,6 +406,8 @@ _RING_DEFAULTS = {
 	'mic_azimuths': None,
 	'nmics': None,
 }
+#: Ring options that each place every microphone; at most one may be set.
+_RING_LAYOUT = ('mic_azimuths', 'nmics')
 _SITE_DEFAULTS = {
 	'kmz': None,
 	'ref_lat': None,
@@ -445,6 +447,8 @@ def _apply_case(args: argparse.Namespace, defaults: dict) -> None:
 	Case-file keys are the option names without the leading dashes, with "-"
 	or "_" (``mic-azimuths`` or ``mic_azimuths``).  A list option takes a TOML
 	array, a "low:high" option a two-element array.  An unknown key is refused.
+	--mic-azimuths and --nmics form one group: when the command line sets
+	either, the case file's values for both are ignored.
 	"""
 	case = {}
 	if args.case:
@@ -455,6 +459,13 @@ def _apply_case(args: argparse.Namespace, defaults: dict) -> None:
 		if unknown:
 			raise ValueError(f'{args.case}: unknown case key(s) {unknown}; '
 							 f'a {args.command} case file takes {sorted(defaults)}')
+	# --mic-azimuths and --nmics are two ways to place the same microphones:
+	# when the command line gives either, the case file's values of both are
+	# ignored, so that the command line overrides the case file's layout.
+	layout = [key for key in _RING_LAYOUT if key in defaults]
+	if any(getattr(args, key) is not None for key in layout):
+		for key in layout:
+			case.pop(key, None)
 	for key, default in defaults.items():
 		if getattr(args, key) is None:
 			setattr(args, key, case.get(key, default))
@@ -492,6 +503,8 @@ def _ring_microphones(args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray]
 	radii = _float_list(args.radii, '--radii')
 	if np.any(radii < 0):
 		raise ValueError(f'--radii must not be negative, got {radii.tolist()}')
+	if args.mic_azimuths is not None and args.nmics is not None:
+		raise ValueError('Give --mic-azimuths or --nmics, not both')
 	if args.mic_azimuths is not None:
 		azimuths = _float_list(args.mic_azimuths, '--mic-azimuths')
 		if radii.size == 1:
@@ -716,10 +729,11 @@ def build_parser() -> argparse.ArgumentParser:
 	ring.add_argument('--mic-azimuths', type=_parse_csv_floats, default=None,
 					  help='Comma-separated microphone azimuths (deg, counterclockwise seen from above: 0 = +x, '
 						   '90 = +y, left of +x), paired with --radii; one value of either is used for every '
-						   'microphone. Default: none (use --nmics).')
+						   'microphone. Not with --nmics. Default: none (use --nmics).')
 	ring.add_argument('--nmics', type=int, default=None,
 					  help='Microphones per ring, equally spaced from azimuth 0, on each of --radii '
-						   '(used when --mic-azimuths is not set). Default: none.')
+						   '(not with --mic-azimuths; either one given on the command line replaces both in the '
+						   'case file). Default: none.')
 	ring.add_argument('--kmz', type=str, default=None,
 					  help='Also write the microphones to this KMZ file (needs --ref-lat, --ref-lon, --heading); '
 						   'no figure is drawn then unless -o or -p is given. Default: none.')
@@ -761,7 +775,7 @@ def build_parser() -> argparse.ArgumentParser:
 	p_ov.add_argument('--spl-range', type=colon_pair, default=None, help='Color range as "min:max" (dB).')
 	p_ov.add_argument('--marker-size', type=float, default=2.0, help='Overlay marker size. Default: 2.')
 	p_ov.add_argument('--marker-alpha', type=float, default=0.4, help='Overlay marker alpha. Default: 0.4.')
-	p_ov.set_defaults(func=cmd_overlay)
+	p_ov.set_defaults(func=cmd_overlay, check=_check_overflight)
 
 	p_kml = sub.add_parser('kml', parents=[common], help='Write microphone coordinates to a KMZ file.')
 	p_kml.add_argument('--kmz', type=str, required=True, help='Output KMZ filename (e.g., array.kmz).')

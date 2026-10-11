@@ -57,6 +57,23 @@ def test_overlay_field_choices_come_from_the_level_table(monkeypatch):
         assert array_planner.build_parser().parse_args(['overlay', '--altitude', '1', '--field', field]).field == field
 
 
+@pytest.mark.parametrize('command', ['design', 'coverage', 'overlay', 'kml'])
+@pytest.mark.parametrize('altitude', ['0', '-1'])
+def test_every_level_pass_subcommand_refuses_a_meaningless_altitude(command, altitude, tmp_path, capsys):
+    """overlay ran the level pass from a non-positive --altitude with exit 0
+    once the overflight check became a per-subcommand default."""
+    extra = {
+        'coverage': ['-o', str(tmp_path / 'coverage.png')],
+        'overlay': ['-o', str(tmp_path / 'overlay.png')],
+        'kml': ['--kmz', str(tmp_path / 'array.kmz'), '--ref-lat', '40.8', '--ref-lon', '-77.9',
+                '--heading', '0'],
+    }.get(command, [])
+    with pytest.raises(SystemExit) as raised:
+        array_planner.main([command, '--nmics', '4', f'--altitude={altitude}', *extra])
+    assert raised.value.code == 2
+    assert '--altitude' in capsys.readouterr().err
+
+
 def _lambert(azimuth_deg, elevation_deg):
     """Lambert axes coordinates of UMAPR directions (deg), flattened."""
     az = np.radians(np.ravel(azimuth_deg))
@@ -114,6 +131,45 @@ def test_a_case_file_gives_the_options_and_the_command_line_overrides_it(ring_ru
     overridden, _ = ring_run(['hover', '--case', str(case), '--altitudes', '60'])
     elevation = np.degrees(np.arctan2(60.0, [50.0, 100.0]))
     np.testing.assert_allclose(overridden[:, :2], _lambert([180.0, 270.0], elevation), atol=1e-12)
+
+
+def test_nmics_on_the_command_line_replaces_the_case_file_mic_azimuths(ring_run, tmp_path):
+    """--nmics was ignored when the case file set mic_azimuths."""
+    case = tmp_path / 'hover.toml'
+    case.write_text('radii = [50]\nmic_azimuths = [0, 90]\naltitudes = [30]\n')
+    from_case, _ = ring_run(['hover', '--case', str(case), '--nmics', '4'])
+    by_hand, _ = ring_run(['hover', '--radii', '50', '--nmics', '4', '--altitudes', '30'])
+    assert by_hand.shape[1] == 4
+    np.testing.assert_array_equal(from_case, by_hand)
+
+
+def test_mic_azimuths_on_the_command_line_replaces_the_case_file_nmics(ring_run, tmp_path):
+    case = tmp_path / 'hover.toml'
+    case.write_text('radii = [50]\nnmics = 8\naltitudes = [30]\n')
+    from_case, _ = ring_run(['hover', '--case', str(case), '--mic-azimuths', '0'])
+    np.testing.assert_allclose(from_case, _lambert([180.0], [np.degrees(np.arctan2(30.0, 50.0))]), atol=1e-12)
+
+
+@pytest.mark.parametrize('command', ['hover', 'takeoff'])
+def test_mic_azimuths_and_nmics_together_are_refused_by_name(command, tmp_path, capsys):
+    """One of the two was silently ignored."""
+    argv = [command, '--radii', '50', '--mic-azimuths', '0,90', '--nmics', '4']
+    if command == 'hover':
+        argv += ['--altitudes', '30']
+    with pytest.raises(SystemExit) as raised:
+        array_planner.main(argv)
+    assert raised.value.code == 2
+    err = capsys.readouterr().err
+    assert '--mic-azimuths' in err and '--nmics' in err
+
+    case = tmp_path / 'case.toml'
+    case.write_text('radii = [50]\nmic_azimuths = [0, 90]\nnmics = 4\n'
+                    + ('altitudes = [30]\n' if command == 'hover' else ''))
+    with pytest.raises(SystemExit) as raised:
+        array_planner.main([command, '--case', str(case)])
+    assert raised.value.code == 2
+    err = capsys.readouterr().err
+    assert '--mic-azimuths' in err and '--nmics' in err
 
 
 def test_an_unknown_case_key_is_refused_by_name(tmp_path, capsys):
