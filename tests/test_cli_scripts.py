@@ -200,3 +200,17 @@ def test_array_planner_subcommands_run(tmp_path):
                   '--kmz', 'array.kmz', cwd=tmp_path)
     assert result.returncode == 0, result.stderr
     assert (tmp_path / 'array.kmz').stat().st_size > 0
+
+
+def test_array_planner_hover_and_takeoff_run(tmp_path):
+    result = run_here('array_planner.py', 'hover', '--radii', '50,100', '--nmics', '8', '--altitudes', '30,60',
+                      '--vehicle-headings', '0,90', '-o', 'hover.png', cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / 'hover.png').stat().st_size > 0
+    (tmp_path / 'takeoff.toml').write_text(
+        'radii = [150]\nnmics = 12\norigin = [-100, 0]\nflight_path_angle = 8\n'
+        'ref_lat = 40.8\nref_lon = -77.9\nheading = 90\nkmz = "takeoff.kmz"\n')
+    result = run_here('array_planner.py', 'takeoff', '--case', 'takeoff.toml', '-o', 'takeoff.png', cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / 'takeoff.png').stat().st_size > 0
+    assert (tmp_path / 'takeoff.kmz').stat().st_size > 0

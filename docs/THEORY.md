@@ -887,7 +887,13 @@ These are in PANAM but not used to build the databases.
   $[-(90^\circ - e_\min),\ 90^\circ - e_\min]$ (defaults $e_\min = 10^\circ$, $e_t = 90^\circ$),
   so that the outermost microphone is seen from overhead at $\arctan(\sin e_t\tan e_\min)$ below
   the horizon. `array_coverage`, `hover_array_coverage` and `takeoff_array_coverage` give the
-  sphere directions a planned level pass, hover or takeoff covers (§3.1–3.2).
+  sphere directions a planned level pass, hover or takeoff covers (§3.1–3.2). The hover and
+  takeoff microphones sit on rings, at radius $R$ and azimuth $\alpha$ (counterclockwise from
+  $+x$) about the origin. A hover at height $h$ above them is seen at elevation $\arctan(h/R)$;
+  a takeoff from height $h_0$ climbing at $\gamma$ is at $h_0 + d\tan\gamma$ after ground distance
+  $d$, so a microphone at the liftoff point sees it at $\gamma$ behind the vehicle when $h_0 = 0$.
+  The `array_planner.py` subcommands `hover` and `takeoff` plot these directions and write the
+  microphones to KMZ.
 - **Footprint preview** (`project_sphere`, `plot_projection`): each direction at least $e_c$ below
   the horizon (`elv_cutoff`, no default; `project_directory` and `plot_projection` use 30°)
   follows a straight slant ray from the sphere radius $r_\mathrm{ref}$ to flat ground $h_a$ below
@@ -954,7 +960,7 @@ Functions are in `flight_acoustics.py` unless another module is named. Tests are
 | §9 Metrics | `sound_exposure_level`, `ten_db_down_interval`, `noys`, `perceived_noise_level`, `tone_correction`, `effective_perceived_noise_level`, `mil_std_1474e_nondetectability_distance` | `test_sound_exposure_level.py`, `test_pnl_epnl.py`, `test_mil_std_nondetectability.py` |
 | §10 VKF | `vold_kalman_filter.vold_kalman_filter` | `test_vold_kalman_filter.py` |
 | §10 Ground-board models, two-path fit | `ground_plane.board_*`, `disc_bem_scattered`, `raised_plate_scattering`, `fit_two_path`, `height_from_path_difference` | `test_ground_plane.py`, `test_ground_validation.py`, `test_axisymmetric_bem.py` |
-| §10 Array planning | `linear_array_plan` (through the `array_planner.py design` CLI); `array_coverage`, `hover_array_coverage`, `takeoff_array_coverage` | `test_array_planner.py` (the CLI's spacing and options); the coverage functions: none |
+| §10 Array planning | `linear_array_plan` (through the `array_planner.py design` CLI); `array_coverage`, `hover_array_coverage`, `takeoff_array_coverage` (through `array_planner.py coverage`, `hover` and `takeoff`) | `test_array_coverage.py` (the coverage functions on known geometry), `test_array_planner.py` (the CLI's spacing, options and case files), `test_cli_scripts.py` (smoke) |
 | §10 Footprint, fried egg | `project_sphere`, `project_directory`, `fried_egg_plot`, `is_noisy` | `test_projection.py`, `test_no_data.py`, `test_cli_scripts.py` (smoke) |
 | §10 De-Dopplerization | `dedopplerize` | `test_acoustics.py` |
 
