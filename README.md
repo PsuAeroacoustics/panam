@@ -137,6 +137,8 @@ variable `PANAM_<NAME>` (for example `PANAM_NORAH2`), then `local_paths.toml`.
 | `norah2` | EASA NORAH2 public distribution (`Hemispheres/`) | NORAH2 tests |
 | `niceops` | NICE-OPS executable | tests that load PANAM databases in NICE-OPS |
 | `niceops_ray_geometry` | NICE-OPS ray-geometry executable | refracted-ray tests |
+| `b407_legacy_spheres` | legacy B407 sphere directory, the recipe's `reference_directory` | `docs/recipes/release_2017.toml` |
+| `b407_ray_profiles` | per-run NICE-OPS atmosphere CSVs (`<run>.csv`, heights in ft), the recipe's `ray_profiles` | `docs/recipes/release_2017.toml` |
 
 The 2017 archive and the AS350 demo data are not distributed with PANAM. The
 NICE-OPS executables come from a NICE-OPS build.

@@ -30,6 +30,7 @@ compares tip speed, radius, weight and C_T with the database's and refuses a mis
 | `--thrust-density` | the vehicle file's density, or 1.225 | the density C_T is formed with, kg/m³ |
 | `--radius` | 30.48 | sphere radius, m |
 | `--build-temperature`, `--build-pressure`, `--build-humidity` | 293.15 K, 101.325 kPa, 20% | the atmosphere of the broadband EAA |
+| `--absorption-band-method {center,arp5534,integrated}` | center | how band absorption is formed in the move to the sphere radius and in the EAA ([THEORY §5.4](THEORY.md#54-the-atmosphere)) |
 | `--accept-ground-included` | off | convert FREEFIELD = 0 tables (see [ground](#3-ground-freefield--0-tables)) |
 | `--mirror-rotor` | off | reverse the azimuth (see [rotor sense](#4-rotor-sense)) |
 | `--fill-empty` | off | fill NOVALUE cells from the nearest direction (see [missing cells](#missing-cells)) |
