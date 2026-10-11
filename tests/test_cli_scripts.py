@@ -261,6 +261,8 @@ def test_nod_tool_subcommands_run(tmp_path):
         assert result.returncode == 0, result.stderr
         assert (tmp_path / image).stat().st_size > 0
     assert run_here('nod_tool.py', 'plot', 'db.nod', '-c=70:0', '-o', 'x.png', cwd=tmp_path).returncode != 0
+    result = run_here('nod_tool.py', 'plot', 'db.nod', '-g', 'sphere0', '-n', '1.5', '-o', 'x.png', cwd=tmp_path)
+    assert result.returncode != 0
     result = run_here('nod_tool.py', 'envelope', 'db.nod', '-o', 'envelope.png', cwd=tmp_path)
     assert result.returncode == 0, result.stderr
     assert (tmp_path / 'envelope.png').stat().st_size > 0

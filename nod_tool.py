@@ -20,7 +20,8 @@ def build_parser():
 
     listing = commands.add_parser(
         'list', description='Print one row per condition: group, speed (kt), flight path angle (deg), '
-                            'load factor, condition origin, fraction of coverage cells set and the '
+                            'load factor, condition origin, fraction of coverage cells set in the '
+                            'lower hemisphere (|phi| <= 90 deg, the part a measurement can cover) and the '
                             'largest channel dBA (dB, at the sphere radius).',
         help='list the conditions')
     listing.add_argument('database', help='NICE-OPS database (.nod)')
@@ -37,7 +38,7 @@ def build_parser():
                             'and 0.05 deg), e.g. -c=80:-6')
     plot.add_argument('-n', '--load-factor', type=float, default=None,
                       help='Load factor, 1, that picks one of several conditions at the speed and angle '
-                           'of --condition (default: none; the match must be unique)')
+                           'of --condition; not with --group (default: none; the match must be unique)')
     plot.add_argument('-q', '--quantity', choices=nd.PLOT_QUANTITIES, default='dBA',
                       help='dBA (dB at the sphere radius), EAA (dB/1000 m), band (band level, dB, '
                            'needs --band) or coverage (1 where measured; the fraction of bands '
@@ -87,6 +88,8 @@ def format_listing(database):
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    if args.command == 'plot' and args.group is not None and args.load_factor is not None:
+        raise SystemExit('nod_tool.py plot: --load-factor applies to --condition only')
     if args.command == 'check':
         violations = nd.validate_nod(args.database)
         for violation in violations:
