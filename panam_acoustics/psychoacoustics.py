@@ -80,6 +80,9 @@ _USL = _single([
 _STEP = float(np.float32(0.1))
 _ZUP_MARGIN = float(np.float32(0.0001))
 _MP1_SCALE = float(np.float32(0.0635))
+# Each critical band's loudness scale at its threshold in quiet, evaluated
+# value by value as the band loop once did.
+_MP1 = np.array([_MP1_SCALE * 10.0 ** (0.025 * ltq) for ltq in _LTQ])
 _KORRY = (float(np.float32(0.4)), float(np.float32(0.32)))
 
 
@@ -103,9 +106,8 @@ def _core_loudness(levels_db, diffuse):
             level += _DDF[i]
         if level > _LTQ[i]:
             level -= _DCB[i]
-            mp1 = _MP1_SCALE * 10.0 ** (0.025 * _LTQ[i])
             mp2 = (0.75 + 0.25 * 10.0 ** (0.1 * (level - _LTQ[i]))) ** 0.25 - 1.0
-            core[i] = max(mp1 * mp2, 0.0)
+            core[i] = max(_MP1[i] * mp2, 0.0)
     # Run of the threshold in quiet within the lowest critical band.
     correction = _KORRY[0] + _KORRY[1] * core[0] ** 0.2
     if correction < 1.0:

@@ -28,6 +28,12 @@ IMPULSE_RISE = 0.035
 IMPULSE_DECAY = 1.5
 
 
+def _check_fs(fs):
+    """Raise ValueError unless the sample rate ``fs`` (Hz) is positive and finite."""
+    if not np.isfinite(fs) or fs <= 0:
+        raise ValueError('fs must be positive and finite')
+
+
 def _analog_zpk(kind):
     """Analog zeros and poles (rad/s) of weighting ``kind``, unnormalized."""
     w = [2.0 * np.pi * f for f in (F1, F2, F3, F4)]
@@ -70,8 +76,7 @@ def frequency_weighting_sos(kind, fs):
         ValueError: ``fs`` not positive and finite, or not above 2 kHz for
             A and C; unknown ``kind``.
     """
-    if not np.isfinite(fs) or fs <= 0:
-        raise ValueError('fs must be positive and finite')
+    _check_fs(fs)
     if kind == 'Z':
         return np.array([[1.0, 0.0, 0.0, 1.0, 0.0, 0.0]])
     zeros, poles = _analog_zpk(kind)
@@ -99,8 +104,7 @@ def apply_frequency_weighting(p, fs, kind='A'):
     """
     p = np.asarray(p, dtype=float)
     if kind == 'Z':
-        if not np.isfinite(fs) or fs <= 0:
-            raise ValueError('fs must be positive and finite')
+        _check_fs(fs)
         return p.copy()
     return sosfilt(frequency_weighting_sos(kind, fs), p, axis=-1)
 
@@ -129,8 +133,7 @@ def time_weighted_square(p, fs, time='F'):
     Returns:
         mean-square pressure, Pa^2, same shape as ``p``.
     """
-    if not np.isfinite(fs) or fs <= 0:
-        raise ValueError('fs must be positive and finite')
+    _check_fs(fs)
     p2 = np.asarray(p, dtype=float) ** 2
     if time in TIME_CONSTANTS:
         return _exponential(p2, fs, TIME_CONSTANTS[time])
@@ -214,8 +217,7 @@ def leq(p, fs, frequency='A', duration=None, p_ref=20e-6):
     p = np.asarray(p, dtype=float)
     if p.ndim != 1 or not p.size:
         raise ValueError('p must be a nonempty one-dimensional history')
-    if not np.isfinite(fs) or fs <= 0:
-        raise ValueError('fs must be positive and finite')
+    _check_fs(fs)
     record = p.size / float(fs)
     T = record if duration is None else float(duration)
     if not np.isfinite(T) or T < record * (1.0 - 1e-12):

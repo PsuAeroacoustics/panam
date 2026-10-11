@@ -91,17 +91,28 @@ def frame_signal(pressure, sampling_rate, frame_time, hop_time=None):
 
 
 def _prepared_frames(pressure, sampling_rate, frame_time, hop_time, detrend):
+    """Frame times, frames (de-trended, NaN samples zeroed, when ``detrend``)
+    and which frames hold a NaN sample."""
     times, frames = frame_signal(pressure, sampling_rate, frame_time, hop_time)
-    missing = np.isnan(frames).any(axis=-1)
+    nan = np.isnan(frames)
+    missing = nan.any(axis=-1)
     if detrend is not None:
         if detrend not in ("constant", "linear"):
             raise ValueError("detrend must be 'constant', 'linear' or None, not {!r}".format(detrend))
-        frames = _detrend(np.where(np.isnan(frames), 0.0, frames), axis=-1, type=detrend)
+        frames = _detrend(np.where(nan, 0.0, frames), axis=-1, type=detrend)
     return times, frames, missing
 
 
 def _rms(frames):
     return np.sqrt(np.mean(frames ** 2, axis=-1))
+
+
+def _frame_ratio(numerator, denominator, missing):
+    """numerator / denominator per frame, NaN for a ``missing`` frame or a
+    ratio that is not finite (a zero denominator)."""
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ratio = numerator / denominator
+    return np.where(missing | ~np.isfinite(ratio), np.nan, ratio)
 
 
 def crest_factor(pressure, sampling_rate, frame_time, *, hop_time=None, detrend="constant"):
@@ -125,10 +136,7 @@ def crest_factor(pressure, sampling_rate, frame_time, *, hop_time=None, detrend=
         sample or with zero RMS.
     """
     times, frames, missing = _prepared_frames(pressure, sampling_rate, frame_time, hop_time, detrend)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        crest = np.max(np.abs(frames), axis=-1) / _rms(frames)
-    crest = np.where(missing | ~np.isfinite(crest), np.nan, crest)
-    return times, crest
+    return times, _frame_ratio(np.max(np.abs(frames), axis=-1), _rms(frames), missing)
 
 
 def kurtosis(pressure, sampling_rate, frame_time, *, hop_time=None, detrend="constant"):
@@ -156,10 +164,7 @@ def kurtosis(pressure, sampling_rate, frame_time, *, hop_time=None, detrend="con
     frames = frames - frames.mean(axis=-1, keepdims=True)
     m2 = np.mean(frames ** 2, axis=-1)
     m4 = np.mean(frames ** 4, axis=-1)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        kurt = m4 / m2 ** 2
-    kurt = np.where(missing | ~np.isfinite(kurt), np.nan, kurt)
-    return times, kurt
+    return times, _frame_ratio(m4, m2 ** 2, missing)
 
 
 def pulse_peak_to_rms(pressure, sampling_rate, frame_time, *, band_hz, hop_time=None,
@@ -203,10 +208,7 @@ def pulse_peak_to_rms(pressure, sampling_rate, frame_time, *, band_hz, hop_time=
     pulse = sosfiltfilt(sos, np.where(np.isnan(pressure), 0.0, pressure), axis=-1)
     times, frames, missing = _prepared_frames(pressure, sampling_rate, frame_time, hop_time, detrend)
     _, pulse_frames = frame_signal(pulse, sampling_rate, frame_time, hop_time)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        ratio = np.max(np.abs(pulse_frames), axis=-1) / _rms(frames)
-    ratio = np.where(missing | ~np.isfinite(ratio), np.nan, ratio)
-    return times, ratio
+    return times, _frame_ratio(np.max(np.abs(pulse_frames), axis=-1), _rms(frames), missing)
 
 
 def _harmonic_band_energy(power, freqs, width, lower, upper):
