@@ -1024,6 +1024,30 @@ These are in PANAM but not used to build the databases.
   the path difference $\Delta R = R_2 - R_1$; with the pole height, $\Delta R$ gives the arrival
   elevation or the source height. It checks the flight geometry and the pole height independently
   of any level model (see the ground-plane notes).
+- **Ground impedance inversion** (`fit_ground_impedance`). The variable-porosity parameters
+  (§4.1) are fitted to measured pole levels re free field, $\Delta L_{bj}$ in band $b$ and frame
+  $j$, with the forward model $\Delta L$ of §4.4 (`pole_level`):
+
+  $$
+  \min_{\ln\sigma_e,\ \ln\alpha_e}\ \sum_{b,j} s_f^2\,\rho\!\left(r_{bj}^2/s_f^2\right),
+  \qquad r_{bj} = \sqrt{w_{bj}}\left[\Delta L(f_b; h_{s,j}, d_j, h_r; \sigma_e, \alpha_e) - \Delta L_{bj}\right],
+  \qquad \rho(z) = 2\left(\sqrt{1 + z} - 1\right),
+  $$
+
+  the soft-L1 loss with scale $s_f$ (`f_scale`, default 1 dB) and optional weights $w_{bj}$
+  (default 1). Bands and frames with no finite measurement are left out. The search is in the
+  logarithms of the parameters, within $1 \le \sigma_e \le 10^5$ kPa·s/m² and
+  $10^{-2} \le \alpha_e \le 10^3$ m⁻¹, from the best of a coarse grid in $\sigma_e$; $\alpha_e$
+  can instead be held, at 0 for the site ground (§4.6). The covariance is $s^2(J^\mathsf{T}J)^{-1}$
+  of the log parameters, the robust Gauss-Newton approximation: $J$ is the Jacobian of $r$ scaled
+  by the loss, $J_{bj} = \sqrt{\rho'(z) + 2z\rho''(z)}\,\partial r_{bj}/\partial(\ln\sigma_e, \ln\alpha_e)$
+  with $z = r_{bj}^2/s_f^2$, which is $(1 + z)^{-3/4}\,\partial r_{bj}/\partial(\ldots)$ for soft-L1,
+  and $s^2 = \sum s_f^2\,\rho(r_{bj}^2/s_f^2)/(N - p)$, so a gross outlier raises $s^2$ in proportion to $|r_{bj}|$, not $r_{bj}^2$.
+  Both reduce to the ordinary least-squares forms for residuals well below $s_f$. The covariance
+  is carried to $\sigma_e$ and $\alpha_e$ by the delta method. It ignores any correlation
+  between bands and frames. The target is the pole level re free field because that is what
+  `pole_level` returns. Forming $\Delta L_{bj}$ from measurements, for example from a co-located
+  plate microphone and its modeled transfer function, is left to the caller.
 - **Array planning** (`linear_array_plan`, `array_planner.py`): microphones along a line,
   $y_i = (h/\sin e_t)\tan\theta_i$, with $\theta_i$ equally spaced in
   $[-(90^\circ - e_\min),\ 90^\circ - e_\min]$ (defaults $e_\min = 10^\circ$, $e_t = 90^\circ$),
@@ -1119,6 +1143,7 @@ Functions are in `flight_acoustics.py` unless another module is named. Tests are
 | §9 Time-weighted levels | `panam_acoustics.time_weighting.frequency_weighting_sos`, `apply_frequency_weighting`, `time_weighted_square`, `time_weighted_level`, `leq` | `test_time_weighting.py` |
 | §10 VKF | `vold_kalman_filter.vold_kalman_filter` | `test_vold_kalman_filter.py` |
 | §10 Ground-board models, two-path fit | `ground_plane.board_*`, `disc_bem_scattered`, `raised_plate_scattering`, `fit_two_path`, `height_from_path_difference` | `test_ground_plane.py`, `test_ground_validation.py`, `test_axisymmetric_bem.py` |
+| §10 Ground impedance inversion | `ground_plane.fit_ground_impedance` | `test_ground_impedance_fit.py` |
 | §10 Array planning | `linear_array_plan` (through the `array_planner.py design` CLI); `array_coverage`, `hover_array_coverage`, `takeoff_array_coverage` | `test_array_planner.py` (the CLI's spacing and options); the coverage functions: none |
 | §10 Footprint, fried egg | `project_sphere`, `project_directory`, `fried_egg_plot`, `is_noisy` | `test_projection.py`, `test_no_data.py`, `test_cli_scripts.py` (smoke) |
 | §10 De-Dopplerization | `dedopplerize` | `test_acoustics.py` |
