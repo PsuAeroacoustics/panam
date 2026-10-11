@@ -57,14 +57,15 @@ read the sphere files back.
 | `sphere_statistics.py` | Energy averaging of repeat-run spheres (`average_spheres`, `write_averaged_sphere`) and band-by-band sphere comparison (`compare_spheres`, `plot_sphere_difference`) |
 | `nod_database.py` | Reading NICE-OPS databases: `load_nod`, `validate_nod` (the rules of [file_formats.md](file_formats.md#checking-a-database)), `compare_databases`, `to_frame` (needs pandas) |
 | `synthetic_flyover.py` | Synthetic recordings of a straight, level pass of a source of known directivity (`synthesize_pass`), its true level at the reference radius (`source_level_db`), and the recovered-minus-true Lambert map (`plot_level_difference`). The golden results and the depropagation tutorial use it |
-| `panam_acoustics/` | `signal_io` (recording loaders), `filters` (Butterworth helpers, the one-third-octave filter bank), `atmosphere` and `iso_9613_1_1993` (ISO 9613-1 absorption), `time_weighting` (IEC 61672-1 A/C/Z and F/S/I weighting, Lmax, Leq), `plotting` (`acoustic_plot_style`), `impulsiveness` (BVI crest factor, kurtosis, pulse peak-to-RMS and harmonic ratio). See its `THIRD_PARTY_NOTICES.md` for the parts derived from python-acoustics |
+| `panam_acoustics/` | `signal_io` (recording loaders), `filters` (Butterworth helpers, the one-third-octave filter bank), `atmosphere` and `iso_9613_1_1993` (ISO 9613-1 absorption), `time_weighting` (IEC 61672-1 A/C/Z and F/S/I weighting, Lmax, Leq), `plotting` (`acoustic_plot_style`), `impulsiveness` (BVI crest factor, kurtosis, pulse peak-to-RMS and harmonic ratio), `psychoacoustics` (ISO 532-1 stationary loudness, DIN 45692 sharpness). See its `THIRD_PARTY_NOTICES.md` for the parts derived from python-acoustics |
 | `cli.py` | Argument types and figure output shared by the scripts: `colon_pair`, `colon_pair_or_single`, `save_or_show` |
 | `local_paths.py` | `data_path(name)`: where this machine keeps external data and the NICE-OPS executables |
 | `provenance.py` | `build_provenance(tool, settings)`: the code version, library versions and settings stamped on written spheres and databases |
 | `unit_conversion.py`, `default_units.py` | Aerospace unit conversions (third-party, BSD-style license in the file headers) |
 
 Scripts with a command line: `noise_abatement_2017.py` (the main pipeline),
-`build_empirical_database.py`, `norah2_to_nod.py`, `compare_databases.py`, `array_planner.py`, `sphere_diff.py`, and the
+`build_empirical_database.py`, `norah2_to_nod.py`, `sphere_to_norah2.py`, `compare_databases.py`, `array_planner.py`,
+`sphere_diff.py`, and the
 plotting scripts `nc_lambert_ea.py`, `plot_projection.py`, `fried_egg_plot.py`,
 `spectrogram_plot.py`, `atmomap.py`, `ega_plot.py` and `board_field_plot.py`.
 `depropagation_tutorial.py`, `AS350_289108_demo.py`, `hexacopter_vkf_example.py`,

@@ -42,13 +42,14 @@ Instructions for AI coding tools working on PANAM. Human developers: see
 - `panam_acoustics/`: `signal_io` (loaders), `filters`, `atmosphere` and
   `iso_9613_1_1993` (ISO 9613-1), `time_weighting` (IEC 61672-1 frequency
   and time weighting, Lmax, Leq), `plotting` (`acoustic_plot_style`),
-  `impulsiveness` (BVI crest factor, kurtosis, harmonic ratio).
+  `impulsiveness` (BVI crest factor, kurtosis, harmonic ratio),
+  `psychoacoustics` (ISO 532-1 loudness, DIN 45692 sharpness).
 - `cli.py`: `colon_pair`, `colon_pair_or_single`, `save_or_show`.
 - `provenance.py`: the `panam_*` provenance stamp on written files.
 - `local_paths.py`: data lookup. `unit_conversion.py`, `default_units.py`:
   third-party unit conversions.
 - Tools: `noise_abatement_2017.py`, `build_empirical_database.py`,
-  `norah2_to_nod.py`, `compare_databases.py`, `array_planner.py`,
+  `norah2_to_nod.py`, `sphere_to_norah2.py`, `compare_databases.py`, `array_planner.py`,
   `sphere_diff.py`, plotting scripts. Examples and
   diagnostics: `depropagation_tutorial.py`, `AS350_289108_demo.py`,
   `hexacopter_vkf_example.py`, `as350_flip_check.py`.

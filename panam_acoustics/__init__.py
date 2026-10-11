@@ -4,7 +4,8 @@
 Butterworth low/high-pass helpers and the one-third-octave filter bank;
 ``atmosphere`` and ``iso_9613_1_1993`` give ISO 9613-1 absorption;
 ``time_weighting`` gives IEC 61672-1 frequency- and time-weighted levels;
-``plotting`` holds the scoped figure style; ``impulsiveness`` holds the BVI metrics.
+``plotting`` holds the scoped figure style; ``impulsiveness`` holds the BVI metrics;
+``psychoacoustics`` gives ISO 532-1 loudness and DIN 45692 sharpness.
 ``atmosphere.py``, ``iso_9613_1_1993.py`` and
 the low/high-pass helpers in ``filters.py`` derive from python-acoustics
 (BSD-3-Clause; see THIRD_PARTY_NOTICES.md).  The rest is PANAM's own code.

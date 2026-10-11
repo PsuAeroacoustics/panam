@@ -33,6 +33,8 @@ python nc_lambert_ea.py example_data/AS350B3108.nc -w A -o demo_plots/sphere.png
 python plot_projection.py example_data/AS350B3108.nc -a 150 -u ft -o demo_plots/footprint.png  # -a is in m; -u sets the axes
 python array_planner.py coverage --nmics 12 --altitude 150 -o demo_plots/coverage.png
 python hexacopter_vkf_example.py   # writes demo_plots/hexa_*.png
+python sphere_to_norah2.py example_data/AS350B3108.nc -o demo_plots/AS350B3108.hem \
+    --temperature 288.15 --pressure 101.325 --humidity 70   # K, kPa, % of the measurement
 ```
 
 To build a database, a directory needs spheres and a `vehicle.cfg`. One sphere
@@ -84,6 +86,7 @@ scripts take no options and run as soon as they start, `-h` included:
 | `build_empirical_database.py` | Build a NICE-OPS database from a directory of spheres and its `vehicle.cfg`; `--manifest` and `--exclude` select the spheres | Your spheres |
 | `norah2_to_nod.py` | Build a NICE-OPS database from NORAH2 `.hem` hemispheres | `.hem` files |
 | `compare_databases.py` | Compare two NICE-OPS databases: per-band energy, coverage, unmatched conditions, root attributes; `--validate` checks the file contract | Your databases |
+| `sphere_to_norah2.py` | Convert an AAM sphere to a NORAH2 `.hem` hemisphere; the measurement atmosphere is required | No (bundled sphere) |
 | `nc_lambert_ea.py` | Plot a sphere's levels on a Lambert equal-area projection | No (bundled sphere) |
 | `sphere_diff.py` | Energy-average repeat-run spheres (`average`), or print and map the band-by-band level difference of two spheres (`compare`) | Your spheres |
 | `plot_projection.py` | Project a sphere onto flat ground and contour the footprint | No (bundled sphere) |
@@ -106,6 +109,12 @@ something else (`--pressure`, `--plot-type`). The other plotting scripts write
 the file named by `-o`, open a window without it, and with `-o` and `-p/--plot`
 do both. The examples write to `demo_plots/` in the current directory;
 `hexacopter_vkf_example.py` must be run from the repository root.
+
+Loudness and sharpness of a one-third-octave spectrum are library functions, not a
+script: `panam_acoustics.psychoacoustics.loudness_zwicker` (ISO 532-1:2017, stationary,
+25 Hz to 12.5 kHz) and `sharpness_din` (DIN 45692). `iso_532_1_levels` picks those bands out of
+a PANAM 10 Hz to 10 kHz spectrum and sets 12.5 kHz to no energy, which understates the loudness
+by the 12.5 kHz content; see [THEORY §9](docs/THEORY.md#9-metrics).
 
 ## Data locations
 
