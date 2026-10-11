@@ -4329,6 +4329,97 @@ def _fore_aft_measured(measured):
     return averaged
 
 
+#: Flight path angles, degrees, a synthesized hover is written at when no
+#: extended angles are given (see :func:`_hover_flight_path_angles`).
+HOVER_FLIGHT_PATH_ANGLES = (-12, 0, 12)
+
+
+def _hover_flight_path_angles(extended_flight_path_angles=None):
+    """Flight path angles, degrees, a synthesized hover is written at.
+
+    0 and each of ``extended_flight_path_angles`` (degrees) when given, sorted;
+    otherwise :data:`HOVER_FLIGHT_PATH_ANGLES`.  A hover has no flight path, so
+    the copies only keep the condition hull from clamping a steep, slow state.
+    """
+    if extended_flight_path_angles is not None:
+        return sorted({0.0, *extended_flight_path_angles})
+    return list(HOVER_FLIGHT_PATH_ANGLES)
+
+
+def _hover_source_index(conditions, level_flight_tolerance=LEVEL_FLIGHT_TOLERANCE):
+    """Index of the condition a hover is synthesized from.
+
+    ``conditions`` is a sequence of (speed in knots, flight path angle in
+    degrees).  The slowest condition within ``level_flight_tolerance`` degrees
+    of level flight is picked, the first on a tie; if none is that close, the
+    slowest overall, with a warning (the further from level flight, the rougher
+    the hover approximation).
+    """
+    if len(conditions) == 0:
+        raise ValueError('no conditions to synthesize a hover from')
+    min_speed, min_index = np.inf, None
+    slowest_speed, slowest_index = np.inf, None
+    for index, (speed, flight_path_angle) in enumerate(conditions):
+        if speed < min_speed and np.abs(flight_path_angle) < level_flight_tolerance:
+            min_speed, min_index = speed, index
+        if speed < slowest_speed:
+            slowest_speed, slowest_index = speed, index
+    if min_index is None:
+        warnings.warn('No sphere within {:g} degrees of level flight; synthesizing hover from the '
+                      'slowest available at {:.1f} knots.'.format(level_flight_tolerance, slowest_speed))
+        return slowest_index
+    return min_index
+
+
+def _synthesized_hover_sphere(phi_list, theta_list, amplitude, measured, frequency, distance,
+                              atmosphere, hover_correction=None, clamp_empty_directions=True):
+    """Synthesize a completed hover sphere from a slow flight sphere's band levels (THEORY 7.4).
+
+    Shared by :func:`build_empirical_database` and :func:`build_database_from_norah2`.
+    The spectrum is averaged fore to aft in energy (:func:`average_fore_and_aft`),
+    a cell is measured only where both partners were (:func:`_fore_aft_measured`),
+    ``hover_correction`` (dB; see :func:`build_empirical_database`) is added,
+    SPLA and EAA are recomputed from the result (:func:`spla_and_eaa_from_spectrum`),
+    and the sphere is completed onto its upper surface.
+
+    Args:
+        phi_list, theta_list: the lower-hemisphere axes, degrees.
+        amplitude: (phi, theta, band) levels at the sphere radius, dB, -inf where missing.
+        measured: (phi, theta, band) bool, True where the source bin is measured.
+        frequency: band centers, Hz.
+        distance: the EAA distance, m.
+        atmosphere: the atmosphere of the EAA.
+        hover_correction: None, or a callable as in :func:`build_empirical_database`.
+        clamp_empty_directions: zero the EAA of a direction with no energy
+            (:func:`_finite_sphere_levels`).
+
+    Returns: ``(phi, theta, SPLA, EAA, amplitude, coverage)`` of the completed sphere,
+        as :func:`_complete_sphere_with_coverage` returns them (dB, dB per ``distance``).
+    """
+    # The averaging below gives a gated bin the level of its partner, so the
+    # hover's coverage is measured only where both partners were.
+    measured = _fore_aft_measured(measured)
+    # Average the SPECTRUM fore-to-aft on an energy basis, then derive SPLA and
+    # EAA from the averaged spectrum.  Averaging the broadband dB levels instead
+    # (a) is not an energy average, and (b) leaves EAA untouched, so level and
+    # excess attenuation end up describing different spheres.
+    amplitude = average_fore_and_aft(amplitude)
+    if hover_correction is not None:
+        theta_grid, phi_grid = np.meshgrid(np.asarray(theta_list, dtype=float),
+                                           np.asarray(phi_list, dtype=float))
+        correction = np.asarray(hover_correction(phi_grid, theta_grid, np.asarray(frequency, dtype=float)),
+                                dtype=float)
+        if correction.shape != amplitude.shape:
+            raise ValueError('hover_correction returned shape {}, the sphere is {}'.format(
+                correction.shape, amplitude.shape))
+        amplitude = amplitude + correction
+    SPLA, EAA = spla_and_eaa_from_spectrum(amplitude, frequency, distance, atmosphere)
+    if clamp_empty_directions:
+        SPLA, EAA = _finite_sphere_levels(SPLA, EAA)
+    # Complete the sphere onto its upper surface
+    return _complete_sphere_with_coverage(phi_list, theta_list, SPLA, EAA, amplitude, measured)
+
+
 def mirror_phi_to_upper_surface(phi_list):
     """Complete a lower-hemisphere sphere onto its upper surface.
 
@@ -4536,10 +4627,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     if hover_source is not None:
         ncdatabase.hover_source = os.path.basename(str(hover_source))
 
-    min_speed = np.inf
-    min_speed_file = None
-    slowest_speed = np.inf
-    slowest_file = None
+    source_conditions = []
     sphere_index = 0
     level_conditions = []
     # Every condition to write, collected rather than written immediately, so
@@ -4556,14 +4644,8 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
         measured = _measured_bins(amplitude, EAA)
         if clamp_empty_directions:
             SPLA, EAA = _finite_sphere_levels(SPLA, EAA)
-        # Find the lowest speed file near level flight
-        if speed < min_speed and np.abs(flight_path_angle) < level_flight_tolerance:
-            min_speed = speed
-            min_speed_file = filename
-        # ...and the slowest overall, as a fallback when nothing is near level
-        if speed < slowest_speed:
-            slowest_speed = speed
-            slowest_file = filename
+        # Remembered for picking the hover source (_hover_source_index).
+        source_conditions.append((speed, flight_path_angle))
         # Complete the sphere onto its upper surface
         phi_full, theta_full, SPLA_full, EAA_full, amplitude_full, coverage_full = (
             _complete_sphere_with_coverage(phi_list, theta_list, SPLA, EAA, amplitude, measured))
@@ -4583,17 +4665,9 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                 frequency if store_spectrum else None,
                 amplitude_full if store_spectrum else None, coverage_full, measured_metadata))
 
-    if min_speed_file is None:
-        # No sphere within level_flight_tolerance of level flight.  The hover
-        # sphere is synthesized by averaging the slowest one fore-to-aft, so
-        # fall back to the slowest available rather than failing with an
-        # unbound name -- the further it is from level flight, the rougher the
-        # hover approximation.
-        if slowest_file is None:
-            raise ValueError('No sphere files found in ' + str(directory_name))
-        warnings.warn('No sphere within {:g} degrees of level flight; synthesizing hover from the '
-                      'slowest available at {:.1f} knots.'.format(level_flight_tolerance, slowest_speed))
-        min_speed_file = slowest_file
+    if not file_list:
+        raise ValueError('No sphere files found in ' + str(directory_name))
+    min_speed_file = file_list[_hover_source_index(source_conditions, level_flight_tolerance)]
 
     if hover_source is not None:
         # Its DOPPLER_SHIFT_REMOVED does not enter the database's flag: a hover
@@ -4603,36 +4677,14 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     # Now, adapt the lowest speed sphere to a hover sphere by averaging from fore to aft
     (_, _, phi_list, theta_list, radius, _, _, eaa_source, _, _,
      frequency, amplitude) = extract_SPL(min_speed_file, infreqs, distance, atmosphere)
-    # The averaging below gives a gated bin the level of its partner, so the
-    # hover's coverage is measured only where both partners were.
-    measured = _fore_aft_measured(_measured_bins(amplitude, eaa_source))
-    # Average the SPECTRUM fore-to-aft on an energy basis, then derive SPLA and
-    # EAA from the averaged spectrum.  Averaging the broadband dB levels instead
-    # (a) is not an energy average, and (b) leaves EAA untouched, so level and
-    # excess attenuation end up describing different spheres.
-    amplitude = average_fore_and_aft(amplitude)
-    if hover_correction is not None:
-        theta_grid, phi_grid = np.meshgrid(np.asarray(theta_list, dtype=float),
-                                           np.asarray(phi_list, dtype=float))
-        correction = np.asarray(hover_correction(phi_grid, theta_grid, np.asarray(frequency, dtype=float)),
-                                dtype=float)
-        if correction.shape != amplitude.shape:
-            raise ValueError('hover_correction returned shape {}, the sphere is {}'.format(
-                correction.shape, amplitude.shape))
-        amplitude = amplitude + correction
-    SPLA, EAA = spla_and_eaa_from_spectrum(amplitude, frequency, distance, atmosphere)
-    if clamp_empty_directions:
-        SPLA, EAA = _finite_sphere_levels(SPLA, EAA)
-    # Complete the sphere onto its upper surface
-    phi_full, theta_full, SPLA_full, EAA_full, amplitude_full, coverage_full = (
-        _complete_sphere_with_coverage(phi_list, theta_list, SPLA, EAA, amplitude, measured))
+    phi_full, theta_full, SPLA_full, EAA_full, amplitude_full, coverage_full = _synthesized_hover_sphere(
+        phi_list, theta_list, amplitude, _measured_bins(amplitude, eaa_source), frequency,
+        distance, atmosphere, hover_correction=hover_correction,
+        clamp_empty_directions=clamp_empty_directions)
     # Set hover conditions.  Hover is a near-level condition, so it is written
     # at the extended angles as well as level flight.
     speed = 0
-    if extended_flight_path_angles is not None:
-        flight_path_angles = sorted({0.0, *extended_flight_path_angles})
-    else:
-        flight_path_angles = [-12, 0, 12]
+    flight_path_angles = _hover_flight_path_angles(extended_flight_path_angles)
     # Augment load factor data
     hover_metadata = run_metadata(min_speed_file, 'synthesized_hover')
     for load_factor in load_factors_to_write:
