@@ -196,6 +196,21 @@ def test_build_empirical_database_runs(tmp_path):
     assert result.returncode == 0, result.stderr
     with Dataset(str(tmp_path / 'database.nod')) as ds:
         assert ds.source_spheres == 'X101.nc' and ds.excluded_spheres == 'X102.nc'
+    # A recipe's settings, and a refused key's message.
+    (tmp_path / 'recipe.toml').write_text('[database]\nfixed_load_factor = true\nexclude = ["X102.nc"]\n')
+    result = run_here('build_empirical_database.py', 'spheres', 'recipe.nod', '--recipe', 'recipe.toml',
+                      cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    with Dataset(str(tmp_path / 'recipe.nod')) as ds:
+        assert ds.source_spheres == 'X101.nc' and int(ds['fixed_load_factor'][...]) == 1
+    (tmp_path / 'bad.toml').write_text('[database]\nload_factor = [1.0]\n')
+    result = run_here('build_empirical_database.py', 'spheres', 'bad.nod', '--recipe', 'bad.toml', cwd=tmp_path)
+    assert result.returncode == 1 and 'did you mean load_factors' in result.stderr
+
+
+def test_noise_abatement_2017_recipe_help(tmp_path):
+    result = run_here('noise_abatement_2017.py', '--help', cwd=tmp_path)
+    assert result.returncode == 0 and '--recipe' in result.stdout and '--hover-source' in result.stdout
 
 
 def test_compare_databases_runs(tmp_path):

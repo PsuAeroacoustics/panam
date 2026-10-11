@@ -1882,7 +1882,7 @@ def _prefetch_run(test, run, gate_ambient=True, done=None):
 def build_all(aircraft, output_directory, *, root=None, runs=None,
               steady_only=True, reference_directory=None, sphere_prefix=None,
               manifest_path=None, prefetch=True, norah2_directory=None, ray_models=None, winds=None,
-              **kwargs):
+              ray_profiles=None, **kwargs):
     """Rebuild every usable run for one aircraft.
 
     ``winds``, if given, is called with each run id and returns that run's ``wind`` for
@@ -1897,6 +1897,12 @@ def build_all(aircraft, output_directory, *, root=None, runs=None,
     ``ray_model`` for :func:`build_sphere` (its own atmosphere, or ``'wind'`` for its
     wind from ``winds``), or None to build that run along straight lines; the
     manifest's ``rays`` column says which.
+
+    ``ray_profiles``, if given, is a directory of per-run NICE-OPS ``--atmosphere`` CSV
+    files (heights in ft) named by run id, ``<run>.csv``: :func:`profile_ray_models` turns
+    it into ``ray_models``.  A run with a profile is depropagated along refracted rays
+    through it, and a run without one along straight lines.  Give ``ray_models`` or
+    ``ray_profiles``, not both.
 
     ``norah2_directory``, if given, also receives each sphere as a NORAH2
     ``.hem`` file and, once the batch is done, the ``[prefix]_Triangulation.int``
@@ -1917,6 +1923,10 @@ def build_all(aircraft, output_directory, *, root=None, runs=None,
     Returns ``(records, failures)``.
     """
     test = NoiseAbatementTest(aircraft, root=root)
+    if ray_profiles is not None:
+        if ray_models is not None:
+            raise ValueError('give ray_models or ray_profiles, not both')
+        ray_models = profile_ray_models(test, ray_profiles)
     if runs is None:
         runs = test.runs(steady_only=steady_only)
     prefix = sphere_prefix or AIRCRAFT_SPHERE_PREFIX.get(aircraft, aircraft)
@@ -1983,6 +1993,34 @@ def build_all(aircraft, output_directory, *, root=None, runs=None,
     if manifest_path:
         write_manifest(manifest_path, records, failures)
     return records, failures
+
+
+def profile_ray_models(test, directory, executable=None):
+    """``build_all``'s ``ray_models`` from a directory of per-run atmospheric profiles.
+
+    ``directory`` holds NICE-OPS ``--atmosphere`` CSV files (heights in ft, above the
+    ground boards) named by run id, ``<run>.csv``.  The returned callable gives, for a
+    run with a profile, :func:`refracted_rays.external_ray_model` through it: stratified
+    refraction, flush plate receivers, and the run's own :func:`frame_bearing_deg` to place
+    the profile's winds.  For a run without one it gives None, straight lines.
+    ``executable`` is NICE-OPS's ``niceops_ray_geometry`` (default: the
+    ``niceops_ray_geometry`` entry of :mod:`local_paths`), looked up only when a run has a
+    profile.
+    """
+    directory = os.path.abspath(os.path.expanduser(directory))
+    if not os.path.isdir(directory):
+        raise FileNotFoundError('ray profile directory {} does not exist'.format(directory))
+
+    def ray_model(run):
+        path = os.path.join(directory, '{}.csv'.format(run))
+        if not os.path.isfile(path):
+            return None
+        tracer = local_paths.data_path('niceops_ray_geometry', executable)
+        bearing = frame_bearing_deg(test.by_run[run], load_track(test.track_path(run)))
+        return refracted_rays.external_ray_model(tracer, path, frame_bearing_deg=bearing,
+                                                 refraction='stratified', receiver='plate',
+                                                 length_units='ft')
+    return ray_model
 
 
 def write_manifest(path, records, failures):
@@ -2141,16 +2179,60 @@ def write_track_checks(path, records):
             writer.writerow(record)
 
 
-def main(argv=None):
+def _interpolation_setting(value):
+    """argparse type for one adaptive gridding setting, KEY=VALUE (see fa.ADAPTIVE_INTERPOLATION)."""
+    import argparse
+    key, separator, text = value.partition('=')
+    key = key.strip()
+    if not separator or key not in fa.ADAPTIVE_INTERPOLATION:
+        raise argparse.ArgumentTypeError('expected KEY=VALUE with KEY one of {}, got {!r}'.format(
+            ', '.join(sorted(fa.ADAPTIVE_INTERPOLATION)), value))
+    default = fa.ADAPTIVE_INTERPOLATION[key]
+    text = text.strip()
+    if isinstance(default, bool):
+        if text.lower() not in ('true', 'false'):
+            raise argparse.ArgumentTypeError('{} takes true or false, not {!r}'.format(key, text))
+        return key, text.lower() == 'true'
+    try:
+        return key, type(default)(text)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError('{}: {}'.format(key, error))
+
+
+#: Command-line destinations whose build_all/build_sphere keyword has another name, or that
+#: set more than one keyword.  Every other destination is its keyword.  A recipe value of
+#: one of these keywords gives way when the destination is given on the command line.
+CLI_KEYWORDS = dict(
+    include_maneuvers=('steady_only',), manifest=('manifest_path',), no_prefetch=('prefetch',),
+    no_ambient_gate=('gate_ambient',), no_track_check=('track_check',),
+    ray_model=('ray_models', 'ray_profiles'), ray_profiles=('ray_profiles', 'ray_models'),
+    tone_split=('tone_split', 'tone_aware'), adaptive_interpolation=('interpolation',),
+    interpolation=('interpolation',), no_absorption_deprop=('apply_absorption_deprop',),
+    no_overwrite=('overwrite',))
+
+
+def make_parser():
+    """The command line's parser: every build_all and build_sphere option it exposes."""
     import argparse
 
     parser = argparse.ArgumentParser(
-        description='Rebuild 2017 Noise Abatement source spheres with ambient gating.')
+        description='Rebuild 2017 Noise Abatement source spheres with ambient gating.',
+        epilog='Python-only build_sphere keywords (atmosphere, ground, absorption_profile, '
+               'samples_path, a ray model other than the profiles or the wind) have no option. '
+               '--recipe reads settings from a TOML recipe (see build_recipe.py); an option given '
+               'on the command line overrides the recipe.')
     parser.add_argument('aircraft', nargs='?', default=None,
                         help='dataset directory name under --root: AS350B3, B206L3, B407, '
                              'EC130B4, R44 or R66 (not needed with --plate-cache)')
     parser.add_argument('output_directory', nargs='?', default=None,
                         help='where the spheres go (not needed with --check-tracks or --plate-cache)')
+    parser.add_argument('--recipe', default=None, metavar='FILE.toml',
+                        help="build with the [spheres] settings of this recipe; options given here "
+                             'override it (default: none)')
+    parser.add_argument('--hover-source', action='store_true',
+                        help="with --recipe: build with the recipe's [hover_source] settings over its "
+                             '[spheres] ones, the rebuild the database synthesizes its hover from; '
+                             'needs --runs (default off)')
     parser.add_argument('--plate-table-directory', default=None,
                         help='where computed ground-plate tables are cached (default: '
                              '~/.cache/panam/plate_tables)')
@@ -2168,6 +2250,10 @@ def main(argv=None):
                         help="'track' (the default for flight) measures each sphere's azimuth from the ground track; "
                              "'heading' from the tracked INS heading, with Doppler and depropagation "
                              'still on the ground velocity.  Written to every sphere and so to the database')
+    parser.add_argument('--nose-from-heading', action='store_true',
+                        help='orient each sphere by the tracked heading, for hovers: no Doppler or '
+                             'convective term, and the whole record instead of a steady window '
+                             '(default off)')
     parser.add_argument('--winds', default=None,
                         help='CSV of the wind at the aircraft per run (run, units, source, and east/north '
                              'or speed/direction_from_deg; see read_winds), recorded in each sphere; '
@@ -2176,6 +2262,13 @@ def main(argv=None):
                         help="'straight' (default): straight lines in still air; 'wind': straight rays "
                              "carried by each run's wind from --winds (required), uniform over the path; "
                              'a run with no wind there fails')
+    parser.add_argument('--ray-profiles', default=None, metavar='DIRECTORY',
+                        help="refracted rays through each run's NICE-OPS atmosphere CSV, <run>.csv in "
+                             'this directory (heights in ft), traced by niceops_ray_geometry from '
+                             'local_paths; straight lines for a run without one (default: none)')
+    parser.add_argument('--air-relative-doppler', action='store_true',
+                        help='with --remove-doppler and --ray-model wind, take the Doppler factor in '
+                             'the moving air (default off)')
     parser.add_argument('--no-track-check', action='store_true',
                         help='build runs whose track fails the sanity check (below or within '
                              '--min-height-above-array-ft of the ground boards, z not following altitude)')
@@ -2192,12 +2285,16 @@ def main(argv=None):
                              'way depropagation does not correct for')
     parser.add_argument('--reference-directory', default=None,
                         help='legacy spheres, used only for their PHI/THETA/FREQUENCY grids')
+    parser.add_argument('--sphere-prefix', default=None,
+                        help="sphere file name prefix (default: the aircraft's legacy prefix, e.g. Be407)")
     parser.add_argument('--manifest', default=None,
                         help="CSV recording each run's inputs and outcome (with --check-tracks: "
                              'the track-check table); default: not written')
     parser.add_argument('--norah2-directory', default=None,
                         help='also write each sphere as a NORAH2 .hem file here, with the '
                              'triangulation file NORAH2 needs to interpolate between them')
+    parser.add_argument('--no-overwrite', action='store_true',
+                        help='fail on a run whose sphere exists instead of replacing it (default: replace)')
     parser.add_argument('--board-correction', choices=('plate_bem', 'flat'), default='plate_bem',
                         help="'plate_bem' (default) divides out the ground plate's modeled "
                              "response per band and frame; 'flat' is the old constant -6 dB")
@@ -2212,10 +2309,28 @@ def main(argv=None):
                         help='discard bins needing more absorption correction than this, dB; '
                              '30 dB is what keeps source spectra rolling off physically '
                              '(default %(default)g)')
+    parser.add_argument('--max-response-correction-db', type=float, default=None,
+                        help='discard bins whose receiver (ground-plate) correction exceeds this, dB '
+                             '(default: no cap)')
+    parser.add_argument('--no-absorption-deprop', action='store_true',
+                        help='do not undo atmospheric absorption (default: undo it)')
+    parser.add_argument('--absorption-band-method', choices=('center', 'arp5534', 'integrated'),
+                        default='center',
+                        help="band absorption for --third-octave-method filter_bank: 'center' (ISO "
+                             "9613-1 at the band center), 'arp5534' or 'integrated' (default %(default)s)")
+    parser.add_argument('--speed-of-sound-ft-s', type=float, default=None,
+                        help="speed of sound, ft/s (default: from the run's atmosphere)")
+    parser.add_argument('--r-ref-ft', type=float, default=DEFAULT_R_REF_FT,
+                        help='radius the sphere is referred to, ft (default %(default)g)')
+    parser.add_argument('--window-time', type=float, default=0.5,
+                        help='analysis window length, s (default %(default)g)')
+    parser.add_argument('--window-overlap', type=float, default=0.5,
+                        help='fraction of a window the next one overlaps (default %(default)g)')
     parser.add_argument('--point-stride', type=int, default=10,
                         help='depropagate every Nth sample of the steady track (default %(default)s, '
                              "the 2017 release's setting; build_sphere and build_all default to 1, "
-                             'every sample, which is about N times slower and does not reproduce it)')
+                             'every sample, which is about N times slower and does not reproduce it; '
+                             'with --recipe, a recipe without point_stride takes 1)')
     parser.add_argument('--min-elevation-deg', type=float, default=10.0,
                         help='drop emission points below this elevation, where ground '
                              'impedance dominates (default 10)')
@@ -2228,6 +2343,12 @@ def main(argv=None):
                         help='drop emission-point/microphone pairs farther apart than '
                              'this, beyond which a straight ray through a homogeneous '
                              'atmosphere is a poor model (default 2000)')
+    parser.add_argument('--rim-elevation-deg', type=float, default=None,
+                        help='with --max-rim-range-ft: samples filed shallower than this, deg below the '
+                             'horizon, may come from that range (default {:g})'.format(DEFAULT_RIM_ELEVATION_DEG))
+    parser.add_argument('--max-rim-range-ft', type=float, default=None,
+                        help='propagation range allowed for samples filed at the rim, ft '
+                             '(default: --max-propagation-range-ft everywhere)')
     parser.add_argument('--min-steady-duration-s', type=float, default=8.0,
                         help='shortest steady segment worth building a sphere from, s; '
                              'the binding constraint on how many runs survive the gates '
@@ -2236,10 +2357,29 @@ def main(argv=None):
                         help="percentile of the run's own spectrogram to use as ambient (e.g. 5) "
                              'where the array layout has no ambient run; less reliable than a '
                              'measured one')
+    parser.add_argument('--azi-step', type=float, default=10.0,
+                        help='azimuth step of the gridding, deg (default %(default)g)')
+    parser.add_argument('--elv-step', type=float, default=10.0,
+                        help='elevation step of the gridding, deg (default %(default)g)')
+    parser.add_argument('--rmax', type=float, default=25.0,
+                        help='fixed gridding radius, deg (default %(default)g; unused with adaptive gridding)')
+    parser.add_argument('--adaptive-interpolation', action='store_true',
+                        help='grid with a radius chosen per node (flight_acoustics.adaptive_idw_weights) '
+                             'instead of the fixed --rmax (default off)')
+    parser.add_argument('--interpolation', dest='interpolation', action='append', default=None,
+                        type=_interpolation_setting, metavar='KEY=VALUE',
+                        help='an adaptive gridding setting (implies --adaptive-interpolation), e.g. '
+                             'kernel=shepard, aspect=5 or shepard_floor=1; repeat for each one; keys: '
+                             + ', '.join(sorted(fa.ADAPTIVE_INTERPOLATION)) + ' (default: their defaults)')
+    parser.add_argument('--flip-y-for-geometry', action='store_true',
+                        help='mirror the track and microphones across y = 0 (a diagnostic; default off)')
     parser.add_argument('--no-prefetch', action='store_true',
                         help='do not warm the cloud-storage cache ahead of each run')
     parser.add_argument('--no-ambient-gate', action='store_true',
                         help='reproduce the uncorrected legacy behavior')
+    parser.add_argument('--remove-doppler', action='store_true',
+                        help='file band power at the emitted frequency, for a hover source sphere; '
+                             'never for spheres NICE-OPS reads as flight (default off)')
     parser.add_argument('--tone-aware', action='store_true',
                         help='file each tone whole in the band of its own frequency instead of summing '
                              'whole FFT bins (FFT method only; default off)')
@@ -2247,11 +2387,80 @@ def main(argv=None):
                         help='also write tonal and broadband part spheres, <name>_tonal.nc and '
                              '<name>_broadband.nc, in tonal/ and broadband/ under output_directory; '
                              'implies --tone-aware (default off)')
+    return parser
+
+
+def build_options(args):
+    """The keyword arguments of :func:`build_all` (and so :func:`build_sphere`) that ``args`` give.
+
+    ``aircraft`` is included; ``output_directory`` is not.
+    """
+    interpolation = None
+    if args.adaptive_interpolation or args.interpolation:
+        interpolation = dict(args.interpolation or ())
+    return dict(
+        aircraft=args.aircraft, root=args.root, runs=args.runs,
+        steady_only=not args.include_maneuvers, sphere_prefix=args.sphere_prefix,
+        reference_directory=args.reference_directory, manifest_path=args.manifest,
+        norah2_directory=args.norah2_directory, prefetch=not args.no_prefetch,
+        winds=read_winds(args.winds) if args.winds else None,
+        ray_models=(lambda run: 'wind') if args.ray_model == 'wind' else None,
+        ray_profiles=args.ray_profiles,
+        third_octave_method=args.third_octave_method,
+        board_correction=args.board_correction,
+        plate_table_directory=args.plate_table_directory,
+        band_snr_gate_db=args.band_snr_gate_db,
+        max_absorption_correction_db=args.max_absorption_correction_db,
+        max_response_correction_db=args.max_response_correction_db,
+        apply_absorption_deprop=not args.no_absorption_deprop,
+        absorption_band_method=args.absorption_band_method,
+        speed_of_sound_ft_s=args.speed_of_sound_ft_s,
+        r_ref_ft=args.r_ref_ft, window_time=args.window_time, window_overlap=args.window_overlap,
+        point_stride=args.point_stride, gate_ambient=not args.no_ambient_gate,
+        min_elevation_deg=args.min_elevation_deg,
+        max_array_range_ft=args.max_array_range_ft,
+        max_propagation_range_ft=args.max_propagation_range_ft,
+        rim_elevation_deg=args.rim_elevation_deg, max_rim_range_ft=args.max_rim_range_ft,
+        min_steady_duration_s=args.min_steady_duration_s,
+        ambient_fallback_percentile=args.ambient_fallback_percentile,
+        azi_step=args.azi_step, elv_step=args.elv_step, rmax=args.rmax, interpolation=interpolation,
+        flip_y_for_geometry=args.flip_y_for_geometry, overwrite=not args.no_overwrite,
+        azimuth_reference=args.azimuth_reference, nose_from_heading=args.nose_from_heading,
+        remove_doppler=args.remove_doppler, air_relative_doppler=args.air_relative_doppler,
+        track_check=not args.no_track_check,
+        min_height_above_array_ft=args.min_height_above_array_ft,
+        tone_aware=args.tone_aware or args.tone_split,
+        tone_split=args.tone_split)
+
+
+def main(argv=None):
+    parser = make_parser()
     args = parser.parse_args(argv)
+    options = build_options(args)
+    if args.hover_source and not args.recipe:
+        parser.error('--hover-source applies to --recipe only')
+    if args.recipe:
+        import build_recipe          # here: build_recipe imports this module
+        try:
+            recipe = build_recipe.load_recipe(args.recipe)
+            recipe_options = recipe.sphere_options(hover_source=args.hover_source)
+        except (ValueError, LookupError, OSError) as error:
+            parser.error(str(error))
+        explicit = build_recipe.explicit_keywords(parser, argv, CLI_KEYWORDS)
+        options = build_recipe.merge(recipe_options, options, explicit)
+        # A keyword neither in the recipe nor on the command line takes the function's
+        # default, so that a recipe builds the same spheres here as from Python.  Only
+        # point_stride has a command-line default (10) other than the function's (1).
+        for key, value in build_recipe.function_defaults('spheres').items():
+            if key in options and key not in explicit and key not in recipe_options:
+                options[key] = value
+        if args.hover_source and not options['runs']:
+            parser.error('--hover-source needs --runs: the hover source run (a sphere built with '
+                         'remove_doppler must not be read as flight)')
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
     if args.plate_cache:
-        directory = os.path.abspath(os.path.expanduser(args.plate_table_directory
+        directory = os.path.abspath(os.path.expanduser(options['plate_table_directory']
                                                        or default_plate_table_directory()))
         if args.plate_cache == 'clear':
             print('Deleted {} plate tables from {}'.format(clear_plate_table_cache(directory), directory))
@@ -2262,55 +2471,35 @@ def main(argv=None):
                                                    os.path.basename(record['path'])))
         print('{} plate tables in {}'.format(len(records), directory))
         return 0
-    if args.aircraft is None:
+    aircraft = options.pop('aircraft')
+    if aircraft is None:
         parser.error('aircraft is required unless --plate-cache is given')
     if args.check_tracks:
-        checks = check_tracks(args.aircraft, root=args.root, runs=args.runs,
-                              steady_only=not args.include_maneuvers, hovers=args.hovers,
-                              max_array_range_ft=args.max_array_range_ft,
-                              min_steady_duration_s=args.min_steady_duration_s,
-                              min_height_ft=args.min_height_above_array_ft)
+        checks = check_tracks(aircraft, root=options['root'], runs=options['runs'],
+                              steady_only=options['steady_only'], hovers=args.hovers,
+                              max_array_range_ft=options['max_array_range_ft'],
+                              min_steady_duration_s=options['min_steady_duration_s'],
+                              min_height_ft=options['min_height_above_array_ft'])
         for record in checks:
-            record['aircraft'] = args.aircraft
+            record['aircraft'] = aircraft
             if record['status'] != 'ok':
                 print('{} {} {}: {}'.format(record['run'], record['condition'], record['status'],
                                             '; '.join(r for r in (record['reasons'], record['flags']) if r)))
         counts = defaultdict(int)
         for record in checks:
             counts[record['status']] += 1
-        print('{}: {} runs checked, {}'.format(args.aircraft, len(checks), ', '.join(
+        print('{}: {} runs checked, {}'.format(aircraft, len(checks), ', '.join(
             '{} {}'.format(n, status) for status, n in sorted(counts.items()))))
-        if args.manifest:
-            write_track_checks(args.manifest, checks)
+        if options['manifest_path']:
+            write_track_checks(options['manifest_path'], checks)
         return 0
     if args.output_directory is None:
         parser.error('output_directory is required unless --check-tracks is given')
-    if args.ray_model == 'wind' and not args.winds:
+    if args.ray_model == 'wind' and not options['winds']:
         parser.error('--ray-model wind needs --winds')
-    records, failures = build_all(
-        args.aircraft, args.output_directory, root=args.root, runs=args.runs,
-        steady_only=not args.include_maneuvers,
-        reference_directory=args.reference_directory, manifest_path=args.manifest,
-        norah2_directory=args.norah2_directory,
-        third_octave_method=args.third_octave_method,
-        board_correction=args.board_correction,
-        plate_table_directory=args.plate_table_directory,
-        band_snr_gate_db=args.band_snr_gate_db,
-        max_absorption_correction_db=args.max_absorption_correction_db,
-        point_stride=args.point_stride, gate_ambient=not args.no_ambient_gate,
-        min_elevation_deg=args.min_elevation_deg,
-        max_array_range_ft=args.max_array_range_ft,
-        max_propagation_range_ft=args.max_propagation_range_ft,
-        min_steady_duration_s=args.min_steady_duration_s,
-        ambient_fallback_percentile=args.ambient_fallback_percentile,
-        prefetch=not args.no_prefetch,
-        azimuth_reference=args.azimuth_reference,
-        winds=read_winds(args.winds) if args.winds else None,
-        ray_models=(lambda run: 'wind') if args.ray_model == 'wind' else None,
-        track_check=not args.no_track_check,
-        min_height_above_array_ft=args.min_height_above_array_ft,
-        tone_aware=args.tone_aware or args.tone_split,
-        tone_split=args.tone_split)
+    if options['ray_models'] is not None and options['ray_profiles'] is not None:
+        parser.error('give --ray-model wind or --ray-profiles, not both')
+    records, failures = build_all(aircraft, args.output_directory, **options)
     logging.info('Built %d spheres, %d failures', len(records), len(failures))
     return 0 if records else 1
 

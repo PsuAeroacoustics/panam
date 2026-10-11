@@ -5,7 +5,8 @@ Usage:  python build_empirical_database.py SPHERE_DIRECTORY DATABASE_FILE [optio
 SPHERE_DIRECTORY holds the .nc spheres and a vehicle.cfg (rotors,
 atmosphere, weight and drag; see docs/file_formats.md).  Every option maps to
 a keyword of flight_acoustics.build_empirical_database and defaults to that
-function's default.
+function's default.  --recipe FILE.toml takes the [database] section of a build
+recipe (build_recipe.py); options given on the command line override it.
 """
 import argparse
 import os
@@ -18,9 +19,24 @@ import flight_acoustics
 
 EPILOG = """\
 hover_correction, a callable that adds dB to the synthesized hover per direction
-and band, has no command-line form: call flight_acoustics.build_empirical_database
-from Python to use it (see docs/database_build.md, "The 2017 release settings").
+and band, has no option: give it in a recipe's [database] section as
+"module:callable" (--recipe; see build_recipe.py), or call
+flight_acoustics.build_empirical_database from Python.  Options given on the
+command line override the recipe.
 """
+
+#: Destinations whose build_empirical_database keyword has another name.  Every other
+#: destination is its keyword.  A recipe value gives way when its destination is given.
+CLI_KEYWORDS = dict(
+    manifest=('spheres',), skip_flagged=('spheres',), fixed_load_factor=('load_factors',),
+    extended_fpa=('extended_flight_path_angles',), doppler_removed=('doppler_shift_removed',),
+    frequency_range=('infreqs',), build_temperature=('atmosphere',), build_pressure=('atmosphere',),
+    build_humidity=('atmosphere',), no_spectrum=('store_spectrum',),
+    no_clamp_empty=('clamp_empty_directions',))
+
+#: The --build-* destinations and the Atmosphere field each sets (K, kPa, percent).
+ATMOSPHERE_FIELDS = dict(build_temperature='temperature', build_pressure='pressure',
+                         build_humidity='relative_humidity')
 
 
 def _float_list(value):
@@ -34,11 +50,14 @@ def _float_list(value):
     return values
 
 
-def parse_arguments(argv=None):
+def make_parser():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0], epilog=EPILOG,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('sphere_directory', help='directory of .nc spheres and vehicle.cfg')
     parser.add_argument('database_file', help='output NICE-OPS database (.nc/.nod)')
+    parser.add_argument('--recipe', default=None, metavar='FILE.toml',
+                        help="take the settings of this recipe's [database] section; options given "
+                             'here override it (default: none)')
 
     selection = parser.add_argument_group('sphere selection (default: every .nc in SPHERE_DIRECTORY)')
     selection.add_argument('--sphere', dest='spheres', action='append', default=None, metavar='FILE',
@@ -101,6 +120,11 @@ def parse_arguments(argv=None):
     parser.add_argument('--no-clamp-empty', action='store_true',
                         help='leave EAA NaN where ambient gating emptied a direction, instead of 0')
     parser.add_argument('--overwrite', action='store_true', help='replace an existing output')
+    return parser
+
+
+def parse_arguments(argv=None, parser=None):
+    parser = parser or make_parser()
     args = parser.parse_args(argv)
 
     if args.skip_flagged and args.manifest is None:
@@ -146,16 +170,39 @@ def build_options(args):
     return options
 
 
+def recipe_options(args, parser, argv=None):
+    """build_options(args) with the recipe's [database] settings where no option was given.
+
+    A --build-temperature, --build-pressure or --build-humidity option replaces only its
+    own field of a recipe's ``atmosphere``; the recipe's other fields stay.
+    """
+    options = build_options(args)
+    if args.recipe is None:
+        return options
+    import build_recipe
+    recipe = build_recipe.load_recipe(args.recipe).database_options()
+    merged = build_recipe.merge(recipe, options, build_recipe.explicit_keywords(parser, argv, CLI_KEYWORDS))
+    explicit = build_recipe.explicit_destinations(parser, argv)
+    given = {field: getattr(args, destination) for destination, field in ATMOSPHERE_FIELDS.items()
+             if destination in explicit}
+    if 'atmosphere' in recipe and given:
+        fields = {field: getattr(recipe['atmosphere'], field) for field in ATMOSPHERE_FIELDS.values()}
+        fields.update(given)
+        merged['atmosphere'] = Atmosphere(**fields)
+    return merged
+
+
 def main(argv=None):
-    args = parse_arguments(argv)
+    parser = make_parser()
+    args = parse_arguments(argv, parser)
     flight_acoustics.build_empirical_database(args.sphere_directory, args.database_file,
-                                              **build_options(args))
+                                              **recipe_options(args, parser, argv))
     return 0
 
 
 if __name__ == '__main__':
     try:
         sys.exit(main())
-    except (ValueError, FileNotFoundError) as error:
+    except (ValueError, LookupError, OSError) as error:
         print(f'build_empirical_database.py: error: {error}', file=sys.stderr)
         sys.exit(1)

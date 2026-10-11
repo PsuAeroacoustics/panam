@@ -1,0 +1,50 @@
+# The 2017 release: the B407 database built for the NICE-OPS validation study.
+# docs/database_build.md, "The 2017 release settings", gives each value against PANAM's default.
+#
+#   python noise_abatement_2017.py B407 $OUT/spheres/Be407 --recipe docs/recipes/release_2017.toml \
+#       --manifest $OUT/spheres/Be407/manifest.csv
+#   python noise_abatement_2017.py B407 $OUT/hover_source --recipe docs/recipes/release_2017.toml \
+#       --hover-source --runs $HOVER_RUN
+#   python build_empirical_database.py --recipe docs/recipes/release_2017.toml \
+#       $OUT/spheres/Be407 $OUT/Be407_ambient_gated.nod \
+#       --manifest $OUT/spheres/Be407/manifest.csv --hover-source $HOVER_SOURCE_SPHERE
+#
+# ${name} is a local_paths entry (local_paths.example.toml).
+
+[spheres]
+band_snr_gate_db = 10.0                 # dB over the measured ambient run
+max_response_correction_db = 15.0       # dB
+max_absorption_correction_db = 30.0     # dB
+max_propagation_range_ft = 2000.0       # ft
+min_elevation_deg = 2.0                 # deg
+point_stride = 10                       # every tenth track sample
+board_correction = "plate_bem"          # on SITE_GROUND
+third_octave_method = "fft"
+tone_aware = true
+azi_step = 2.0                          # deg
+elv_step = 2.0                          # deg
+track_check = false                     # the shipped database predates the check
+azimuth_reference = "track"
+reference_directory = "${b407_legacy_spheres}"   # the output grid: the legacy spheres'
+ray_profiles = "${b407_ray_profiles}"            # refracted rays; straight lines without a profile
+
+[spheres.interpolation]                 # adaptive radius, adaptive_idw_weights defaults otherwise
+kernel = "shepard"
+aspect = 5.0
+shepard_floor = 1.0
+
+[hover_source]
+# The run build_empirical_database would pick as the hover source (the slowest sphere within
+# 2 deg of level flight), rebuilt at emitted frequencies.  Give the run with --runs.
+remove_doppler = true
+
+[database]
+# ambient_gated: these load factors without spectra.  For ambient_gated_spectral set
+# store_spectrum = true; for fixed_load_factor replace load_factors with
+# fixed_load_factor = true.
+load_factors = [0.0, 1.0, 1.1, 1.2, 1.5, 2.0, 3.0, 5.0]
+extended_flight_path_angles = [-24.0, 35.0]   # deg
+store_spectrum = false
+# The B407's hover correction is fitted outside PANAM.  Name it as "module:callable", with the
+# module beside this file or on sys.path:
+# hover_correction = "b407_hover_correction:correction"
