@@ -1050,6 +1050,34 @@ def test_a_skipped_run_keeps_the_manifest_row_of_its_build(monkeypatch, tmp_path
     assert record['norah2_output'] == first[0]['norah2_output']
 
 
+def test_a_skipped_run_lists_its_own_norah2_file_not_a_stale_one(monkeypatch, tmp_path):
+    """A .hem left by an earlier build at another speed label (it sorts first) is
+    neither listed for a skipped run nor taken as proof that its NORAH2 file exists."""
+    _archive(tmp_path)
+    out, norah2 = tmp_path / 'out', tmp_path / 'norah2'
+    arguments = dict(root=str(tmp_path), prefetch=False, board_correction='flat', point_stride=2,
+                     norah2_directory=str(norah2))
+    first, failures = na.build_all('AS350B3', str(out), **arguments)
+    assert failures == []
+    current = first[0]['norah2_output']
+    stale = norah2 / 'AS350_Approach_1kts_3deg_108.hem'
+    stale.write_text('stale')
+    assert sorted(os.listdir(norah2))[0] == stale.name
+    triangulation = []
+    monkeypatch.setattr(na.fa, 'write_norah2_triangulation',
+                        lambda path, entries: triangulation.append(entries))
+    monkeypatch.setattr(na, 'build_sphere', _no_build)
+    for option in ('skip_existing', 'skip_unchanged'):
+        records, failures = na.build_all('AS350B3', str(out), **{option: True}, **arguments)
+        assert failures == [] and records[0]['norah2_output'] == current
+    # With the run's own .hem gone, the stale one does not count: the run is built again.
+    os.remove(current)
+    monkeypatch.undo()
+    records, failures = na.build_all('AS350B3', str(out), skip_existing=True, **arguments)
+    assert failures == [] and 'skipped' not in records[0]
+    assert os.path.exists(current)
+
+
 def test_a_skipped_sphere_without_a_build_record_counts_as_flagged(tmp_path):
     """A sphere written before build records were gives no track flags, so the
     manifest marks them unknown and --skip-flagged leaves the run out."""

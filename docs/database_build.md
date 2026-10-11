@@ -93,7 +93,8 @@ it. [The 2017 release settings](#the-2017-release-settings) are a recipe.
 
 `--skip-existing` and `--skip-unchanged` resume or refresh a build. A run counts as built
 when its sphere exists, with its NORAH2 file under `--norah2-directory` and its parts under
-`--tone-split`. `--skip-unchanged` also needs the sphere's `panam_settings_sha256` to equal this
+`--tone-split`. The NORAH2 file is the one named from the speed and flight path angle in the
+sphere's build record; an older `.hem` of the run at another speed label does not count. `--skip-unchanged` also needs the sphere's `panam_settings_sha256` to equal this
 build's and its `panam_input_signature` to equal the signature of the run's input files now:
 the track, the run and ambient recordings, the reference and microphone lists, the day's
 weather station files, the reference sphere and the run's `--ray-profiles` CSV, by name, size

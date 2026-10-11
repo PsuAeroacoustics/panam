@@ -1976,14 +1976,40 @@ def _build_run(test, run, output_path, reference, norah2_directory, ray_models, 
     return record, None
 
 
-def _norah2_output(test, run, norah2_directory):
-    """The NORAH2 .hem file an earlier build wrote for ``run`` in ``norah2_directory``, or None."""
+def _norah2_output(test, run, norah2_directory, details):
+    """The NORAH2 .hem file the build that wrote ``details`` (its record: speed and
+    flight path angle) wrote for ``run`` in ``norah2_directory``, or None if it is not there.
+
+    The name is worked out with :func:`norah2_file_name`, not searched for: a run
+    rebuilt at another speed label leaves its older .hem beside the new one.
+    """
     prefix = AIRCRAFT_SPHERE_PREFIX.get(test.aircraft, test.aircraft)
     number = test.by_run.get(run, {}).get('run_num', run)
-    matches = sorted(glob.glob(os.path.join(os.path.abspath(os.path.expanduser(norah2_directory)),
-                                            glob.escape('{}_'.format(prefix)) + '*'
-                                            + glob.escape('_{}.hem'.format(number)))))
-    return matches[0] if matches else None
+    path = os.path.join(os.path.abspath(os.path.expanduser(norah2_directory)), norah2_file_name(
+        prefix, details['speed_knots'], details['flight_path_angle_deg'], number))
+    return path if os.path.exists(path) else None
+
+
+def _sphere_record(test, run, output_path):
+    """``(stamp, details)`` of the sphere at ``output_path``: its global attributes, and
+    the record its build wrote (``panam_build_record``).
+
+    A sphere without a build record gives only the run's identity, its speed and
+    flight path angle from the sphere's float32 ``SPEED`` and ``FLIGHT_PATH_ANGLE``,
+    and ``track_flags`` :data:`UNKNOWN_TRACK_FLAGS`, so that a run whose flags are
+    not known is never taken as unflagged.
+    """
+    row = test.by_run.get(run, {})
+    with Dataset(output_path) as sphere:
+        stamp = {name: sphere.getncattr(name) for name in sphere.ncattrs()}
+        if provenance.BUILD_RECORD_ATTRIBUTE in stamp:
+            details = provenance.read_record_json(stamp[provenance.BUILD_RECORD_ATTRIBUTE])
+        else:
+            details = dict(condition=row.get('test_cond'), layout=row.get('layout'),
+                           speed_knots=float(np.ravel(sphere['SPEED'][:])[0]),
+                           flight_path_angle_deg=float(np.ravel(sphere['FLIGHT_PATH_ANGLE'][:])[0]),
+                           track_flags=UNKNOWN_TRACK_FLAGS)
+    return stamp, details
 
 
 def _skip_reason(test, run, output_path, call, skip_existing, skip_unchanged, ray_models):
@@ -2002,8 +2028,12 @@ def _skip_reason(test, run, output_path, call, skip_existing, skip_unchanged, ra
         outputs += list(tone_split_paths(output_path).values())
     if not all(os.path.exists(path) for path in outputs):
         return None
+    try:
+        stamp, details = _sphere_record(test, run, output_path)
+    except (OSError, KeyError, IndexError, ValueError):
+        return None
     if call.get('norah2_directory') is not None and _norah2_output(
-            test, run, call['norah2_directory']) is None:
+            test, run, call['norah2_directory'], details) is None:
         return None
     if skip_existing:
         return 'exists'
@@ -2014,11 +2044,6 @@ def _skip_reason(test, run, output_path, call, skip_existing, skip_unchanged, ra
     signature = provenance.file_signature(run_input_files(
         test, run, arguments.get('gate_ambient', True), arguments.get('reference_sphere'),
         arguments['ray_model']))
-    try:
-        with Dataset(output_path) as sphere:
-            stamp = {name: sphere.getncattr(name) for name in sphere.ncattrs()}
-    except OSError:
-        return None
     if (stamp.get('panam_settings_sha256') == provenance.settings_sha256(settings)
             and stamp.get(provenance.INPUT_SIGNATURE_ATTRIBUTE) == signature):
         return 'unchanged'
@@ -2045,21 +2070,14 @@ def _skipped_record(test, run, output_path, norah2_directory, reason):
     and ``track_flags`` :data:`UNKNOWN_TRACK_FLAGS`, so that a run whose flags are
     not known is never taken as unflagged.
     """
-    row = test.by_run.get(run, {})
-    with Dataset(output_path) as sphere:
-        stamp = {name: sphere.getncattr(name) for name in sphere.ncattrs()}
-        if provenance.BUILD_RECORD_ATTRIBUTE in stamp:
-            details = provenance.read_record_json(stamp[provenance.BUILD_RECORD_ATTRIBUTE])
-        else:
-            logging.warning('run %s: %s has no build record; its manifest row has no track flags',
-                            run, os.path.basename(output_path))
-            details = dict(condition=row.get('test_cond'), layout=row.get('layout'),
-                           speed_knots=float(np.ravel(sphere['SPEED'][:])[0]),
-                           flight_path_angle_deg=float(np.ravel(sphere['FLIGHT_PATH_ANGLE'][:])[0]),
-                           track_flags=UNKNOWN_TRACK_FLAGS)
+    stamp, details = _sphere_record(test, run, output_path)
+    if provenance.BUILD_RECORD_ATTRIBUTE not in stamp:
+        logging.warning('run %s: %s has no build record; its manifest row has no track flags',
+                        run, os.path.basename(output_path))
     parts = tone_split_paths(output_path)
     return dict(run=run, output=output_path,
-                norah2_output=None if norah2_directory is None else _norah2_output(test, run, norah2_directory),
+                norah2_output=None if norah2_directory is None else _norah2_output(test, run, norah2_directory,
+                                                                                    details),
                 tonal_output=parts['tonal'] if os.path.exists(parts['tonal']) else None,
                 broadband_output=parts['broadband'] if os.path.exists(parts['broadband']) else None,
                 **details,
