@@ -166,7 +166,8 @@ about 12 times its upper edge. Each band's output is then advanced by the filter
 $f_c$ (about 0.14 s at 20 Hz), so that low-band energy stays at the emission angle it arrived from.
 The squared output is averaged with Hann² weights over the FFT frame length, centered on the FFT
 frames, so it is comparable with a PSD band sum. In this mode the ambient gate, the subtraction and
-the absorption cap act per band, and absorption is taken at the band center.
+the absorption cap act per band, and absorption is taken at the band center unless
+`absorption_band_method` forms it otherwise (§5.4).
 
 The banding the 2017 release used is in [`database_build.md`](database_build.md#the-2017-release-settings).
 
@@ -471,6 +472,11 @@ steps, in this order:
    $P \leftarrow P\cdot10^{\alpha(f)(\ell - r_\mathrm{ref})/10}$, with $\alpha$ the ISO 9613-1
    coefficient at the received frequency (§5.4) and $\ell$ the straight distance or the ray's arc
    length. A cap (`max_absorption_correction_db`) discards bins whose correction would exceed it.
+   Filter-bank bands may instead take a band attenuation,
+   $P \leftarrow P\cdot10^{[\delta_B(\ell) - \delta_B(r_\mathrm{ref})]/10}$
+   (`absorption_band_method`, §5.4). With a layered atmosphere (`absorption_profile`, §5.4) the
+   correction is the path's layered attenuation less $\alpha(f)\,r_\mathrm{ref}$ in the uniform
+   `atmosphere`, so the sphere keeps the same convention.
 
 The gate comes first: an ambient-limited bin would otherwise be amplified by both corrections. The
 ambient is a mean because each $P$ is a single frame, whose expectation is the mean; a single
@@ -560,9 +566,67 @@ $$
 \alpha = 8.686f^2\left[1.84\times10^{-11}\frac{p_{a0}}{p_a}\left(\frac{T}{T_0}\right)^{1/2} + \left(\frac{T}{T_0}\right)^{-5/2}\left(\frac{0.01275\,e^{-2239.1/T}}{f_{rO} + f^2/f_{rO}} + \frac{0.1068\,e^{-3352.0/T}}{f_{rN} + f^2/f_{rN}}\right)\right]\ \mathrm{dB/m},
 $$
 
-with $h_w$ the molar concentration of water vapor (%). It is evaluated at single frequencies (a
-bin or a band center), with no integration over a band. The speed of sound is
-$c = 343.2\sqrt{T/T_0}$ m/s.
+with $h_w$ the molar concentration of water vapor (%). By default it is evaluated at single
+frequencies (a bin or a band center). The speed of sound is $c = 343.2\sqrt{T/T_0}$ m/s.
+
+**Band absorption** (`panam_acoustics.atmosphere.band_absorption_db`). Over a path $s$ a
+one-third octave band loses $\delta_B$, formed from the pure-tone attenuation
+$\delta_t(f) = \alpha(f)\,s$ by one of three methods (`absorption_band_method`):
+
+- `'center'` (the default everywhere): $\delta_B = \delta_t(f_c)$ at the given band center.
+- `'arp5534'`: SAE ARP 5534 [40], from the pure-tone attenuation at the exact base-10 mid-band
+  frequency $f_m = 10^{i/10}$ (`exact_midband_frequency`) [52, Eqs. 16–17]:
+
+  $$
+  \delta_B = \begin{cases}
+  A\,\delta_t\,[1 + B(C - D\,\delta_t)]^{E}, & \delta_t < 150\ \mathrm{dB},\\
+  F + G\,\delta_t, & \delta_t \ge 150\ \mathrm{dB},
+  \end{cases}
+  $$
+
+  with $A = 0.867942$, $B = 0.111761$, $C = 0.95824$, $D = 0.008191$, $E = 1.6$, $F = 9.2$ and
+  $G = 0.765$ (`arp5534_band_attenuation`). It is a fit to the spectrum-integration method for
+  broadband spectra sloping −5 to +5 dB per band through base-10 order-3 Butterworth filters,
+  normalized to a fixed 3 dB per band, so it takes no spectrum. It extends the ANSI S1.26
+  Annex E approximation past that method's 50 dB limit, and it is reciprocal.
+- `'integrated'`: ISO 9613-1 integrated over the band (the spectrum integration of ISO 9613-1
+  Annex D),
+
+  $$
+  \delta_B = -10\lg\frac{\int W(f)\,10^{-\delta_t(f)/10}\,df}{\int W(f)\,df}, \qquad
+  W(f) = \frac{(f/f_c)^{k-1}}{1 + [Q(f/f_c - f_c/f)]^6}, \qquad Q = \frac{1}{2^{1/6} - 2^{-1/6}},
+  $$
+
+  the order-3 Butterworth response of PANAM's filter bank (§2.2) about the given center and a
+  spectrum whose band levels rise $k$ dB per one-third octave (`spectrum_slope_db`, default 0:
+  flat band levels). It is evaluated by the trapezoidal rule on 241 points uniform in $\lg f$
+  over one octave either side of $f_c$. For flat band levels, widening that range to three octaves
+  changes the result by less than 0.05 dB up to 50 dB of mid-band pure-tone attenuation; past about
+  60 dB the result is set by the filter skirt, and so by that range. With $k = 3$ it agrees with
+  `'arp5534'` within 0.3 dB where the ARP 5534 attenuation is at most 20 dB, and within about
+  3 dB where it is at most 50 dB, depending on the atmosphere (263-303 K, 10-95% RH, exact centers
+  100 Hz to 10 kHz). That difference is between the two methods, not an effect of the
+  integration range.
+
+A depropagated band is corrected by $\delta_B(\ell) - \delta_B(r_\mathrm{ref})$ (§5.1), so the
+sphere keeps the band attenuation over its first $r_\mathrm{ref}$; for `'center'` this is
+$\alpha(f_c)(\ell - r_\mathrm{ref})$, as before.
+
+**Layered atmosphere** (`absorption_profile`, `panam_acoustics.atmosphere.layered_attenuation_db`).
+A profile gives $T$, $H$ and $p_a$ at altitudes $z_j$ (ft, in the frame of the track's $z$).
+$\alpha$ is evaluated at each $z_j$, taken linear in $z$ between them and constant beyond them, and
+integrated along the straight path from the microphone at $z_r$ to the source at $z_s$:
+
+$$
+\delta_t(f) = \frac{\ell}{z_s - z_r}\int_{z_r}^{z_s}\alpha(f, z)\,dz,
+$$
+
+exactly for the piecewise-linear $\alpha$, and $\delta_t = \ell\,\alpha(f, z_r)$ for a level path.
+With a ray model $\ell$ is the arc length, but the altitude mean is still taken along the
+straight line. A band method then forms $\delta_B$ from $\delta_t$ as above. Depropagation
+undoes $\delta_t(\ell)$ and puts back the absorption over $r_\mathrm{ref}$ in the uniform
+`atmosphere`, which the sphere's metadata records. The default (`absorption_profile=None`) is
+the uniform atmosphere.
 
 **The run's atmosphere** is uniform: the mean over the site's ground weather stations of the
 samples nearest the run's start time (`noise_abatement_2017.run_atmosphere`). A run with no usable
@@ -692,7 +756,10 @@ $$
 $$
 
 with $d_E$ the `distance` argument (default 1000 m) and $\alpha$ in the build atmosphere
-(`atmosphere`, default 293.15 K, 101.325 kPa and 20% RH), recorded in the file. NICE-OPS consumes
+(`atmosphere`, default 293.15 K, 101.325 kPa and 20% RH), recorded in the file. With
+`absorption_band_method` other than `'center'`, $\alpha(f_i)\,d_E$ is replaced by the band
+attenuation $\delta_B$ over $d_E$ (§5.4, flat band levels for `'integrated'`); the method is
+recorded only in the provenance settings (`panam_settings`). NICE-OPS consumes
 it as $\mathrm{EAA}\,(r - R_s)/1000$ m, so $d_E$ must stay 1000 m. Where the gate emptied a
 direction, SPLA is $-\infty$ and EAA would be NaN; with `clamp_empty_directions=True` (the default)
 EAA is set to 0 there and dBA stays $-\infty$ (`_finite_sphere_levels`).
@@ -754,8 +821,10 @@ $$
 
 with POLDIST read from each file and $\alpha_\mathrm{file}$ the ISO 9613-1 coefficient at the
 band centers in the file's atmosphere. For $r > \mathrm{POLDIST}$ the same expression adds the
-absorption between the two. **Departure:** NORAH2 itself applies SAE ARP 5534's band correction
-[40], which is not reproduced. The angle conventions agree with NICE-OPS's (`norah2umapr`),
+absorption between the two. NORAH2 itself applies SAE ARP 5534's band correction [40]; with
+`absorption_band_method='arp5534'` (`--absorption-band-method arp5534`) the absorption term
+becomes $\delta_B(\mathrm{POLDIST}) - \delta_B(r)$ (§5.4), and the EAA uses the same method.
+The default, `'center'`, keeps the band-center coefficient. The angle conventions agree with NICE-OPS's (`norah2umapr`),
 so no rotation is needed.
 
 NORAH2's speed field (ACSPEED) is labeled indicated airspeed but used as ground speed, so the
@@ -805,7 +874,9 @@ L(60\ \mathrm{m}) = L(r_\mathrm{ref}) - 20\lg\frac{60\ \mathrm{m}}{r_\mathrm{ref
 + \alpha_\mathrm{meas}(f)\,r_\mathrm{ref} - \alpha_\mathrm{ICAO}(f_c)\cdot 60\ \mathrm{m},
 $$
 
-with $f$ the hemisphere's own band center and $f_c$ the nominal one. A band the hemisphere lacks,
+with $f$ the hemisphere's own band center and $f_c$ the nominal one. For a sphere depropagated
+with a band method (§5.4, the metadata's `absorption_band_method`), the measured term is that
+method's $\delta_B(r_\mathrm{ref})$ in place of $\alpha_\mathrm{meas}(f)\,r_\mathrm{ref}$. A band the hemisphere lacks,
 a direction it did not cover, and a level below −100 dB at 60 m (`minimum_level_db`) are written
 as −999. This is not the inverse of the import: a sphere exported and imported again comes back
 shifted by $(\alpha_\mathrm{meas} - \alpha_\mathrm{ICAO})\,r_\mathrm{ref}$. A sphere built without
@@ -1006,9 +1077,11 @@ These are in PANAM but not used to build the databases.
   (§5.3) sees it. A wind given to `build_sphere` is recorded as metadata only, unless
   `ray_model='wind'` carries the rays with it, uniform over the path (§5.3). Its shear near the
   ground is not modeled.
-- **A stratified atmosphere without rays.** Absorption and timing use one uniform atmosphere; only
-  the optional ray model sees the profile (§5.3).
-- **Band-integrated absorption.** ISO 9613-1 is evaluated at single frequencies.
+- **A stratified atmosphere without rays.** Timing and spreading use one uniform atmosphere; only
+  the optional ray model sees the profile (§5.3). Absorption sees a layered profile when
+  `absorption_profile` is given (§5.4), along straight paths.
+- **Band absorption on FFT bands.** The FFT path corrects each bin at its own frequency;
+  `absorption_band_method` applies to filter-bank bands, the EAA and the NORAH2 import (§5.4).
 - **Ground roughness in the sphere build.** Only `pole_level` has a roughness term; the plate BEM
   has none (§4.6).
 
@@ -1033,6 +1106,7 @@ Functions are in `flight_acoustics.py` unless another module is named. Tests are
 | §5.1–5.2 Depropagation | `depropagate_hemisphere`; `noise_abatement_2017.build_sphere` | `test_ambient_gating.py`, `test_generate_hemisphere.py`, `test_golden_results.py` |
 | §5.3 Rays | `refracted_rays.external_ray_model`, `straight_ray_model`, `uniform_wind_ray_model`; `noise_abatement_2017.wind_in_frame_ft_s` (`build_sphere(ray_model='wind')`) | `test_refracted_rays.py`, `test_run_metadata.py` |
 | §5.4 Atmosphere | `panam_acoustics.iso_9613_1_1993`, `panam_acoustics.atmosphere.Atmosphere`, `atmosorb`; `noise_abatement_2017.run_atmosphere`, `air_density_kg_m3` | `test_acoustics.py`, `test_python_acoustics_equivalence.py`, `test_run_metadata.py`, `test_noise_abatement_2017.py` |
+| §5.4 Band and layered absorption | `panam_acoustics.atmosphere.band_absorption_db`, `arp5534_band_attenuation`, `exact_midband_frequency`, `layered_attenuation_db`, `check_absorption_profile`; `depropagate_hemisphere` (`absorption_band_method`, `absorption_profile`), `noise_abatement_2017.build_sphere`, `spla_and_eaa_from_spectrum`, `norah2_levels_at_radius` | `test_band_absorption.py`, `test_spla_and_eaa.py`, `test_norah2_import.py` |
 | §6.1 Fixed radius | `shepIDW`, `shepIDW_weights`, `shepIDW_apply`, `geodist` | `test_shep_idw.py`, `test_no_data.py`, `test_hemisphere_geometry_accuracy.py` |
 | §6.2 Adaptive radius | `adaptive_idw_weights`, `ADAPTIVE_INTERPOLATION` | `test_adaptive_interpolation.py`, `test_hemisphere_geometry_accuracy.py` |
 | §6.3 Output grids | `write_aam_hemisphere_netcdf`, `_sample_hemisphere_levels`, `mask_missing_levels`, `lambert_ea`, `lambert_lon` | `test_write_aam_hemisphere_netcdf.py`, `test_hemisphere_sampling.py`, `test_no_data.py`, `test_lambert_geometry.py` |
@@ -1103,3 +1177,4 @@ Functions are in `flight_acoustics.py` unless another module is named. Tests are
 49. de Jong, B. A., Moerkerken, A., and van der Toorn, J. D., "Propagation of Sound over Grassland and over an Earth Barrier," *Journal of Sound and Vibration*, Vol. 86, No. 1, 1983, pp. 23–46. https://doi.org/10.1016/0022-460X(83)90941-0
 50. Lam, Y. W., and Monazzam, M. R., "On the Modeling of Sound Propagation over Multi-Impedance Discontinuities Using a Semiempirical Diffraction Formulation," *Journal of the Acoustical Society of America*, Vol. 120, No. 2, 2006, pp. 686–698. https://doi.org/10.1121/1.2216905
 51. "Sound Level Meters," IEC 60651:1979, International Electrotechnical Commission, Geneva, 1979 (withdrawn; replaced by IEC 61672-1).
+52. Rickley, E. J., Rosenbaum, J. E., Fleming, G. G., Roof, C. J., and Boeker, E. R., "Development of Simplified Procedure for Computing the Absorption of Sound by the Atmosphere and Applicability to Aircraft Noise Certification: Proposed SAE Method," DOT-VNTSC-FAA-12-14, U.S. Department of Transportation, Volpe National Transportation Systems Center, Cambridge, MA, November 2012.

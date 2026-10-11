@@ -1362,7 +1362,8 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
                  rim_elevation_deg=None, max_rim_range_ft=None, remove_doppler=False,
                  nose_from_heading=False, samples_path=None, tone_aware=False,
                  azimuth_reference=None, wind=None, track_check=True,
-                 min_height_above_array_ft=MIN_HEIGHT_ABOVE_ARRAY_FT, air_relative_doppler=False):
+                 min_height_above_array_ft=MIN_HEIGHT_ABOVE_ARRAY_FT, air_relative_doppler=False,
+                 absorption_profile=None, absorption_band_method='center'):
     """Depropagate one run into an AAM-style source sphere.
 
     ``track_check`` (default True) refuses, with :class:`TrackRefused` and the reason, a run
@@ -1450,6 +1451,17 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     :func:`flight_acoustics.write_norah2_hemisphere`).  Its ACSPEED is the
     ground speed the AAM sphere is labeled with; the tracking data carries no
     airspeed.
+
+    ``absorption_profile`` undoes each path's absorption through a layered atmosphere instead
+    of the uniform ``atmosphere``: a mapping of ``altitude_ft`` (ft, in the track frame's z,
+    the same datum as the track and microphone heights), ``temperature_k`` (K),
+    ``relative_humidity`` (percent) and ``pressure_kpa`` (kPa), integrated along each straight
+    path (:func:`panam_acoustics.atmosphere.layered_attenuation_db`).  The sphere still keeps
+    the absorption over ``r_ref_ft`` in ``atmosphere``.  Default None: the uniform atmosphere.
+
+    ``absorption_band_method`` (``'center'``, the default, ``'arp5534'`` or ``'integrated'``)
+    forms the filter-bank bands' absorption (``third_octave_method='filter_bank'`` only; see
+    :func:`flight_acoustics.depropagate_hemisphere`).
 
     ``atmosphere``, if not given, is the ground stations' at the time of the run
     (:func:`run_atmosphere`).  A run whose day has no usable station record (AS350B3 day 292,
@@ -1697,6 +1709,8 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
         return_scattered=samples_path is not None,
         track_nose=nose,
         air_relative_doppler=air_relative_doppler,
+        absorption_profile=absorption_profile,
+        absorption_band_method=absorption_band_method,
     )
     if samples_path is not None:
         scattered = hemisphere['scattered']

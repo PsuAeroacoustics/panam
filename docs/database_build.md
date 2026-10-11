@@ -123,7 +123,9 @@ them with their units):
   relative to the current directory, not the sphere directory);
 - spectra stored (`--no-spectrum` leaves them out);
 - the EAA computed at 1000 m in 293.15 K, 101.325 kPa and 20% relative humidity
-  (`--distance`, `--build-temperature`, `--build-pressure`, `--build-humidity`).
+  (`--distance`, `--build-temperature`, `--build-pressure`, `--build-humidity`), with each
+  band's absorption taken at its center frequency (`--absorption-band-method arp5534` or
+  `integrated`, THEORY §5.4).
 
 The script refuses to replace an existing database without `--overwrite`. The hover
 correction is a Python callable and has no flag; see

@@ -91,6 +91,11 @@ def parse_arguments(argv=None):
                         help='... pressure, kPa (default %(default)g)')
     parser.add_argument('--build-humidity', type=float, default=20.0,
                         help='... relative humidity, percent (default %(default)g)')
+    parser.add_argument('--absorption-band-method', choices=('center', 'arp5534', 'integrated'),
+                        default='center',
+                        help='how band absorption over --distance enters the EAA: center (ISO 9613-1 '
+                             'at the band center), arp5534 (SAE ARP 5534) or integrated (ISO 9613-1 '
+                             'integrated over the band, flat band levels) (default %(default)s)')
     parser.add_argument('--no-spectrum', action='store_true',
                         help='write dBA and EAA only, without the band levels')
     parser.add_argument('--no-clamp-empty', action='store_true',
@@ -128,6 +133,7 @@ def build_options(args):
         azimuth_reference=args.azimuth_reference,
         spheres=args.spheres,
         exclude=args.exclude,
+        absorption_band_method=args.absorption_band_method,
     )
     if args.fixed_load_factor:
         options['load_factors'] = None

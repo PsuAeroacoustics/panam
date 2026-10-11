@@ -71,3 +71,32 @@ def test_the_database_carries_them_for_every_group(tmp_path):
                                        err_msg=name)
             np.testing.assert_allclose(np.asarray(group['EAA'][:]), eaa.ravel(), rtol=0, atol=1e-9,
                                        err_msg=name)
+
+
+def test_the_database_eaa_takes_the_absorption_band_method(tmp_path):
+    """build_empirical_database(absorption_band_method='arp5534'): every group's EAA is
+    formed with the ARP 5534 band attenuation over the 1000 m."""
+    from panam_acoustics.atmosphere import band_absorption_db
+    rng = np.random.default_rng(6)
+    hemispheres = []
+    for speed, angle in [(40, -6), (60, 0), (80, -3)]:
+        hemisphere = minimal_hemisphere()
+        hemisphere['third_octave']['band_centers_hz'] = np.array([250.0, 1000.0, 4000.0])
+        bands = hemisphere['third_octave']['bands_db']
+        hemisphere['third_octave']['bands_db'] = bands + rng.uniform(-10.0, 10.0, bands.shape)
+        hemispheres.append((hemisphere, speed, angle))
+    directory = write_sphere_directory(tmp_path / 'spheres', hemispheres)
+    database = tmp_path / 'database.nod'
+    fa.build_empirical_database(str(directory), str(database), load_factors=None,
+                                atmosphere=ATMOSPHERE, absorption_band_method='arp5534')
+    with Dataset(str(database)) as db:
+        frequency = np.asarray(db['frequency'][:], dtype=float)
+        attenuation = band_absorption_db(1000.0, frequency, ATMOSPHERE.temperature, ATMOSPHERE.pressure,
+                                         ATMOSPHERE.relative_humidity, method='arp5534')
+        for name, group in db.groups.items():
+            amplitude = np.asarray(group['amplitude'][:], dtype=float)
+            a_weight = fa.dBAw(frequency)
+            spla = 10.0 * np.log10(np.sum(10.0 ** (0.1 * (amplitude + a_weight)), axis=-1))
+            attenuated = 10.0 * np.log10(np.sum(10.0 ** (0.1 * (amplitude + a_weight - attenuation)), axis=-1))
+            np.testing.assert_allclose(np.asarray(group['EAA'][:]), (spla - attenuated).ravel(), rtol=0,
+                                       atol=1e-9, err_msg=name)

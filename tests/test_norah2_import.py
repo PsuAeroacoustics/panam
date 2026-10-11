@@ -565,3 +565,24 @@ def test_converts_a_shipped_set(tmp_path):
         expected = hem['levels_db'] + offset_db(hem['frequency_hz'], atmosphere=reference)
         assert np.allclose(amplitude[lower][present], expected[present], atol=1e-9)
         assert np.array_equal(coverage[lower].astype(bool), present)
+
+
+def test_absorption_band_method_reaches_the_levels_and_the_eaa(tmp_path):
+    """--absorption-band-method arp5534: each band moves from POLDIST to the sphere radius
+    by the ARP 5534 band attenuation between them, and the EAA uses it too."""
+    import norah2_to_nod
+    from panam_acoustics.atmosphere import band_absorption_db
+    files = three_hems(tmp_path)
+    common = ['--tip-speed', '214.88', '--rotor-radius', '5.03', '--weight-kg', '861', '--speed', 'ground-speed']
+    assert norah2_to_nod.main([*files, '-o', str(tmp_path / 'center.nod'), *common]) == 0
+    assert norah2_to_nod.main([*files, '-o', str(tmp_path / 'arp.nod'), *common,
+                               '--absorption-band-method', 'arp5534']) == 0
+    hem = fa.load_norah2_hemisphere(files[0])
+    _, _, center, _, _, eaa_center = group_grid(tmp_path / 'center.nod')
+    _, _, arp, _, _, eaa_arp = group_grid(tmp_path / 'arp.nod')
+    band = np.diff(band_absorption_db(np.array([R_SPHERE, 60.0]), hem['frequency_hz'], ICAO.temperature,
+                                      ICAO.pressure, ICAO.relative_humidity, method='arp5534'), axis=1)[:, 0]
+    change = band - ICAO.attenuation_coefficient(hem['frequency_hz']) * (60.0 - R_SPHERE)
+    present = np.isfinite(center) & np.isfinite(arp)
+    assert np.allclose((arp - center)[present], np.broadcast_to(change, center.shape)[present], atol=1e-9)
+    assert not np.allclose(eaa_arp, eaa_center)

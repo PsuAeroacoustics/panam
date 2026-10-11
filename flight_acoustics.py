@@ -8,7 +8,8 @@ from configparser import ConfigParser
 from glob import glob
 
 import numpy as np
-from panam_acoustics.atmosphere import Atmosphere
+from panam_acoustics.atmosphere import (Atmosphere, BAND_ABSORPTION_METHODS, band_absorption_db,
+                                        check_absorption_profile, layered_attenuation_db)
 from typing import Any, Optional, cast
 import openpyxl
 import scipy.signal
@@ -1264,6 +1265,8 @@ def depropagate_hemisphere(
         tone_aware=False,
         track_nose=None,
         air_relative_doppler=False,
+        absorption_band_method='center',
+        absorption_profile=None,
 ):
     """Generate an acoustic hemisphere from microphone time series and vehicle tracking data.
 
@@ -1492,8 +1495,29 @@ def depropagate_hemisphere(
             harmonics, which is what analyzer-based data such as NORAH2
             contain.  In 'filter_bank' mode the ambient gate, subtraction and
             absorption cap act per band rather than per bin, and absorption is
-            taken at the band center.  OASPL, A-weighted and narrowband output
-            are FFT-based either way.
+            taken at the band center unless ``absorption_band_method`` says
+            otherwise.  OASPL, A-weighted and narrowband output are FFT-based
+            either way.
+        absorption_band_method: how the filter-bank bands' absorption is formed
+            (:func:`panam_acoustics.atmosphere.band_absorption_db`): 'center'
+            (default, alpha at the band center, as before), 'arp5534' (SAE ARP
+            5534) or 'integrated' (ISO 9613-1 integrated over the band's filter,
+            flat band levels).  The correction is the band attenuation over the
+            path less that over ``r_ref``, so the sphere keeps the band
+            attenuation over ``r_ref``.  It needs ``apply_absorption_deprop``
+            and ``third_octave_method='filter_bank'``: FFT bins are corrected
+            one by one and need no band method.
+        absorption_profile: None (default) for the uniform ``atmosphere``, or a
+            layered atmosphere to undo the absorption of each path through:
+            a mapping of ``altitude_ft`` (ft, strictly increasing, in the frame
+            of the track's z, converted from ``length_units``),
+            ``temperature_k`` (K), ``relative_humidity`` (percent) and
+            ``pressure_kpa`` (kPa).  Each path's absorption is integrated along
+            the straight line from source to microphone altitude
+            (:func:`panam_acoustics.atmosphere.layered_attenuation_db`), over
+            the ray's arc length when a ray model is given.  What is put back
+            is the absorption over ``r_ref`` in ``atmosphere``, so the sphere
+            keeps the same convention.  Needs ``apply_absorption_deprop``.
 
     Returns:
         dict with keys:
@@ -1568,6 +1592,19 @@ def depropagate_hemisphere(
     if third_octave_method not in ('fft', 'filter_bank'):
         raise ValueError("third_octave_method must be 'fft' or 'filter_bank'")
     use_filter_bank = bool(third_octave) and third_octave_method == 'filter_bank'
+    if absorption_band_method not in BAND_ABSORPTION_METHODS:
+        raise ValueError('absorption_band_method must be one of {}, not {!r}'.format(
+            BAND_ABSORPTION_METHODS, absorption_band_method))
+    if absorption_band_method != 'center':
+        if not apply_absorption_deprop:
+            raise ValueError('absorption_band_method needs apply_absorption_deprop=True')
+        if not use_filter_bank:
+            raise ValueError("absorption_band_method applies to third_octave_method='filter_bank' "
+                             "bands; FFT bins are corrected one by one")
+    if absorption_profile is not None:
+        if not apply_absorption_deprop:
+            raise ValueError('absorption_profile needs apply_absorption_deprop=True')
+        check_absorption_profile(absorption_profile)
     ambient_pressure_list = None
     ambient_time_list = None
     if ambient_pressure is not None:
@@ -1750,14 +1787,16 @@ def depropagate_hemisphere(
 
     pref_sq = P_REF ** 2
 
-    def _depropagate(lin, amb, r_v, alpha, response=None, r_path=None):
+    def _depropagate(lin, amb, r_v, alpha, response=None, r_path=None, delta_db=None):
         """Gate against ambient, subtract it, then undo spreading and absorption.
 
         ``lin`` is (Nf, Npts) linear power (per bin or per band) at the
         microphone; ``amb`` the matching (Nf,) ambient or None; ``alpha`` the
         (Nf,) absorption coefficients in dB/m, used when absorption
         depropagation is on.  Spreading is undone over ``r_v`` and absorption
-        over ``r_path`` (the same, without a ray model).
+        over ``r_path`` (the same, without a ray model).  ``delta_db``, if
+        given, is the (Nf, Npts) absorption correction in dB used in place of
+        ``alpha (r_path - r_ref)`` (a band method or a layered atmosphere).
         """
         if r_path is None:
             r_path = r_v
@@ -1778,8 +1817,11 @@ def depropagate_hemisphere(
         # Optional absorption depropagation back to r_ref
         if apply_absorption_deprop:
             assert r_ref_m is not None
-            r_m = unit_conversion.len_conv(r_path, from_units=length_units, to_units='m').astype(float)
-            deltaL = np.asarray(alpha, dtype=float)[:, None] * (r_m[None, :] - r_ref_m)
+            if delta_db is not None:
+                deltaL = delta_db
+            else:
+                r_m = unit_conversion.len_conv(r_path, from_units=length_units, to_units='m').astype(float)
+                deltaL = np.asarray(alpha, dtype=float)[:, None] * (r_m[None, :] - r_ref_m)
             if max_absorption_correction_db is not None:
                 # Drop bins the measurement cannot support before applying the
                 # correction, not after: once multiplied they are indisting-
@@ -1788,6 +1830,24 @@ def depropagate_hemisphere(
                 lin = np.where(deltaL <= float(max_absorption_correction_db), lin, np.nan)
             lin = lin * (10.0 ** (deltaL / 10.0))
         return lin
+
+    def _absorption_delta(frequency, method, r_path, source_z, receiver_z):
+        """(Nf, Npts) absorption correction, dB: each path's attenuation (in the
+        layered ``absorption_profile`` if given, else in ``atmosphere``) less the
+        attenuation over r_ref in ``atmosphere``, by ``method``.  ``r_path``,
+        ``source_z`` and ``receiver_z`` are in ``length_units``."""
+        def to(value, units):
+            return np.asarray(unit_conversion.len_conv(np.asarray(value, dtype=float), from_units=length_units,
+                                                       to_units=units), dtype=float)
+        weather = (atmosphere.temperature, atmosphere.pressure, atmosphere.relative_humidity)
+        reference = band_absorption_db(r_ref_m, frequency, *weather, method=method)
+        if absorption_profile is None:
+            path = band_absorption_db(to(r_path, 'm'), frequency, *weather, method=method)
+        else:
+            ray = dict(source_altitude_ft=to(source_z, 'ft'), receiver_altitude_ft=to(receiver_z, 'ft'),
+                       path_length_ft=to(r_path, 'ft'))
+            path = layered_attenuation_db(absorption_profile, ray, frequency, method=method)
+        return path - reference[:, None]
 
     for im in range(nmics):
         # PSD spectrogram on observer time axis
@@ -1934,7 +1994,12 @@ def depropagate_hemisphere(
             response_bins = inverse[band_of_bin]
             response_bands = inverse
 
-        psd_v_lin = _depropagate(psd_v_lin, amb_lin, spread_v, alpha_db_per_m, response_bins, path_v)
+        source_z_v = pos_geom[tidx][valid][:, 2]
+        delta_bins = None
+        if absorption_profile is not None:
+            delta_bins = _absorption_delta(f_sel, 'center', path_v, source_z_v, mic_geom[im][2])
+        psd_v_lin = _depropagate(psd_v_lin, amb_lin, spread_v, alpha_db_per_m, response_bins, path_v,
+                                 delta_bins)
 
         # OASPL power over selected frequency range: the bins a cap dropped are
         # left out, and a sample with no bin left is missing
@@ -1975,7 +2040,11 @@ def depropagate_hemisphere(
                 band_v[ib, :] = np.interp(tobs_v, t_abs, band_frames[ib, :])
             alpha_band = (np.asarray(atmosphere.attenuation_coefficient(band_centers), dtype=float)
                           if apply_absorption_deprop else None)
-            band_v = _depropagate(band_v, amb_band, spread_v, alpha_band, response_bands, path_v)
+            delta_bands = None
+            if absorption_profile is not None or absorption_band_method != 'center':
+                delta_bands = _absorption_delta(band_centers, absorption_band_method, path_v, source_z_v,
+                                                mic_geom[im][2])
+            band_v = _depropagate(band_v, amb_band, spread_v, alpha_band, response_bands, path_v, delta_bands)
             for ib in range(band_centers.size):
                 band_power_lists[ib].append(band_v[ib, :])
         elif third_octave:
@@ -2089,6 +2158,8 @@ def depropagate_hemisphere(
             'rim_range': None if rim_range is None else (float(rim_range[0]), float(rim_range[1])),
             'apply_absorption_deprop': bool(apply_absorption_deprop),
             'third_octave_method': str(third_octave_method),
+            'absorption_band_method': str(absorption_band_method),
+            'absorption_profile': absorption_profile is not None,
             # Depropagation removes absorption over r - r_ref only, so the
             # sphere still carries absorption over r_ref in this atmosphere.
             # Exporters for formats with a different convention (NORAH2) need
@@ -3118,8 +3189,9 @@ def write_norah2_hemisphere(
 
     - moved by spherical spreading from the hemisphere's ``r_ref`` to 60 m;
     - the absorption depropagation leaves in over ``r_ref`` (in the
-      measurement atmosphere) taken out, and absorption over 60 m in the ICAO
-      reference atmosphere put in, as ``FREEFIELD = 2`` declares;
+      measurement atmosphere, by the band method in its metadata's
+      ``absorption_band_method``) taken out, and absorption over 60 m in the
+      ICAO reference atmosphere put in, as ``FREEFIELD = 2`` declares;
     - resampled in linear power onto the NORAH2 10 degree grid and its 31
       nominal one-third octave bands (10 Hz to 10 kHz).  A band the
       hemisphere does not have, a direction it did not cover, and a level
@@ -3197,8 +3269,17 @@ def write_norah2_hemisphere(
         # ones for NORAH2's: those are what NORAH2 will remove it at.
         measured_centers = np.where(present, np.asarray(frequency_hz, dtype=float)[band_index],
                                     NORAH2_BAND_CENTERS_HZ)
+        # The sphere keeps the band attenuation over r_ref as its band method
+        # formed it (see depropagate_hemisphere), so take out that amount.
+        band_method = str(meta.get('absorption_band_method', 'center'))
+        if band_method == 'center':
+            measured_db = measurement_atmosphere.attenuation_coefficient(measured_centers) * r_ref_m
+        else:
+            measured_db = band_absorption_db(r_ref_m, measured_centers, measurement_atmosphere.temperature,
+                                             measurement_atmosphere.pressure,
+                                             measurement_atmosphere.relative_humidity, method=band_method)
         offset_db = (offset_db
-                     + measurement_atmosphere.attenuation_coefficient(measured_centers) * r_ref_m
+                     + measured_db
                      - reference_atmosphere.attenuation_coefficient(NORAH2_BAND_CENTERS_HZ)
                      * NORAH2_REFERENCE_DISTANCE_M)
     else:
@@ -3477,7 +3558,7 @@ def _norah2_reference_atmosphere(constants, filename):
                       relative_humidity=humidity)
 
 
-def norah2_levels_at_radius(hemisphere, radius_m=DATABASE_SPHERE_RADIUS_M):
+def norah2_levels_at_radius(hemisphere, radius_m=DATABASE_SPHERE_RADIUS_M, absorption_band_method='center'):
     """Band levels of a loaded .hem moved from POLDIST to a NICE-OPS sphere's radius.
 
     The level at POLDIST includes absorption from the center out to POLDIST in
@@ -3492,9 +3573,15 @@ def norah2_levels_at_radius(hemisphere, radius_m=DATABASE_SPHERE_RADIUS_M):
     reference atmosphere.  For a radius beyond POLDIST the same expression adds
     the absorption between the two instead.  Missing cells stay -inf.
 
+    With ``absorption_band_method`` other than 'center' the absorption term is
+    the band attenuation over POLDIST less that over ``radius_m``
+    (:func:`panam_acoustics.atmosphere.band_absorption_db`): 'arp5534', SAE ARP
+    5534 as NORAH2 itself applies it, or 'integrated' (flat band levels).
+
     Args:
         hemisphere: a :func:`load_norah2_hemisphere` result.
         radius_m: the sphere radius, meters.
+        absorption_band_method: 'center' (default), 'arp5534' or 'integrated'.
 
     Returns: (phi, theta, frequency) levels at ``radius_m``, dB.
     """
@@ -3509,8 +3596,14 @@ def norah2_levels_at_radius(hemisphere, radius_m=DATABASE_SPHERE_RADIUS_M):
     if not (np.isfinite(radius_m) and radius_m > 0.0):
         raise ValueError(f'radius_m must be a positive distance in meters, not {radius_m:g}')
     atmosphere = _norah2_reference_atmosphere(constants, hemisphere.get('title', 'hemisphere'))
-    alpha = atmosphere.attenuation_coefficient(np.asarray(hemisphere['frequency_hz'], dtype=float))
-    offset_db = 20.0 * np.log10(poldist / radius_m) + alpha * (poldist - radius_m)
+    frequency = np.asarray(hemisphere['frequency_hz'], dtype=float)
+    if absorption_band_method == 'center':
+        absorption_db = atmosphere.attenuation_coefficient(frequency) * (poldist - radius_m)
+    else:
+        absorption_db = np.diff(band_absorption_db(
+            np.array([radius_m, poldist]), frequency, atmosphere.temperature, atmosphere.pressure,
+            atmosphere.relative_humidity, method=absorption_band_method), axis=1)[:, 0]
+    offset_db = 20.0 * np.log10(poldist / radius_m) + absorption_db
     return mask_missing_levels(hemisphere['levels_db']) + offset_db[None, None, :]
 
 
@@ -3636,7 +3729,8 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
                                atmosphere=Atmosphere(temperature=293.15, pressure=101.325,
                                                      relative_humidity=20.0),
                                accept_ground_included=False, mirror_rotor=False,
-                               fill_empty=False, store_spectrum=True, overwrite=True):
+                               fill_empty=False, store_spectrum=True, overwrite=True,
+                               absorption_band_method='center'):
     """Build a NICE-OPS database from NORAH2 (HELENA, ECAC Doc 32) ``.hem`` hemispheres.
 
     One condition per file, at load factor 1 with ``fixed_load_factor`` set, so
@@ -3699,6 +3793,12 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
         store_spectrum: keep the band levels in each group, as NICE-OPS's
             spectral path needs.  Without them only dBA and EAA are written.
         overwrite: if False, refuse an existing ``database_filename``.
+        absorption_band_method: how band absorption is formed, both in the move
+            from POLDIST to ``radius_m`` and in the EAA
+            (:func:`panam_acoustics.atmosphere.band_absorption_db`): 'center'
+            (default, the coefficient at the band center), 'arp5534' (SAE ARP
+            5534, NORAH2's own) or 'integrated'.  The database records it only in
+            the provenance settings.
 
     The root carries the provenance stamp of :mod:`provenance`: the processing
     arguments of this call as canonical JSON, and the .hem files and the
@@ -3733,6 +3833,9 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
         raise ValueError("tas_air_density applies to speed_mapping='ias_to_tas' only")
 
     _check_build_atmosphere(atmosphere)
+    if absorption_band_method not in BAND_ABSORPTION_METHODS:
+        raise ValueError('absorption_band_method must be one of {}, not {!r}'.format(
+            BAND_ABSORPTION_METHODS, absorption_band_method))
 
     # realpath, so a symbolic link or a second spelling of one file is caught too.
     hem_files = [os.path.realpath(os.path.expanduser(str(f))) for f in hem_files]
@@ -3797,7 +3900,7 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
             raise ValueError(f'{name} and {grid[3]} have different angle grids or bands; one '
                              'database takes one layout')
 
-        amplitude = norah2_levels_at_radius(hemisphere, radius_m)
+        amplitude = norah2_levels_at_radius(hemisphere, radius_m, absorption_band_method)
         if mirror_rotor:
             # phi -> -phi reverses the row order; keep the rows ascending.
             amplitude = amplitude[::-1]
@@ -3812,12 +3915,14 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
         if not (np.isfinite(flight_path_angle) and abs(flight_path_angle) < 90.0):
             raise ValueError(f'{name}: GAMM = {flight_path_angle:g} is not a flight path angle')
 
-        spla, eaa = spla_and_eaa_from_spectrum(amplitude, frequency, 1000.0, atmosphere)
+        spla, eaa = spla_and_eaa_from_spectrum(amplitude, frequency, 1000.0, atmosphere,
+                                               absorption_band_method)
         # Coverage is what the file measured, taken before any fill.
         measured = _measured_bins(amplitude, eaa)
         if fill_empty:
             amplitude = fill_norah2_empty_cells(amplitude, phi_list, theta_deg)
-            spla, eaa = spla_and_eaa_from_spectrum(amplitude, frequency, 1000.0, atmosphere)
+            spla, eaa = spla_and_eaa_from_spectrum(amplitude, frequency, 1000.0, atmosphere,
+                                                   absorption_band_method)
         spla, eaa = _finite_sphere_levels(spla, eaa)
         phi_full, theta_full, spla_full, eaa_full, amplitude_full, coverage_full = (
             _complete_sphere_with_coverage(phi_list, theta_deg, spla, eaa, amplitude, measured))
@@ -4335,8 +4440,7 @@ def average_fore_and_aft(spectrum):
     spectrum = np.array(spectrum, dtype=float, copy=True)
     n_theta = spectrum.shape[1]
     # -inf entries mean "no energy" and are expected; 10**(-inf/10) == 0.
-    old = np.seterr(divide='ignore', invalid='ignore')
-    try:
+    with np.errstate(divide='ignore', invalid='ignore'):
         for i in range(n_theta // 2):
             j = n_theta - 1 - i
             mean_square = 0.5 * (10.0 ** (spectrum[:, i, :] / 10.0)
@@ -4344,27 +4448,38 @@ def average_fore_and_aft(spectrum):
             averaged = 10.0 * np.log10(mean_square)
             spectrum[:, i, :] = averaged
             spectrum[:, j, :] = averaged
-    finally:
-        np.seterr(**old)
     return spectrum
 
 
-def spla_and_eaa_from_spectrum(spectrum, frequency, distance, atmosphere):
+def spla_and_eaa_from_spectrum(spectrum, frequency, distance, atmosphere, absorption_band_method='center'):
     """Derive A-weighted OASPL and excess atmospheric attenuation from a spectrum.
 
     Mirrors the reduction in :func:`extract_SPL`, so a caller that modifies the
     spectrum (e.g. fore/aft averaging for hover) can recompute both quantities
     consistently instead of carrying stale values forward.
+
+    Args:
+        spectrum: (phi, theta, frequency) band levels, dB.
+        frequency: band centers, Hz.
+        distance: the distance the EAA is formed over, m.
+        atmosphere: the Atmosphere of the absorption (K, kPa, percent).
+        absorption_band_method: how each band's attenuation over ``distance`` is
+            formed (:func:`panam_acoustics.atmosphere.band_absorption_db`):
+            'center' (default, alpha at the band center times the distance),
+            'arp5534' or 'integrated' (flat band levels).
+
+    Returns: (SPLA, dBA; EAA, dB over ``distance``), each (phi, theta).
     """
     a_weight = np.array([dBAw(f) for f in frequency])
-    alpha = atmosphere.attenuation_coefficient(frequency)
+    if absorption_band_method == 'center':
+        attenuation = distance * atmosphere.attenuation_coefficient(frequency)
+    else:
+        attenuation = band_absorption_db(float(distance), frequency, atmosphere.temperature, atmosphere.pressure,
+                                         atmosphere.relative_humidity, method=absorption_band_method)
     spla = np.apply_along_axis(OASPL, 2, spectrum + a_weight)
-    spla_attenuated = np.apply_along_axis(OASPL, 2, spectrum + a_weight - distance * alpha)
-    old = np.seterr(invalid='ignore')
-    try:
+    spla_attenuated = np.apply_along_axis(OASPL, 2, spectrum + a_weight - attenuation)
+    with np.errstate(invalid='ignore'):
         eaa = spla - spla_attenuated
-    finally:
-        np.seterr(**old)
     return spla, eaa
 
 
@@ -4495,7 +4610,8 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                              store_spectrum=True, clamp_empty_directions=True,
                              hover_correction=None, hover_source=None,
                              speed_reference='ground', doppler_shift_removed=None,
-                             azimuth_reference=None, spheres=None, exclude=None):
+                             azimuth_reference=None, spheres=None, exclude=None,
+                             absorption_band_method='center'):
     """Build a NICE-OPS sphere database from a directory of sphere files.
 
     directory_name holds vehicle.cfg and, unless ``spheres`` says otherwise,
@@ -4627,6 +4743,13 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     ``exclude`` by file name in ``panam_inputs``), and, as float attributes, ``load_factors``
     (omitted with ``load_factors=None``; ``fixed_load_factor`` says so) and
     ``extended_flight_path_angles_deg`` (omitted when not given).
+
+
+    absorption_band_method sets how each band's attenuation over ``distance``
+    (m) enters the EAA (:func:`spla_and_eaa_from_spectrum`): 'center' (default,
+    the ISO 9613-1 coefficient at the band center), 'arp5534' (SAE ARP 5534) or
+    'integrated' (ISO 9613-1 integrated over the band, flat band levels).  The
+    database records it only in the provenance settings.
     """
     # File identity apart from the hashed settings; paths by file name only (a relative
     # path's directories name this machine's layout too).  Whether a hover source was
@@ -4713,7 +4836,8 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     for filename in file_list:
         # Load the sphere data
         (_, _, phi_list, theta_list, radius, _, SPLA, EAA, speed, flight_path_angle,
-         frequency, amplitude) = extract_SPL(filename, infreqs, distance, atmosphere)
+         frequency, amplitude) = extract_SPL(filename, infreqs, distance, atmosphere,
+                                                      absorption_band_method)
         # Which bins carry a measurement.  Taken before the clamp, and before the
         # completion fills the upper surface, so a gated bin is recorded as such.
         measured = _measured_bins(amplitude, EAA)
@@ -4765,7 +4889,8 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
         min_speed_file = os.path.abspath(os.path.expanduser(hover_source))
     # Now, adapt the lowest speed sphere to a hover sphere by averaging from fore to aft
     (_, _, phi_list, theta_list, radius, _, _, eaa_source, _, _,
-     frequency, amplitude) = extract_SPL(min_speed_file, infreqs, distance, atmosphere)
+     frequency, amplitude) = extract_SPL(min_speed_file, infreqs, distance, atmosphere,
+                                       absorption_band_method)
     # The averaging below gives a gated bin the level of its partner, so the
     # hover's coverage is measured only where both partners were.
     measured = _fore_aft_measured(_measured_bins(amplitude, eaa_source))
@@ -4783,7 +4908,8 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
             raise ValueError('hover_correction returned shape {}, the sphere is {}'.format(
                 correction.shape, amplitude.shape))
         amplitude = amplitude + correction
-    SPLA, EAA = spla_and_eaa_from_spectrum(amplitude, frequency, distance, atmosphere)
+    SPLA, EAA = spla_and_eaa_from_spectrum(amplitude, frequency, distance, atmosphere,
+                                           absorption_band_method)
     if clamp_empty_directions:
         SPLA, EAA = _finite_sphere_levels(SPLA, EAA)
     # Complete the sphere onto its upper surface
@@ -5428,7 +5554,12 @@ def fried_egg_plot(directory_name, metric='mean', dimensionless=False, altitude=
 
 def extract_SPL(filename, infreqs=None, distance=1000,
                 atmosphere=Atmosphere(temperature=293.15, pressure=101.325,
-                                      relative_humidity=20.0)):
+                                      relative_humidity=20.0), absorption_band_method='center'):
+    """Read a sphere file and reduce it to the levels a database group carries.
+
+    ``distance`` (m) and ``atmosphere`` set the EAA, with each band's attenuation
+    formed by ``absorption_band_method`` (see :func:`spla_and_eaa_from_spectrum`).
+    """
     # Get data from netCDF file
     amplitude, phi, theta, frequency, radius, speed, flight_path_angle = load_nc_sphere(filename)
     # Convert radius to meters
@@ -5442,7 +5573,7 @@ def extract_SPL(filename, infreqs=None, distance=1000,
         frequency = frequency[frequency_index]
     SPLO = power_to_db(np.sum(np.power(10.0, amplitude / 10.0), axis=2))
     # A-weighted OASPL and excess atmospheric attenuation
-    SPLA, EAA = spla_and_eaa_from_spectrum(amplitude, frequency, distance, atmosphere)
+    SPLA, EAA = spla_and_eaa_from_spectrum(amplitude, frequency, distance, atmosphere, absorption_band_method)
     # Convert from ART to UMAPR coordinates
     _, P = np.meshgrid(theta, phi)
     azi, elv = art2umapr(np.pi * P / 180.0, np.pi * theta / 180.0)
