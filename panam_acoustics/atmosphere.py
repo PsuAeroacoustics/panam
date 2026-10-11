@@ -169,6 +169,19 @@ def arp5534_band_attenuation(tone_attenuation_db):
     return np.where(delta_t < ARP5534_BREAK_DB, low, c['F'] + c['G'] * delta_t)
 
 
+def energy_mean_attenuation_db(tone_db, axis=0, weight=None):
+    """Attenuation, dB, of a band whose frequencies are attenuated by ``tone_db``
+    along ``axis``: -10 lg of the energy mean of 10^(-tone_db / 10), the plain mean
+    or, with ``weight`` (summing to 1, broadcast against ``tone_db``), the weighted
+    sum.  Taken relative to the least-attenuated frequency, so a long path does
+    not underflow every term to zero.  Returns ``tone_db``'s shape without ``axis``.
+    """
+    least = np.min(tone_db, axis=axis)
+    kept = 10.0 ** (-(tone_db - np.expand_dims(least, axis)) / 10.0)
+    kept = np.mean(kept, axis=axis) if weight is None else np.sum(weight * kept, axis=axis)
+    return least - 10.0 * np.log10(kept)
+
+
 def _band_attenuation(tone_db, band_centers, method, spectrum_slope_db):
     """Band attenuation, dB, shaped (bands,) + path shape, from a pure-tone one.
 
@@ -204,11 +217,7 @@ def _band_attenuation(tone_db, band_centers, method, spectrum_slope_db):
         weight = weight / np.sum(weight)
         tone = np.asarray(tone_db(fc * ratio), dtype=float)          # (K,) + path shape
         weight = weight.reshape((-1,) + (1,) * (tone.ndim - 1))
-        # Relative to the least-attenuated frequency, so a long path does not
-        # underflow every term to zero.
-        least = np.min(tone, axis=0)
-        kept = np.sum(weight * 10.0 ** (-(tone - least) / 10.0), axis=0)
-        band = least - 10.0 * np.log10(kept)
+        band = energy_mean_attenuation_db(tone, axis=0, weight=weight)
         if out is None:
             out = np.empty((centers.size,) + band.shape, dtype=float)
         out[ib] = band

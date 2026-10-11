@@ -39,11 +39,6 @@ def _track_arrays(track):
     return time, position, np.gradient(position, time, axis=0)
 
 
-def _interp_columns(t, time, values):
-    """Linear interpolation of each column of ``values`` (n, k) at ``t``."""
-    return np.column_stack([np.interp(t, time, values[:, k]) for k in range(values.shape[1])])
-
-
 def doppler_factor(reception_times, track, receiver, sound_speed):
     """Emission time and Doppler factor of a moving source heard at a fixed receiver.
 
@@ -64,10 +59,10 @@ def doppler_factor(reception_times, track, receiver, sound_speed):
     if receiver.shape != (3,):
         raise ValueError('receiver must be one (3,) position')
     t_r = np.asarray(reception_times, dtype=float)
-    t_e, x_e = ground_plane.emission_times(lambda t: _interp_columns(t, time, position),
+    t_e, x_e = ground_plane.emission_times(lambda t: ground_plane.interp_columns(t, time, position),
                                            t_r.ravel(), receiver, sound_speed)
     r = receiver - x_e
-    v = _interp_columns(t_e, time, velocity)
+    v = ground_plane.interp_columns(t_e, time, velocity)
     with np.errstate(invalid='ignore', divide='ignore'):
         mach_toward = np.sum(v * r, axis=1) / (np.linalg.norm(r, axis=1) * sound_speed)
         factor = 1.0 / (1.0 - mach_toward)
@@ -136,7 +131,7 @@ def observed_order_track(reception_times, track, receiver, rotor_speed, orders, 
         if values.shape[0] != len(times):
             raise ValueError(f'rotor_speed has {values.shape[0]} samples and its times {len(times)}')
         flat = values.reshape(len(times), -1)
-        speed = _interp_columns(t_known, times, flat).reshape(t_known.shape + values.shape[1:])
+        speed = ground_plane.interp_columns(t_known, times, flat).reshape(t_known.shape + values.shape[1:])
     shaft_hz = speed * to_hz * np.where(known, factor, np.nan).reshape(t_e.shape + (1,) * (speed.ndim - t_e.ndim))
     orders = np.asarray(orders, dtype=float)
     return shaft_hz.reshape(shaft_hz.shape + (1,) * orders.ndim) * orders

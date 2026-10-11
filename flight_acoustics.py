@@ -1271,6 +1271,105 @@ def _band_attenuation_db(atmosphere, frequency_hz, distance_m, method):
                               atmosphere.relative_humidity, method=method)
 
 
+def finite_difference_velocity(time, position):
+    """Velocity (Nt, 3), length units per second, of a sampled track: central
+    differences of ``position`` (Nt, 3) over ``time`` (Nt,) s (one-sided at the
+    ends), as ``depropagate_hemisphere`` takes it when none is given."""
+    return np.gradient(position, axis=0) / np.gradient(time)[:, None]
+
+
+def metadata_atmosphere(metadata, default=None):
+    """The :class:`Atmosphere` a hemisphere's ``metadata['atmosphere']`` records
+    (``temperature_k`` K, ``pressure_kpa`` kPa, ``relative_humidity`` %), or
+    ``default`` when it records none."""
+    recorded = metadata.get('atmosphere')
+    if recorded is None:
+        return default
+    return Atmosphere(temperature=recorded['temperature_k'], pressure=recorded['pressure_kpa'],
+                      relative_humidity=recorded['relative_humidity'])
+
+
+def path_absorption_db(frequency, method, r_path, source_z, receiver_z, *, length_units, atmosphere,
+                       absorption_profile=None):
+    """(Nf, Npts) band attenuation, dB, of each path by ``method``: in the
+    layered ``absorption_profile`` (:func:`panam_acoustics.atmosphere.layered_attenuation_db`)
+    if given, else in the uniform ``atmosphere``
+    (:func:`panam_acoustics.atmosphere.band_absorption_db`).
+
+    ``frequency`` (Nf,) Hz; ``r_path`` (Npts,) path lengths and ``source_z``,
+    ``receiver_z`` heights, all in ``length_units`` ('ft' or 'm').
+    Depropagation and :mod:`synthesis` both form absorption with it.
+    """
+    def to(value, units):
+        return np.asarray(unit_conversion.len_conv(np.asarray(value, dtype=float), from_units=length_units,
+                                                   to_units=units), dtype=float)
+    if absorption_profile is None:
+        return band_absorption_db(to(r_path, 'm'), frequency, atmosphere.temperature, atmosphere.pressure,
+                                  atmosphere.relative_humidity, method=method)
+    ray = dict(source_altitude_ft=to(source_z, 'ft'), receiver_altitude_ft=to(receiver_z, 'ft'),
+               path_length_ft=to(r_path, 'ft'))
+    return layered_attenuation_db(absorption_profile, ray, frequency, method=method)
+
+
+def ambient_from_frames(power, frames, ambient_time_range=None, ambient_percentile=None, power_db=None):
+    """(Nf,) ambient power from a record's own frames, or None.
+
+    The mean of ``power`` (Nf, Nframes) over the frames whose times ``frames``
+    (Nframes,) s fall in ``ambient_time_range`` (t0, t1) s; else its
+    ``ambient_percentile`` (0-100) per row, taken in dB over ``power_db`` when
+    given (spectrogram bins) and in power otherwise (filter-bank bands); else None.
+    """
+    if ambient_time_range is not None:
+        quiet = np.logical_and(frames >= float(ambient_time_range[0]), frames <= float(ambient_time_range[1]))
+        if not np.any(quiet):
+            raise ValueError('ambient_time_range contains no spectrogram frames')
+        return np.nanmean(power[:, quiet], axis=1)
+    if ambient_percentile is not None:
+        if power_db is not None:
+            return 10.0 ** (np.nanpercentile(power_db, float(ambient_percentile), axis=1) / 10.0)
+        return np.nanpercentile(power, float(ambient_percentile), axis=1)
+    return None
+
+
+def gate_ambient(power, ambient, band_snr_gate_db):
+    """Gate ``power`` (Nf, N) against ``ambient`` (Nf,) and subtract it: a value
+    less than ``band_snr_gate_db`` dB above the ambient becomes 0 (measured, no
+    energy left), any other loses the ambient (floored at 0)."""
+    ambient = ambient[:, None]
+    return np.where(power >= ambient * 10.0 ** (band_snr_gate_db / 10.0), np.maximum(power - ambient, 0.0), 0.0)
+
+
+def range_cap_mask(elevation_deg, distance, min_elevation_deg=0.0, max_range=None, rim_range=None):
+    """Samples ``depropagate_hemisphere`` keeps by elevation and range: elevation
+    (deg, UMAPR) at least ``min_elevation_deg`` (when positive) and ``distance``
+    within ``max_range``, raised to ``rim_range[1]`` below ``rim_range[0]`` deg.
+    Lengths in one unit; returns a boolean array shaped like ``distance``."""
+    keep = np.ones(np.shape(distance), dtype=bool)
+    if min_elevation_deg > 0.0:
+        keep &= elevation_deg >= float(min_elevation_deg)
+    if max_range is not None:
+        cap = np.full(np.shape(distance), float(max_range))
+        if rim_range is not None:
+            cap = np.where(elevation_deg < float(rim_range[0]), max(float(rim_range[1]), float(max_range)), cap)
+        keep &= distance <= cap
+    return keep
+
+
+def ray_azimuth_deg(azimuth_deg, emitted, toward):
+    """The straight line's azimuth (deg, UMAPR) turned by the horizontal angle
+    from ``toward`` (the source-to-receiver line) to ``emitted`` (the direction
+    a ray left the source along), both (..., 3): a crosswind's drift."""
+    turn = np.degrees(np.arctan2(emitted[..., 1], emitted[..., 0]) - np.arctan2(toward[..., 1], toward[..., 0]))
+    return np.remainder(azimuth_deg + turn, 360.0)
+
+
+def air_relative_doppler_factor(velocity, emitted, doppler_speed):
+    """D = 1 / (1 - v.n / doppler_speed): ``velocity`` and the emission
+    direction ``emitted`` (..., 3), ``doppler_speed`` (...) the ray model's
+    c + W.n, in matching length units per second."""
+    return 1.0 / (1.0 - np.sum(velocity * emitted, axis=-1) / doppler_speed)
+
+
 def depropagate_hemisphere(
         mic_locations,
         pressure,
@@ -1626,8 +1725,7 @@ def depropagate_hemisphere(
         raise ValueError('track_position must be shape (Nt, 3) matching track_time')
 
     if track_velocity is None:
-        dt = np.gradient(track_time)
-        track_velocity = np.gradient(track_position, axis=0) / dt[:, None]
+        track_velocity = finite_difference_velocity(track_time, track_position)
     track_velocity = np.asarray(track_velocity, dtype=float)
     if track_velocity.shape != (track_time.size, 3):
         raise ValueError('track_velocity must be shape (Nt, 3) matching track_time')
@@ -1774,16 +1872,14 @@ def depropagate_hemisphere(
             if flip_y_for_geometry:
                 emitted[..., 1] *= -1.0
             toward = np.asarray(mic_geom, dtype=float)[None, :, :] - np.asarray(pos_geom, dtype=float)[tidx][:, None, :]
-            turn = np.degrees(np.arctan2(emitted[..., 1], emitted[..., 0])
-                              - np.arctan2(toward[..., 1], toward[..., 0]))
             az_deg = np.array(az_deg, dtype=float)
-            az_deg[tidx] = np.remainder(az_deg[tidx] + turn, 360.0)
+            az_deg[tidx] = ray_azimuth_deg(az_deg[tidx], emitted, toward)
             ray_valid &= np.all(np.isfinite(emitted), axis=-1)
         if air_relative_doppler:
             if 'emission_direction' not in rays or 'doppler_speed' not in rays:
                 raise ValueError(_AIR_RELATIVE_DOPPLER_RAYS)
-            speed_along = np.sum(np.asarray(vel_geom, dtype=float)[tidx][:, None, :] * emitted, axis=2)
-            doppler_geom[tidx] = 1.0 / (1.0 - speed_along / np.asarray(rays['doppler_speed'], dtype=float))
+            doppler_geom[tidx] = air_relative_doppler_factor(np.asarray(vel_geom, dtype=float)[tidx][:, None, :],
+                                                             emitted, np.asarray(rays['doppler_speed'], dtype=float))
 
     # Regular hemisphere grid (degrees) with seam closure at 360
     azi_grid_deg = np.arange(0.0, 360.0 + 1e-9, float(azi_step))
@@ -1880,8 +1976,7 @@ def depropagate_hemisphere(
         # spreading and absorption depropagation, or an ambient-limited band
         # gets amplified by both.
         if amb is not None:
-            gate = lin >= amb[:, None] * 10.0 ** (band_snr_gate_db / 10.0)
-            lin = np.where(gate, np.maximum(lin - amb[:, None], 0.0), 0.0)
+            lin = gate_ambient(lin, amb, band_snr_gate_db)
 
         # The installation's response, as a power ratio to divide out.
         if response is not None:
@@ -1912,17 +2007,10 @@ def depropagate_hemisphere(
         layered ``absorption_profile`` if given, else in ``atmosphere``) less the
         attenuation over r_ref in ``atmosphere``, by ``method``.  ``r_path``,
         ``source_z`` and ``receiver_z`` are in ``length_units``."""
-        def to(value, units):
-            return np.asarray(unit_conversion.len_conv(np.asarray(value, dtype=float), from_units=length_units,
-                                                       to_units=units), dtype=float)
-        weather = (atmosphere.temperature, atmosphere.pressure, atmosphere.relative_humidity)
-        reference = band_absorption_db(r_ref_m, frequency, *weather, method=method)
-        if absorption_profile is None:
-            path = band_absorption_db(to(r_path, 'm'), frequency, *weather, method=method)
-        else:
-            ray = dict(source_altitude_ft=to(source_z, 'ft'), receiver_altitude_ft=to(receiver_z, 'ft'),
-                       path_length_ft=to(r_path, 'ft'))
-            path = layered_attenuation_db(absorption_profile, ray, frequency, method=method)
+        reference = band_absorption_db(r_ref_m, frequency, atmosphere.temperature, atmosphere.pressure,
+                                       atmosphere.relative_humidity, method=method)
+        path = path_absorption_db(frequency, method, r_path, source_z, receiver_z, length_units=length_units,
+                                  atmosphere=atmosphere, absorption_profile=absorption_profile)
         return path - reference[:, None]
 
     for im in range(nmics):
@@ -1969,14 +2057,7 @@ def depropagate_hemisphere(
         # Keep only points that can be interpolated in time and, when
         # requested, that lie above the elevation cutoff
         valid = np.logical_and(tobs_sub >= t_abs[0], tobs_sub <= t_abs[-1])
-        if min_elevation_deg > 0.0:
-            valid = np.logical_and(valid, el_sub >= float(min_elevation_deg))
-        if max_range is not None:
-            cap = np.full(r_sub.shape, float(max_range))
-            if rim_range is not None:
-                rim_elevation, rim_cap = float(rim_range[0]), float(rim_range[1])
-                cap = np.where(el_sub < rim_elevation, max(rim_cap, float(max_range)), cap)
-            valid = np.logical_and(valid, r_sub <= cap)
+        valid &= range_cap_mask(el_sub, r_sub, min_elevation_deg, max_range, rim_range)
         if ray_valid is not None:
             valid = np.logical_and(valid, ray_valid[:, im])
         if not np.any(valid):
@@ -2034,18 +2115,11 @@ def depropagate_hemisphere(
             if use_filter_bank:
                 amb_band = np.nanmean(pa_filters.third_octave_filter_bank(
                     amb_p, amb_fs, band_centers, t_amb, frame_samples), axis=1) / pref_sq
-        elif ambient_time_range is not None:
-            amb_mask = np.logical_and(t_abs >= float(ambient_time_range[0]),
-                                      t_abs <= float(ambient_time_range[1]))
-            if not np.any(amb_mask):
-                raise ValueError('ambient_time_range contains no spectrogram frames')
-            amb_lin = np.nanmean(psd_sel_lin[:, amb_mask], axis=1)
+        else:
+            amb_lin = ambient_from_frames(psd_sel_lin, t_abs, ambient_time_range, ambient_percentile,
+                                          power_db=psd_sel_db)
             if use_filter_bank:
-                amb_band = np.nanmean(band_frames[:, amb_mask], axis=1)
-        elif ambient_percentile is not None:
-            amb_lin = 10.0 ** (np.nanpercentile(psd_sel_db, float(ambient_percentile), axis=1) / 10.0)
-            if use_filter_bank:
-                amb_band = np.nanpercentile(band_frames, float(ambient_percentile), axis=1)
+                amb_band = ambient_from_frames(band_frames, t_abs, ambient_time_range, ambient_percentile)
 
         response_bins = response_bands = None
         if receiver_response_db is not None:
@@ -3439,13 +3513,10 @@ def write_norah2_hemisphere(
                                              from_units=str(meta['length_units']), to_units='m'))
 
     if measurement_atmosphere is None:
-        recorded = meta.get('atmosphere')
-        if recorded is None:
+        measurement_atmosphere = metadata_atmosphere(meta)
+        if measurement_atmosphere is None:
             raise ValueError('measurement_atmosphere not given and the hemisphere metadata '
                              'does not record one')
-        measurement_atmosphere = Atmosphere(temperature=recorded['temperature_k'],
-                                            pressure=recorded['pressure_kpa'],
-                                            relative_humidity=recorded['relative_humidity'])
 
     PH, TH = np.meshgrid(NORAH2_PHI_DEG, NORAH2_THETA_DEG, indexing='ij')
     azi_rad, elv_rad = norah2umapr(np.deg2rad(PH), np.deg2rad(TH))

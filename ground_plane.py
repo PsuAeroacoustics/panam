@@ -114,7 +114,7 @@ def emission_geometry(track, location, reception_times, sound_speed):
     reception_times = np.asarray(reception_times, dtype=float)
     inside = (reception_times >= arrival[0]) & (reception_times <= arrival[-1])
     emitted = np.interp(reception_times, arrival, times)
-    source = np.column_stack([np.interp(emitted, times, offsets[:, k]) for k in range(3)])
+    source = interp_columns(emitted, times, offsets)
     ground_distance = np.hypot(source[:, 0], source[:, 1])
     out = {
         'elevation': np.degrees(np.arctan2(source[:, 2], ground_distance)),
@@ -129,7 +129,14 @@ def emission_geometry(track, location, reception_times, sound_speed):
     return {key: np.where(inside, value, np.nan) for key, value in out.items()}
 
 
-def emission_times(position, reception_times, receiver, sound_speed, tol=1e-9, max_iter=50):
+def interp_columns(t, time, values):
+    """Each column of ``values`` (n, k) interpolated linearly at times ``t`` (m,) and held
+    at the ends, (m, k): how a sampled track becomes a position function."""
+    return np.column_stack([np.interp(t, time, values[:, k]) for k in range(values.shape[1])])
+
+
+def emission_times(position, reception_times, receiver, sound_speed, tol=1e-9, max_iter=50,
+                   travel_time=None, t0=None):
     """Emission times of the sound reaching ``receiver`` at ``reception_times``, for a
     source whose position is a function of time.
 
@@ -142,6 +149,10 @@ def emission_times(position, reception_times, receiver, sound_speed, tol=1e-9, m
     -- and the receiver may move: ``receiver`` is (3,) or (n, 3), one row per reception
     time.
 
+    ``travel_time(x)``, if given, replaces the straight line's |x - receiver| / c with
+    another travel time (s) from source positions (n, 3), a ray model's for instance,
+    and ``t0`` (n,), if given, starts the iteration there instead of at t.
+
     ``position(t)`` takes an (n,) array of times and returns (n, 3) positions; lengths
     and ``sound_speed`` in matching units.  Returns (t_e, x(t_e)).  Raises
     RuntimeError if the iteration has not converged after ``max_iter`` passes (a
@@ -149,10 +160,13 @@ def emission_times(position, reception_times, receiver, sound_speed, tol=1e-9, m
     """
     t = np.asarray(reception_times, dtype=float)
     rec = np.asarray(receiver, dtype=float)
-    t_e = t.copy()
+    if travel_time is None:
+        def travel_time(x):
+            return np.linalg.norm(x - rec, axis=-1) / sound_speed
+    t_e = t.copy() if t0 is None else np.asarray(t0, dtype=float)
     for _ in range(max_iter):
         x = np.asarray(position(t_e), dtype=float)
-        new = t - np.linalg.norm(x - rec, axis=-1) / sound_speed
+        new = t - travel_time(x)
         step = np.nanmax(np.abs(new - t_e), initial=0.0)
         t_e = new
         if step < tol:
