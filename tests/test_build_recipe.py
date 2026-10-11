@@ -434,3 +434,34 @@ def test_the_release_recipe_needs_its_data_only_for_the_spheres(monkeypatch, tmp
     assert options['ray_profiles'] == str(tmp_path / 'profiles')
     assert options['remove_doppler'] is True
     assert np.isclose(options['min_elevation_deg'], 2.0)
+
+
+def test_a_recipes_merge_repeats_admits_a_command_line_merge_speed_tolerance(tmp_path):
+    recipe = _write(tmp_path / 'r.toml', '''
+        [database]
+        merge_repeats = true
+        ''')
+    parser = database_cli.make_parser()
+    argv = [str(tmp_path), str(tmp_path / 'db.nod'), '--recipe', str(recipe),
+            '--merge-speed-tolerance', '1.5']
+    options = database_cli.recipe_options(database_cli.parse_arguments(argv, parser), parser, argv)
+    assert options['merge_repeats'] is True and options['merge_speed_tolerance'] == 1.5
+    plain = _write(tmp_path / 'plain.toml', '[database]\ndistance = 500.0\n')
+    with pytest.raises(SystemExit):
+        database_cli.main([str(tmp_path), str(tmp_path / 'db2.nod'), '--recipe', str(plain),
+                           '--merge-speed-tolerance', '1.5'])
+
+
+def test_recipes_take_the_options_of_the_other_feature_branches(tmp_path):
+    recipe = build_recipe.load_recipe(_write(tmp_path / 'r.toml', '''
+        [spheres]
+        node_statistics = true
+        jobs = 2
+        skip_unchanged = true
+
+        [database]
+        merge_repeats = true
+        merge_speed_tolerance = 1.0
+        '''))
+    assert recipe.sphere_options() == dict(node_statistics=True, jobs=2, skip_unchanged=True)
+    assert recipe.database_options() == dict(merge_repeats=True, merge_speed_tolerance=1.0)

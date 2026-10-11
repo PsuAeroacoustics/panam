@@ -136,7 +136,8 @@ def parse_arguments(argv=None, parser=None):
 
     if args.skip_flagged and args.manifest is None:
         parser.error('--skip-flagged applies to --manifest only')
-    if args.merge_speed_tolerance != 0.0 and not args.merge_repeats:
+    # With a recipe, merge_repeats may come from its [database]: main checks the merged options.
+    if args.merge_speed_tolerance != 0.0 and not args.merge_repeats and args.recipe is None:
         parser.error('--merge-speed-tolerance applies to --merge-repeats only')
     if not args.merge_speed_tolerance >= 0.0:
         parser.error('--merge-speed-tolerance must be at least 0 kt')
@@ -208,8 +209,10 @@ def recipe_options(args, parser, argv=None):
 def main(argv=None):
     parser = make_parser()
     args = parse_arguments(argv, parser)
-    flight_acoustics.build_empirical_database(args.sphere_directory, args.database_file,
-                                              **recipe_options(args, parser, argv))
+    options = recipe_options(args, parser, argv)
+    if options.get('merge_speed_tolerance', 0.0) != 0.0 and not options.get('merge_repeats', False):
+        parser.error('--merge-speed-tolerance (or merge_speed_tolerance) applies to merge_repeats only')
+    flight_acoustics.build_empirical_database(args.sphere_directory, args.database_file, **options)
     return 0
 
 
