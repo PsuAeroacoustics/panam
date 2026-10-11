@@ -849,6 +849,45 @@ every column gives 5 m, an upper bound; one over the 6 km column gives 6 km, a l
 wins and flags the result; an NA entry counts as met, so a band over its last listed column is
 bracketed by that column and the next.
 
+**Loudness** (`panam_acoustics.psychoacoustics.loudness_zwicker`) follows the stationary method
+of ISO 532-1:2017 (Zwicker) [51] from 28 one-third-octave band levels $L_i$, 25 Hz to 12.5 kHz,
+for a free (frontal) or diffuse field. The 11 bands up to 250 Hz are first corrected for the
+equal-loudness contours, $L_i + \Delta L_i(L_i)$ with the correction looked up by level range
+(tables RAP, DLL), and summed in energy into the three lowest critical-band levels (25–80 Hz,
+100–160 Hz, 200–250 Hz). Each of the 20 approximated critical bands $k$, with level $L_k$, then has
+the core loudness
+
+$$
+N'_k = 0.0635\cdot10^{0.025L_{\mathrm{TQ},k}}
+\left[\left(0.75 + 0.25\cdot10^{(L_{E,k} - L_{\mathrm{TQ},k})/10}\right)^{1/4} - 1\right],
+\qquad L_{E,k} = L_k - a_{0,k} + \Delta_{\mathrm{DF},k} - \Delta_{\mathrm{CB},k},
+$$
+
+zero when $L_k - a_{0,k} + \Delta_{\mathrm{DF},k} \le L_{\mathrm{TQ},k}$, with $L_\mathrm{TQ}$ the
+threshold in quiet, $a_0$ the outer-ear transmission, $\Delta_\mathrm{DF}$ the diffuse-field
+difference (diffuse field only) and $\Delta_\mathrm{CB}$ the third-octave to critical-band
+adaptation. The lowest band is scaled by $\min(1,\ 0.4 + 0.32\,N_1'^{0.2})$. The specific loudness
+$N'(z)$ is built over the critical-band rate $z$ (0 to 24 Bark) by joining each band's core
+loudness to the next with the upper masking slopes (tables RNS, USL), and the total loudness is
+its integral, $N = \int_0^{24} N'(z)\,dz$ (sone). $N'$ is returned at 0.1 to 24.0 Bark. The loudness
+level is $L_N = 40 + 10\log_2 N$ for $N \ge 1$ sone and $40\,(N + 0.0005)^{0.35}$ below, never
+under 3 phon. The implementation reproduces the program of the standard's Annex A, including its
+single-precision tables and 0.1 Bark steps, and with them the standard's third-octave test case
+(Annex B.2) to its printed precision. A 1 kHz, 40 dB tone is 1.000 sone when its third-octave
+levels include the leakage of the standard's filter bank into the neighboring bands (about 20 dB
+down); the tone's band alone gives 0.93 sone. A band of $-\infty$ has no energy; a spectrum with a
+NaN band gives NaN.
+
+**Sharpness** (`sharpness_din`) follows DIN 45692:2009 [52]:
+
+$$
+S = 0.11\,\frac{\int_0^{24} N'(z)\,g(z)\,z\,dz}{N}\ \mathrm{acum}, \qquad
+g(z) = \begin{cases}1, & z \le 15.8\ \mathrm{Bark}\\ 0.85 + 0.15\,e^{0.42(z - 15.8)}, & z > 15.8\ \mathrm{Bark}\end{cases}
+$$
+
+with the integral a sum over the 0.1 Bark values of $N'$ and $N$ the ISO 532-1 total loudness.
+A 1 kHz critical-band noise (920–1080 Hz) at 60 dB is 1.00 acum. $S$ is NaN where $N = 0$.
+
 ## 10. Auxiliary models
 
 These are in PANAM but not used to build the databases.
@@ -952,6 +991,7 @@ Functions are in `flight_acoustics.py` unless another module is named. Tests are
 | §7.5 Completion | `mirror_phi_to_upper_surface`, `_complete_sphere_with_coverage` | `test_mirror_phi.py`, `test_sphere_completion_integration.py` |
 | §8 NORAH2 | `build_database_from_norah2`, `norah2_levels_at_radius`, `norah2_speed_knots`, `humid_air_density`, `fill_norah2_empty_cells`, `write_norah2_hemisphere`, `write_norah2_triangulation`, `norah2umapr` | `test_norah2_import.py`, `test_write_norah2_hemisphere.py` |
 | §9 Metrics | `sound_exposure_level`, `ten_db_down_interval`, `noys`, `perceived_noise_level`, `tone_correction`, `effective_perceived_noise_level`, `mil_std_1474e_nondetectability_distance` | `test_sound_exposure_level.py`, `test_pnl_epnl.py`, `test_mil_std_nondetectability.py` |
+| §9 Loudness, sharpness | `panam_acoustics.psychoacoustics.loudness_zwicker`, `loudness_level`, `sharpness_din` | `test_psychoacoustics.py` |
 | §10 VKF | `vold_kalman_filter.vold_kalman_filter` | `test_vold_kalman_filter.py` |
 | §10 Ground-board models, two-path fit | `ground_plane.board_*`, `disc_bem_scattered`, `raised_plate_scattering`, `fit_two_path`, `height_from_path_difference` | `test_ground_plane.py`, `test_ground_validation.py`, `test_axisymmetric_bem.py` |
 | §10 Array planning | `linear_array_plan` (through the `array_planner.py design` CLI); `array_coverage`, `hover_array_coverage`, `takeoff_array_coverage` | `test_array_planner.py` (the CLI's spacing and options); the coverage functions: none |
@@ -1010,3 +1050,5 @@ Functions are in `flight_acoustics.py` unless another module is named. Tests are
 48. Boulanger, P., Waters-Fuller, T., Attenborough, K., and Li, K. M., "Models and Measurements of Sound Propagation from a Point Source over Mixed Impedance Ground," *Journal of the Acoustical Society of America*, Vol. 102, No. 3, 1997, pp. 1432–1442. https://doi.org/10.1121/1.420101
 49. de Jong, B. A., Moerkerken, A., and van der Toorn, J. D., "Propagation of Sound over Grassland and over an Earth Barrier," *Journal of Sound and Vibration*, Vol. 86, No. 1, 1983, pp. 23–46. https://doi.org/10.1016/0022-460X(83)90941-0
 50. Lam, Y. W., and Monazzam, M. R., "On the Modeling of Sound Propagation over Multi-Impedance Discontinuities Using a Semiempirical Diffraction Formulation," *Journal of the Acoustical Society of America*, Vol. 120, No. 2, 2006, pp. 686–698. https://doi.org/10.1121/1.2216905
+51. "Acoustics — Methods for Calculating Loudness — Part 1: Zwicker Method," ISO 532-1:2017, International Organization for Standardization, Geneva, 2017.
+52. "Measurement Technique for the Simulation of the Auditory Sensation of Sharpness," DIN 45692:2009-08, Deutsches Institut für Normung, Berlin, 2009.

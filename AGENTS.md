@@ -34,7 +34,8 @@ Instructions for AI coding tools working on PANAM. Human developers: see
   `niceops_ray_geometry`.
 - `vold_kalman_filter.py`: Vold-Kalman order tracking.
 - `panam_acoustics/`: `signal_io` (loaders), `filters`, `atmosphere` and
-  `iso_9613_1_1993` (ISO 9613-1), `plotting` (`acoustic_plot_style`).
+  `iso_9613_1_1993` (ISO 9613-1), `plotting` (`acoustic_plot_style`),
+  `psychoacoustics` (ISO 532-1 loudness, DIN 45692 sharpness).
 - `cli.py`: `colon_pair`, `colon_pair_or_single`, `save_or_show`.
 - `local_paths.py`: data lookup. `unit_conversion.py`, `default_units.py`:
   third-party unit conversions.

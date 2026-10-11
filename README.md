@@ -85,6 +85,11 @@ the file named by `-o`, open a window without it, and with `-o` and `-p/--plot`
 do both. The examples write to `demo_plots/` in the current directory;
 `hexacopter_vkf_example.py` must be run from the repository root.
 
+Loudness and sharpness of a one-third-octave spectrum are library functions, not a
+script: `panam_acoustics.psychoacoustics.loudness_zwicker` (ISO 532-1:2017, stationary,
+25 Hz to 12.5 kHz) and `sharpness_din` (DIN 45692); see
+[THEORY §9](docs/THEORY.md#9-metrics).
+
 ## Data locations
 
 External data and executables are looked up by name. Copy
