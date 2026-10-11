@@ -112,7 +112,8 @@ method. The plate tables are computed first, in the parent, so the workers read 
 the cache. The parent prefetches each run before it hands it to a worker. Records come back
 in run order, so the manifest and the triangulation are those of `--jobs 1`. From Python,
 `ray_models` and `winds` must be None, a dict or a module-level function, since they are sent
-to the workers.
+to the workers. `ray_profiles` and `--ray-profiles`, from the command line or a
+recipe, work with any `--jobs`.
 
 The command line selects only flight runs by itself. To build a hover sphere, give its run
 with `--runs` and add `--nose-from-heading`.

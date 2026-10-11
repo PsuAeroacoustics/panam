@@ -2321,22 +2321,54 @@ def profile_ray_models(test, directory, executable=None):
     the profile's winds.  For a run without one it gives None, straight lines.
     ``executable`` is NICE-OPS's ``niceops_ray_geometry`` (default: the
     ``niceops_ray_geometry`` entry of :mod:`local_paths`), looked up only when a run has a
-    profile.
+    profile.  The callable pickles, so that ``build_all(jobs=N)`` can send it to its
+    worker processes: it carries the dataset's aircraft and root, and a worker opens
+    the dataset again (or uses its own) on its first call.
     """
     directory = os.path.abspath(os.path.expanduser(directory))
     if not os.path.isdir(directory):
         raise FileNotFoundError('ray profile directory {} does not exist'.format(directory))
+    return _ProfileRayModels(test, directory, executable)
 
-    def ray_model(run):
-        path = os.path.join(directory, '{}.csv'.format(run))
+
+class _ProfileRayModels:
+    """The callable :func:`profile_ray_models` returns; module-level, so it pickles."""
+
+    def __init__(self, test, directory, executable):
+        self.test = test
+        self.directory = directory
+        self.executable = executable
+
+    def __getstate__(self):
+        state = dict(self.__dict__)
+        test = state.pop('test')
+        state['dataset'] = (test.aircraft, test.root)
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self.test = None
+
+    def _dataset(self):
+        if self.test is None:
+            aircraft, root = self.dataset
+            worker = _WORKER.get('test')
+            if worker is not None and (worker.aircraft, worker.root) == (aircraft, root):
+                self.test = worker
+            else:
+                self.test = NoiseAbatementTest(aircraft, root=root)
+        return self.test
+
+    def __call__(self, run):
+        path = os.path.join(self.directory, '{}.csv'.format(run))
         if not os.path.isfile(path):
             return None
-        tracer = local_paths.data_path('niceops_ray_geometry', executable)
+        tracer = local_paths.data_path('niceops_ray_geometry', self.executable)
+        test = self._dataset()
         bearing = frame_bearing_deg(test.by_run[run], load_track(test.track_path(run)))
         return refracted_rays.external_ray_model(tracer, path, frame_bearing_deg=bearing,
                                                  refraction='stratified', receiver='plate',
                                                  length_units='ft')
-    return ray_model
 
 
 def write_manifest(path, records, failures):

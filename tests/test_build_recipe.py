@@ -351,6 +351,27 @@ def test_profile_ray_models_trace_runs_with_a_profile_and_leave_the_rest_straigh
         na.profile_ray_models(test, str(tmp_path / 'absent'))
 
 
+def test_profile_ray_models_pickle_for_parallel_builds(tmp_path, monkeypatch):
+    # build_all(jobs=N) sends ray_models to spawned workers, so the recipe's ray_profiles
+    # (the 2017 release uses them) must survive a pickle round trip.
+    import pickle
+    (tmp_path / '285101.csv').write_text('height,temperature\n')
+    test = type('Test', (), {})()
+    test.aircraft, test.root = 'B407', str(tmp_path)
+    test.by_run = {'285101': dict(true_heading='270')}
+    test.track_path = lambda run: run
+    opened = []
+    monkeypatch.setattr(na, 'NoiseAbatementTest',
+                        lambda aircraft, root=None: opened.append((aircraft, root)) or test)
+    monkeypatch.setattr(na, 'load_track', lambda path: {})
+    monkeypatch.setattr(na.refracted_rays, 'external_ray_model', lambda executable, path, **kwargs: 'model')
+    models = pickle.loads(pickle.dumps(
+        na.profile_ray_models(test, str(tmp_path), executable=str(tmp_path / 'tracer'))))
+    assert models('285102') is None and opened == []
+    assert models('285101') == 'model'
+    assert opened == [('B407', str(tmp_path))]
+
+
 def test_build_all_takes_ray_models_or_ray_profiles_not_both(tmp_path, monkeypatch):
     monkeypatch.setattr(na, 'NoiseAbatementTest', lambda aircraft, root=None: None)
     with pytest.raises(ValueError, match='not both'):
