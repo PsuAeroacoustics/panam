@@ -156,6 +156,44 @@ def test_a_crosswind_turns_the_filing_azimuth(flip):
     np.testing.assert_allclose(rayed['elv_deg'], rays['depression_deg'].T.ravel(), atol=1e-12)
 
 
+@pytest.mark.parametrize('flip, abeam', [(False, 270.0), (True, 90.0)])
+def test_a_tailwind_files_the_abeam_sample_aft(flip, abeam):
+    """Track along +x at 250 ft, mic on +y 300 ft to the side, a 60 ft/s tailwind along +x.
+    At closest approach the wind is perpendicular to r, so tau = |r| / sqrt(c^2 - W^2) and the
+    sound leaves aft of abeam: the normal's horizontal part is (-W, r_y / tau) / c, a turn of
+    atan(W |r| / (r_y sqrt(c^2 - W^2))) toward the tail (asin(W / c) for a mic level with the
+    source). In UMAPR (180 ahead) aft is 0/360, so the filed azimuth moves from 270 toward 360,
+    or from 90 toward 0 with flip_y_for_geometry. The elevation is the normal's depression,
+    asin(h sqrt(c^2 - W^2) / (c |r|))."""
+    c, w, side, height = SPEED, 60.0, 300.0, 250.0
+    flight = _flyover()
+    nt = 121                                                    # sample 60 is at x = 0, abeam
+    flight['track_time'] = np.linspace(0.0, 6.0, nt)
+    flight['track_position'] = np.column_stack([800.0 * flight['track_time'] / 6.0 - 400.0,
+                                                np.zeros(nt), np.full(nt, height)])
+    flight['track_velocity'] = np.tile([800.0 / 6.0, 0.0, 0.0], (nt, 1))
+
+    def scattered(model):
+        return depropagate_hemisphere(**flight, speed_of_sound=c, length_units='ft', r_ref=100.0,
+                                      freq_range=(50.0, 1500.0), window_time=0.25, window_overlap=0.5,
+                                      point_stride=4, azi_step=20.0, elv_step=10.0, rmax=30.0,
+                                      return_scattered=True, ray_model=model,
+                                      flip_y_for_geometry=flip)['scattered']
+    plain = scattered(None)
+    rayed = scattered(rr.uniform_wind_ray_model(c, (w, 0.0)))
+    per_mic = len(range(0, nt, 4))
+    assert plain['azi_deg'].size == rayed['azi_deg'].size == 3 * per_mic
+    k = 2 * per_mic + 60 // 4                                   # mic on +y, the abeam sample
+    distance = np.hypot(side, height)
+    turn = np.degrees(np.arctan(w * distance / (side * np.sqrt(c ** 2 - w ** 2))))
+    assert turn == pytest.approx(3.942, abs=1e-3)
+    assert plain['azi_deg'][k] == pytest.approx(abeam, abs=1e-9)
+    toward_tail = 1.0 if abeam == 270.0 else -1.0
+    assert rayed['azi_deg'][k] == pytest.approx(abeam + toward_tail * turn, abs=1e-9)
+    depression = np.degrees(np.arcsin(height * np.sqrt(c ** 2 - w ** 2) / (c * distance)))
+    assert rayed['elv_deg'][k] == pytest.approx(depression, abs=1e-9)
+
+
 def test_air_relative_doppler_is_a_separate_opt_in():
     calm = rr.uniform_wind_ray_model(SPEED, (0.0, 0.0))
     windy = rr.uniform_wind_ray_model(SPEED, (100.0, 0.0))

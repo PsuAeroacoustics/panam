@@ -526,7 +526,12 @@ $$
 
 the positive root, and $\hat{\mathbf{n}} = (\mathbf{r} - \mathbf{W}\tau)/(c\tau)$. The travel
 time is $\tau$; spreading and absorption are undone over $c\tau$, the wavefront's radius in the
-moving air. A sample is filed along $\hat{\mathbf{n}}$: its elevation is the normal's depression,
+moving air. This is not the whole field. The convective factor relative to the air,
+$1 - (\mathbf{v} - \mathbf{W})\cdot\hat{\mathbf{n}}/c$, is not applied (§3.3, §11), so it stays in
+the source sphere, which is filed by the direction $\hat{\mathbf{n}}$ relative to the air. Even for a
+source fixed to the ground the full field goes as $1/R_*$ with
+$R_* = c\tau\,(1 + \mathbf{W}\cdot\hat{\mathbf{n}}/c)$: downwind $R_* = \lvert\mathbf{r}\rvert$
+while the model undoes $\lvert\mathbf{r}\rvert/(1 + M_W)$, about 0.4 dB apart at 30 kt. A sample is filed along $\hat{\mathbf{n}}$: its elevation is the normal's depression,
 and its azimuth turns from the straight line's by the horizontal angle from $\mathbf{r}$ to
 $\hat{\mathbf{n}}$ (the model's `emission_direction`). The normal does not turn on the way, so
 the plate sees the same direction. Downwind, $\tau = \lvert\mathbf{r}\rvert/(c + W)$; upwind,
