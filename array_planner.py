@@ -592,7 +592,9 @@ def cmd_takeoff(args: argparse.Namespace) -> int:
 	--origin (length unit) and --initial-altitude (length unit, above the
 	reference point) and climbs at --flight-path-angle (deg) along
 	--vehicle-heading (deg, counterclockwise from +x); it is sampled every
-	--ground-step (length unit) along the ground track.
+	--ground-step (length unit) along the ground track from the first to the
+	last --ground-distances; the last spacing is shorter when the step does
+	not divide the range.
 	"""
 	_apply_case(args, _TAKEOFF_DEFAULTS)
 	radii, azimuths = _ring_microphones(args)
@@ -606,7 +608,9 @@ def cmd_takeoff(args: argparse.Namespace) -> int:
 	if not 0 <= angle < 90:
 		raise ValueError(f'--flight-path-angle must be at least 0 and below 90 deg, got {angle:g}')
 	mic_height = float(args.mic_height)
-	distances = np.arange(start, end + 0.5 * step, step)
+	# Every --ground-step from start, then the exact end, never past it.
+	count = int(np.ceil((end - start) / step - 1e-9))
+	distances = np.append(start + step * np.arange(count), end)
 	heights = float(args.initial_altitude) + distances * np.tan(np.radians(angle)) - mic_height
 	if np.any(heights <= 0):
 		raise ValueError('The source must be above the microphones at every --ground-distances; '
@@ -813,7 +817,8 @@ def build_parser() -> argparse.ArgumentParser:
 						   help='First and last source distance along the ground track from --origin, as '
 								'"start:end" (length unit). Default: 10:1000.')
 	p_takeoff.add_argument('--ground-step', type=float, default=None,
-						   help='Source spacing along the ground track (length unit). Default: 10.')
+						   help='Source spacing along the ground track (length unit); the last spacing is shorter '
+								'when the step does not divide --ground-distances. Default: 10.')
 	p_takeoff.add_argument('--initial-altitude', type=float, default=None,
 						   help='Source height above the ring center at ground distance 0 (length unit). Default: 0.')
 	p_takeoff.add_argument('--flight-path-angle', '--fpa', dest='flight_path_angle', type=float, default=None,

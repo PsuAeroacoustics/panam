@@ -211,6 +211,18 @@ def test_takeoff_draws_takeoff_array_coverage_from_the_origin(ring_run):
     np.testing.assert_allclose(points, _lambert(azimuth, elevation), atol=1e-12)
 
 
+@pytest.mark.parametrize('step, expected', [(60, [0.0, 60.0, 100.0]), (30, [0.0, 30.0, 60.0, 90.0, 100.0])])
+def test_takeoff_samples_end_at_the_last_ground_distance(ring_run, step, expected):
+    """The source is never sampled past --ground-distances and always at its end."""
+    points, _ = ring_run(['takeoff', '--radii', '150', '--nmics', '6', '--initial-altitude', '5',
+                          '--ground-distances', '0:100', '--ground-step', str(step)])
+    azimuth, elevation, _ = array_planner.fa.takeoff_array_coverage(
+        np.full(6, 150.0), 60.0 * np.arange(6), np.array(expected), initial_altitude=5.0,
+        flight_path_angle=8.0, heading=0.0, source_origin_xy=(0.0, 0.0))
+    assert points.shape[1] == azimuth.size
+    np.testing.assert_allclose(points, _lambert(azimuth, elevation), atol=1e-12)
+
+
 @pytest.mark.parametrize('options, named', [
     (['--ground-distances', '0:100'], '--ground-distances'),
     (['--fpa', '90'], '--flight-path-angle'),
