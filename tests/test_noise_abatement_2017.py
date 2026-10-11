@@ -374,6 +374,27 @@ def test_plate_table_ignores_old_and_mismatched_files(monkeypatch, tmp_path):
     assert len(calls) == 3                      # and the replacement reads back
 
 
+@pytest.mark.parametrize('damage', ['truncated', 'empty'])
+def test_plate_table_recomputes_a_truncated_or_empty_file(monkeypatch, tmp_path, damage):
+    """A cut-off .npz (BadZipFile) or a 0-byte one (EOFError) at the cache name
+    is listed as unreadable, then recomputed and replaced, not a crash."""
+    import axisymmetric_bem as ab
+    calls = []
+    monkeypatch.setattr(ab, 'table', _plate_table_stub(0.0, calls))
+    monkeypatch.setattr(na, '_PLATE_TABLES', {})
+    na.plate_table('gdbdfl', 1125.0, BANDS, directory=str(tmp_path))
+    (path,) = tmp_path.glob('*.npz')
+    contents = path.read_bytes()
+    path.write_bytes(contents[:len(contents) // 2] if damage == 'truncated' else b'')
+    with pytest.raises(ValueError):
+        ab.read_table_npz(str(path))
+    assert [record['status'] for record in na.plate_table_cache(str(tmp_path))] == ['unreadable']
+    monkeypatch.setattr(na, '_PLATE_TABLES', {})
+    table = na.plate_table('gdbdfl', 1125.0, BANDS, directory=str(tmp_path))
+    assert len(calls) == 2 and np.allclose(np.abs(table['P_d']), 1.0)
+    assert [record['status'] for record in na.plate_table_cache(str(tmp_path))] == ['current']
+
+
 def test_plate_table_cache_lists_and_clears(monkeypatch, tmp_path):
     import axisymmetric_bem as ab
     monkeypatch.setattr(ab, 'table', _plate_table_stub(0.0))

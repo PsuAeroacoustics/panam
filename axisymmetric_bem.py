@@ -15,6 +15,7 @@ Units follow ground_plane: lengths in feet, speeds in ft/s.
 """
 import inspect
 import json
+import zipfile
 from types import SimpleNamespace
 
 import numpy as np
@@ -552,14 +553,15 @@ def write_table_npz(file, table, key=''):
 
 def read_table_npz(path):
     """(table, key) written by :func:`write_table_npz`.  Raises ValueError for a
-    file that is not one (an entry missing, or a pickled object in it)."""
-    with np.load(path, allow_pickle=False) as data:
-        try:
+    file that is not one (an entry missing, a pickled object in it, or a
+    truncated, empty or otherwise corrupt archive)."""
+    try:
+        with np.load(path, allow_pickle=False) as data:
             table = {name: data[name] for name in data.files if name not in ('_other', '_key')}
             table.update(json.loads(str(data['_other'])))
             key = str(data['_key'])
-        except KeyError as error:
-            raise ValueError('{} is not a plate table: {}'.format(path, error)) from None
+    except (KeyError, EOFError, zipfile.BadZipFile) as error:
+        raise ValueError('{} is not a plate table: {!r}'.format(path, error)) from None
     return table, key
 
 
