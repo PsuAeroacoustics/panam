@@ -3608,7 +3608,8 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
             them as unmeasured, silent where no neighbor has data.
         synthesize_hover: add a hover synthesized from the slowest level
             condition (above).  Off by default: NICE-OPS then clamps every state
-            slower than the slowest file to it.
+            slower than the slowest file to it.  The theta grid must be
+            symmetric about 90 deg, so that theta and 180 - theta are both on it.
         scale_tip_speed_by_rmomega: form each file's advance ratio with the tip
             speed its rotor ran at, ``main_rotor_tip_speed_mps * RmOmega / 100``
             (RmOmega in percent of nominal), instead of the nominal tip speed.
@@ -3700,6 +3701,11 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
             raise ValueError(f'{name}: PHIOBSAC must increase within [-90, 90] deg')
         if np.any(theta_deg < -1e-9) or np.any(theta_deg > 180.0 + 1e-9) or np.any(np.diff(theta_deg) <= 0.0):
             raise ValueError(f'{name}: THETAOBSAC must increase within [0, 180] deg')
+        if synthesize_hover and not np.allclose(theta_deg, 180.0 - theta_deg[::-1]):
+            # average_fore_and_aft pairs theta index i with n-1-i, a fore-aft
+            # pair only on a grid symmetric about 90 deg.
+            raise ValueError(f'{name}: THETAOBSAC is not symmetric about 90 deg, so a hover '
+                             'cannot be averaged fore and aft from it; leave out synthesize_hover')
         if np.any(frequency <= 0.0) or np.any(np.diff(frequency) <= 0.0):
             raise ValueError(f'{name}: band centers must be positive and increasing')
         if grid is None:
@@ -3834,8 +3840,9 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
 def _norah2_rotor_speed_fraction(constants, filename):
     """A .hem's main rotor speed as a fraction of nominal, from RmOmega (percent).
 
-    Refuses a file without RmOmega, or with one outside 50-130 %: some shipped
-    files carry -999 or -479 there, which are not rotor speeds.
+    Refuses a file without RmOmega, or with one outside 50-130 %: shipped A109,
+    EC120, EC135 and R66 files carry values such as -999, -479, 44 or (most
+    EC120 files) 337-410, which look like rpm.
     """
     if 'RmOmega' not in constants:
         raise ValueError(f'{filename}: no RmOmega in the table constants, so its tip speed cannot '
@@ -3843,7 +3850,7 @@ def _norah2_rotor_speed_fraction(constants, filename):
     percent = float(constants['RmOmega'])
     if not (np.isfinite(percent) and 50.0 <= percent <= 130.0):
         raise ValueError(f'{filename}: RmOmega = {percent:g} is not a rotor speed in percent of '
-                         'nominal (expected 50-130)')
+                         'nominal (expected 50-130; a value near 400 may be rpm)')
     return percent / 100.0
 
 

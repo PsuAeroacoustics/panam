@@ -176,6 +176,9 @@ Its groups carry `condition_origin = 'synthesized_hover'`, and the source file's
 records the source as `norah2_hover_source` (`none` without the option). In the R44 set the
 source is `R44_Flyover_55kts_0deg.hem`: the 36 kt approaches are not level. A file at 0 kt
 and 0 or ±12 deg duplicates a hover condition and is refused with the hover named.
+The fore-aft average pairs theta with 180 - theta by index, so the option refuses a theta
+grid that is not symmetric about 90 deg. Every shipped file has the symmetric 0-180 deg
+grid.
 
 The option is off by default, because the hover is made from a forward-flight condition
 (for the R44, a 55 kt flyover), not measured. The average keeps none of the source's fore-aft
@@ -193,8 +196,17 @@ ratio with the tip speed its rotor ran at (THEORY §8):
 The thrust coefficient stays C_W at the nominal tip speed, and so does the root's
 `main_rotor_tip_speed_meters_per_sec`. NICE-OPS forms the trajectory's C_T with its vehicle
 file's tip speed, and its load-factor scaling would otherwise read the lower rotor speed as
-extra thrust. A file without RmOmega, or with one outside 50-130 %, is refused: some A109
-files carry -999 or -479. The root records `norah2_scale_tip_speed_by_rmomega` (0 or 1).
+extra thrust. A file without RmOmega, or with one outside 50-130 %, is refused. In the NORAH2
+V2.0.74 public package that refuses files in four sets:
+
+| Set | Files refused | RmOmega found |
+| --- | --- | --- |
+| A109 | 6 of 21 | -999, -479, -335.8, -254.4, -116.1 |
+| EC120 | 26 of 28 | mostly 337-410, which looks like rpm (the EC120 rotor turns at about 406-414 rpm); also 143, negative values and -999 |
+| EC135 | 1 of 19 | -926.5 |
+| R66 | 4 of 20 | 44.0 and negative values |
+
+The option cannot be used on these sets without editing the files' RmOmega. The root records `norah2_scale_tip_speed_by_rmomega` (0 or 1).
 The hover is at advance ratio 0 either way.
 
 In the R44 set, RmOmega is 97.5-100 %, so the option raises the advance ratios by up to
@@ -240,7 +252,7 @@ THEORY §7.1).
 - Each group: dBA, EAA, the band spectrum (`--no-spectrum` leaves it out), `coverage`, and
   `DOPPLER_SHIFT_REMOVED = 0`. The group also carries `norah2_source` and the file's
   constants as `norah2_<NAME>` attributes, as read: ACSPEED before the mapping, and RmOmega
-  as found, which includes -999 and -479 in some A109 files.
+  as found, which includes values that are not percentages (see [rotor speed](#6-rotor-speed-rmomega)).
 - The upper hemisphere is PANAM's mirror, phi -> 180 - phi, with coverage 0
   (`mirror_phi_to_upper_surface`).
 
@@ -270,7 +282,8 @@ partial database nor a damaged earlier one.
 - files with different angle grids or bands, a file that is all NOVALUE, the same file twice
   (also through a symbolic link), or the output among the inputs;
 - with `scale_tip_speed_by_rmomega`, a file without RmOmega or with one outside 50-130 %;
-- with `synthesize_hover`, a file at the hover's condition (0 kt at 0 or ±12 deg);
+- with `synthesize_hover`, a file at the hover's condition (0 kt at 0 or ±12 deg), and a
+  THETAOBSAC grid that is not symmetric about 90 deg;
 - an existing output, from the command line without `--overwrite` (the function's
   `overwrite` defaults to True);
 - two files at one flight condition (NICE-OPS takes one sphere per condition);

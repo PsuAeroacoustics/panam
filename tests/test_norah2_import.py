@@ -558,6 +558,23 @@ def test_synthesized_hover_falls_back_to_the_slowest_and_refuses_a_duplicate(tmp
     assert not (tmp_path / 'x.nod').exists()
 
 
+def test_synthesized_hover_refuses_a_theta_grid_not_symmetric_about_90(tmp_path, monkeypatch):
+    """Fore-aft partners are paired by index, which needs theta and 180 - theta on the grid."""
+    files = three_hems(tmp_path)
+    load = fa.load_norah2_hemisphere
+
+    def squeezed(filename):
+        hemisphere = load(filename)
+        hemisphere['theta_deg'] = np.asarray(hemisphere['theta_deg'], dtype=float) * 170.0 / 180.0
+        return hemisphere
+
+    monkeypatch.setattr(fa, 'load_norah2_hemisphere', squeezed)
+    build(files, tmp_path / 'plain.nod')
+    with pytest.raises(ValueError, match='X_0.hem: THETAOBSAC is not symmetric about 90 deg'):
+        build(files, tmp_path / 'x.nod', synthesize_hover=True)
+    assert not (tmp_path / 'x.nod').exists()
+
+
 def test_tip_speed_is_scaled_by_rmomega_only_when_asked(tmp_path):
     files = three_hems(tmp_path)
     for path, percent in zip(files, (95.0, 100.0, 104.0)):
