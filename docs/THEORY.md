@@ -906,6 +906,23 @@ These are in PANAM but not used to build the databases.
   from `vehicle.cfg`; with an `[Option]` section, $\bar f$ is its `fbar` and $\mu$ and $C_W$ come from
   its reference list. This angle is a plot coordinate only;
   the spheres themselves are not tilted (§11).
+- **Repeat-run averaging** (`sphere_statistics.average_spheres`). Spheres of repeat runs on one
+  grid are averaged cell by cell in energy over the $N$ runs that cover the cell,
+  $L = 10\lg\left(\tfrac1N\sum_i 10^{L_i/10}\right)$, a run with no energy there counting as
+  $P_i = 0$. A cell is $-\infty$ only if every covering run is, and NaN where no run (or fewer than
+  `min_runs`) covers it. From sphere files, -999 is read as no data by default, so $P_i = 0$
+  applies only to an in-memory $-\infty$ or with `missing='no_energy'`. The spread is the sample
+  standard deviation of the finite $L_i$, in dB. Files whose grid, bands, radius, azimuth
+  reference or Doppler flag differ are refused, as are files whose speeds (or, on request,
+  flight path angles) spread by more than a tolerance.
+- **Sphere comparison** (`sphere_statistics.compare_spheres`). Per band, the difference
+  $\Delta L = L_B - L_A$ over the cells finite in both spheres gives the mean, root mean square,
+  5th and 95th percentiles and an area-weighted mean,
+  $\sum_c \Omega_c\Delta L_c / \sum_c \Omega_c$, with
+  $\Omega_c = (\cos\theta_{c,-} - \cos\theta_{c,+})\,\Delta\phi_c$ the solid angle of the ART
+  cell between the midpoints to its neighbors (`cell_solid_angles`). Cells finite in only one
+  sphere are counted, not differenced. The overall difference sums, in energy, the bands finite in
+  both spheres.
 - **Time-domain de-Dopplerization** (`dedopplerize`): each microphone's pressure is resampled at
   $t_e + r(t_e)/c$ on an emission-time grid, and, with a virtual observer radius $R_v$, scaled by
   $r(t_e)/R_v$ and labeled with time $t_e + R_v/c$; samples received outside the record are NaN.
@@ -957,6 +974,7 @@ Functions are in `flight_acoustics.py` unless another module is named. Tests are
 | §10 Array planning | `linear_array_plan` (through the `array_planner.py design` CLI); `array_coverage`, `hover_array_coverage`, `takeoff_array_coverage` | `test_array_planner.py` (the CLI's spacing and options); the coverage functions: none |
 | §10 Footprint, fried egg | `project_sphere`, `project_directory`, `fried_egg_plot`, `is_noisy` | `test_projection.py`, `test_no_data.py`, `test_cli_scripts.py` (smoke) |
 | §10 De-Dopplerization | `dedopplerize` | `test_acoustics.py` |
+| §10 Repeat-run averaging, comparison | `sphere_statistics.average_spheres`, `write_averaged_sphere`, `compare_spheres`, `cell_solid_angles`, `plot_sphere_difference` | `test_sphere_statistics.py`, `test_cli_scripts.py` (smoke) |
 
 ## References
 

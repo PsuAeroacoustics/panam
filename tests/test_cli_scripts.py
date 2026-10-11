@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from sphere_helpers import minimal_hemisphere, write_sphere_directory
 
 REPO = Path(__file__).resolve().parents[1]
@@ -200,3 +202,21 @@ def test_array_planner_subcommands_run(tmp_path):
                   '--kmz', 'array.kmz', cwd=tmp_path)
     assert result.returncode == 0, result.stderr
     assert (tmp_path / 'array.kmz').stat().st_size > 0
+
+
+def test_sphere_diff_averages_and_compares(tmp_path):
+    import numpy as np
+    louder = minimal_hemisphere()
+    louder['third_octave']['bands_db'] += 6.0
+    write_sphere_directory(tmp_path / 'spheres', [(minimal_hemisphere(), 60, -6), (louder, 60, -6)])
+    result = run_here('sphere_diff.py', 'average', 'mean.nc', 'spheres/X101.nc', 'spheres/X102.nc',
+                      cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    expected = 10.0 * np.log10((10 ** 8.0 + 10 ** 8.6) / 2.0)
+    result = run_here('sphere_diff.py', 'compare', 'spheres/X101.nc', 'mean.nc', '-f', '100:125',
+                      '-o', 'diff.png', cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    rows = [line.split() for line in result.stdout.splitlines()]
+    assert [row[0] for row in rows[2:]] == ['100', '125', 'overall']
+    assert float(rows[2][2]) == pytest.approx(expected - 80.0, abs=0.01)
+    assert (tmp_path / 'diff.png').stat().st_size > 0
