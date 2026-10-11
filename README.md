@@ -89,7 +89,7 @@ scripts take no options and run as soon as they start, `-h` included:
 | `plot_projection.py` | Project a sphere onto flat ground and contour the footprint | No (bundled sphere) |
 | `fried_egg_plot.py` | Contour ground levels of a directory of spheres over flight condition | Your spheres and `vehicle.cfg` |
 | `spectrogram_plot.py` | Spectrogram of one HDF5 or netCDF recording | Your recording |
-| `array_planner.py` | Design a linear microphone array, plot its coverage, export KMZ | No |
+| `array_planner.py` | Design a linear microphone array and plot its level-pass coverage; `hover` and `takeoff` plot the coverage of ring microphones (optional TOML case file); export KMZ | No |
 | `atmomap.py` | Map atmospheric absorption over temperature and pressure | No |
 | `ega_plot.py` | Plot excess ground attenuation | No |
 | `board_field_plot.py` | Map the sound field around a ground-plane microphone plate | No |
