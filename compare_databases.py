@@ -22,11 +22,14 @@ def parse_arguments(argv=None):
     parser.add_argument('database_b', help='second NICE-OPS database (.nod)')
     parser.add_argument('--tolerance', type=float, default=0.0,
                         help='level differences up to this many dB (dB per 1000 m for EAA) are '
-                             'not reported (default %(default)g)')
+                             'not reported; a finite number, at least 0 (default %(default)g)')
     parser.add_argument('--validate', action='store_true',
                         help='also check both files against docs/file_formats.md and list the '
                              'violations (default: off)')
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if not 0.0 <= args.tolerance < float('inf'):
+        parser.error('--tolerance must be a finite number of dB, at least 0')
+    return args
 
 
 def main(argv=None):

@@ -240,6 +240,13 @@ def test_compare_databases_runs(tmp_path):
     assert tolerated.returncode == 0, tolerated.stdout
 
 
+@pytest.mark.parametrize('tolerance', ['-1', 'nan', 'inf'])
+def test_compare_databases_refuses_a_tolerance_that_is_not_finite_and_non_negative(tmp_path, tolerance):
+    result = run_here('compare_databases.py', 'a.nod', 'a.nod', '--tolerance', tolerance, cwd=tmp_path)
+    assert result.returncode == 2
+    assert '--tolerance must be a finite number of dB, at least 0' in result.stderr
+
+
 def test_noise_abatement_plate_cache_lists_and_clears(tmp_path):
     (tmp_path / 'tables').mkdir()
     (tmp_path / 'tables' / 'old.pkl').write_bytes(b'')
