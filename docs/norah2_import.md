@@ -89,10 +89,13 @@ Two smaller points:
   not the measurement's, because that is all a `.hem` can still say about it. A PANAM
   hemisphere sent through `write_norah2_hemisphere` and back therefore comes out shifted by
   (alpha_measured - alpha_ICAO) x 30.48 m. The round-trip test checks exactly that.
-- NORAH2 removes its absorption by SAE ARP 5534 with a band correction. The importer uses
-  ISO 9613-1 at the nominal band center, as the PANAM writer does when it adds that
-  absorption. The band correction is second order in the band's attenuation, which is at
-  most 2.9 dB over these 29.5 m. It is not quantified here.
+- NORAH2 removes its absorption by SAE ARP 5534 with a band correction. By default the
+  importer uses ISO 9613-1 at the nominal band center, as the PANAM writer does when it adds
+  that absorption. `--absorption-band-method arp5534` (`absorption_band_method='arp5534'`)
+  uses ARP 5534 instead, in the move to the sphere radius and in the EAA;
+  `--absorption-band-method integrated` integrates ISO 9613-1 over each band (THEORY §5.4).
+  The band correction is second order in the band's attenuation, which is at most 2.9 dB
+  over these 29.5 m.
 
 `radius_m` (`--radius`) changes the sphere radius. Beyond POLDIST, the same expression adds
 the absorption between the two radii instead of removing it.

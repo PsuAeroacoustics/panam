@@ -50,6 +50,12 @@ def parse_arguments(argv=None):
                         help='... pressure, kPa (default %(default)g)')
     parser.add_argument('--build-humidity', type=float, default=20.0,
                         help='... relative humidity, percent (default %(default)g)')
+    parser.add_argument('--absorption-band-method', choices=('center', 'arp5534', 'integrated'),
+                        default='center',
+                        help='how band absorption is formed, in the move from POLDIST to the sphere '
+                             'radius and in the EAA: center (ISO 9613-1 at the band center), '
+                             "arp5534 (SAE ARP 5534, NORAH2's own) or integrated (ISO 9613-1 "
+                             'integrated over the band, flat band levels) (default %(default)s)')
     parser.add_argument('--accept-ground-included', action='store_true',
                         help='convert FREEFIELD = 0 hemispheres (ground reflection included) as '
                              'free field, with a warning, instead of refusing them')
@@ -102,7 +108,8 @@ def main(argv=None):
         mirror_rotor=args.mirror_rotor,
         fill_empty=args.fill_empty,
         store_spectrum=not args.no_spectrum,
-        overwrite=args.overwrite)
+        overwrite=args.overwrite,
+        absorption_band_method=args.absorption_band_method)
     for condition in conditions:
         print('{source}: {speed_knots:.2f} kt, {flight_path_angle_deg:+.2f} deg, mu {advance_ratio:.4f}'
               .format(**condition))
