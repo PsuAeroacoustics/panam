@@ -35,8 +35,9 @@ Instructions for AI coding tools working on PANAM. Human developers: see
 - `vold_kalman_filter.py`: Vold-Kalman order tracking.
 - `order_tracking.py`: Doppler-predicted order tracks at a fixed microphone,
   ridge tracking, clock offsets.
-- `sphere_statistics.py`: energy averaging of repeat-run spheres and
-  band-by-band sphere comparison (CLI `sphere_diff.py`).
+- `sphere_statistics.py`: energy averaging of repeat-run spheres,
+  band-by-band sphere comparison (CLI `sphere_diff.py`) and per-node sample
+  statistics (`node_statistics`).
 - `nod_database.py`: reads `.nod` databases: `load_nod`, `validate_nod`,
   `compare_databases`, `to_frame`, and the maps and summaries of
   `nod_tool.py` (`plot_condition`, `plot_envelope`).
