@@ -178,6 +178,57 @@ Instead, each of its groups carries `norah2_source` and the file's constants as
 Adding names leaves the version at 1. Bump it when the on-disk meaning of existing data
 changes, together with a matching change in NICE-OPS.
 
+### Checking a database
+
+`nod_database.validate_nod(path)` returns one violation per broken rule, with the group it
+is in. The R rules are what NICE-OPS requires. The C rules are the rest of this contract,
+which the writers keep; a reader may rely on them.
+
+1. **R1.** The root has `same_grid`, and it is true.
+2. **R2.** There is at least one group, and every group has `radius`, `rotor_scale`,
+   `advance_ratio`, `flight_path_angle` and `thrust_coefficient`, each one finite value.
+3. **R3.** Every group has `dBA` and `EAA` over its `channels` dimension.
+4. **R4.** Every group's channels have directions: `phi` and `theta`, one value per channel,
+   in the group or, when `shared_grid_and_frequency` is true, at the root.
+5. **R5.** `radius` × `rotor_scale` is the same in every group.
+6. **R6.** `EAA` is finite. `dBA` is finite or -inf, never NaN or +inf.
+7. **C1.** `database_version`, when present, is an integer from 0 to
+   `DATABASE_FORMAT_VERSION`.
+8. **C2.** `speed_reference` and `azimuth_reference`, when present, take the values listed
+   above.
+9. **C3.** A group with `amplitude` has its band centers, in the group or shared at the
+   root. A group's own `phi`, `theta` or `frequency` equals the shared one at the root.
+10. **C4.** `amplitude` is over (`PHI`, `THETA`, `frequency`), with PHI × THETA = channels and
+    one band center per band, and the channels are its row-major flatten, rows sorted by
+    `phi` (channel order, above).
+11. **C5.** `amplitude` is finite or -inf, never NaN or +inf.
+12. **C6.** `coverage` is 0 or 1, over the dimensions given above, and is 1 only where the
+    level it marks (the band, or `dBA` without spectra) is finite.
+13. **C7.** A direction with no finite band has `dBA` = -inf.
+14. **C8.** With `fixed_load_factor` set, `thrust_coefficient` is the same in every group.
+15. **C9.** `DOPPLER_SHIFT_REMOVED`, when present, is 0 or 1 and the same in every group.
+16. **C10.** Every `rotor_scale` equals `main_rotor_radius_meters`, when present.
+17. **C11.** The groups are named `sphere0` to `sphere<N-1>`.
+18. **C12.** `condition_origin`, when present, is one of the three values above.
+
+### Reading a database
+
+`nod_database.load_nod(path)` returns the conditions in group order, each with its speed in
+knots (from `advance_ratio` and `main_rotor_tip_speed_meters_per_sec`), flight path angle,
+thrust coefficient, sphere radius, channel directions, `dBA`, `EAA`, band centers,
+`amplitude` and `coverage`, whichever layout the file uses. The load factor is 1 in a
+`fixed_load_factor` database. Otherwise it is C_T / C_W, and the caller passes C_W, since
+the file stores no density to form it. Levels are returned as stored, -inf where missing.
+`measured_amplitude` sets every coverage-0 cell to NaN. The file stores a gated cell and an
+unmeasured one alike ([how a bin's state travels](#how-a-bins-state-travels)), so a reader
+cannot restore the gated cell's -inf.
+
+`nod_database.compare_databases(a, b)` matches conditions by advance ratio, flight path
+angle and thrust coefficient. It reports the root variables and attributes that differ, the
+conditions in only one file, and for each matched condition the per-band difference of the
+energy summed over the cells finite in both, the largest level differences, and the
+coverage gained and lost. `compare_databases.py` prints the same report.
+
 ## How a bin's state travels
 
 This is the one full statement of the missing-value rules. A band level is in one of three
@@ -284,3 +335,6 @@ row, then one row per run:
   sentinel, the masking conventions read back, and the root vehicle fields.
 - `tests/test_golden_results.py` pins depropagated levels and the database built from them
   to 1e-6 dB.
+- `tests/conftest.py` runs `validate_nod` on every database the tests build, and
+  `tests/test_nod_database.py` corrupts a database one way at a time and checks that
+  exactly the matching rules break.

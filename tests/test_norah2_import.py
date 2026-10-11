@@ -12,6 +12,7 @@ from netCDF4 import Dataset
 
 import flight_acoustics as fa
 import local_paths
+import nod_database
 from panam_acoustics.atmosphere import Atmosphere
 
 REPO = Path(__file__).resolve().parents[1]
@@ -525,6 +526,7 @@ def test_command_line(tmp_path):
     assert 'Wrote 3 condition(s)' in result.stdout
     with Dataset(str(tmp_path / 'out.nod')) as nc:
         assert nc.speed_reference == 'air' and len(nc.groups) == 3
+    assert nod_database.validate_nod(tmp_path / 'out.nod') == []  # written in another process
 
     # Refusals: no --speed, no vehicle, an existing output, FREEFIELD = 0.
     result = _run(*files, '-o', 'b.nod', '--vehicle', str(vehicle), cwd=tmp_path)

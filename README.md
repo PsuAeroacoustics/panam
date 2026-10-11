@@ -64,6 +64,7 @@ scripts take no options and run as soon as they start, `-h` included:
 | `noise_abatement_2017.py` | Build source spheres from the 2017 Noise Abatement flight test; `--check-tracks` checks the tracks without building | Yes: the 2017 archive |
 | `build_empirical_database.py` | Build a NICE-OPS database from a directory of spheres and its `vehicle.cfg` | Your spheres |
 | `norah2_to_nod.py` | Build a NICE-OPS database from NORAH2 `.hem` hemispheres | `.hem` files |
+| `compare_databases.py` | Compare two NICE-OPS databases: per-band energy, coverage, unmatched conditions, root attributes; `--validate` checks the file contract | Your databases |
 | `nc_lambert_ea.py` | Plot a sphere's levels on a Lambert equal-area projection | No (bundled sphere) |
 | `plot_projection.py` | Project a sphere onto flat ground and contour the footprint | No (bundled sphere) |
 | `fried_egg_plot.py` | Contour ground levels of a directory of spheres over flight condition | Your spheres and `vehicle.cfg` |
