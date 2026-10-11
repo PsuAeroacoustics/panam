@@ -241,9 +241,13 @@ def band_absorption_db(distance_m, band_centers, temperature, pressure, relative
       :func:`panam_acoustics.filters.third_octave_filter_bank` about the given
       center and a spectrum whose band levels rise ``k = spectrum_slope_db`` dB
       per one-third octave (0, the default, is flat band levels).  It is
-      integrated over one octave either side of the center (241 points); past
-      about 50 dB of mid-band attenuation the result is set by the filter skirt
-      and so depends on that range.
+      integrated over one octave either side of the center (241 points).  For
+      flat band levels a three-octave range changes the result by less than
+      0.05 dB up to 50 dB of mid-band attenuation; past about 60 dB the result
+      is set by the filter skirt and so depends on that range.  With
+      ``spectrum_slope_db=3`` it agrees with ``'arp5534'`` within 0.3 dB up to
+      20 dB of ARP 5534 attenuation and within about 3 dB up to 50 dB,
+      depending on the atmosphere.
 
     Args:
         distance_m: path length(s), m (scalar or array).

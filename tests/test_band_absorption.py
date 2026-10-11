@@ -70,13 +70,22 @@ def test_arp5534_band_absorption_evaluates_the_tone_at_the_exact_midband():
 
 def test_integrated_agrees_with_arp5534_over_its_fitted_range():
     """ARP 5534 is a fit to the spectrum-integration method for spectra normalized to
-    3 dB per band; the integration over the band's filter with that slope agrees to a
-    few tenths of a dB up to 60 dB of attenuation."""
-    for distance in (100.0, 500.0, 1000.0):
-        arp = band_absorption_db(distance, CENTERS, T, P, RH, method='arp5534')
-        integrated = band_absorption_db(distance, CENTERS, T, P, RH, method='integrated',
-                                        spectrum_slope_db=3.0)
-        np.testing.assert_allclose(integrated, arp, atol=0.6, rtol=0.02)
+    3 dB per band.  Over 263-303 K, 10-95 % RH and exact centers 100 Hz to 10 kHz,
+    the integration with that slope agrees within 0.3 dB where the ARP attenuation is
+    at most 20 dB and within 3 dB where it is at most 50 dB."""
+    centers = 10.0 ** (np.arange(20, 41) / 10.0)
+    worst_20 = worst_50 = 0.0
+    for temperature in (263.15, 283.15, 303.15):
+        for humidity in (10.0, 30.0, 70.0, 95.0):
+            for distance in (50.0, 300.0, 1000.0, 2000.0, 3000.0):
+                arp = band_absorption_db(distance, centers, temperature, P, humidity, method='arp5534')
+                integrated = band_absorption_db(distance, centers, temperature, P, humidity,
+                                                method='integrated', spectrum_slope_db=3.0)
+                error = np.abs(integrated - arp)
+                worst_20 = max(worst_20, error[arp <= 20.0].max(initial=0.0))
+                worst_50 = max(worst_50, error[arp <= 50.0].max(initial=0.0))
+    assert worst_20 < 0.3
+    assert worst_50 < 3.0
 
 
 def test_integrated_tends_to_the_band_mean_at_short_range_and_below_the_tone_at_long():

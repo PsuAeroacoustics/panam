@@ -3089,8 +3089,9 @@ def write_norah2_hemisphere(
 
     - moved by spherical spreading from the hemisphere's ``r_ref`` to 60 m;
     - the absorption depropagation leaves in over ``r_ref`` (in the
-      measurement atmosphere) taken out, and absorption over 60 m in the ICAO
-      reference atmosphere put in, as ``FREEFIELD = 2`` declares;
+      measurement atmosphere, by the band method in its metadata's
+      ``absorption_band_method``) taken out, and absorption over 60 m in the
+      ICAO reference atmosphere put in, as ``FREEFIELD = 2`` declares;
     - resampled in linear power onto the NORAH2 10 degree grid and its 31
       nominal one-third octave bands (10 Hz to 10 kHz).  A band the
       hemisphere does not have, a direction it did not cover, and a level
@@ -3168,8 +3169,17 @@ def write_norah2_hemisphere(
         # ones for NORAH2's: those are what NORAH2 will remove it at.
         measured_centers = np.where(present, np.asarray(frequency_hz, dtype=float)[band_index],
                                     NORAH2_BAND_CENTERS_HZ)
+        # The sphere keeps the band attenuation over r_ref as its band method
+        # formed it (see depropagate_hemisphere), so take out that amount.
+        band_method = str(meta.get('absorption_band_method', 'center'))
+        if band_method == 'center':
+            measured_db = measurement_atmosphere.attenuation_coefficient(measured_centers) * r_ref_m
+        else:
+            measured_db = band_absorption_db(r_ref_m, measured_centers, measurement_atmosphere.temperature,
+                                             measurement_atmosphere.pressure,
+                                             measurement_atmosphere.relative_humidity, method=band_method)
         offset_db = (offset_db
-                     + measurement_atmosphere.attenuation_coefficient(measured_centers) * r_ref_m
+                     + measured_db
                      - reference_atmosphere.attenuation_coefficient(NORAH2_BAND_CENTERS_HZ)
                      * NORAH2_REFERENCE_DISTANCE_M)
     else:

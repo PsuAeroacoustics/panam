@@ -565,9 +565,13 @@ $\delta_t(f) = \alpha(f)\,s$ by one of three methods (`absorption_band_method`):
   the order-3 Butterworth response of PANAM's filter bank (§2.2) about the given center and a
   spectrum whose band levels rise $k$ dB per one-third octave (`spectrum_slope_db`, default 0:
   flat band levels). It is evaluated by the trapezoidal rule on 241 points uniform in $\lg f$
-  over one octave either side of $f_c$. Past about 50 dB of mid-band attenuation the result is
-  set by the filter skirt, and so by that range. With $k = 3$ it agrees with `'arp5534'` within
-  0.6 dB up to 60 dB.
+  over one octave either side of $f_c$. For flat band levels, widening that range to three octaves
+  changes the result by less than 0.05 dB up to 50 dB of mid-band pure-tone attenuation; past about
+  60 dB the result is set by the filter skirt, and so by that range. With $k = 3$ it agrees with
+  `'arp5534'` within 0.3 dB where the ARP 5534 attenuation is at most 20 dB, and within about
+  3 dB where it is at most 50 dB, depending on the atmosphere (263-303 K, 10-95% RH, exact centers
+  100 Hz to 10 kHz). That difference is between the two methods, not an effect of the
+  integration range.
 
 A depropagated band is corrected by $\delta_B(\ell) - \delta_B(r_\mathrm{ref})$ (§5.1), so the
 sphere keeps the band attenuation over its first $r_\mathrm{ref}$; for `'center'` this is
@@ -835,7 +839,9 @@ L(60\ \mathrm{m}) = L(r_\mathrm{ref}) - 20\lg\frac{60\ \mathrm{m}}{r_\mathrm{ref
 + \alpha_\mathrm{meas}(f)\,r_\mathrm{ref} - \alpha_\mathrm{ICAO}(f_c)\cdot 60\ \mathrm{m},
 $$
 
-with $f$ the hemisphere's own band center and $f_c$ the nominal one. A band the hemisphere lacks,
+with $f$ the hemisphere's own band center and $f_c$ the nominal one. For a sphere depropagated
+with a band method (§5.4, the metadata's `absorption_band_method`), the measured term is that
+method's $\delta_B(r_\mathrm{ref})$ in place of $\alpha_\mathrm{meas}(f)\,r_\mathrm{ref}$. A band the hemisphere lacks,
 a direction it did not cover, and a level below −100 dB at 60 m (`minimum_level_db`) are written
 as −999. This is not the inverse of the import: a sphere exported and imported again comes back
 shifted by $(\alpha_\mathrm{meas} - \alpha_\mathrm{ICAO})\,r_\mathrm{ref}$. A sphere built without
