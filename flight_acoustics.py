@@ -4443,7 +4443,8 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     the slowest near-level one in the directory -- typically that same run rebuilt with
     ``build_sphere(remove_doppler=True)``, so that the fore-to-aft average combines
     spectra at their emitted frequencies.  The flight spheres in the directory keep
-    their received ones.
+    their received ones.  hover_source is a path resolved against the current
+    directory, not against sphere_directory as the names in ``spheres`` are.
 
     hover_correction, when given, is added to the synthesized hover sphere's band levels
     after the fore-to-aft average: a callable taking phi and theta (degrees, arrays shaped

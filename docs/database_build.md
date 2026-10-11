@@ -117,7 +117,8 @@ them with their units):
   for one 1 g reference that NICE-OPS scales);
 - no extended flight path angles (`--extended-fpa LO:HI`, deg);
 - a hover synthesized from the slowest sphere within 2° of level flight, as built
-  (`--hover-source`, `--level-flight-tolerance`);
+  (`--hover-source`, `--level-flight-tolerance`; the `--hover-source` path is taken
+  relative to the current directory, not the sphere directory);
 - spectra stored (`--no-spectrum` leaves them out);
 - the EAA computed at 1000 m in 293.15 K, 101.325 kPa and 20% relative humidity
   (`--distance`, `--build-temperature`, `--build-pressure`, `--build-humidity`).

@@ -26,9 +26,12 @@ from Python to use it (see docs/database_build.md, "The 2017 release settings").
 def _float_list(value):
     """argparse type for a comma-separated list of floats."""
     try:
-        return [float(item) for item in value.split(',') if item.strip()]
+        values = [float(item) for item in value.split(',') if item.strip()]
     except ValueError as error:
         raise argparse.ArgumentTypeError(str(error))
+    if not values:
+        raise argparse.ArgumentTypeError('at least one load factor is required')
+    return values
 
 
 def parse_arguments(argv=None):
@@ -60,13 +63,14 @@ def parse_arguments(argv=None):
 
     parser.add_argument('--extended-fpa', type=cli.colon_pair, default=None, metavar='LO:HI',
                         help='re-emit every near-level condition at these two flight path angles, deg '
-                             '(e.g. -24:35; default none: the hover is written at -12, 0 and +12)')
+                             '(e.g. --extended-fpa=-24:35; default none: the hover is written at -12, 0 and +12)')
     parser.add_argument('--level-flight-tolerance', type=float,
                         default=flight_acoustics.LEVEL_FLIGHT_TOLERANCE,
                         help='flight path angle within which a sphere counts as level flight, deg '
                              '(default %(default)g)')
     parser.add_argument('--hover-source', default=None,
-                        help='sphere file the hover is synthesized from (default: the slowest sphere '
+                        help='path of the sphere file the hover is synthesized from, relative to the '
+                             'current directory, not SPHERE_DIRECTORY (default: the slowest sphere '
                              'within the level-flight tolerance)')
     parser.add_argument('--speed-reference', choices=flight_acoustics.SPEED_REFERENCES, default='ground',
                         help='what the advance ratio and flight path angle are taken against '

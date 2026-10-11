@@ -2,7 +2,9 @@
 
 The parse tests check that every option maps to its build_empirical_database
 keyword and that the defaults are the function's own.  The build tests write a
-small synthetic sphere directory and check that each option reaches the file.
+small synthetic sphere directory and check that each option reaches the file,
+except --doppler-removed: the synthetic spheres carry their own
+DOPPLER_SHIFT_REMOVED flag, which takes precedence, so the parse test covers it.
 """
 
 import csv
@@ -90,6 +92,8 @@ def test_fixed_load_factor_passes_none(tmp_path):
     ['--doppler-removed', '2'],
     ['--speed-reference', 'wind'],
     ['--extended-fpa', '-24'],
+    ['--load-factors', ''],
+    ['--load-factors', ','],
 ])
 def test_bad_combinations_are_refused(tmp_path, flags, capsys):
     with pytest.raises(SystemExit):
@@ -140,6 +144,54 @@ def test_load_factors_reach_the_database(tmp_path):
         thrust = sorted({float(g['thrust_coefficient'][0]) for g in db.groups.values()})
         assert len(thrust) == 2 and thrust[1] == pytest.approx(2 * thrust[0])
         assert not bool(db['fixed_load_factor'][()])
+
+
+def _groups(database):
+    with Dataset(str(database)) as db:
+        return db['frequency'][:].data.copy(), {name: dict(
+            eaa=g['EAA'][:].filled(np.nan), advance_ratio=float(g['advance_ratio'][0]),
+            source=g.source_sphere) for name, g in db.groups.items()}
+
+
+def test_frequency_range_reaches_the_database(tmp_path):
+    # The synthetic spheres have bands at 100, 125 and 160 Hz.
+    frequency, _ = _groups(_build(tmp_path, '--fixed-load-factor', '--frequency-range', '110:200'))
+    assert list(frequency) == [125.0, 160.0]
+
+
+def test_distance_reaches_the_database(tmp_path):
+    _, near = _groups(_build(tmp_path, '--fixed-load-factor'))
+    (tmp_path / 'database.nod').unlink()
+    _, far = _groups(_build(tmp_path, '--fixed-load-factor', '--distance', '500'))
+    assert set(near) == set(far)
+    for name in near:
+        assert not np.allclose(near[name]['eaa'], far[name]['eaa']), name
+
+
+def test_level_flight_tolerance_chooses_the_hover_source(tmp_path):
+    # Conditions: X101 60 kt at -3 deg, X102 80 kt and X103 100 kt level.
+    def hover_sources(*flags):
+        database = _build(tmp_path, '--fixed-load-factor', *flags)
+        _, groups = _groups(database)
+        database.unlink()
+        return {g['source'] for g in groups.values() if g['advance_ratio'] == 0}
+    assert hover_sources() == {'X102.nc'}
+    assert hover_sources('--level-flight-tolerance', '4') == {'X101.nc'}
+
+
+def test_no_clamp_empty_reaches_the_database(tmp_path):
+    # One sphere has a direction that ambient gating emptied in every band: -999 on disk.
+    directory = _directory(tmp_path)
+    with Dataset(str(directory / 'X103.nc'), 'a') as sphere:
+        sphere['AMPLITUDE'][4, 6, :] = -999.0
+
+    def eaa_of_x103(*flags):
+        database = _build(tmp_path, '--fixed-load-factor', *flags)
+        _, groups = _groups(database)
+        database.unlink()
+        return np.concatenate([g['eaa'].ravel() for g in groups.values() if g['source'] == 'X103.nc'])
+    assert np.all(np.isfinite(eaa_of_x103()))
+    assert np.any(np.isnan(eaa_of_x103('--no-clamp-empty')))
 
 
 # --- sphere selection ---------------------------------------------------------------
