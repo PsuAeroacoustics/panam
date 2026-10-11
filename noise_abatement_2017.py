@@ -2918,7 +2918,8 @@ def build_options(args):
 
 def main(argv=None):
     parser = make_parser()
-    args = parser.parse_args(argv)
+    # Intermixed, so that the optional positionals may follow options on Python 3.11 too.
+    args = parser.parse_intermixed_args(argv)
     options = build_options(args)
     if args.hover_source and not args.recipe:
         parser.error('--hover-source applies to --recipe only')

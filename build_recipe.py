@@ -291,7 +291,7 @@ def explicit_destinations(parser, argv=None):
     try:
         for action, _ in saved:
             action.default = argparse.SUPPRESS
-        namespace = parser.parse_args(argv)
+        namespace = parser.parse_intermixed_args(argv)
     finally:
         for action, default in saved:
             action.default = default

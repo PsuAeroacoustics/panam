@@ -40,4 +40,10 @@ Repository = "https://github.com/PsuAeroacoustics/panam"
 
 [tool.coverage.run]
 # CI reports coverage of the modules and scripts, not of the tests.
-omit = ["tests/*"]
+# src/* is the path that Cython code in some binary wheels (netCDF4 on macOS)
+# reports relative to the working directory; it has no source here.
+omit = ["tests/*", "src/*"]
+
+[tool.coverage.report]
+# The CI summary is informational: an unreadable source file must not fail it.
+ignore_errors = true
