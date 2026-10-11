@@ -1247,6 +1247,30 @@ def _bands_missing(dropped, f, lower, upper, doppler):
     return out
 
 
+_AIR_RELATIVE_DOPPLER_RAYS = ('air_relative_doppler needs a ray model that returns emission_direction '
+                             'and doppler_speed (refracted_rays.uniform_wind_ray_model)')
+
+
+def _check_band_method(method):
+    """Raise ValueError unless ``method`` is one of ``BAND_ABSORPTION_METHODS``."""
+    if method not in BAND_ABSORPTION_METHODS:
+        raise ValueError('absorption_band_method must be one of {}, not {!r}'.format(
+            BAND_ABSORPTION_METHODS, method))
+
+
+def _band_attenuation_db(atmosphere, frequency_hz, distance_m, method):
+    """Band attenuation (dB) over ``distance_m`` (m) in ``atmosphere`` (K, kPa, % RH).
+
+    'center' is the ISO 9613-1 coefficient at ``frequency_hz`` times the
+    distance, computed directly so its results stay bit-identical; any other
+    method goes through :func:`panam_acoustics.atmosphere.band_absorption_db`.
+    """
+    if method == 'center':
+        return atmosphere.attenuation_coefficient(frequency_hz) * distance_m
+    return band_absorption_db(distance_m, frequency_hz, atmosphere.temperature, atmosphere.pressure,
+                              atmosphere.relative_humidity, method=method)
+
+
 def depropagate_hemisphere(
         mic_locations,
         pressure,
@@ -1640,14 +1664,16 @@ def depropagate_hemisphere(
         raise ValueError('tone_aware needs third_octave_method=\'fft\'')
     if decompose_tonal and not (tone_aware and third_octave):
         raise ValueError('decompose_tonal needs third_octave=True and tone_aware=True')
+    if air_relative_doppler and not remove_doppler:
+        raise ValueError('air_relative_doppler applies to remove_doppler, which is off')
+    if air_relative_doppler and ray_model is None:
+        raise ValueError(_AIR_RELATIVE_DOPPLER_RAYS)
     if remove_doppler and third_octave_method != 'fft':
         raise ValueError('remove_doppler needs third_octave_method=\'fft\'')
     if third_octave_method not in ('fft', 'filter_bank'):
         raise ValueError("third_octave_method must be 'fft' or 'filter_bank'")
     use_filter_bank = bool(third_octave) and third_octave_method == 'filter_bank'
-    if absorption_band_method not in BAND_ABSORPTION_METHODS:
-        raise ValueError('absorption_band_method must be one of {}, not {!r}'.format(
-            BAND_ABSORPTION_METHODS, absorption_band_method))
+    _check_band_method(absorption_band_method)
     if absorption_band_method != 'center':
         if not apply_absorption_deprop:
             raise ValueError('absorption_band_method needs apply_absorption_deprop=True')
@@ -1754,15 +1780,10 @@ def depropagate_hemisphere(
             az_deg[tidx] = np.remainder(az_deg[tidx] + turn, 360.0)
             ray_valid &= np.all(np.isfinite(emitted), axis=-1)
         if air_relative_doppler:
-            if not remove_doppler:
-                raise ValueError('air_relative_doppler applies to remove_doppler, which is off')
             if 'emission_direction' not in rays or 'doppler_speed' not in rays:
-                raise ValueError('air_relative_doppler needs a ray model that returns emission_direction '
-                                 'and doppler_speed (refracted_rays.uniform_wind_ray_model)')
+                raise ValueError(_AIR_RELATIVE_DOPPLER_RAYS)
             speed_along = np.sum(np.asarray(vel_geom, dtype=float)[tidx][:, None, :] * emitted, axis=2)
             doppler_geom[tidx] = 1.0 / (1.0 - speed_along / np.asarray(rays['doppler_speed'], dtype=float))
-    elif air_relative_doppler:
-        raise ValueError('air_relative_doppler needs a ray model that returns emission_direction and doppler_speed')
 
     # Regular hemisphere grid (degrees) with seam closure at 360
     azi_grid_deg = np.arange(0.0, 360.0 + 1e-9, float(azi_step))
@@ -2112,14 +2133,13 @@ def depropagate_hemisphere(
                 # where its Doppler-scaled edges leave the selected bins.
                 psd_kept = np.where(dropped, 0.0, psd_v_lin) if dropped.any() else psd_v_lin
                 missing = _bands_missing(dropped, f_sel, band_lower, band_upper, d_v)
-                if decompose_tonal:
+                if tone_aware:
                     powers, tonal, broadband = _tone_aware_bands(psd_kept, f_sel, band_lower, band_upper,
-                                                                 doppler=d_v, parts=True)
-                    for ib in range(band_centers.size):
-                        tonal_power_lists[ib].append(np.where(missing[ib], np.nan, tonal[ib]))
-                        broadband_power_lists[ib].append(np.where(missing[ib], np.nan, broadband[ib]))
-                elif tone_aware:
-                    powers = tone_aware_band_power(psd_kept, f_sel, band_lower, band_upper, doppler=d_v)
+                                                                 doppler=d_v, parts=decompose_tonal)
+                    if decompose_tonal:
+                        for ib in range(band_centers.size):
+                            tonal_power_lists[ib].append(np.where(missing[ib], np.nan, tonal[ib]))
+                            broadband_power_lists[ib].append(np.where(missing[ib], np.nan, broadband[ib]))
                 else:
                     # Running integral of the spectrum at the bins' edges, read at each
                     # sample's Doppler-scaled band edges.
@@ -2295,29 +2315,25 @@ def depropagate_hemisphere(
             assert scattered is not None
             scattered['third_octave'] = {'band_centers_hz': band_centers}
         for key, power_lists in fields.items():
+            # Each band's samples, concatenated once; None for a band with none.
+            band_rows = [np.concatenate(samples) if samples else None for samples in power_lists]
             band_grids_db = np.full((band_centers.size, ELV_GRID.shape[0], ELV_GRID.shape[1]), -np.inf, dtype=float)
-            for ib in range(band_centers.size):
-                if len(power_lists[ib]) == 0:
+            for ib, P_band_pts in enumerate(band_rows):
+                if P_band_pts is None:
                     continue
-                P_band_pts = np.concatenate(power_lists[ib])
                 if P_band_pts.size != fazi_pts.size:
                     raise ValueError('Internal error: third-octave sample count does not match scattered angle count')
                 P_band_grid = grid_power(P_band_pts)
                 band_grids_db[ib, :, :] = power_to_db(P_band_grid)
                 band_grids_db[ib, :, -1] = band_grids_db[ib, :, 0]
             out['third_octave'][key] = band_grids_db
+            band_power_pts = (np.vstack(band_rows) if band_centers.size > 0
+                              else np.empty((0, fazi_pts.size), dtype=float))
             if grid_statistics is not None and band_centers.size > 0:
-                out['statistics'].setdefault('third_octave', {})[key] = grid_statistics(
-                    np.vstack([np.concatenate(power_lists[ib]) for ib in range(band_centers.size)]))
-
+                out['statistics'].setdefault('third_octave', {})[key] = grid_statistics(band_power_pts)
             if return_scattered:
-                if band_centers.size > 0:
-                    band_power_pts = np.vstack([np.concatenate(power_lists[ib]) for ib in range(band_centers.size)])
-                    if band_power_pts.shape[1] != fazi_pts.size:
-                        raise ValueError('Internal error: third-octave sample count does not match scattered angle count')
-                    scattered['third_octave'][key] = power_to_db(band_power_pts)
-                else:
-                    scattered['third_octave'][key] = np.empty((0, fazi_pts.size), dtype=float)
+                scattered['third_octave'][key] = (power_to_db(band_power_pts) if band_centers.size > 0
+                                                  else band_power_pts)
 
     if narrowband:
         assert f_sel_master is not None
@@ -2771,27 +2787,45 @@ def interpolate_hemisphere_power(levels_db, elv_grid_deg, azi_grid_deg, azi_q_de
     pts = np.column_stack((elv_q, azi_q))
 
     nfreq = levels_db.shape[0]
-
-    # Interpolate every band at once in linear power.  Unmeasured (NaN) cells
-    # carry no weight: interpolate which cells are measured alongside the
-    # power and renormalize by it, so a level next to a coverage gap is not
-    # pulled toward zero energy.  A direction weighted mostly by unmeasured
-    # cells (or off the grid) is missing, which puts the edge of coverage
-    # halfway between measured and unmeasured cells.
     P = np.moveaxis(np.power(10.0, levels_db / 10.0), 0, -1)       # (Nelv, Nazi, Nf)
-    measured = np.isfinite(P)
-    P = np.where(measured, P, 0.0)
+    Pq, covered = _interpolate_measured_power((elv_grid_deg, azi_axis), P, np.isfinite(P), pts)
+    return Pq.reshape(query_shape + (nfreq,)), covered.reshape(query_shape + (nfreq,))
+
+
+def _interpolate_measured_power(axes, power, measured, points):
+    """Bilinear interpolation of band power over the measured grid cells only.
+
+    Every band is interpolated at once in linear power.  Unmeasured cells carry
+    no weight: which cells are measured is interpolated alongside the power and
+    the power renormalized by it, so a level next to a coverage gap is not
+    pulled toward zero energy.  A point weighted mostly by unmeasured cells (or
+    off the grid) is not covered, which puts the edge of coverage halfway
+    between measured and unmeasured cells.
+
+    Args:
+        axes: the grid's strictly increasing axes (deg), one per leading axis of
+            ``power``.
+        power: (..., Nf) band power on the grid, any power unit, bands last.
+        measured: boolean, shaped like ``power``: True where a cell is measured.
+            Unmeasured cells' power is ignored.
+        points: (Npts, len(axes)) query points, in the axes' units.
+
+    Returns:
+        (power, covered), each (Npts, Nf): the power (0 where not covered) and
+        True where the measured cells' interpolated weight is at least 0.5.
+    """
+    nfreq = power.shape[-1]
     interp = RegularGridInterpolator(
-        (elv_grid_deg, azi_axis),
-        np.concatenate((P, measured.astype(float)), axis=-1),
+        axes,
+        np.concatenate((np.where(measured, power, 0.0), measured.astype(float)), axis=-1),
         bounds_error=False,
         fill_value=0.0,
     )
-    sampled = interp(pts)
+    sampled = interp(points)
     Pq, weight = sampled[:, :nfreq], sampled[:, nfreq:]
     covered = weight >= 0.5
     Pq = np.divide(Pq, weight, out=np.zeros_like(Pq), where=covered)
-    return Pq.reshape(query_shape + (nfreq,)), covered.reshape(query_shape + (nfreq,))
+    return Pq, covered
 
 
 def _sample_hemisphere_levels(hemisphere, mode, azi_q_deg, elv_q_deg, minimum_level_db):
@@ -2862,8 +2896,7 @@ def _sample_hemisphere_levels(hemisphere, mode, azi_q_deg, elv_q_deg, minimum_le
     else:
         raise ValueError('hemisphere must include third_octave or narrowband data; run depropagate_hemisphere with third_octave=True and/or narrowband=True')
 
-    Pq, covered = interpolate_hemisphere_power(levels_db_umapr, elv_grid_deg, azi_grid_deg, azi_q_deg, elv_q_deg)
-    Pq = np.where(covered, Pq, 0.0)
+    Pq, _ = interpolate_hemisphere_power(levels_db_umapr, elv_grid_deg, azi_grid_deg, azi_q_deg, elv_q_deg)
     eps = np.finfo(float).tiny
     levels_db = np.full_like(Pq, -np.inf)
     pos = Pq > 0.0
@@ -3494,13 +3527,8 @@ def write_norah2_levels(
                                     NORAH2_BAND_CENTERS_HZ)
         # The sphere keeps the band attenuation over r_ref as its band method
         # formed it (see depropagate_hemisphere), so take out that amount.
-        band_method = str(absorption_band_method)
-        if band_method == 'center':
-            measured_db = measurement_atmosphere.attenuation_coefficient(measured_centers) * r_ref_m
-        else:
-            measured_db = band_absorption_db(r_ref_m, measured_centers, measurement_atmosphere.temperature,
-                                             measurement_atmosphere.pressure,
-                                             measurement_atmosphere.relative_humidity, method=band_method)
+        measured_db = _band_attenuation_db(measurement_atmosphere, measured_centers, r_ref_m,
+                                           str(absorption_band_method))
         offset_db = (offset_db
                      + measured_db
                      - reference_atmosphere.attenuation_coefficient(NORAH2_BAND_CENTERS_HZ)
@@ -3824,11 +3852,10 @@ def norah2_levels_at_radius(hemisphere, radius_m=DATABASE_SPHERE_RADIUS_M, absor
     atmosphere = _norah2_reference_atmosphere(constants, hemisphere.get('title', 'hemisphere'))
     frequency = np.asarray(hemisphere['frequency_hz'], dtype=float)
     if absorption_band_method == 'center':
-        absorption_db = atmosphere.attenuation_coefficient(frequency) * (poldist - radius_m)
+        absorption_db = _band_attenuation_db(atmosphere, frequency, poldist - radius_m, 'center')
     else:
-        absorption_db = np.diff(band_absorption_db(
-            np.array([radius_m, poldist]), frequency, atmosphere.temperature, atmosphere.pressure,
-            atmosphere.relative_humidity, method=absorption_band_method), axis=1)[:, 0]
+        absorption_db = np.diff(_band_attenuation_db(atmosphere, frequency, np.array([radius_m, poldist]),
+                                                     absorption_band_method), axis=1)[:, 0]
     offset_db = 20.0 * np.log10(poldist / radius_m) + absorption_db
     return mask_missing_levels(hemisphere['levels_db']) + offset_db[None, None, :]
 
@@ -4081,9 +4108,7 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
         raise ValueError("tas_air_density applies to speed_mapping='ias_to_tas' only")
 
     _check_build_atmosphere(atmosphere)
-    if absorption_band_method not in BAND_ABSORPTION_METHODS:
-        raise ValueError('absorption_band_method must be one of {}, not {!r}'.format(
-            BAND_ABSORPTION_METHODS, absorption_band_method))
+    _check_band_method(absorption_band_method)
 
     # realpath, so a symbolic link or a second spelling of one file is caught too.
     hem_files = [os.path.realpath(os.path.expanduser(str(f))) for f in hem_files]
@@ -4775,11 +4800,7 @@ def spla_and_eaa_from_spectrum(spectrum, frequency, distance, atmosphere, absorp
     Returns: (SPLA, dBA; EAA, dB over ``distance``), each (phi, theta).
     """
     a_weight = np.array([dBAw(f) for f in frequency])
-    if absorption_band_method == 'center':
-        attenuation = distance * atmosphere.attenuation_coefficient(frequency)
-    else:
-        attenuation = band_absorption_db(float(distance), frequency, atmosphere.temperature, atmosphere.pressure,
-                                         atmosphere.relative_humidity, method=absorption_band_method)
+    attenuation = _band_attenuation_db(atmosphere, frequency, float(distance), absorption_band_method)
     spla = np.apply_along_axis(OASPL, 2, spectrum + a_weight)
     spla_attenuated = np.apply_along_axis(OASPL, 2, spectrum + a_weight - attenuation)
     with np.errstate(invalid='ignore'):
@@ -5262,17 +5283,28 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
             ncdatabase.excluded_spheres = '\n'.join(os.path.basename(f) for f in excluded)
 
         source_conditions = []
-        sphere_index = 0
         level_conditions = []
+        # Each condition's levels, kept for the hover synthesis below.
+        condition_inputs = {}
         # Every condition to write, collected rather than written immediately, so
         # that whether phi/theta/frequency can be deduplicated (see
         # _grid_and_frequency_are_shared) is known before the first group is
         # written -- not discovered partway through and left to redo.
         pending_groups = []
+
+        def add(phi, theta, radius, spla, eaa, speed, flight_path_angle, load_factor, frequency,
+                amplitude, coverage, metadata):
+            pending_groups.append(_SphereCondition(
+                'sphere' + str(len(pending_groups)), phi, theta, radius, spla, eaa,
+                speed, flight_path_angle, load_factor,
+                frequency if store_spectrum else None,
+                amplitude if store_spectrum else None, coverage, metadata))
+
         for filenames in condition_files:
             # Load the sphere data (the energy average of repeat runs, when merged)
             (_, _, phi_list, theta_list, radius, _, SPLA, EAA, speed, flight_path_angle,
              frequency, amplitude) = condition_levels(filenames)
+            condition_inputs[filenames] = (phi_list, theta_list, radius, EAA, frequency, amplitude)
             # Which bins carry a measurement.  Taken before the clamp, and before the
             # completion fills the upper surface, so a gated bin is recorded as such.
             measured = _measured_bins(amplitude, EAA)
@@ -5291,13 +5323,8 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
             # Augment load factor data
             measured_metadata = run_metadata(filenames)
             for load_factor in load_factors_to_write:
-                groupname = "sphere" + str(sphere_index)
-                sphere_index = sphere_index + 1
-                pending_groups.append(_SphereCondition(
-                    groupname, phi_full, theta_full, radius, SPLA_full, EAA_full,
-                    speed, flight_path_angle, load_factor,
-                    frequency if store_spectrum else None,
-                    amplitude_full if store_spectrum else None, coverage_full, measured_metadata))
+                add(phi_full, theta_full, radius, SPLA_full, EAA_full, speed, flight_path_angle,
+                    load_factor, frequency, amplitude_full, coverage_full, measured_metadata)
 
         min_speed_files = condition_files[_hover_source_index(source_conditions, level_flight_tolerance)]
 
@@ -5306,9 +5333,11 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
             # has no Doppler shift, so its emitted and received frequencies are one
             # and the group is received-frame like the flight spheres around it.
             min_speed_files = (os.path.abspath(os.path.expanduser(hover_source)),)
+            (_, _, phi_list, theta_list, radius, _, _, eaa_source, _, _,
+             frequency, amplitude) = condition_levels(min_speed_files)
+        else:
+            phi_list, theta_list, radius, eaa_source, frequency, amplitude = condition_inputs[min_speed_files]
         # Now, adapt the lowest speed sphere to a hover sphere by averaging from fore to aft
-        (_, _, phi_list, theta_list, radius, _, _, eaa_source, _, _,
-         frequency, amplitude) = condition_levels(min_speed_files)
         phi_full, theta_full, SPLA_full, EAA_full, amplitude_full, coverage_full = _synthesized_hover_sphere(
             phi_list, theta_list, amplitude, _measured_bins(amplitude, eaa_source), frequency,
             distance, atmosphere, hover_correction=hover_correction,
@@ -5322,13 +5351,8 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
         hover_metadata = run_metadata(min_speed_files, 'synthesized_hover')
         for load_factor in load_factors_to_write:
             for flight_path_angle in flight_path_angles:
-                groupname = "sphere" + str(sphere_index)
-                sphere_index = sphere_index + 1
-                pending_groups.append(_SphereCondition(
-                    groupname, phi_full, theta_full, radius, SPLA_full, EAA_full,
-                    speed, flight_path_angle, load_factor,
-                    frequency if store_spectrum else None,
-                    amplitude_full if store_spectrum else None, coverage_full, hover_metadata))
+                add(phi_full, theta_full, radius, SPLA_full, EAA_full, speed, flight_path_angle,
+                    load_factor, frequency, amplitude_full, coverage_full, hover_metadata)
 
         # Widen the flight-path-angle envelope: re-emit each near-level condition at
         # the extended angles, keeping its own airspeed and directivity.  Hover is
@@ -5341,13 +5365,9 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                 extended_metadata = run_metadata(source_files, 'extended_flight_path_angle')
                 for extended_angle in extended_flight_path_angles:
                     for load_factor in load_factors_to_write:
-                        groupname = "sphere" + str(sphere_index)
-                        sphere_index = sphere_index + 1
-                        pending_groups.append(_SphereCondition(
-                            groupname, phi_full, theta_full, radius, SPLA_full, EAA_full,
-                            level_speed, extended_angle, load_factor,
-                            frequency if store_spectrum else None,
-                            amplitude_full if store_spectrum else None, coverage_full, extended_metadata))
+                        add(phi_full, theta_full, radius, SPLA_full, EAA_full, level_speed,
+                            extended_angle, load_factor, frequency, amplitude_full, coverage_full,
+                            extended_metadata)
 
         # phi/theta (and frequency, for a spectral database) are usually the same
         # on every condition -- panam completes every sphere onto a common grid

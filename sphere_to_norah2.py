@@ -12,7 +12,6 @@ import argparse
 import sys
 
 import numpy as np
-from scipy.interpolate import RegularGridInterpolator
 
 from panam_acoustics.atmosphere import Atmosphere
 
@@ -55,15 +54,10 @@ def sphere_levels_on_norah2_grid(amplitude_db, phi_deg, theta_deg):
         raise ValueError('sphere PHI and THETA must be strictly increasing, with at least 2 values each')
     nfreq = levels_db.shape[2]
     measured = np.isfinite(levels_db)
-    power = np.where(measured, np.power(10.0, np.where(measured, levels_db, 0.0) / 10.0), 0.0)
-    interp = RegularGridInterpolator((phi_deg, theta_deg),
-                                     np.concatenate((power, measured.astype(float)), axis=-1),
-                                     bounds_error=False, fill_value=0.0)
+    power = np.power(10.0, np.where(measured, levels_db, 0.0) / 10.0)
     PH, TH = np.meshgrid(fa.NORAH2_PHI_DEG, fa.NORAH2_THETA_DEG, indexing='ij')
-    sampled = interp(np.column_stack((PH.ravel(), TH.ravel())))
-    sampled_power, weight = sampled[:, :nfreq], sampled[:, nfreq:]
-    covered = weight >= 0.5
-    sampled_power = np.divide(sampled_power, weight, out=np.zeros_like(sampled_power), where=covered)
+    sampled_power, _ = fa._interpolate_measured_power(
+        (phi_deg, theta_deg), power, measured, np.column_stack((PH.ravel(), TH.ravel())))
     out = np.full_like(sampled_power, -np.inf)
     positive = sampled_power > 0.0
     out[positive] = 10.0 * np.log10(sampled_power[positive])
@@ -123,9 +117,7 @@ def sphere_to_norah2(sphere_filename, hem_filename, *, measurement_atmosphere,
                                  measurement_atmosphere.pressure,
                                  measurement_atmosphere.relative_humidity)
     amplitude, phi, theta, frequency, radius, speed, angle = fa.load_nc_sphere(sphere_filename)
-    with np.errstate(divide='ignore', invalid='ignore'):
-        octaves = np.abs(np.log2(frequency[:, None] / fa.NORAH2_BAND_CENTERS_HZ))
-    if not np.any(octaves < 1.0 / 12.0):
+    if np.all(fa._norah2_band_index(frequency) < 0):
         raise ValueError(f'{sphere_filename}: no FREQUENCY is a one-third octave band of NORAH2 '
                          '(10 Hz to 10 kHz)')
     radius_ft = float(np.ravel(radius)[0])
