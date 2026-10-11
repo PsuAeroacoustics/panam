@@ -77,6 +77,7 @@ The main options:
 | `--no-track-check`, `--min-height-above-array-ft` | check on, 10 ft | see [options](#options) |
 | `--tone-aware` | off | file each tone whole in the band of its own frequency |
 | `--tone-split` | off | also write each run's tonal and broadband parts (implies `--tone-aware`; see below) |
+| `--node-statistics` | off | also write `N_SAMPLES` and `AMPLITUDE_STD` per cell ([file formats](file_formats.md#aam-sphere-netcdf-nc)) |
 | `--skip-existing` | off | keep a run whose outputs (sphere, NORAH2 file and parts when asked for) all exist |
 | `--skip-unchanged` | off | keep a run whose existing sphere has this build's settings hash and input signature |
 | `--jobs N` | 1 | build N runs at once in worker processes; the output is the same as with 1 |

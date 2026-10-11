@@ -82,7 +82,7 @@ scripts take no options and run as soon as they start, `-h` included:
 
 | Script | Purpose | Needs external data? |
 |---|---|---|
-| `noise_abatement_2017.py` | Build source spheres from the 2017 Noise Abatement flight test; `--check-tracks` checks the tracks without building; `--tone-split` also writes tonal and broadband spheres; `--skip-existing` or `--skip-unchanged` resumes a build; `--jobs N` builds N runs at once; `--plate-cache list` or `clear` inspects or empties the plate-table cache; `--recipe` reads the settings from a build recipe (`docs/recipes/release_2017.toml`) | Yes: the 2017 archive (not for `--plate-cache`) |
+| `noise_abatement_2017.py` | Build source spheres from the 2017 Noise Abatement flight test; `--check-tracks` checks the tracks without building; `--tone-split` also writes tonal and broadband spheres; `--node-statistics` adds per-cell sample counts and level spread; `--skip-existing` or `--skip-unchanged` resumes a build; `--jobs N` builds N runs at once; `--plate-cache list` or `clear` inspects or empties the plate-table cache; `--recipe` reads the settings from a build recipe (`docs/recipes/release_2017.toml`) | Yes: the 2017 archive (not for `--plate-cache`) |
 | `build_empirical_database.py` | Build a NICE-OPS database from a directory of spheres and its `vehicle.cfg`; `--manifest` and `--exclude` select the spheres; `--recipe` reads the settings from a build recipe | Your spheres |
 | `norah2_to_nod.py` | Build a NICE-OPS database from NORAH2 `.hem` hemispheres | `.hem` files |
 | `compare_databases.py` | Compare two NICE-OPS databases: per-band energy, coverage, unmatched conditions, root attributes; `--validate` checks the file contract | Your databases |

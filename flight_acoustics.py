@@ -1294,6 +1294,7 @@ def depropagate_hemisphere(
         air_relative_doppler=False,
         absorption_band_method='center',
         absorption_profile=None,
+        return_statistics=False,
 ):
     """Generate an acoustic hemisphere from microphone time series and vehicle tracking data.
 
@@ -1551,6 +1552,16 @@ def depropagate_hemisphere(
             the ray's arc length when a ray model is given.  What is put back
             is the absorption over ``r_ref`` in ``atmosphere``, so the sphere
             keeps the same convention.  Needs ``apply_absorption_deprop``.
+        return_statistics: if True, also describe the samples behind every gridded
+            node (:func:`sphere_statistics.node_statistics`), with the weights the
+            gridding uses, renormalized over the samples a field has at that node.
+            For each field: ``n_samples`` (samples with a positive weight and a
+            power that is not NaN), ``n_mics`` (distinct microphones among them),
+            ``n_eff`` = (sum w)^2 / sum w^2 (0 where none) and ``sd_db``, the
+            weighted standard deviation, dB, of the sample levels 10 lg p_i about
+            the node's energy-mean level 10 lg(sum w p / sum w), over the samples
+            with positive power (NaN where none).  Default False: nothing extra
+            is computed.
 
     Returns:
         dict with keys:
@@ -1564,6 +1575,11 @@ def depropagate_hemisphere(
             - when third_octave=True: 'third_octave' (band centers + band grids, dB re 20 uPa
               at r_ref; with decompose_tonal=True also 'tonal_db' and 'broadband_db')
             - when narrowband=True: 'narrowband' (frequency + PSD grids)
+            - when return_statistics=True: 'statistics', with 'oaspl_db' and
+              'spl_a_db', and 'third_octave' and 'narrowband' dicts keyed as the
+              gridded fields there ('bands_db', 'tonal_db', 'broadband_db',
+              'psd_db'); each entry a dict of 'n_samples', 'n_mics', 'n_eff' and
+              'sd_db' arrays shaped as the field it describes
 
         Grid cells with no sample within ``rmax`` are NaN: nothing was
         measured there.  Scattered samples a cap discarded are NaN too, and a
@@ -2176,6 +2192,29 @@ def depropagate_hemisphere(
         def grid_power(power_pts):
             return shepIDW_apply(idw_weights, power_pts)
 
+    grid_statistics = None
+    if return_statistics:
+        import scipy.sparse as sparse
+        import sphere_statistics
+        if interp_settings is not None:
+            # A gap node is NaN whatever its weights: it has no samples.
+            node_weights = sparse.diags((~node_gap.ravel()).astype(float)) @ weights
+        else:
+            node_weights = sphere_statistics.idw_weight_matrix(idw_weights[1], fazi_pts.size)
+        mic_pts = np.concatenate(fmic_list)
+
+        def grid_statistics(power_pts):
+            # Statistics of one field (Np,) or several (Nf, Np), shaped as their grids,
+            # with the seam column closed as the levels' is.
+            power_pts = np.asarray(power_pts, dtype=float)
+            stats = sphere_statistics.node_statistics(node_weights, power_pts, mic_pts)
+            shape = power_pts.shape[:-1] + ELV_GRID.shape
+            stats = {key: value.reshape(shape) for key, value in stats.items()}
+            if ELV_GRID.shape[1] > 1:
+                for value in stats.values():
+                    value[..., -1] = value[..., 0]
+            return stats
+
     P_oaspl_grid = grid_power(P_oaspl_pts)
     oaspl_db = power_to_db(P_oaspl_grid)
     if oaspl_db.shape[1] > 1:
@@ -2223,6 +2262,9 @@ def depropagate_hemisphere(
     }
     if interpolation_info is not None:
         out['interpolation'] = interpolation_info
+    if grid_statistics is not None:
+        out['statistics'] = {'oaspl_db': grid_statistics(P_oaspl_pts),
+                             'spl_a_db': grid_statistics(P_spl_a_pts)}
 
     scattered: Optional[dict[str, Any]] = None
     if return_scattered:
@@ -2263,6 +2305,9 @@ def depropagate_hemisphere(
                 band_grids_db[ib, :, :] = power_to_db(P_band_grid)
                 band_grids_db[ib, :, -1] = band_grids_db[ib, :, 0]
             out['third_octave'][key] = band_grids_db
+            if grid_statistics is not None and band_centers.size > 0:
+                out['statistics'].setdefault('third_octave', {})[key] = grid_statistics(
+                    np.vstack([np.concatenate(power_lists[ib]) for ib in range(band_centers.size)]))
 
             if return_scattered:
                 if band_centers.size > 0:
@@ -2294,6 +2339,8 @@ def depropagate_hemisphere(
             'frequency_hz': f_nb,
             'psd_db': psd_grid_db,
         }
+        if grid_statistics is not None:
+            out['statistics']['narrowband'] = {'psd_db': grid_statistics(psd_power_pts[::narrowband_stride, :])}
 
         if return_scattered:
             assert scattered is not None
@@ -2818,6 +2865,9 @@ def _atomic_output(path):
         with contextlib.suppress(OSError):
             os.remove(temporary)
         raise
+#: The ART grid :func:`write_aam_hemisphere_netcdf` writes when given none, deg.
+AAM_DEFAULT_PHI_DEG = np.arange(-90.0, 90.0 + 1e-9, 10.0)
+AAM_DEFAULT_THETA_DEG = np.arange(0.0, 180.0 + 1e-9, 5.0)
 
 
 def write_aam_hemisphere_netcdf(
@@ -2988,9 +3038,9 @@ def write_aam_hemisphere_netcdf(
     # The step sizes can vary by dataset; pass phi_deg/theta_deg explicitly if you
     # need an exact grid.
     if phi_deg is None:
-        phi_deg = np.arange(-90.0, 90.0 + 1e-9, 10.0)
+        phi_deg = AAM_DEFAULT_PHI_DEG
     if theta_deg is None:
-        theta_deg = np.arange(0.0, 180.0 + 1e-9, 5.0)
+        theta_deg = AAM_DEFAULT_THETA_DEG
     phi_deg = np.asarray(phi_deg, dtype=float).ravel()
     theta_deg = np.asarray(theta_deg, dtype=float).ravel()
     if phi_deg.size < 2 or theta_deg.size < 2:
