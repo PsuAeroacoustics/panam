@@ -18,16 +18,11 @@ from netCDF4 import Dataset
 import flight_acoustics as fa
 import noise_abatement_2017 as na
 import build_empirical_database as script
-from sphere_helpers import minimal_hemisphere, write_sphere_directory
+from sphere_helpers import stepped_sphere_directory
 
 
 def _directory(tmp_path, conditions=((60, -3), (80, 0), (100, 0))):
-    hemispheres = []
-    for i, (speed, angle) in enumerate(conditions):
-        hemisphere = minimal_hemisphere()
-        hemisphere['third_octave']['bands_db'] += 3.0 * i
-        hemispheres.append((hemisphere, speed, angle))
-    return write_sphere_directory(tmp_path / 'spheres', hemispheres)
+    return stepped_sphere_directory(tmp_path / 'spheres', conditions)
 
 
 def _build(tmp_path, *flags):

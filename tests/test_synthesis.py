@@ -236,8 +236,21 @@ def test_true_directivity_reproduces_the_synthetic_band_histories():
     assert mirrored[0] < -1.5 and mirrored[-1] > 1.5
 
 
-def test_depropagate_then_synthesize_round_trip():
-    scenario, ambient = sf.synthesize_pass(LINE, duration=12.0, directivity_db=sf.example_directivity_db, seed=1)
+@pytest.fixture(scope='module')
+def line_pass():
+    """(scenario, ambient) of the seed-1 pass over LINE, shared by the tests below; read only."""
+    return sf.synthesize_pass(LINE, duration=12.0, directivity_db=sf.example_directivity_db, seed=1)
+
+
+@pytest.fixture(scope='module')
+def narrow(line_pass):
+    """leave_mics_out of microphones 1, 3 and 5 in turn, DEPROPAGATION settings; read only."""
+    scenario, ambient = line_pass
+    return sy.leave_mics_out(**scenario, ambient_pressure=ambient, held_out=[[1], [3], [5]], **DEPROPAGATION)
+
+
+def test_depropagate_then_synthesize_round_trip(line_pass):
+    scenario, ambient = line_pass
     hemisphere = fa.depropagate_hemisphere(**scenario, **DEPROPAGATION, ambient_pressure=ambient)
     centers = hemisphere['third_octave']['band_centers_hz']
     for im in range(LINE.shape[0]):
@@ -252,9 +265,8 @@ def test_depropagate_then_synthesize_round_trip():
 
 # --- leaving microphones out ----------------------------------------------------------------------------------
 
-def test_leave_mics_out_ranks_the_gridding_radius():
-    scenario, ambient = sf.synthesize_pass(LINE, duration=12.0, directivity_db=sf.example_directivity_db, seed=1)
-    narrow = sy.leave_mics_out(**scenario, ambient_pressure=ambient, held_out=[[1], [3], [5]], **DEPROPAGATION)
+def test_leave_mics_out_ranks_the_gridding_radius(line_pass, narrow):
+    scenario, ambient = line_pass
     wide = sy.leave_mics_out(**scenario, ambient_pressure=ambient, held_out=[[1], [3], [5]],
                              **dict(DEPROPAGATION, rmax=60.0))
     assert [fold['kept'] for fold in narrow['folds']][0] == [0, 2, 3, 4, 5, 6]
@@ -276,8 +288,8 @@ def test_leave_mics_out_passes_each_microphone_its_own_index():
     assert seen == {0, 1, 2}
 
 
-def test_leave_mics_out_drops_frames_the_depropagation_drops():
-    scenario, ambient = sf.synthesize_pass(LINE, duration=12.0, directivity_db=sf.example_directivity_db, seed=1)
+def test_leave_mics_out_drops_frames_the_depropagation_drops(line_pass):
+    scenario, ambient = line_pass
     every = sy.leave_mics_out(**scenario, ambient_pressure=ambient, held_out=[[0]], **DEPROPAGATION)
     steep = sy.leave_mics_out(**scenario, ambient_pressure=ambient, held_out=[[0]],
                               **dict(DEPROPAGATION, min_elevation_deg=20.0))
@@ -304,14 +316,13 @@ def _mirrored(scenario):
     return out
 
 
-def test_leave_mics_out_honors_flip_y_for_geometry():
+def test_leave_mics_out_honors_flip_y_for_geometry(line_pass, narrow):
     """Mirrored inputs depropagated with flip_y_for_geometry give the original hemisphere,
-    so the held-out residuals must match the unflipped run's."""
-    scenario, ambient = sf.synthesize_pass(LINE, duration=12.0, directivity_db=sf.example_directivity_db, seed=1)
-    plain = sy.leave_mics_out(**scenario, ambient_pressure=ambient, held_out=[[1], [5]], **DEPROPAGATION)
+    so the held-out residuals must match the unflipped run's (narrow's folds of 1 and 5)."""
+    scenario, ambient = line_pass
     flipped = sy.leave_mics_out(**_mirrored(scenario), ambient_pressure=ambient, held_out=[[1], [5]],
                                 **DEPROPAGATION, flip_y_for_geometry=True)
-    for a, b in zip(plain['folds'], flipped['folds']):
+    for a, b in zip([narrow['folds'][0], narrow['folds'][2]], flipped['folds']):
         np.testing.assert_allclose(b['residual_db'][0], a['residual_db'][0], atol=1e-6, equal_nan=True)
 
 
@@ -342,8 +353,8 @@ def test_measured_bands_take_the_depropagation_ambient_sources():
         sy.measured_band_histories(pressure, time, CENTERS, window_time=WINDOW, ambient_time_range=(-9.0, -8.0))
 
 
-def test_leave_mics_out_gates_the_held_out_bands_like_the_depropagation():
-    scenario = sf.synthesize_pass(LINE, duration=12.0, directivity_db=sf.example_directivity_db, seed=1)[0]
+def test_leave_mics_out_gates_the_held_out_bands_like_the_depropagation(line_pass):
+    scenario = line_pass[0]
     out = sy.leave_mics_out(**scenario, held_out=[[2]], ambient_percentile=10.0, **DEPROPAGATION)
     centers = out['band_centers_hz']
     _, expected = sy.measured_band_histories(scenario['pressure'][2], scenario['time'], centers,
@@ -368,9 +379,8 @@ def test_measured_bands_by_filter_bank_and_tone_aware():
         sy.measured_band_histories(pressure, time, CENTERS, third_octave_method='filter_bank', tone_aware=True)
 
 
-def test_leave_mics_out_measures_with_the_depropagation_band_method():
-    scenario, ambient = sf.synthesize_pass(LINE, duration=12.0, directivity_db=sf.example_directivity_db, seed=1,
-                                           sampling_rate=FS)
+def test_leave_mics_out_measures_with_the_depropagation_band_method(line_pass):
+    scenario, ambient = line_pass                   # sampled at FS
     out = sy.leave_mics_out(**scenario, ambient_pressure=ambient, held_out=[[3]], third_octave_method='filter_bank',
                             **DEPROPAGATION)
     _, expected = sy.measured_band_histories(scenario['pressure'][3], scenario['time'], out['band_centers_hz'],

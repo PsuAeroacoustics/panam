@@ -14,7 +14,7 @@ import build_recipe
 import flight_acoustics as fa
 import noise_abatement_2017 as na
 import nod_database
-from sphere_helpers import minimal_hemisphere, write_sphere_directory
+from sphere_helpers import stepped_sphere_directory
 
 REPO = Path(__file__).resolve().parents[1]
 RELEASE = REPO / 'docs' / 'recipes' / 'release_2017.toml'
@@ -38,20 +38,11 @@ def _write(path, text):
     return path
 
 
-def _spheres(tmp_path):
-    hemispheres = []
-    for i, (speed, angle) in enumerate(((5, 0), (60, -3), (80, 0), (100, 0))):
-        hemisphere = minimal_hemisphere()
-        hemisphere['third_octave']['bands_db'] += 3.0 * i
-        hemispheres.append((hemisphere, speed, angle))
-    return write_sphere_directory(tmp_path / 'spheres', hemispheres)
-
-
 # --- a database from a recipe -------------------------------------------------------
 
 
 def test_a_database_from_a_recipe_equals_the_python_call(tmp_path, monkeypatch):
-    directory = _spheres(tmp_path)
+    directory = stepped_sphere_directory(tmp_path / 'spheres', ((5, 0), (60, -3), (80, 0), (100, 0)))
     (tmp_path / 'recipe_correction.py').write_text(CORRECTION_MODULE)
     recipe = _write(tmp_path / 'recipe.toml', '''
         [database]

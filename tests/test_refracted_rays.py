@@ -7,30 +7,13 @@ import pytest
 
 from flight_acoustics import depropagate_hemisphere
 import refracted_rays as rr
-from sphere_helpers import executable
+from sphere_helpers import executable, tone_flyover
 
-P_REF = 2.0e-5
 SPEED = 1135.0
 
 
-def _flyover(seed=0):
-    rng = np.random.default_rng(seed)
-    mic_locations = np.array([[0.0, -300.0, 0.0], [0.0, 0.0, 0.0], [0.0, 300.0, 0.0]])
-    nt = 120
-    track_time = np.linspace(0.0, 6.0, nt)
-    track_position = np.column_stack([800.0 * track_time / track_time[-1] - 400.0, np.zeros(nt),
-                                      np.full(nt, 250.0)])
-    track_velocity = np.tile([800.0 / track_time[-1], 0.0, 0.0], (nt, 1))
-    fs = 4000.0
-    t = np.arange(0.0, 7.0, 1.0 / fs)
-    pressure = np.vstack([P_REF * (3.0 * np.sin(2 * np.pi * 250.0 * t) + rng.standard_normal(t.size))
-                          for _ in range(3)])
-    return dict(mic_locations=mic_locations, pressure=pressure, time=t, track_time=track_time,
-                track_position=track_position, track_velocity=track_velocity)
-
-
 def _hemisphere(ray_model=None, **extra):
-    return depropagate_hemisphere(**_flyover(), speed_of_sound=SPEED, length_units='ft', r_ref=100.0,
+    return depropagate_hemisphere(**tone_flyover(), speed_of_sound=SPEED, length_units='ft', r_ref=100.0,
                                   freq_range=(50.0, 1500.0), window_time=0.25, window_overlap=0.5,
                                   point_stride=4, azi_step=20.0, elv_step=10.0, rmax=30.0,
                                   third_octave=True, third_octave_fmin=100.0, return_scattered=True,
@@ -87,7 +70,7 @@ def test_ray_model_shapes_are_checked():
 
 
 def test_uniform_wind_model_without_wind_is_the_straight_model():
-    flight = _flyover()
+    flight = tone_flyover()
     source, mics = flight['track_position'], flight['mic_locations']
     want = rr.straight_ray_model(SPEED)(source, mics)
     for wind in ((0.0, 0.0), (0.0, 0.0, 0.0)):
@@ -141,7 +124,7 @@ def test_a_crosswind_turns_the_filing_azimuth(flip):
     model = rr.uniform_wind_ray_model(SPEED, wind)
     plain = _hemisphere(flip_y_for_geometry=flip)['scattered']
     rayed = _hemisphere(model, flip_y_for_geometry=flip)['scattered']
-    flight = _flyover()
+    flight = tone_flyover()
     tidx = np.arange(0, flight['track_time'].size, 4)
     rays = model(flight['track_position'][tidx], flight['mic_locations'])
     toward = flight['mic_locations'][None, :, :] - flight['track_position'][tidx][:, None, :]
@@ -166,7 +149,7 @@ def test_a_tailwind_files_the_abeam_sample_aft(flip, abeam):
     or from 90 toward 0 with flip_y_for_geometry. The elevation is the normal's depression,
     asin(h sqrt(c^2 - W^2) / (c |r|))."""
     c, w, side, height = SPEED, 60.0, 300.0, 250.0
-    flight = _flyover()
+    flight = tone_flyover()
     nt = 121                                                    # sample 60 is at x = 0, abeam
     flight['track_time'] = np.linspace(0.0, 6.0, nt)
     flight['track_position'] = np.column_stack([800.0 * flight['track_time'] / 6.0 - 400.0,
@@ -221,7 +204,7 @@ def test_external_model_in_uniform_air_is_straight(tmp_path):
     atmosphere = tmp_path / 'uniform.csv'
     atmosphere.write_text('z_ft,T_C,RH\n0,15,50\n')
     model = rr.external_ray_model(RAYS, str(atmosphere))
-    flight = _flyover()
+    flight = tone_flyover()
     source, mics = flight['track_position'][::10], flight['mic_locations']
     got, want = model(source, mics), rr.straight_ray_model(340.294 / 0.3048)(source, mics)
     assert got['valid'].all()
@@ -253,7 +236,7 @@ def test_rim_range_admits_far_samples_only_at_the_rim():
     # A long, high pass: within the 600 ft cap it never files below ~24 deg; with the
     # rim range the shallow directions come in from further out, and nothing steeper
     # changes.
-    flight = _flyover()
+    flight = tone_flyover()
     flight['track_position'] = flight['track_position'] * np.array([3.0, 1.0, 1.0])
     flight['track_velocity'] = flight['track_velocity'] * 3.0
     common = dict(**flight, speed_of_sound=SPEED, length_units='ft', r_ref=100.0, freq_range=(50.0, 1500.0),
@@ -312,7 +295,7 @@ def test_external_model_parses_a_tracer_and_rebuilds_the_geometry(tmp_path, monk
     atmosphere = tmp_path / 'profile.csv'
     atmosphere.write_text('z_ft,T_C,RH\n0,15,50\n')
     monkeypatch.setenv('FAKE_DARK_ID', '4')                      # source 1, mic 1
-    flight = _flyover()
+    flight = tone_flyover()
     source, mics = flight['track_position'][::30], flight['mic_locations']
     model = rr.external_ray_model(str(tracer), str(atmosphere), receiver='point',
                                   receiver_heights=np.array([5.0, 1.0, 0.0]))

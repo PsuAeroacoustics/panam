@@ -5,6 +5,7 @@ import pytest
 
 import flight_acoustics as fa
 import sphere_statistics as ss
+from sphere_helpers import tone_flyover
 
 
 def _db(p):
@@ -74,19 +75,7 @@ def test_the_shepard_neighbor_list_becomes_the_same_weights():
 
 
 def _pass():
-    rng = np.random.default_rng(4)
-    mic_locations = np.array([[0.0, -300.0, 0.0], [0.0, 0.0, 0.0], [0.0, 300.0, 0.0], [0.0, 600.0, 0.0]])
-    nt = 120
-    track_time = np.linspace(0.0, 6.0, nt)
-    track_position = np.column_stack([800.0 * track_time / track_time[-1] - 400.0, np.zeros(nt),
-                                      np.full(nt, 250.0)])
-    track_velocity = np.tile([800.0 / track_time[-1], 0.0, 0.0], (nt, 1))
-    fs = 4000.0
-    t = np.arange(0.0, 7.0, 1.0 / fs)
-    pressure = np.vstack([2e-5 * (3.0 * np.sin(2 * np.pi * 250.0 * t) + rng.standard_normal(t.size))
-                          for _ in range(4)])
-    return dict(mic_locations=mic_locations, pressure=pressure, time=t, track_time=track_time,
-                track_position=track_position, track_velocity=track_velocity, speed_of_sound=1135.0,
+    return dict(tone_flyover((-300.0, 0.0, 300.0, 600.0), seed=4), speed_of_sound=1135.0,
                 r_ref=100.0, freq_range=(50.0, 1500.0), window_time=0.25, window_overlap=0.5, point_stride=2,
                 azi_step=10.0, elv_step=10.0, rmax=25.0, third_octave=True, third_octave_fmin=100.0,
                 narrowband=True, narrowband_stride=20, return_scattered=True)
