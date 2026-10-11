@@ -41,7 +41,7 @@ makes a toy database:
 ```
 mkdir -p demo_plots/spheres
 cp example_data/AS350B3108.nc demo_plots/spheres/
-# write demo_plots/spheres/vehicle.cfg from the example in docs/file_formats.md
+cp example_data/vehicle.cfg demo_plots/spheres/
 python build_empirical_database.py demo_plots/spheres demo_plots/toy.nod
 ```
 
@@ -53,7 +53,26 @@ recordings are built with the Python API (`depropagate_hemisphere`, then
 [`docs/DEVELOPING.md`](docs/DEVELOPING.md#data-flow) and
 [THEORY §5](docs/THEORY.md#5-depropagation)).
 
-The tools and plotting scripts, and `AS350_289108_demo.py`, take `-h`. Three
+## Try it without flight-test data
+
+`depropagation_tutorial.py` runs the whole pipeline on a synthetic flyover. It
+synthesizes a straight, level pass of a source with a known directivity over a
+line of microphones (`synthetic_flyover.synthesize_pass`), depropagates it to a
+hemisphere at 100 ft, maps the recovered overall level minus the true one on a
+Lambert equal-area projection, and builds a toy database from the result:
+
+```
+python depropagation_tutorial.py            # writes into demo_plots/
+python depropagation_tutorial.py -o /tmp/tutorial --mics 11 --mic-y=-900:900
+```
+
+It prints the median and largest recovered-minus-true difference and writes
+`tutorial_difference.png`, a sphere directory `tutorial_spheres/` (with a copy
+of `example_data/vehicle.cfg`) and `tutorial.nod`. With the defaults the
+difference stays within 1 dB. Read the script to see each step's API call.
+
+The tools and plotting scripts, `depropagation_tutorial.py` and
+`AS350_289108_demo.py` take `-h`. Three
 scripts take no options and run as soon as they start, `-h` included:
 `hexacopter_vkf_example.py`, `vold_kalman_filter.py` and `as350_flip_check.py`.
 
@@ -74,6 +93,7 @@ scripts take no options and run as soon as they start, `-h` included:
 | `atmomap.py` | Map atmospheric absorption over temperature and pressure | No |
 | `ega_plot.py` | Plot excess ground attenuation | No |
 | `board_field_plot.py` | Map the sound field around a ground-plane microphone plate | No |
+| `depropagation_tutorial.py` | Tutorial: depropagate a synthetic flyover, map recovered minus true directivity, build a toy database | No |
 | `AS350_289108_demo.py` | Example: depropagate one AS350 run and compare it with its reference sphere | Yes: AS350 demo data |
 | `hexacopter_vkf_example.py` | Example: separate rotor harmonics with the Vold-Kalman filter | No (bundled `.mat`) |
 | `vold_kalman_filter.py` | Run as a script: Vold-Kalman filter examples on synthetic signals | No |

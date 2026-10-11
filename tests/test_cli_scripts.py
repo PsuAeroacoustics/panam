@@ -260,3 +260,21 @@ def test_sphere_diff_averages_and_compares(tmp_path):
     assert [row[0] for row in rows[2:]] == ['100', '125', 'overall']
     assert float(rows[2][2]) == pytest.approx(expected - 80.0, abs=0.01)
     assert (tmp_path / 'diff.png').stat().st_size > 0
+
+
+def test_depropagation_tutorial_runs(tmp_path):
+    """By default it writes only into demo_plots/ in the current directory."""
+    from netCDF4 import Dataset
+    result = run_here('depropagation_tutorial.py', '--mics', '5', '--duration', '8', cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert 'Recovered minus true' in result.stdout
+    assert [path.name for path in tmp_path.iterdir()] == ['demo_plots']
+    plots = tmp_path / 'demo_plots'
+    assert (plots / 'tutorial_difference.png').stat().st_size > 0
+    assert sorted(path.name for path in (plots / 'tutorial_spheres').iterdir()) == ['X101.nc', 'vehicle.cfg']
+    with Dataset(str(plots / 'tutorial.nod')) as ds:
+        assert len(ds.groups) >= 1
+    result = run_here('depropagation_tutorial.py', '--mics', '3', '--duration', '6', '-o', 'elsewhere',
+                      cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / 'elsewhere' / 'tutorial.nod').is_file()

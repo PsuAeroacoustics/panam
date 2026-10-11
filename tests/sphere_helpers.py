@@ -21,11 +21,9 @@ def executable(name):
     return (local_paths.data_path(name, required=False) or os.environ.get(name.upper())
             or shutil.which(name))
 
-#: A vehicle.cfg for directories of spheres (AS350-like rotors).
-VEHICLE_CFG = ('[Main Rotor]\nradius = 5.334\ntip speed = 230.7\nblades = 4\n'
-               '[Tail Rotor]\nradius = 0.8255\ntip speed = 216.1\nblades = 2\n'
-               '[Atmosphere]\ndensity = 1.070\ntemperature = 280.37\n'
-               '[Vehicle]\nweight = 2250\ndrag = 0.8175\n')
+#: A vehicle.cfg for directories of spheres (AS350-like rotors): example_data/vehicle.cfg.
+with open(os.path.join(os.path.dirname(__file__), os.pardir, 'example_data', 'vehicle.cfg')) as _cfg:
+    VEHICLE_CFG = _cfg.read()
 
 
 def minimal_hemisphere():
