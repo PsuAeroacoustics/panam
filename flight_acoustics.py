@@ -1160,7 +1160,8 @@ def _running_floor(psd, size, chunk=64):
     return floor
 
 
-def tone_aware_band_power(psd, f, lower, upper, doppler=None, floor_bins=15, threshold_db=6.0, lobe=2, reach=4):
+def tone_aware_band_power(psd, f, lower, upper, doppler=None, floor_bins=15, threshold_db=6.0, lobe=2, reach=4,
+                          return_parts=False):
     """Band power (bands x samples) from Hann-windowed PSD columns (freq x samples), tones filed whole.
 
     Summing whole FFT bins between band edges (brick-wall) gives a tone near an edge to the wrong
@@ -1172,7 +1173,27 @@ def tone_aware_band_power(psd, f, lower, upper, doppler=None, floor_bins=15, thr
     is located to a fraction of a bin by the Hann ratio formula, its power inferred from the peak bin
     and the window's response, and that window-shaped contribution removed from the bins around it;
     the tone is filed whole in the band of its own frequency (divided by doppler when given), the
-    remainder band-summed over (Doppler-scaled) edges."""
+    remainder band-summed over (Doppler-scaled) edges.
+
+    psd is in power per Hz (any power unit), f the bin centers (Hz, evenly spaced), lower and upper
+    the band edges (Hz), doppler the (samples,) received-over-emitted frequency ratio, floor_bins
+    the running-median width (bins), threshold_db the tone threshold above that floor (dB), lobe
+    and reach half-widths (bins).  Returns band power (bands x samples, power units of psd x Hz).
+
+    With return_parts=True, returns (tonal, broadband) instead, each bands x samples in the same
+    units: the located tones' power filed by band, and the band-summed remainder.  Their sum is
+    the total to rounding, and exactly where a band holds at most one tone in a sample.  The split
+    is set by threshold_db, lobe and floor_bins: a tone weaker than threshold_db above the floor
+    stays in the broadband part."""
+    out, tonal_bands, broadband_bands = _tone_aware_bands(psd, f, lower, upper, doppler, floor_bins=floor_bins,
+                                                          threshold_db=threshold_db, lobe=lobe, reach=reach,
+                                                          parts=return_parts)
+    return (tonal_bands, broadband_bands) if return_parts else out
+
+
+def _tone_aware_bands(psd, f, lower, upper, doppler=None, *, floor_bins=15, threshold_db=6.0, lobe=2, reach=4,
+                      parts=False):
+    """:func:`tone_aware_band_power` as (total, tonal, broadband); the last two None unless ``parts``."""
     df = f[1] - f[0]
     floor = _running_floor(psd, floor_bins)
     peak = (psd == maximum_filter1d(psd, size=2 * lobe + 1, axis=0, mode='nearest')) & (psd > floor * 10 ** (threshold_db / 10))
@@ -1197,10 +1218,14 @@ def tone_aware_band_power(psd, f, lower, upper, doppler=None, floor_bins=15, thr
     e0 = f[0] - 0.5 * df
     d = np.ones(psd.shape[1]) if doppler is None else doppler
     out = np.maximum(_band_integrals(run, e0, df, lower, upper, d), 0.0)
+    tonal_bands = np.zeros_like(out) if parts else None
+    broadband_bands = out.copy() if parts else None
     for ib, (lo, hi) in enumerate(zip(lower, upper)):
         inside = (f_peak >= lo) & (f_peak < hi)
         np.add.at(out[ib], J[inside], power[inside])
-    return out
+        if parts:
+            np.add.at(tonal_bands[ib], J[inside], power[inside])
+    return out, tonal_bands, broadband_bands
 
 
 def _bands_missing(dropped, f, lower, upper, doppler):
@@ -1263,6 +1288,7 @@ def depropagate_hemisphere(
         rim_range=None,
         remove_doppler=False,
         tone_aware=False,
+        decompose_tonal=False,
         track_nose=None,
         air_relative_doppler=False,
         absorption_band_method='center',
@@ -1467,6 +1493,12 @@ def depropagate_hemisphere(
             bins between band edges, which hands a tone near an edge to the wrong band (+5 to
             +19 dB in the B407's 31.5 and 63 Hz bands).  Combines with remove_doppler.  FFT
             method, Hann window.
+        decompose_tonal: if True, also return the tonal and broadband parts of the third-octave
+            bands (``tone_aware_band_power(..., return_parts=True)``), each depropagated and
+            gridded with the same weights as the total, under 'tonal_db' and 'broadband_db' in
+            'third_octave' (and in the scattered 'third_octave' when return_scattered=True).
+            The two sum to 'bands_db' in energy.  Needs third_octave=True and tone_aware=True
+            (so the FFT method).
         remove_doppler: if True, file each sample's third-octave band power at the frequency it
             was emitted at, not received at.  A sample's Doppler factor is
             D = 1 / (1 - v.u / c), v the source velocity at emission and u the unit vector
@@ -1528,7 +1560,8 @@ def depropagate_hemisphere(
                         - when return_scattered=True: 'scattered' (dict of scattered az/el/power samples)
                             If third_octave/narrowband are enabled, the corresponding scattered data are
                             also included under 'scattered'.
-            - when third_octave=True: 'third_octave' (band centers + band grids)
+            - when third_octave=True: 'third_octave' (band centers + band grids, dB re 20 uPa
+              at r_ref; with decompose_tonal=True also 'tonal_db' and 'broadband_db')
             - when narrowband=True: 'narrowband' (frequency + PSD grids)
 
         Grid cells with no sample within ``rmax`` are NaN: nothing was
@@ -1587,6 +1620,8 @@ def depropagate_hemisphere(
         raise ValueError('ambient_percentile must lie strictly between 0 and 100')
     if tone_aware and third_octave_method != 'fft':
         raise ValueError('tone_aware needs third_octave_method=\'fft\'')
+    if decompose_tonal and not (tone_aware and third_octave):
+        raise ValueError('decompose_tonal needs third_octave=True and tone_aware=True')
     if remove_doppler and third_octave_method != 'fft':
         raise ValueError('remove_doppler needs third_octave_method=\'fft\'')
     if third_octave_method not in ('fft', 'filter_bank'):
@@ -1765,6 +1800,8 @@ def depropagate_hemisphere(
                 np.round(band_centers[~covered], 1).tolist(), (fmin, fmax)))
         band_centers = band_centers[covered]
         band_power_lists = [list() for _ in range(band_centers.size)]
+        tonal_power_lists = [list() for _ in range(band_centers.size)]
+        broadband_power_lists = [list() for _ in range(band_centers.size)]
     else:
         band_centers = np.array([], dtype=float)
         band_power_lists = []
@@ -2057,7 +2094,13 @@ def depropagate_hemisphere(
                 # where its Doppler-scaled edges leave the selected bins.
                 psd_kept = np.where(dropped, 0.0, psd_v_lin) if dropped.any() else psd_v_lin
                 missing = _bands_missing(dropped, f_sel, band_lower, band_upper, d_v)
-                if tone_aware:
+                if decompose_tonal:
+                    powers, tonal, broadband = _tone_aware_bands(psd_kept, f_sel, band_lower, band_upper,
+                                                                 doppler=d_v, parts=True)
+                    for ib in range(band_centers.size):
+                        tonal_power_lists[ib].append(np.where(missing[ib], np.nan, tonal[ib]))
+                        broadband_power_lists[ib].append(np.where(missing[ib], np.nan, broadband[ib]))
+                elif tone_aware:
                     powers = tone_aware_band_power(psd_kept, f_sel, band_lower, band_upper, doppler=d_v)
                 else:
                     # Running integral of the spectrum at the bins' edges, read at each
@@ -2198,38 +2241,36 @@ def depropagate_hemisphere(
         out['scattered'] = scattered
 
     if third_octave:
-        # Concatenate scattered band powers and interpolate per band
-        band_grids_db = np.full((band_centers.size, ELV_GRID.shape[0], ELV_GRID.shape[1]), -np.inf, dtype=float)
-        for ib in range(band_centers.size):
-            if len(band_power_lists[ib]) == 0:
-                continue
-            P_band_pts = np.concatenate(band_power_lists[ib])
-            if P_band_pts.size != fazi_pts.size:
-                raise ValueError('Internal error: third-octave sample count does not match scattered angle count')
-            P_band_grid = grid_power(P_band_pts)
-            band_grids_db[ib, :, :] = power_to_db(P_band_grid)
-            band_grids_db[ib, :, -1] = band_grids_db[ib, :, 0]
-
-        out['third_octave'] = {
-            'band_centers_hz': band_centers,
-            'bands_db': band_grids_db,
-        }
-
+        # Concatenate scattered band powers and interpolate per band; the tonal
+        # and broadband parts, when asked for, are gridded with the same weights
+        fields = {'bands_db': band_power_lists}
+        if decompose_tonal:
+            fields.update(tonal_db=tonal_power_lists, broadband_db=broadband_power_lists)
+        out['third_octave'] = {'band_centers_hz': band_centers}
         if return_scattered:
             assert scattered is not None
-            if band_centers.size > 0:
-                band_power_pts = np.vstack([np.concatenate(band_power_lists[ib]) for ib in range(band_centers.size)])
-                if band_power_pts.shape[1] != fazi_pts.size:
+            scattered['third_octave'] = {'band_centers_hz': band_centers}
+        for key, power_lists in fields.items():
+            band_grids_db = np.full((band_centers.size, ELV_GRID.shape[0], ELV_GRID.shape[1]), -np.inf, dtype=float)
+            for ib in range(band_centers.size):
+                if len(power_lists[ib]) == 0:
+                    continue
+                P_band_pts = np.concatenate(power_lists[ib])
+                if P_band_pts.size != fazi_pts.size:
                     raise ValueError('Internal error: third-octave sample count does not match scattered angle count')
-                scattered['third_octave'] = {
-                    'band_centers_hz': band_centers,
-                    'bands_db': power_to_db(band_power_pts),
-                }
-            else:
-                scattered['third_octave'] = {
-                    'band_centers_hz': band_centers,
-                    'bands_db': np.empty((0, fazi_pts.size), dtype=float),
-                }
+                P_band_grid = grid_power(P_band_pts)
+                band_grids_db[ib, :, :] = power_to_db(P_band_grid)
+                band_grids_db[ib, :, -1] = band_grids_db[ib, :, 0]
+            out['third_octave'][key] = band_grids_db
+
+            if return_scattered:
+                if band_centers.size > 0:
+                    band_power_pts = np.vstack([np.concatenate(power_lists[ib]) for ib in range(band_centers.size)])
+                    if band_power_pts.shape[1] != fazi_pts.size:
+                        raise ValueError('Internal error: third-octave sample count does not match scattered angle count')
+                    scattered['third_octave'][key] = power_to_db(band_power_pts)
+                else:
+                    scattered['third_octave'][key] = np.empty((0, fazi_pts.size), dtype=float)
 
     if narrowband:
         assert f_sel_master is not None

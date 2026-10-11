@@ -168,3 +168,77 @@ def test_remove_doppler_files_a_moving_tone_at_its_emitted_frequency(tone_aware)
     assert steep.sum() > 50 and np.all(10.0 * np.log10(share) > -0.1)
     level = 10.0 * np.log10(bands[np.argmin(np.abs(centers - f0))] / 1.0)
     assert np.median(level) == pytest.approx(10.0 * np.log10(0.5 / P_REF ** 2), abs=0.3)
+
+
+def _tone_and_noise_pass(**options):
+    """A 1 kHz tone (1 Pa amplitude at r_ref) and white noise from a source passing at
+    100 ft/s, 100 ft over two microphones, depropagated with tone-aware bands.  Slower than
+    the pass above: overhead, at 300 ft/s, the received tone sweeps 60 Hz in one 0.1 s
+    window, and a sweep that wide is no longer a tone."""
+    c, speed, height, r_ref, f0 = 1125.0, 100.0, 100.0, 100.0, 1000.0
+    fs = 8000.0
+    t = np.arange(0.0, 4.0, 1.0 / fs)
+    mics = np.array([[0.0, 0.0, 0.0], [0.0, 50.0, 0.0]])
+    rng = np.random.default_rng(11)
+
+    def position(time):
+        time = np.asarray(time, dtype=float)
+        return np.column_stack([speed * (time - 2.0), np.zeros(time.size), np.full(time.size, height)])
+
+    pressure = []
+    for mic in mics:
+        t_e, x_e = gp.emission_times(position, t, mic, c)
+        spread = r_ref / np.linalg.norm(x_e - mic, axis=1)
+        pressure.append(spread * (np.sin(2 * np.pi * f0 * t_e) + 0.05 * rng.standard_normal(t.size)))
+    track_time = np.linspace(0.3, 3.5, 200)
+    settings = dict(
+        mic_locations=mics, pressure=np.array(pressure), time=t, track_time=track_time,
+        track_position=position(track_time), track_velocity=np.tile([speed, 0.0, 0.0], (track_time.size, 1)),
+        speed_of_sound=c, r_ref=r_ref, freq_range=(0.0, 3500.0), window_time=0.1, window_overlap=0.5,
+        azi_step=30.0, elv_step=15.0, rmax=25.0, third_octave=True,
+        third_octave_band_centers_hz=[500.0, 630.0, 800.0, 1000.0, 1250.0, 1600.0],
+        remove_doppler=True, tone_aware=True, return_scattered=True)
+    settings.update(options)
+    return depropagate_hemisphere(**settings)
+
+
+def test_decompose_tonal_splits_the_tone_from_the_noise_on_the_sphere():
+    """The tonal part carries the tone in its emitted band at the level its amplitude
+    gives at r_ref; tonal and broadband parts sum in energy to the total, sample by
+    sample and node by node, since both are gridded with the same weights."""
+    hemi = _tone_and_noise_pass(decompose_tonal=True)
+    bands = hemi['third_octave']
+    total = 10.0 ** (bands['bands_db'] / 10.0)
+    parts = 10.0 ** (bands['tonal_db'] / 10.0) + 10.0 ** (bands['broadband_db'] / 10.0)
+    assert bands['tonal_db'].shape == bands['broadband_db'].shape == bands['bands_db'].shape
+    np.testing.assert_array_equal(np.isnan(parts), np.isnan(total))
+    np.testing.assert_allclose(parts, total, rtol=1e-10, equal_nan=True)
+
+    scattered = hemi['scattered']
+    steep = scattered['elv_deg'] > 15.0
+    s_total = 10.0 ** (scattered['third_octave']['bands_db'] / 10.0)
+    s_tonal = 10.0 ** (scattered['third_octave']['tonal_db'] / 10.0)
+    s_broad = 10.0 ** (scattered['third_octave']['broadband_db'] / 10.0)
+    np.testing.assert_allclose(s_tonal + s_broad, s_total, rtol=1e-10)
+    tone_band = list(bands['band_centers_hz']).index(1000.0)
+    level = 10.0 * np.log10(s_tonal[tone_band, steep])
+    assert steep.sum() > 50
+    assert np.median(level) == pytest.approx(10.0 * np.log10(0.5 / P_REF ** 2), abs=0.3)
+    # The noise, 26 dB under the tone, is what is left in the tone's band
+    assert np.median(10.0 * np.log10(s_tonal[tone_band, steep] / s_broad[tone_band, steep])) > 15.0
+
+
+def test_decompose_tonal_leaves_the_total_alone():
+    plain = _tone_and_noise_pass()
+    split = _tone_and_noise_pass(decompose_tonal=True)
+    assert 'tonal_db' not in plain['third_octave'] and 'tonal_db' not in plain['scattered']['third_octave']
+    np.testing.assert_array_equal(split['third_octave']['bands_db'], plain['third_octave']['bands_db'])
+    np.testing.assert_array_equal(split['scattered']['third_octave']['bands_db'],
+                                  plain['scattered']['third_octave']['bands_db'])
+
+
+@pytest.mark.parametrize('options', [dict(tone_aware=False), dict(third_octave=False),
+                                     dict(tone_aware=False, third_octave_method='filter_bank', remove_doppler=False)])
+def test_decompose_tonal_needs_tone_aware_bands(options):
+    with pytest.raises(ValueError, match='decompose_tonal'):
+        _tone_and_noise_pass(decompose_tonal=True, **options)

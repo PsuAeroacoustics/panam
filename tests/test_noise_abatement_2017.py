@@ -662,6 +662,50 @@ def test_the_cli_help_states_the_point_stride_defaults(capsys):
     assert 'default 10' in help_text and 'default to 1' in help_text
 
 
+
+def test_the_cli_tone_split_writes_part_spheres_that_sum_to_the_total(tmp_path):
+    """--tone-split writes each run's tonal and broadband spheres in directories of their
+    own (a database takes every .nc in a directory), and in energy they sum to the total."""
+    import flight_acoustics as fa
+    _archive(tmp_path)
+    out = tmp_path / 'out'
+    assert na.main(['AS350B3', str(out), '--root', str(tmp_path), '--no-prefetch', '--board-correction', 'flat',
+                    '--tone-split']) == 0
+    spheres = list(out.glob('*.nc'))
+    assert len(spheres) == 1
+    total_path = spheres[0]
+    stem = total_path.stem
+    levels = {}
+    for part, path in (('total', total_path), ('tonal', out / 'tonal' / (stem + '_tonal.nc')),
+                       ('broadband', out / 'broadband' / (stem + '_broadband.nc'))):
+        levels[part] = fa.mask_missing_levels(fa.load_nc_sphere(str(path))[0])
+    energy = {part: 10.0 ** (level / 10.0) for part, level in levels.items()}
+    # Cells clear of the writer's -100 dB floor (minimum_level_db), which clamps each part
+    # alone; levels are stored to single precision
+    clear = levels['total'] > -90.0
+    assert clear.sum() > 1000
+    np.testing.assert_allclose(energy['tonal'][clear] + energy['broadband'][clear], energy['total'][clear],
+                               rtol=1e-5)
+    # Every part carries the build's provenance under its own file name.
+    import json
+    from netCDF4 import Dataset
+    stamps = {}
+    for path in (total_path, out / 'tonal' / (stem + '_tonal.nc'), out / 'broadband' / (stem + '_broadband.nc')):
+        with Dataset(str(path)) as sphere:
+            stamps[path.name] = (sphere.panam_tool, sphere.panam_settings_sha256,
+                                 json.loads(sphere.panam_inputs)['output_path'])
+    assert {tool for tool, _, _ in stamps.values()} == {'noise_abatement_2017.build_sphere'}
+    assert len({sha for _, sha, _ in stamps.values()}) == 1
+    assert all(name == output for name, (_, _, output) in stamps.items())
+
+
+def test_tone_split_needs_tone_aware(tmp_path):
+    _archive(tmp_path)
+    test = na.NoiseAbatementTest('AS350B3', root=str(tmp_path))
+    with pytest.raises(ValueError, match='tone_split needs tone_aware'):
+        na.build_sphere(test, '289108', str(tmp_path / 'out.nc'), board_correction='flat', tone_split=True)
+
+
 def _reference_index(rows, without_acoustics=()):
     """A NoiseAbatementTest over ``rows`` (run, condition, layout, seconds) with no files behind it."""
     test = object.__new__(na.NoiseAbatementTest)

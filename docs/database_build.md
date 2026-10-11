@@ -73,6 +73,8 @@ The main options:
 | `--ray-model` | `straight` | `straight`, or `wind`: depropagate along straight rays carried by each run's wind from `--winds`, uniform over the path; a run without a wind fails |
 | `--azimuth-reference` | `track` | `track` or `heading` (see [the heading frame](#the-heading-frame)) |
 | `--no-track-check`, `--min-height-above-array-ft` | check on, 10 ft | see [options](#options) |
+| `--tone-aware` | off | file each tone whole in the band of its own frequency |
+| `--tone-split` | off | also write each run's tonal and broadband parts (implies `--tone-aware`; see below) |
 
 `python noise_abatement_2017.py -h` lists the depropagation settings, among them
 `--band-snr-gate-db`, `--max-absorption-correction-db`, `--min-elevation-deg`,
@@ -82,6 +84,14 @@ see [the 2017 release settings](#the-2017-release-settings).
 
 The command line builds only flight spheres. To build a hover sphere, call
 `build_sphere(..., nose_from_heading=True)` from Python.
+
+`--tone-split` (`build_sphere(tone_split=True)`) writes `<name>_tonal.nc` in `tonal/` and
+`<name>_broadband.nc` in `broadband/` under the output directory, beside each total sphere.
+In energy the two sum to the total. They are ordinary sphere files. They go in directories of
+their own because `build_empirical_database` reads every `.nc` in its directory, and parts
+beside the total would count each run three times. Where the split falls depends on the tone
+detector's `threshold_db`, `lobe` and `floor_bins` ([THEORY §2.2](THEORY.md#22-one-third-octave-bands)). The `.nod` database
+format is unchanged.
 
 ### 4. Write vehicle.cfg
 
@@ -353,7 +363,6 @@ line's default added where it differs.
 The command line does not expose these settings:
 
 - the response cap;
-- tone-aware banding;
 - the ray model;
 - the adaptive gridding;
 - the hover correction.

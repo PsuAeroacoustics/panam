@@ -1360,7 +1360,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
                  third_octave_method='fft', board_correction='plate_bem', ground=None,
                  plate_table_directory=None, ray_model=None, interpolation=None,
                  rim_elevation_deg=None, max_rim_range_ft=None, remove_doppler=False,
-                 nose_from_heading=False, samples_path=None, tone_aware=False,
+                 nose_from_heading=False, samples_path=None, tone_aware=False, tone_split=False,
                  azimuth_reference=None, wind=None, track_check=True,
                  min_height_above_array_ft=MIN_HEIGHT_ABOVE_ARRAY_FT, air_relative_doppler=False,
                  absorption_profile=None, absorption_band_method='center'):
@@ -1409,6 +1409,15 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
 
     ``tone_aware`` files each tone whole in the band of its own frequency
     (:func:`flight_acoustics.tone_aware_band_power`) instead of summing whole FFT bins.
+
+    ``tone_split`` (needs ``tone_aware``) also writes the run's tonal and broadband parts
+    (:func:`flight_acoustics.depropagate_hemisphere`'s ``decompose_tonal``) as spheres of their
+    own, ``<name>_tonal.nc`` in a ``tonal`` directory and ``<name>_broadband.nc`` in a
+    ``broadband`` directory beside ``output_path``.  They sum to the total sphere in energy.  They
+    go in directories of their own because a database is built from every ``.nc`` in a
+    directory, and the parts beside the total would count the run three times.  The returned
+    dict names them under ``tonal_output`` and ``broadband_output``; ``samples_path`` then also
+    holds ``tonal_db`` and ``broadband_db``.
 
     ``samples_path``, if given, also saves the scattered samples (before gridding) to that
     .npz: azimuth and elevation (deg, panam's convention: 180 ahead, elevation positive
@@ -1491,6 +1500,8 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     settings['reference_sphere_given'] = reference_sphere is not None
     if rim_elevation_deg is None:
         rim_elevation_deg = DEFAULT_RIM_ELEVATION_DEG
+    if tone_split and not tone_aware:
+        raise ValueError('tone_split needs tone_aware=True')
     row = test.by_run[run]
     track = load_track(test.track_path(run))
     if nose_from_heading:
@@ -1706,6 +1717,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
                    (rim_elevation_deg, max_rim_range_ft)),
         remove_doppler=remove_doppler,
         tone_aware=tone_aware,
+        decompose_tonal=tone_split,
         return_scattered=samples_path is not None,
         track_nose=nose,
         air_relative_doppler=air_relative_doppler,
@@ -1715,30 +1727,46 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     if samples_path is not None:
         scattered = hemisphere['scattered']
         os.makedirs(os.path.dirname(os.path.abspath(samples_path)) or '.', exist_ok=True)
+        parts = {key: scattered['third_octave'][key] for key in ('tonal_db', 'broadband_db') if tone_split}
         np.savez(samples_path, azimuth_deg=scattered['azi_deg'], elevation_deg=scattered['elv_deg'],
                  band_centers_hz=scattered['third_octave']['band_centers_hz'],
                  bands_db=scattered['third_octave']['bands_db'], mic=scattered['mic'],
-                 range_ft=scattered['range'], source_height_ft=scattered['source_height'], run=str(run))
+                 range_ft=scattered['range'], source_height_ft=scattered['source_height'], run=str(run),
+                 **parts)
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)) or '.', exist_ok=True)
-    stamp = provenance.build_provenance('noise_abatement_2017.build_sphere', settings, inputs=inputs)
-    fa.write_aam_hemisphere_netcdf(
-        output_path,
-        hemisphere,
-        mode='third_octave',
-        phi_deg=phi_deg,
-        theta_deg=theta_deg,
-        radius_ft=r_ref_ft,
-        speed_knots=speed_knots,
-        flight_path_angle_deg=fpa_deg,
-        title=sphere_title(AIRCRAFT_SPHERE_PREFIX.get(test.aircraft, test.aircraft),
-                           row.get('run_num', run), run[:3]),
-        overwrite=overwrite,
-        doppler_shift_removed=1.0 if remove_doppler else 0.0,
-        azimuth_reference=azimuth_reference,
-        run_metadata=run_metadata,
-        provenance=stamp,
-    )
+    title = sphere_title(AIRCRAFT_SPHERE_PREFIX.get(test.aircraft, test.aircraft), row.get('run_num', run), run[:3])
+    spheres = [(output_path, hemisphere, title)]
+    part_paths = {}
+    if tone_split:
+        directory, name = os.path.split(os.path.abspath(output_path))
+        stem, extension = os.path.splitext(name)
+        for part in ('tonal', 'broadband'):
+            part_paths[part] = os.path.join(directory, part, '{}_{}{}'.format(stem, part, extension))
+            os.makedirs(os.path.dirname(part_paths[part]), exist_ok=True)
+            bands = dict(hemisphere['third_octave'], bands_db=hemisphere['third_octave'][part + '_db'])
+            spheres.append((part_paths[part], dict(hemisphere, third_octave=bands), '{} {}'.format(title, part)))
+    for path, sphere, sphere_name in spheres:
+        # Each file is stamped with its own name; the settings, and their hash, are shared.
+        stamp = provenance.build_provenance(
+            'noise_abatement_2017.build_sphere', settings,
+            inputs=dict(inputs, output_path=os.path.basename(path)))
+        fa.write_aam_hemisphere_netcdf(
+            path,
+            sphere,
+            mode='third_octave',
+            phi_deg=phi_deg,
+            theta_deg=theta_deg,
+            radius_ft=r_ref_ft,
+            speed_knots=speed_knots,
+            flight_path_angle_deg=fpa_deg,
+            title=sphere_name,
+            overwrite=overwrite,
+            doppler_shift_removed=1.0 if remove_doppler else 0.0,
+            azimuth_reference=azimuth_reference,
+            run_metadata=run_metadata,
+            provenance=stamp,
+        )
     norah2_output_path = None
     if norah2_directory is not None:
         norah2_directory = os.path.abspath(os.path.expanduser(norah2_directory))
@@ -1756,7 +1784,9 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
             overwrite=overwrite,
         )
 
-    return dict(run=run, output=output_path, norah2_output=norah2_output_path, condition=row.get('test_cond'),
+    return dict(run=run, output=output_path, norah2_output=norah2_output_path,
+                tonal_output=part_paths.get('tonal'), broadband_output=part_paths.get('broadband'),
+                condition=row.get('test_cond'),
                 layout=row.get('layout'), ambient_run=ambient_run,
                 ambient_source=ambient_source,
                 mics=len(mics), speed_knots=speed_knots, flight_path_angle_deg=fpa_deg,
@@ -2210,6 +2240,13 @@ def main(argv=None):
                         help='do not warm the cloud-storage cache ahead of each run')
     parser.add_argument('--no-ambient-gate', action='store_true',
                         help='reproduce the uncorrected legacy behavior')
+    parser.add_argument('--tone-aware', action='store_true',
+                        help='file each tone whole in the band of its own frequency instead of summing '
+                             'whole FFT bins (FFT method only; default off)')
+    parser.add_argument('--tone-split', action='store_true',
+                        help='also write tonal and broadband part spheres, <name>_tonal.nc and '
+                             '<name>_broadband.nc, in tonal/ and broadband/ under output_directory; '
+                             'implies --tone-aware (default off)')
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
@@ -2271,7 +2308,9 @@ def main(argv=None):
         winds=read_winds(args.winds) if args.winds else None,
         ray_models=(lambda run: 'wind') if args.ray_model == 'wind' else None,
         track_check=not args.no_track_check,
-        min_height_above_array_ft=args.min_height_above_array_ft)
+        min_height_above_array_ft=args.min_height_above_array_ft,
+        tone_aware=args.tone_aware or args.tone_split,
+        tone_split=args.tone_split)
     logging.info('Built %d spheres, %d failures', len(records), len(failures))
     return 0 if records else 1
 
