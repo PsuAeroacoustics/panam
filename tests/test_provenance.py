@@ -159,6 +159,7 @@ def test_the_norah2_database_records_its_build(tmp_path):
     settings, inputs = _assert_stamp(path, 'flight_acoustics.build_database_from_norah2')
     assert inputs == dict(hem_files=['X_0.hem', 'X_1.hem', 'X_2.hem'], database_filename='norah2.nod')
     assert 'hem_files' not in settings
+    assert 'overwrite' not in settings      # a file-handling choice, not a processing setting
     assert settings['speed_mapping'] == 'ground_speed'
     _assert_no_machine_path(path, tmp_path)
 

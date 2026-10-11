@@ -949,6 +949,21 @@ def test_skip_unchanged_rebuilds_only_on_new_settings_or_inputs(monkeypatch, tmp
     assert built == ['289108', '289108'] and 'skipped' not in records[0]
 
 
+def test_skip_unchanged_with_no_overwrite_skips_a_default_build(monkeypatch, tmp_path):
+    """overwrite changes no level, so a resumed --skip-unchanged --no-overwrite build
+    keeps the sphere a default (overwrite=True) build wrote instead of failing on it."""
+    _archive(tmp_path)
+    out = tmp_path / 'out'
+    arguments = dict(root=str(tmp_path), prefetch=False, board_correction='flat', point_stride=2)
+    first, failures = na.build_all('AS350B3', str(out), **arguments)
+    assert failures == []
+    monkeypatch.setattr(na, 'build_sphere', _no_build)
+    records, failures = na.build_all('AS350B3', str(out), skip_unchanged=True, overwrite=False,
+                                     **arguments)
+    assert failures == [] and [r['skipped'] for r in records] == ['unchanged']
+    assert records[0]['settings_sha256'] == first[0]['settings_sha256']
+
+
 def test_a_skipped_run_keeps_the_manifest_row_of_its_build(monkeypatch, tmp_path):
     """A resumed build lists a skipped run as its original build did: its track flags
     (so --skip-flagged still leaves a flagged run out), its rays, window and settings,

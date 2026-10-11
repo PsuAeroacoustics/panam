@@ -4049,7 +4049,7 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
     # File identity apart from the hashed settings; paths by file name only (a relative
     # path's directories name this machine's layout too).
     settings = {key: value for key, value in locals().items()
-                if key not in ('hem_files', 'database_filename')}
+                if key not in ('hem_files', 'database_filename', 'overwrite')}
     inputs = dict(hem_files=[_path_name(f) for f in hem_files],
                   database_filename=_path_name(database_filename))
     if speed_mapping not in NORAH2_SPEED_MAPPINGS:

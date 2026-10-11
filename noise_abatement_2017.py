@@ -1384,6 +1384,9 @@ def _sphere_settings(arguments):
     # out of the settings so that a default build keeps the hash it had before the option.
     if not settings.get('node_statistics', False):
         settings.pop('node_statistics', None)
+    # Whether an existing file may be replaced changes no level: a resumed build with
+    # overwrite=False must still match the sphere a default build wrote.
+    settings.pop('overwrite', None)
     inputs = dict(test=test.aircraft, run=str(run))
     for name in ('output_path', 'reference_sphere', 'norah2_directory', 'plate_table_directory',
                  'samples_path'):

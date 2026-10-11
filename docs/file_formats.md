@@ -331,6 +331,8 @@ equal text and an equal hash, so `panam_settings_sha256` alone says whether two 
 two databases, were built with the same settings, whatever their names or runs.
 `build_sphere` records `node_statistics` only when it is true: the node statistics add
 variables and change no level, so a default build keeps the hash it had before the option.
+`overwrite` is a file-handling choice, not a processing setting: `build_sphere` and
+`build_database_from_norah2` leave it out of the settings.
 
 `build_sphere`'s record, and the `--manifest` CSV, also carry the settings in
 `noise_abatement_2017.RECORDED_SETTINGS` as given, `panam_version` and `settings_sha256`.
