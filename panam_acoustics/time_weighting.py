@@ -52,23 +52,32 @@ def frequency_weighting_sos(kind, fs):
     meets the class 1 acceptance limits of Table 3 for nominal frequencies up
     to ``fs/4``, and from 10 Hz to 20 kHz for ``fs`` of 44.1 kHz and above.
     Pre-warping the 12194 Hz poles raises the response 0.5 to 4 dB above the
-    standard at 4 to 10 kHz for ``fs`` of 16 to 32 kHz, and matched-z reads
+    standard at 4 to 10 kHz for ``fs`` of 25 to 32 kHz (at 16 kHz the pole
+    lies above the Nyquist frequency and cannot be pre-warped), and matched-z reads
     up to 4.5 dB high near the Nyquist frequency and fails at 12.5 kHz even
     at 48 kHz; the bilinear transform's droop toward the Nyquist frequency
     stays within the larger negative tolerances there.
 
     Args:
         kind: 'A', 'C' or 'Z' (Z is flat: one pass-through section).
-        fs: sample rate, Hz.
+        fs: sample rate, Hz.  A and C need ``fs`` above 2 kHz, so that the
+            1 kHz normalization frequency lies below the Nyquist frequency.
 
     Returns:
         (n_sections, 6) array for ``scipy.signal.sosfilt``.
+
+    Raises:
+        ValueError: ``fs`` not positive and finite, or not above 2 kHz for
+            A and C; unknown ``kind``.
     """
     if not np.isfinite(fs) or fs <= 0:
         raise ValueError('fs must be positive and finite')
     if kind == 'Z':
         return np.array([[1.0, 0.0, 0.0, 1.0, 0.0, 0.0]])
     zeros, poles = _analog_zpk(kind)
+    if fs <= 2000.0:
+        raise ValueError('fs must be above 2000 Hz for A and C weighting '
+                         '(the 1 kHz normalization must lie below the Nyquist frequency)')
     z, p, _ = bilinear_zpk(zeros, poles, 1.0, fs)
     e = np.exp(2j * np.pi * 1000.0 / fs)
     gain = 1.0 / np.abs(np.prod(e - z) / np.prod(e - p))
@@ -151,6 +160,11 @@ def time_weighted_level(p, fs, frequency='A', time='F', p_ref=20e-6):
     by :func:`time_weighted_square`, both starting from rest, so the first
     second or so (5 tau) reads low.
 
+    A NaN (no data) in ``p`` is carried by the recursive filters to every
+    later sample, so ``level`` is NaN from there on.  ``lmax`` and ``t_max``
+    are then NaN too: a maximum taken over the samples before the gap would
+    not be the maximum of the record.
+
     Args:
         p: pressure history, Pa, one-dimensional at equal intervals 1/fs.
         fs: sample rate, Hz.
@@ -162,8 +176,9 @@ def time_weighted_level(p, fs, frequency='A', time='F', p_ref=20e-6):
         time: sample times, s, from 0 at the first sample.
         level: time-weighted level (e.g. LAF), dB re p_ref, at each sample;
             -inf where the averaged energy is zero.
-        lmax: maximum of ``level`` (e.g. LAFmax), dB.
-        t_max: time of the maximum, s (the first one when it repeats).
+        lmax: maximum of ``level`` (e.g. LAFmax), dB; NaN when ``p`` has NaN.
+        t_max: time of the maximum, s (the first one when it repeats); NaN
+            when ``p`` has NaN.
     """
     p = np.asarray(p, dtype=float)
     if p.ndim != 1 or not p.size:
@@ -171,7 +186,9 @@ def time_weighted_level(p, fs, frequency='A', time='F', p_ref=20e-6):
     level = _level(time_weighted_square(apply_frequency_weighting(p, fs, frequency), fs, time),
                    p_ref)
     t = np.arange(p.size) / float(fs)
-    k = int(np.nanargmax(level)) if not np.isnan(level).all() else 0
+    if np.isnan(level).any():
+        return {'time': t, 'level': level, 'lmax': np.nan, 't_max': np.nan}
+    k = int(np.argmax(level))
     return {'time': t, 'level': level, 'lmax': float(level[k]), 't_max': float(t[k])}
 
 
@@ -197,6 +214,8 @@ def leq(p, fs, frequency='A', duration=None, p_ref=20e-6):
     p = np.asarray(p, dtype=float)
     if p.ndim != 1 or not p.size:
         raise ValueError('p must be a nonempty one-dimensional history')
+    if not np.isfinite(fs) or fs <= 0:
+        raise ValueError('fs must be positive and finite')
     record = p.size / float(fs)
     T = record if duration is None else float(duration)
     if not np.isfinite(T) or T < record * (1.0 - 1e-12):

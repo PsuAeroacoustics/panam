@@ -155,3 +155,23 @@ def test_bad_arguments():
         time_weighted_square(np.ones(10), 25000.0, 'X')
     with pytest.raises(ValueError):
         time_weighted_level(np.ones((2, 10)), 25000.0)
+    for kind in ('A', 'C'):
+        with pytest.raises(ValueError):
+            frequency_weighting_sos(kind, 2000.0)
+        with pytest.raises(ValueError):
+            frequency_weighting_sos(kind, 1000.0)
+    frequency_weighting_sos('Z', 1000.0)
+    with pytest.raises(ValueError):
+        leq(np.ones(10), 0.0)
+    with pytest.raises(ValueError):
+        leq(np.ones(10), np.nan, frequency='Z')
+
+
+def test_nan_sample_makes_the_maximum_nan():
+    fs = 48000.0
+    p = np.sqrt(2.0) * np.sin(2.0 * np.pi * 1000.0 * np.arange(int(fs)) / fs)
+    p[100] = np.nan
+    out = time_weighted_level(p, fs)
+    assert np.isnan(out['level'][100:]).all()
+    assert np.isnan(out['lmax'])
+    assert np.isnan(out['t_max'])
