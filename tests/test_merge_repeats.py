@@ -113,6 +113,8 @@ def test_speed_tolerance_merges_nearby_speeds(tmp_path):
     assert mu == pytest.approx(mu_100 * 80.5 / 100.0)
     with pytest.raises(ValueError, match='at least 0'):
         _build(directory, tmp_path / 'bad.nod', merge_repeats=True, merge_speed_tolerance=-1.0)
+    with pytest.raises(ValueError, match='merge_repeats=True only'):
+        _build(directory, tmp_path / 'ignored.nod', merge_speed_tolerance=1.5)
 
 
 def test_cli_merge_repeats(tmp_path):
@@ -129,3 +131,66 @@ def test_cli_merge_repeats(tmp_path):
                             '--fixed-load-factor']) == 0
     with Dataset(str(tmp_path / 'db.nod')) as db:
         assert json.loads(db.panam_inputs)['merged_spheres'] == [['X102.nc', 'X103.nc']]
+
+
+def _database_cell(database, phi_deg, theta_deg):
+    """The (PHI, THETA) index of the database cell at phi_deg and theta_deg (deg)."""
+    with Dataset(str(database)) as db:
+        group = next(iter(db.groups.values()))
+        shape = group['amplitude'].shape[:2]
+        phi = np.asarray(db['phi'][:]).reshape(shape)
+        theta = np.asarray(db['theta'][:]).reshape(shape)
+    (i,), (j,) = np.nonzero((np.abs(phi - phi_deg) < 1e-9) & (np.abs(theta - theta_deg) < 1e-9))
+    return i, j
+
+
+def test_a_cell_missing_from_one_run_takes_the_other_runs_level(tmp_path):
+    # -999 (no data) in X103 only: the merged cell is X102's level, measured, not
+    # the mean of X102's power and zero.  -999 in both runs stays unmeasured.
+    directory = _repeat_directory(tmp_path)
+    one_run = [(-40.0, 50.0), (30.0, 100.0)]          # (phi, theta), deg
+    both_runs = (0.0, 75.0)
+    for name, cells in (('X103.nc', one_run + [both_runs]), ('X102.nc', [both_runs])):
+        with Dataset(str(directory / name), 'a') as sphere:
+            phi, theta = np.asarray(sphere['PHI'][:]), np.asarray(sphere['THETA'][:])
+            for p, t in cells:
+                sphere['AMPLITUDE'][np.argmin(np.abs(phi - p)), np.argmin(np.abs(theta - t)), :] = -999.0
+    merged = _build(directory, tmp_path / 'merged.nod', merge_repeats=True)
+    only_a = _build(directory, tmp_path / 'a.nod', exclude=['X103.nc'])
+    with Dataset(str(merged)) as db:
+        group = next(g for g in db.groups.values()
+                     if g.condition_origin == 'measured' and g.source_sphere == 'X102.nc\nX103.nc')
+        amplitude, coverage = np.asarray(group['amplitude'][:]), np.asarray(group['coverage'][:])
+    amplitude_a, _, _ = _measured_group(only_a, 'X102.nc')
+    for p, t in one_run:
+        i, j = _database_cell(merged, p, t)
+        np.testing.assert_allclose(amplitude[i, j], amplitude_a[i, j], atol=1e-9)
+        assert np.all(coverage[i, j] == 1)
+    i, j = _database_cell(merged, *both_runs)
+    assert np.all(coverage[i, j] == 0)
+    assert np.all(np.isneginf(amplitude[i, j]))
+
+
+def _run_row(source_sphere, wind_along_track, **text):
+    """A group_run_metadata row: winds in kt, every other number 1."""
+    row = {name: 1.0 for name, _ in fa.GROUP_RUN_METADATA_NUMBERS}
+    row.update(wind_along_track=wind_along_track, wind_cross_track=2.0, wind_source='lidar',
+               wind_units='kt', wind_reference_direction='ground track',
+               air_density_source='none', source_sphere=source_sphere, condition_origin='measured')
+    row.update(text)
+    return row
+
+
+def test_merged_winds_are_averaged_only_in_one_frame():
+    same = fa._merged_run_metadata([_run_row('X102.nc', -8.0), _run_row('X103.nc', -4.0)])
+    assert same['wind_along_track'] == -6.0 and same['wind_source'] == 'lidar'
+    # Winds along different reference directions do not average.
+    turned = fa._merged_run_metadata([
+        _run_row('X102.nc', -8.0),
+        _run_row('X103.nc', -4.0, wind_reference_direction='heading', wind_source='station')])
+    assert np.isnan(turned['wind_along_track']) and np.isnan(turned['wind_cross_track'])
+    # Every source a merged wind came from is named, as a '+'-joined wind_source.
+    assert turned['wind_source'] == 'lidar+station'
+    assert fa.normalize_wind_source(turned['wind_source']) == 'lidar+station'
+    none = fa._merged_run_metadata([_run_row('X102.nc', np.nan, wind_source='none')] * 2)
+    assert none['wind_source'] == 'none'

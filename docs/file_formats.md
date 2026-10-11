@@ -178,7 +178,9 @@ and each has its units in a text attribute `<name>_units`:
 The text attributes are `wind_source`, `wind_units`, `wind_reference_direction`,
 `air_density_source`, `source_sphere` (the sphere file's name; for a condition that
 `merge_repeats` averaged from repeat runs, every run's file name, one per line, with the runs'
-mean numeric values and the first run's text values) and `condition_origin`.
+mean numeric values (NaN winds if their wind units or reference directions differ), every
+source any run named in `wind_source`, and the first run's other text values) and
+`condition_origin`.
 `condition_origin` takes one of three values:
 
 - `measured`: one of the sphere's own conditions, at any load factor;

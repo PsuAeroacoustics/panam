@@ -5052,9 +5052,10 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     of that cell's average), into one condition at the runs' mean speed; with
     it, merge_speed_tolerance (kt, default 0) also merges spheres at one flight
     path angle whose speeds lie within it of the slowest of the group.  A merged
-    condition's groups carry the runs' mean numeric run metadata, the first
-    run's text metadata, and every run's file name in source_sphere, one per
-    line; ``panam_inputs`` lists each merged set as ``merged_spheres``.  The
+    condition's groups carry the runs' mean numeric run metadata (NaN winds
+    if the runs' wind units or reference directions differ), the first run's
+    text metadata but every run's wind_source, and every run's file name in
+    source_sphere, one per line; ``panam_inputs`` lists each merged set as ``merged_spheres``.  The
     hover is synthesized from a merged condition's averaged levels when that
     condition is the slowest near-level one.
     """
@@ -5109,6 +5110,8 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     if not merge_speed_tolerance >= 0.0:
         raise ValueError('merge_speed_tolerance must be at least 0 kt, not {!r}'.format(
             merge_speed_tolerance))
+    if merge_speed_tolerance != 0.0 and not merge_repeats:
+        raise ValueError('merge_speed_tolerance applies to merge_repeats=True only')
     # One entry per condition to write: a tuple of the sphere files averaged into it.
     condition_files = _group_repeat_conditions(
         file_list, merge_speed_tolerance if merge_repeats else 0.0)
@@ -5323,15 +5326,22 @@ def _merged_run_metadata(rows):
 
     One row is returned as it is.  Several give the mean of each numeric value (NaN
     if any run's is unknown, and for the winds if the runs declare different wind
-    units), the first run's text values, and every run's source_sphere, one per line.
+    units or wind reference directions, which make their winds incommensurable),
+    the first run's text values, except wind_source, which names every source the
+    runs used, '+'-joined in run order ('none' only if no run had one), and every
+    run's source_sphere, one per line.
     """
     if len(rows) == 1:
         return rows[0]
     merged = dict(rows[0])
     for name, _ in GROUP_RUN_METADATA_NUMBERS:
         merged[name] = float(np.mean([row[name] for row in rows]))
-    if len({row['wind_units'] for row in rows}) > 1:
+    if any(len({row[key] for row in rows}) > 1
+           for key in ('wind_units', 'wind_reference_direction')):
         merged.update(wind_along_track=float('nan'), wind_cross_track=float('nan'))
+    sources = [part for row in rows for part in row['wind_source'].split('+')
+               if part not in ('', 'none')]
+    merged['wind_source'] = '+'.join(dict.fromkeys(sources)) or 'none'
     merged['source_sphere'] = '\n'.join(row['source_sphere'] for row in rows)
     return merged
 
