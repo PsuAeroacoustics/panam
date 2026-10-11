@@ -11,11 +11,17 @@ for a direction that was not measured, so the file cannot tell them apart
 says which to take it as: ``'no_data'`` (the default) leaves that run out of the
 cell's average, ``'no_energy'`` counts it as a run with zero power.  A NaN on
 disk is always no data.
+
+:func:`node_statistics` describes the samples behind each node of a gridded
+hemisphere (:func:`flight_acoustics.depropagate_hemisphere` with
+``return_statistics=True``), and :func:`node_statistics_variables` puts them on an
+ART grid for a sphere file.
 """
 
 import os
 
 import numpy as np
+import scipy.sparse as sparse
 from netCDF4 import Dataset
 
 import flight_acoustics as fa
@@ -237,6 +243,139 @@ def write_averaged_sphere(filename, average, title=None, overwrite=True):
         overwrite=overwrite,
         extra_variables={'N_RUNS': (np.asarray(average['n_runs'], dtype=np.int32), ''),
                          'AMPLITUDE_SD_DB': (average['amplitude_sd_db'], 'DECIBEL')})
+
+
+def idw_weight_matrix(neighbors, n_points):
+    """The neighbor list of :func:`flight_acoustics.shepIDW_weights` as a sparse matrix.
+
+    Args:
+        neighbors: the second element of what :func:`flight_acoustics.shepIDW_weights`
+            returns: per node (flattened), the sample indices and their weights.
+        n_points: number of samples.
+
+    Returns:
+        scipy.sparse CSR matrix (nodes x samples) of the weights, zero where a sample
+        does not reach a node.
+    """
+    rows = [np.full(near.size, i) for i, (near, _) in enumerate(neighbors)]
+    cols = [np.asarray(near, dtype=int) for near, _ in neighbors]
+    values = [np.asarray(w, dtype=float) for _, w in neighbors]
+    if not rows:
+        return sparse.csr_matrix((0, int(n_points)))
+    return sparse.csr_matrix((np.concatenate(values), (np.concatenate(rows), np.concatenate(cols))),
+                             shape=(len(neighbors), int(n_points)))
+
+
+def node_statistics(weights, power, mic):
+    """Sample statistics of the interpolation at each node of a gridded field.
+
+    A node's samples are those with a positive weight whose power is not NaN.  Their
+    weights w_i are renormalized over them, as the gridding renormalizes them
+    (:func:`flight_acoustics.depropagate_hemisphere`), and the node's value is the
+    weighted energy mean P = sum w_i p_i / sum w_i, at level L = 10 lg P.
+
+    * ``n_samples``: the number of the node's samples.
+    * ``n_mics``: the number of distinct microphones among them.
+    * ``n_eff``: the effective number of samples, (sum w_i)^2 / sum w_i^2, which is
+      ``n_samples`` for equal weights and near 1 when one weight dominates; 0 with no
+      samples.
+    * ``sd_db``: the weighted standard deviation of the sample levels L_i = 10 lg p_i
+      about L, sqrt(sum' w_i (L_i - L)^2 / sum' w_i), in dB.  The sums sum' run over
+      the samples with positive power, since a sample measured with no energy has no
+      finite level; with no zero-power sample their weights are those of P.  It is NaN
+      where no sample has positive power.  The deviations are taken about the energy
+      mean, not the mean of the levels, so the SD is the scatter about the value the
+      node reports.  It describes the samples; it is not a confidence interval.
+
+    Args:
+        weights: (nodes, samples) nonnegative interpolation weights, a scipy.sparse
+            matrix or an array; a zero weight leaves the sample out of the node.
+        power: sample powers (linear, any mean-square unit), shaped (samples,) or
+            (fields, samples); NaN where missing, 0 where measured with no energy.
+        mic: (samples,) microphone index of each sample.
+
+    Returns:
+        dict with ``n_samples``, ``n_mics`` (int), ``n_eff`` (float) and ``sd_db``
+        (dB), each shaped (nodes,), or (fields, nodes) for a 2-D ``power``.
+    """
+    W = sparse.csr_matrix(weights, dtype=float)
+    W.eliminate_zeros()
+    p = np.asarray(power, dtype=float)
+    single = p.ndim == 1
+    p = np.atleast_2d(p)
+    mic = np.asarray(mic).ravel()
+    if W.shape[1] != p.shape[1] or mic.size != p.shape[1]:
+        raise ValueError('weights, power and mic must have the same number of samples')
+    n_fields, n_nodes = p.shape[0], W.shape[0]
+    n_samples = np.zeros((n_fields, n_nodes), dtype=int)
+    n_mics = np.zeros((n_fields, n_nodes), dtype=int)
+    n_eff = np.zeros((n_fields, n_nodes))
+    sd_db = np.full((n_fields, n_nodes), np.nan)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        level = 10.0 * np.log10(p)
+        for node in range(n_nodes):
+            span = slice(W.indptr[node], W.indptr[node + 1])
+            cols, w = W.indices[span], W.data[span]
+            if cols.size == 0:
+                continue
+            pp = p[:, cols]
+            kept = ~np.isnan(pp)
+            wk = np.where(kept, w, 0.0)
+            s1, s2 = wk.sum(axis=1), np.square(wk).sum(axis=1)
+            n_samples[:, node] = kept.sum(axis=1)
+            n_eff[:, node] = np.where(s2 > 0.0, s1 * s1 / s2, 0.0)
+            node_mics = mic[cols]
+            for m in np.unique(node_mics):
+                n_mics[:, node] += kept[:, node_mics == m].any(axis=1)
+            mean = np.where(s1 > 0.0, (wk * np.where(kept, pp, 0.0)).sum(axis=1) / s1, np.nan)
+            positive = kept & (pp > 0.0)
+            wp = np.where(positive, w, 0.0)
+            sp = wp.sum(axis=1)
+            ok = (sp > 0.0) & (mean > 0.0)
+            deviation = np.where(positive, level[:, cols] - 10.0 * np.log10(mean)[:, None], 0.0)
+            sd_db[ok, node] = np.sqrt((wp * np.square(deviation)).sum(axis=1)[ok] / sp[ok])
+    out = dict(n_samples=n_samples, n_mics=n_mics, n_eff=n_eff, sd_db=sd_db)
+    return {key: value[0] for key, value in out.items()} if single else out
+
+
+def node_statistics_variables(hemisphere, phi_deg=None, theta_deg=None, field='bands_db'):
+    """``N_SAMPLES`` and ``AMPLITUDE_STD`` of a hemisphere on an ART grid.
+
+    For :func:`flight_acoustics.write_aam_hemisphere_netcdf`'s ``extra_variables``.
+    Each ART point takes the statistics of the gridded node nearest it in azimuth and
+    in elevation: the band levels are interpolated between nodes, their statistics are
+    not.
+
+    Args:
+        hemisphere: a :func:`flight_acoustics.depropagate_hemisphere` result made with
+            ``third_octave=True`` and ``return_statistics=True``.
+        phi_deg, theta_deg: the ART grid, deg; default the writer's
+            (:data:`flight_acoustics.AAM_DEFAULT_PHI_DEG`, ``AAM_DEFAULT_THETA_DEG``).
+        field: the third-octave field, 'bands_db' (default), 'tonal_db' or 'broadband_db'.
+
+    Returns:
+        ``{'N_SAMPLES': (int32 array, ''), 'AMPLITUDE_STD': (array, 'DECIBEL')}``,
+        each shaped (phi, theta, band), AMPLITUDE_STD in dB and NaN where undefined.
+    """
+    if 'statistics' not in hemisphere:
+        raise ValueError('the hemisphere has no statistics; build it with return_statistics=True')
+    stats = hemisphere['statistics']['third_octave'][field]
+    phi = np.asarray(fa.AAM_DEFAULT_PHI_DEG if phi_deg is None else phi_deg, dtype=float).ravel()
+    theta = np.asarray(fa.AAM_DEFAULT_THETA_DEG if theta_deg is None else theta_deg, dtype=float).ravel()
+    TH, PH = np.meshgrid(theta, phi)
+    azi, elv = fa.art2umapr(np.radians(PH), np.radians(TH))
+    azi, elv = np.degrees(azi), np.degrees(elv)
+    azi_grid = np.asarray(hemisphere['azi_grid_deg'], dtype=float)
+    elv_grid = np.asarray(hemisphere['elv_grid_deg'], dtype=float)
+    turn = (azi[..., None] - azi_grid + 180.0) % 360.0 - 180.0
+    ia = np.argmin(np.abs(turn), axis=-1)
+    ie = np.argmin(np.abs(elv[..., None] - elv_grid), axis=-1)
+
+    def sample(values):
+        return np.moveaxis(np.asarray(values)[:, ie, ia], 0, -1)
+
+    return {'N_SAMPLES': (sample(stats['n_samples']).astype(np.int32), ''),
+            'AMPLITUDE_STD': (sample(stats['sd_db']), 'DECIBEL')}
 
 
 def cell_solid_angles(phi_deg, theta_deg):

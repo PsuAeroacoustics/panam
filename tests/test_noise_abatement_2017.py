@@ -699,6 +699,29 @@ def test_the_cli_tone_split_writes_part_spheres_that_sum_to_the_total(tmp_path):
     assert all(name == output for name, (_, _, output) in stamps.items())
 
 
+def test_the_cli_node_statistics_adds_variables_and_leaves_the_levels_alone(tmp_path):
+    """--node-statistics writes N_SAMPLES and AMPLITUDE_STD into each sphere, the parts
+    included; without it the spheres carry neither, and the levels are the same either way."""
+    from netCDF4 import Dataset
+    _archive(tmp_path)
+    common = ['AS350B3', '--root', str(tmp_path), '--no-prefetch', '--board-correction', 'flat', '--tone-split']
+    assert na.main([common[0], str(tmp_path / 'plain')] + common[1:]) == 0
+    assert na.main([common[0], str(tmp_path / 'stats')] + common[1:] + ['--node-statistics']) == 0
+    name = next((tmp_path / 'plain').glob('*.nc')).name
+    stem = name[:-3]
+    for relative in (name, 'tonal/{}_tonal.nc'.format(stem), 'broadband/{}_broadband.nc'.format(stem)):
+        with Dataset(str(tmp_path / 'plain' / relative)) as plain, \
+                Dataset(str(tmp_path / 'stats' / relative)) as stats:
+            assert 'N_SAMPLES' not in plain.variables and 'AMPLITUDE_STD' not in plain.variables
+            np.testing.assert_array_equal(plain['AMPLITUDE'][:], stats['AMPLITUDE'][:])
+            n_samples = stats['N_SAMPLES'][:]
+            spread = np.ma.filled(stats['AMPLITUDE_STD'][:], np.nan)
+            assert n_samples.shape == stats['AMPLITUDE'].shape and n_samples.max() > 1
+            assert stats['AMPLITUDE_STD'].unit == 'DECIBEL'
+            assert np.all((spread >= 0.0) | (spread == -999.0))
+            assert np.any(spread > 0.0)
+
+
 def test_tone_split_needs_tone_aware(tmp_path):
     _archive(tmp_path)
     test = na.NoiseAbatementTest('AS350B3', root=str(tmp_path))

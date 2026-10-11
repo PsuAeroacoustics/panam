@@ -75,6 +75,7 @@ The main options:
 | `--no-track-check`, `--min-height-above-array-ft` | check on, 10 ft | see [options](#options) |
 | `--tone-aware` | off | file each tone whole in the band of its own frequency |
 | `--tone-split` | off | also write each run's tonal and broadband parts (implies `--tone-aware`; see below) |
+| `--node-statistics` | off | also write `N_SAMPLES` and `AMPLITUDE_STD` per cell ([file formats](file_formats.md#aam-sphere-netcdf-nc)) |
 
 `python noise_abatement_2017.py -h` lists the depropagation settings, among them
 `--band-snr-gate-db`, `--max-absorption-correction-db`, `--min-elevation-deg`,

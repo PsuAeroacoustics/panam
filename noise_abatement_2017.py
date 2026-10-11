@@ -64,6 +64,7 @@ import flight_acoustics as fa
 import local_paths
 import provenance
 import refracted_rays
+import sphere_statistics
 
 #: Name under which :mod:`local_paths` finds the dataset root.
 DATA_ROOT_NAME = 'noise_abatement_2017'
@@ -1363,7 +1364,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
                  nose_from_heading=False, samples_path=None, tone_aware=False, tone_split=False,
                  azimuth_reference=None, wind=None, track_check=True,
                  min_height_above_array_ft=MIN_HEIGHT_ABOVE_ARRAY_FT, air_relative_doppler=False,
-                 absorption_profile=None, absorption_band_method='center'):
+                 absorption_profile=None, absorption_band_method='center', node_statistics=False):
     """Depropagate one run into an AAM-style source sphere.
 
     ``track_check`` (default True) refuses, with :class:`TrackRefused` and the reason, a run
@@ -1471,6 +1472,12 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     ``absorption_band_method`` (``'center'``, the default, ``'arp5534'`` or ``'integrated'``)
     forms the filter-bank bands' absorption (``third_octave_method='filter_bank'`` only; see
     :func:`flight_acoustics.depropagate_hemisphere`).
+
+    ``node_statistics`` (default False) also writes, per ART point and band, the samples
+    behind the gridded node nearest it (:func:`sphere_statistics.node_statistics_variables`):
+    ``N_SAMPLES`` and ``AMPLITUDE_STD`` (dB, the weighted standard deviation of the sample
+    levels about the node's energy mean), into every sphere this call writes, the tonal and
+    broadband parts each with their own.  AAM and NICE-OPS do not read them.
 
     ``atmosphere``, if not given, is the ground stations' at the time of the run
     (:func:`run_atmosphere`).  A run whose day has no usable station record (AS350B3 day 292,
@@ -1723,6 +1730,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
         air_relative_doppler=air_relative_doppler,
         absorption_profile=absorption_profile,
         absorption_band_method=absorption_band_method,
+        return_statistics=node_statistics,
     )
     if samples_path is not None:
         scattered = hemisphere['scattered']
@@ -1736,7 +1744,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)) or '.', exist_ok=True)
     title = sphere_title(AIRCRAFT_SPHERE_PREFIX.get(test.aircraft, test.aircraft), row.get('run_num', run), run[:3])
-    spheres = [(output_path, hemisphere, title)]
+    spheres = [(output_path, hemisphere, title, 'bands_db')]
     part_paths = {}
     if tone_split:
         directory, name = os.path.split(os.path.abspath(output_path))
@@ -1745,8 +1753,9 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
             part_paths[part] = os.path.join(directory, part, '{}_{}{}'.format(stem, part, extension))
             os.makedirs(os.path.dirname(part_paths[part]), exist_ok=True)
             bands = dict(hemisphere['third_octave'], bands_db=hemisphere['third_octave'][part + '_db'])
-            spheres.append((part_paths[part], dict(hemisphere, third_octave=bands), '{} {}'.format(title, part)))
-    for path, sphere, sphere_name in spheres:
+            spheres.append((part_paths[part], dict(hemisphere, third_octave=bands), '{} {}'.format(title, part),
+                            part + '_db'))
+    for path, sphere, sphere_name, field in spheres:
         # Each file is stamped with its own name; the settings, and their hash, are shared.
         stamp = provenance.build_provenance(
             'noise_abatement_2017.build_sphere', settings,
@@ -1766,6 +1775,8 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
             azimuth_reference=azimuth_reference,
             run_metadata=run_metadata,
             provenance=stamp,
+            extra_variables=(sphere_statistics.node_statistics_variables(hemisphere, phi_deg, theta_deg, field)
+                             if node_statistics else None),
         )
     norah2_output_path = None
     if norah2_directory is not None:
@@ -2247,6 +2258,9 @@ def main(argv=None):
                         help='also write tonal and broadband part spheres, <name>_tonal.nc and '
                              '<name>_broadband.nc, in tonal/ and broadband/ under output_directory; '
                              'implies --tone-aware (default off)')
+    parser.add_argument('--node-statistics', action='store_true',
+                        help='also write N_SAMPLES and AMPLITUDE_STD (dB), the samples behind each '
+                             'gridded node and their weighted level spread, to every sphere (default off)')
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
@@ -2310,7 +2324,8 @@ def main(argv=None):
         track_check=not args.no_track_check,
         min_height_above_array_ft=args.min_height_above_array_ft,
         tone_aware=args.tone_aware or args.tone_split,
-        tone_split=args.tone_split)
+        tone_split=args.tone_split,
+        node_statistics=args.node_statistics)
     logging.info('Built %d spheres, %d failures', len(records), len(failures))
     return 0 if records else 1
 

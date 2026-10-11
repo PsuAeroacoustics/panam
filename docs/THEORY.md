@@ -739,6 +739,36 @@ For plots, spheres are drawn in the azimuthal equal-area projection centered on 
 $q = 2\sin[(90^\circ - e)/2]$ and $\lambda = 180^\circ - \psi$, a view from above with the nose up
 and starboard to the right.
 
+### 6.4 Node statistics
+
+With `return_statistics=True`, `depropagate_hemisphere` also describes the samples behind every
+node of every gridded field (`sphere_statistics.node_statistics`), with the weights of §6.1 or
+§6.2. A node's samples are those with $w_i > 0$ whose power is not NaN, so the set can differ
+from band to band. Their weights are renormalized over them, as the gridding renormalizes them,
+and the node's value is the energy mean $\bar P = \sum_i w_i P_i / \sum_i w_i$, at level
+$\bar L = 10\lg\bar P$. The statistics are
+
+$$
+n = \#\{i\}, \qquad
+n_\text{eff} = \frac{\left(\sum_i w_i\right)^2}{\sum_i w_i^2}, \qquad
+\sigma_L = \sqrt{\frac{\sum_{i}' w_i\,(L_i - \bar L)^2}{\sum_{i}' w_i}}, \quad L_i = 10\lg P_i,
+$$
+
+and $n_\text{mic}$, the number of distinct microphones among the samples. $n_\text{eff}$ equals
+$n$ for equal weights and approaches 1 when one sample dominates, as a node on top of a sample
+does under the Shepard weight. The primed sums run over the samples with $P_i > 0$: a sample
+measured with no energy has no finite level. Without such samples they are the sums of
+$\bar P$. $\sigma_L$ is the scatter about the level the node reports, $\bar L$, not about the
+mean of the levels, so it is not zero when the levels differ. It is NaN where no sample has
+positive power; $n_\text{eff}$ is 0 where the node has no samples. The statistics describe the
+samples: no confidence interval is derived from them.
+
+A sphere file can carry them (`noise_abatement_2017.build_sphere(node_statistics=True)`, CLI
+`--node-statistics`) as `N_SAMPLES` and `AMPLITUDE_STD`, $n$ and $\sigma_L$ per band
+(`sphere_statistics.node_statistics_variables`). Each ART point takes the statistics of the
+gridded node nearest it in azimuth and in elevation; the levels themselves are interpolated as
+in §6.3.
+
 ## 7. The database
 
 `build_empirical_database` collects a directory of sphere files and its `vehicle.cfg`
@@ -1280,6 +1310,7 @@ Functions are in `flight_acoustics.py` unless another module is named. Tests are
 | §6.1 Fixed radius | `shepIDW`, `shepIDW_weights`, `shepIDW_apply`, `geodist` | `test_shep_idw.py`, `test_no_data.py`, `test_hemisphere_geometry_accuracy.py` |
 | §6.2 Adaptive radius | `adaptive_idw_weights`, `ADAPTIVE_INTERPOLATION` | `test_adaptive_interpolation.py`, `test_hemisphere_geometry_accuracy.py` |
 | §6.3 Output grids | `write_aam_hemisphere_netcdf`, `_sample_hemisphere_levels`, `mask_missing_levels`, `lambert_ea`, `lambert_lon` | `test_write_aam_hemisphere_netcdf.py`, `test_hemisphere_sampling.py`, `test_no_data.py`, `test_lambert_geometry.py` |
+| §6.4 Node statistics | `sphere_statistics.node_statistics`, `idw_weight_matrix`, `node_statistics_variables`; `depropagate_hemisphere` (`return_statistics`), `noise_abatement_2017.build_sphere` (`node_statistics`) | `test_node_statistics.py`, `test_noise_abatement_2017.py` |
 | §7.1–7.2 Condition, EAA | `build_empirical_database`, `read_vehicle_data`, `add_sphere_group`, `extract_SPL`, `spla_and_eaa_from_spectrum`, `_finite_sphere_levels`, `_measured_bins` | `test_spla_and_eaa.py`, `test_database_provenance.py`, `test_vehicle_data.py` |
 | §7.3 Load factor | `add_sphere_group` | `test_load_factor_scaling.py`, `test_write_aam_hemisphere_netcdf.py` |
 | §7.4 Hover | `average_fore_and_aft`, `_fore_aft_measured`, `_synthesized_hover_sphere`, `_hover_source_index`, `_hover_flight_path_angles` | `test_hover_averaging.py`, `test_sphere_completion_integration.py`, `test_empirical_database_hover_selection.py`, `test_database_provenance.py`, `test_norah2_import.py` |

@@ -80,6 +80,20 @@ data by default (`missing='no_data'`), or as zero power (`missing='no_energy'`),
 file does not say which it is. `write_aam_hemisphere_netcdf` writes such variables through
 its `extra_variables` argument and levels already on the ART grid through `art_levels`.
 
+**Node statistics.** `noise_abatement_2017.build_sphere(node_statistics=True)` (CLI
+`--node-statistics`; default off) adds two optional variables after everything else, in the
+total sphere and in each tonal and broadband part sphere. AAM and NICE-OPS do not read them,
+and a reader may ignore them.
+
+| variable | type, dimensions | `unit` | content |
+| --- | --- | --- | --- |
+| `N_SAMPLES` | i4 (`PHI`, `THETA`, `FREQUENCY`) | | depropagated samples behind the gridded node: positive interpolation weight, not missing |
+| `AMPLITUDE_STD` | f4 (`PHI`, `THETA`, `FREQUENCY`) | DECIBEL | weighted standard deviation of those samples' levels about the node's energy-mean level; -999 where no sample has positive power |
+
+Each ART point takes the values of the gridded node nearest it in azimuth and in elevation, so
+they describe the neighborhood its `AMPLITUDE` was interpolated from, not that value exactly.
+The definitions are in [THEORY §6.4](THEORY.md#64-node-statistics).
+
 **Missing values.** A missing band is stored as -999 (`AAM_MISSING_LEVEL`); see
 [how a bin's state travels](#how-a-bins-state-travels).
 
@@ -411,6 +425,8 @@ row, then one row per run:
   that the database's metadata are attributes, not variables.
 - `tests/test_sphere_statistics.py` pins the averaged sphere's `N_RUNS` and
   `AMPLITUDE_SD_DB`, and that they follow the AAM variables.
+- `tests/test_node_statistics.py` and `tests/test_noise_abatement_2017.py` pin `N_SAMPLES` and
+  `AMPLITUDE_STD`, and that a sphere built without them is unchanged.
 - `tests/test_write_aam_hemisphere_netcdf.py` pins the AAM variable order, the -999
   sentinel, the masking conventions read back, and the root vehicle fields.
 - `tests/test_provenance.py` pins the provenance stamp: a stable hash for equal settings,
