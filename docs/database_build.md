@@ -71,6 +71,8 @@ The main options:
 | `--norah2-directory DIR` | none | also write each sphere as a NORAH2 `.hem`, and `<prefix>_Triangulation.int` |
 | `--winds FILE` | none | the wind at the aircraft per run, recorded (see [per-run metadata](#per-run-metadata)) |
 | `--ray-model` | `straight` | `straight`, or `wind`: depropagate along straight rays carried by each run's wind from `--winds`, uniform over the path; a run without a wind fails |
+| `--ray-profiles DIR` | none | depropagate along refracted rays through each run's NICE-OPS atmosphere CSV, `<run>.csv` (heights in ft), traced by `niceops_ray_geometry`; straight lines for a run without one |
+| `--recipe FILE.toml` | none | take settings from a [build recipe](#build-recipes); options given override it |
 | `--azimuth-reference` | `track` | `track` or `heading` (see [the heading frame](#the-heading-frame)) |
 | `--no-track-check`, `--min-height-above-array-ft` | check on, 10 ft | see [options](#options) |
 | `--tone-aware` | off | file each tone whole in the band of its own frequency |
@@ -79,11 +81,13 @@ The main options:
 `python noise_abatement_2017.py -h` lists the depropagation settings, among them
 `--band-snr-gate-db`, `--max-absorption-correction-db`, `--min-elevation-deg`,
 `--max-propagation-range-ft`, `--point-stride`, `--board-correction` and
-`--third-octave-method`. Some of the 2017 release's settings have no command-line option;
-see [the 2017 release settings](#the-2017-release-settings).
+`--third-octave-method`. Every keyword of `build_sphere` that has a command-line form has an
+option, with the function's default except `--point-stride`. `--recipe FILE.toml` reads
+settings from a [build recipe](#build-recipes); options given on the command line override
+it. [The 2017 release settings](#the-2017-release-settings) are a recipe.
 
-The command line builds only flight spheres. To build a hover sphere, call
-`build_sphere(..., nose_from_heading=True)` from Python.
+The command line selects only flight runs by itself. To build a hover sphere, give its run
+with `--runs` and add `--nose-from-heading`.
 
 `--tone-split` (`build_sphere(tone_split=True)`) writes `<name>_tonal.nc` in `tonal/` and
 `<name>_broadband.nc` in `broadband/` under the output directory, beside each total sphere.
@@ -138,8 +142,9 @@ them with their units):
   `integrated`, THEORY §5.4).
 
 The script refuses to replace an existing database without `--overwrite`. The hover
-correction is a Python callable and has no flag; see
-[the 2017 release settings](#the-2017-release-settings).
+correction is a Python callable and has no flag; a [build recipe](#build-recipes) names it as
+`"module:callable"`. `--recipe FILE.toml` takes the recipe's `[database]` settings, and
+options given on the command line override them.
 
 ### 6. Load it in NICE-OPS
 
@@ -351,7 +356,7 @@ line's default added where it differs.
 | board correction (`board_correction`) | `plate_bem` on `SITE_GROUND` | `plate_bem` on `SITE_GROUND` |
 | banding | FFT, whole bins (`third_octave_method='fft'`, `tone_aware=False`) | FFT, tone-aware (`tone_aware=True`) |
 | propagation (`ray_model`) | straight lines | refracted rays through each run's measured profile (`refracted_rays.external_ray_model`, stratified); straight lines for a run without a profile |
-| gridding (`interpolation`, `azi_step`, `elv_step`) | fixed radius `rmax` = 25° on a 10° × 10° grid | adaptive radius (`adaptive_idw_weights` defaults) with the Shepard kernel, `aspect` 5 and `shepard_floor` 1, on a 2° × 2° grid |
+| gridding (`interpolation`, `azi_step`, `elv_step`) | fixed radius `rmax` = 25° on a 10° × 10° grid | adaptive radius (`adaptive_idw_weights` defaults) with `kernel` `shepard`, `aspect` 5 and `shepard_floor` 1, on a 2° × 2° grid |
 | output sphere grid | PHI every 10°, THETA every 5°, 31 bands 10 Hz-10 kHz | the legacy sphere's grid (`reference_directory`) |
 | track check (`track_check`) | on | not applied: the shipped database predates the check, and B407 285236, which the check refuses, is one of its spheres |
 | azimuth frame (`azimuth_reference`) | `track` | `track` |
@@ -360,71 +365,108 @@ line's default added where it differs.
 | hover source (`hover_source`) | the slowest sphere within 2° of level flight, as built (received frequencies) | that run rebuilt with `build_sphere(remove_doppler=True)` |
 | hover correction (`hover_correction`) | none | supplied by the caller for the B407: a Fourier series in azimuth from the heading, Σ_m (a_m cos mψ + b_m sin mψ) per band, fitted to each ring of measured hovers, blended linearly in elevation between the rings from 3° to 17.5° below the horizon, with term m fading toward the nadir as (cos e / cos e_ring)^m |
 
-The command line does not expose these settings:
-
-- the response cap;
-- the ray model;
-- the adaptive gridding;
-- the hover correction.
-
-A release build therefore builds its spheres from Python:
-
-```python
-import flight_acoustics as fa
-import noise_abatement_2017 as na
-
-settings = dict(band_snr_gate_db=10.0, max_response_correction_db=15.0,
-                max_absorption_correction_db=30.0, max_propagation_range_ft=2000.0,
-                min_elevation_deg=2.0, point_stride=10, board_correction='plate_bem',
-                tone_aware=True, azi_step=2.0, elv_step=2.0,
-                interpolation=dict(kernel='shepard', aspect=5.0, shepard_floor=1.0))
-na.build_all('B407', f'{OUT}/spheres/Be407', reference_directory=LEGACY_SPHERES,
-             manifest_path=f'{OUT}/spheres/Be407/manifest.csv', ray_models=RAY_MODELS, **settings)
-# The hover source: the run build_empirical_database would pick, without its Doppler shift.
-na.build_all('B407', f'{OUT}/hover_source', runs=[HOVER_RUN], remove_doppler=True,
-             reference_directory=LEGACY_SPHERES, ray_models=RAY_MODELS, **settings)
-fa.build_empirical_database(f'{OUT}/spheres/Be407', f'{OUT}/Be407_ambient_gated.nod',
-                            load_factors=[0.0, 1.0, 1.1, 1.2, 1.5, 2.0, 3.0, 5.0],
-                            extended_flight_path_angles=(-24.0, 35.0),
-                            hover_source=HOVER_SOURCE_SPHERE, hover_correction=HOVER_CORRECTION,
-                            store_spectrum=False)
-```
-
-The database call has a command-line equivalent except for the hover correction. Without
-it, this builds the release database's spheres and settings with an uncorrected hover:
+The recipe [`docs/recipes/release_2017.toml`](recipes/release_2017.toml) holds these release
+values. A recipe is a TOML file of settings that `build_recipe.load_recipe` reads and checks
+(see [build recipes](#build-recipes)). Three commands build the release database from it:
 
 ```sh
+python noise_abatement_2017.py B407 $OUT/spheres/Be407 --recipe docs/recipes/release_2017.toml \
+    --manifest $OUT/spheres/Be407/manifest.csv
+python noise_abatement_2017.py B407 $OUT/hover_source --recipe docs/recipes/release_2017.toml \
+    --hover-source --runs $HOVER_RUN
 python build_empirical_database.py $OUT/spheres/Be407 $OUT/Be407_ambient_gated.nod \
-    --manifest $OUT/spheres/Be407/manifest.csv \
-    --load-factors 0,1,1.1,1.2,1.5,2,3,5 --extended-fpa=-24:35 \
-    --hover-source $HOVER_SOURCE_SPHERE --no-spectrum
+    --recipe docs/recipes/release_2017.toml --manifest $OUT/spheres/Be407/manifest.csv \
+    --hover-source $HOVER_SOURCE_SPHERE
 ```
 
-`--extended-fpa=-24:35` is written with `=` so that the leading minus sign is not read as an
-option. For `ambient_gated_spectral` leave out `--no-spectrum`; for `fixed_load_factor`
-replace `--load-factors` with `--fixed-load-factor`.
+The first builds the flight spheres from the recipe's `[spheres]` section. The second rebuilds
+the hover source run with `[hover_source]` (`remove_doppler = true`) over `[spheres]`. The
+third writes the `ambient_gated` database from `[database]`. For `ambient_gated_spectral`
+set `store_spectrum = true` in a copy of the recipe. For `fixed_load_factor`, replace
+`load_factors` with `fixed_load_factor = true`, or add `--fixed-load-factor` to the command.
+
+The recipe leaves out the hover correction, which is fitted outside PANAM. Without it, these
+commands build the release database's spheres and settings with an uncorrected hover. To
+apply it, put a module that defines it beside a copy of the recipe and name it in
+`[database]` as `hover_correction = "module:callable"`.
 
 The names in capitals are the caller's:
 
 - `OUT`: an output directory outside the checkout.
-- `LEGACY_SPHERES`: the directory of the shipped legacy spheres, whose grids the new spheres
-  take.
-- `RAY_MODELS`: maps a run id to its ray model, or to None (`build_all`'s `ray_models`).
-  PANAM does not build the per-run atmospheric profiles the rays need.
 - `HOVER_RUN`: the run id of the slowest sphere within 2° of level flight, the one
   `build_empirical_database` would pick as the hover source.
-- `HOVER_SOURCE_SPHERE`: the path of that run's sphere in `{OUT}/hover_source`.
-- `HOVER_CORRECTION`: a callable taking phi and theta (degrees, arrays shaped like the
-  sphere's grid) and the band centers (Hz), and returning dB of shape (phi, theta,
-  frequency); an optional `description` attribute is recorded in the database. The B407's
-  is fitted outside PANAM.
+- `HOVER_SOURCE_SPHERE`: the path of that run's sphere in `$OUT/hover_source`.
+
+Two [`local_paths`](../local_paths.example.toml) entries give the recipe's inputs:
+
+- `b407_legacy_spheres`: the directory of the shipped legacy B407 spheres, whose grids the
+  new spheres take (`reference_directory`).
+- `b407_ray_profiles`: the directory of per-run NICE-OPS atmosphere CSVs, `<run>.csv` with
+  heights in ft (`ray_profiles`). PANAM does not build these profiles.
+
+The same build from Python:
+
+```python
+import build_recipe
+import flight_acoustics as fa
+import noise_abatement_2017 as na
+
+recipe = build_recipe.load_recipe('docs/recipes/release_2017.toml')
+na.build_all('B407', f'{OUT}/spheres/Be407', manifest_path=f'{OUT}/spheres/Be407/manifest.csv',
+             **recipe.sphere_options())
+na.build_all('B407', f'{OUT}/hover_source', runs=[HOVER_RUN], **recipe.sphere_options(hover_source=True))
+fa.build_empirical_database(f'{OUT}/spheres/Be407', f'{OUT}/Be407_ambient_gated.nod',
+                            hover_source=HOVER_SOURCE_SPHERE, hover_correction=HOVER_CORRECTION,
+                            **recipe.database_options())
+```
+
+`HOVER_CORRECTION` is a callable taking phi and theta (degrees, arrays shaped like the
+sphere's grid) and the band centers (Hz), and returning dB of shape (phi, theta, frequency).
+An optional `description` attribute is recorded in the database.
+
+## Build recipes
+
+A recipe has up to three sections, each optional:
+
+- `[spheres]`: keywords of `build_all` and `build_sphere`, with the subtable
+  `[spheres.interpolation]` for the adaptive gridding's settings;
+- `[hover_source]`: the same keywords, over `[spheres]` for the hover source rebuild
+  (`noise_abatement_2017.py --hover-source`);
+- `[database]`: keywords of `build_empirical_database`.
+
+`load_recipe` checks every key against the signatures of those functions and refuses an
+unknown one, naming the file, section and key and suggesting the nearest keyword. Values are
+in the functions' units. Some keywords take a recipe form, because TOML holds no Python
+objects or None:
+
+- `atmosphere`: a table of `temperature` (K), `pressure` (kPa) and `relative_humidity`
+  (percent);
+- `hover_correction`: a `"module:callable"` string; the module is imported from the
+  recipe's directory or from `sys.path`;
+- `winds`: the path of a winds CSV (`read_winds`);
+- ray models: only `ray_profiles`, a directory of per-run atmosphere CSVs
+  (`profile_ray_models`; stratified refraction, plate receivers, each run's frame bearing);
+- `fixed_load_factor = true` in `[database]`: `load_factors=None`.
+
+A recipe refuses the dataset (`aircraft`), the outputs (output directory, `manifest_path`,
+`norah2_directory`, `samples_path`, the database file), per-run arguments and Python-only
+objects (`ground`, a ray model callable). An omitted key keeps the function's default.
+
+A path value may name a `local_paths` entry as `${name}`, for example
+`"${b407_legacy_spheres}"`. The rest of the path is taken relative to the current directory.
+Each name is looked up only when its section is used, so a database build does not need
+the sphere build's data.
+
+With `--recipe`, an option given on the command line overrides the recipe, and the recipe
+overrides the command line's defaults. This holds even for an option given at its default
+value: `--band-snr-gate-db 10` overrides a recipe's 12.
 
 ## Code and tests
 
-The code is in `noise_abatement_2017.py` (`build_all`, `build_sphere`, `check_tracks`,
-`check_track`, `steady_window`, `frame_bearing_deg`, `ground_microphone_positions`,
-`read_winds`, `select_from_manifest`) and `flight_acoustics.py` (`build_empirical_database`,
+The code is in `build_recipe.py` (`load_recipe`), `noise_abatement_2017.py` (`build_all`,
+`build_sphere`, `profile_ray_models`, `check_tracks`, `check_track`, `steady_window`,
+`frame_bearing_deg`, `ground_microphone_positions`, `read_winds`, `select_from_manifest`) and `flight_acoustics.py` (`build_empirical_database`,
 `write_aam_hemisphere_netcdf`, `read_vehicle_data`). The tests are
 `tests/test_noise_abatement_2017.py`, `tests/test_track_check.py`,
-`tests/test_run_metadata.py`, `tests/test_azimuth_reference.py` and
-`tests/test_build_empirical_database_cli.py`.
+`tests/test_run_metadata.py`, `tests/test_azimuth_reference.py`,
+`tests/test_build_empirical_database_cli.py` and `tests/test_build_recipe.py`.

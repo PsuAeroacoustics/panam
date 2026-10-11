@@ -48,6 +48,9 @@ Instructions for AI coding tools working on PANAM. Human developers: see
   `psychoacoustics` (ISO 532-1 loudness, DIN 45692 sharpness).
 - `cli.py`: `colon_pair`, `colon_pair_or_single`, `save_or_show`.
 - `provenance.py`: the `panam_*` provenance stamp on written files.
+- `build_recipe.py`: TOML build recipes (`load_recipe`) for `--recipe` on
+  `noise_abatement_2017.py` and `build_empirical_database.py`;
+  `docs/recipes/release_2017.toml` is the 2017 release.
 - `local_paths.py`: data lookup. `unit_conversion.py`, `default_units.py`:
   third-party unit conversions.
 - Tools: `noise_abatement_2017.py`, `build_empirical_database.py`,
