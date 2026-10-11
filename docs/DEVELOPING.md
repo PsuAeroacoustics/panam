@@ -52,7 +52,7 @@ read the sphere files back.
 | `noise_abatement_2017.py` | The 2017 Noise Abatement build: dataset layout, tracks and the track check, steady windows, atmosphere per run, plate tables, `build_sphere`, `build_all`, and its CLI |
 | `ground_plane.py` | Ground impedance models, pole microphones, co-located pole and board pairs, ground-plate models, the exact half-space Green's function, the two-path fit, `emission_times`. Numba-compiled |
 | `axisymmetric_bem.py` | The axisymmetric BEM of the plate on the ground (`scattering`, `table`, `board_level`, `field`, `write_netcdf` for NICE-OPS). Numba-compiled |
-| `refracted_rays.py` | The ray-model interface for depropagation: `straight_ray_model`, and `external_ray_model`, which runs NICE-OPS's `niceops_ray_geometry` |
+| `refracted_rays.py` | The ray-model interface for depropagation: `straight_ray_model`, `uniform_wind_ray_model`, and `external_ray_model`, which runs NICE-OPS's `niceops_ray_geometry` |
 | `vold_kalman_filter.py` | The multi-shaft Vold-Kalman order-tracking filter |
 | `panam_acoustics/` | `signal_io` (recording loaders), `filters` (Butterworth helpers, the one-third-octave filter bank), `atmosphere` and `iso_9613_1_1993` (ISO 9613-1 absorption), `plotting` (`acoustic_plot_style`). See its `THIRD_PARTY_NOTICES.md` for the parts derived from python-acoustics |
 | `cli.py` | Argument types and figure output shared by the scripts: `colon_pair`, `colon_pair_or_single`, `save_or_show` |

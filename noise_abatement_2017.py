@@ -62,6 +62,7 @@ from netCDF4 import Dataset
 
 import flight_acoustics as fa
 import local_paths
+import refracted_rays
 
 #: Name under which :mod:`local_paths` finds the dataset root.
 DATA_ROOT_NAME = 'noise_abatement_2017'
@@ -974,6 +975,15 @@ def wind_components(wind, reference_east_north, ground_velocity_east_north_ft_s)
     return along, cross, airspeed_knots
 
 
+def wind_in_frame_ft_s(wind, bearing_deg):
+    """A :func:`normalize_wind` wind as (Wx, Wy, 0) in ft/s in the track frame of
+    :func:`east_north_to_frame` (+x along compass ``bearing_deg``, deg): the air's horizontal
+    velocity, for :func:`refracted_rays.uniform_wind_ray_model`."""
+    scale = fa.WIND_SPEED_UNITS[wind['units']] / 0.3048
+    x, y = east_north_to_frame(bearing_deg, wind['east'] * scale, wind['north'] * scale)
+    return np.array([float(x), float(y), 0.0])
+
+
 # --------------------------------------------------------------------------
 # Acoustic loading
 # --------------------------------------------------------------------------
@@ -1286,7 +1296,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
                  rim_elevation_deg=None, max_rim_range_ft=None, remove_doppler=False,
                  nose_from_heading=False, samples_path=None, tone_aware=False,
                  azimuth_reference=None, wind=None, track_check=True,
-                 min_height_above_array_ft=MIN_HEIGHT_ABOVE_ARRAY_FT):
+                 min_height_above_array_ft=MIN_HEIGHT_ABOVE_ARRAY_FT, air_relative_doppler=False):
     """Depropagate one run into an AAM-style source sphere.
 
     ``track_check`` (default True) refuses, with :class:`TrackRefused` and the reason, a run
@@ -1343,7 +1353,12 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     samples are filed at the rays' launch angles, spreading is undone over the
     ray tubes and absorption over the arcs, and the plate correction is taken at
     the rays' arrival angles.  ``min_elevation_deg`` then bounds the launch
-    angle.  Default None: straight lines, as before.
+    angle.  Default None: straight lines, as before.  ``ray_model='wind'`` depropagates
+    along straight rays carried by the run's ``wind`` (required), uniform over the whole
+    path, in the run's uniform atmosphere (:func:`refracted_rays.uniform_wind_ray_model`):
+    a downwind sample travels faster and spreads over a shorter range, and a crosswind
+    turns the direction it is filed at.  ``air_relative_doppler`` (with ``remove_doppler``
+    and ``ray_model='wind'``) also takes the Doppler factor in the moving air; default False.
 
     ``max_rim_range_ft`` with ``rim_elevation_deg`` lets samples filed shallower than
     that come from as far as that range instead of ``max_propagation_range_ft``
@@ -1478,6 +1493,13 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
 
     if speed_of_sound_ft_s is None:
         speed_of_sound_ft_s = sound_speed_ft_s(atmosphere)
+    if isinstance(ray_model, str):
+        if ray_model != 'wind':
+            raise ValueError("ray_model must be a ray model, None or 'wind', not {!r}".format(ray_model))
+        if wind is None:
+            raise ValueError("Run {}: ray_model='wind' needs the run's wind".format(run))
+        ray_model = refracted_rays.uniform_wind_ray_model(speed_of_sound_ft_s,
+                                                          wind_in_frame_ft_s(normalized, bearing))
 
     mics = test.ground_board_mics(run)
     if not mics:
@@ -1590,6 +1612,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
         tone_aware=tone_aware,
         return_scattered=samples_path is not None,
         track_nose=nose,
+        air_relative_doppler=air_relative_doppler,
     )
     if samples_path is not None:
         scattered = hemisphere['scattered']
@@ -1738,9 +1761,9 @@ def build_all(aircraft, output_directory, *, root=None, runs=None,
     in its failure record; pass ``track_check=False`` to build it anyway.
 
     ``ray_models``, if given, is called with each run id and returns that run's
-    ``ray_model`` for :func:`build_sphere` (its own atmosphere), or None to
-    build that run along straight lines; the manifest's ``rays`` column says
-    which.
+    ``ray_model`` for :func:`build_sphere` (its own atmosphere, or ``'wind'`` for its
+    wind from ``winds``), or None to build that run along straight lines; the
+    manifest's ``rays`` column says which.
 
     ``norah2_directory``, if given, also receives each sphere as a NORAH2
     ``.hem`` file and, once the batch is done, the ``[prefix]_Triangulation.int``
@@ -1972,6 +1995,10 @@ def main(argv=None):
                         help='CSV of the wind at the aircraft per run (run, units, source, and east/north '
                              'or speed/direction_from_deg; see read_winds), recorded in each sphere; '
                              'nothing is assumed about its units')
+    parser.add_argument('--ray-model', choices=('straight', 'wind'), default='straight',
+                        help="'straight' (default): straight lines in still air; 'wind': straight rays "
+                             "carried by each run's wind from --winds (required), uniform over the path; "
+                             'a run with no wind there fails')
     parser.add_argument('--no-track-check', action='store_true',
                         help='build runs whose track fails the sanity check (below or within '
                              '--min-height-above-array-ft of the ground boards, z not following altitude)')
@@ -2060,6 +2087,8 @@ def main(argv=None):
         return 0
     if args.output_directory is None:
         parser.error('output_directory is required unless --check-tracks is given')
+    if args.ray_model == 'wind' and not args.winds:
+        parser.error('--ray-model wind needs --winds')
     records, failures = build_all(
         args.aircraft, args.output_directory, root=args.root, runs=args.runs,
         steady_only=not args.include_maneuvers,
@@ -2078,6 +2107,7 @@ def main(argv=None):
         prefetch=not args.no_prefetch,
         azimuth_reference=args.azimuth_reference,
         winds=read_winds(args.winds) if args.winds else None,
+        ray_models=(lambda run: 'wind') if args.ray_model == 'wind' else None,
         track_check=not args.no_track_check,
         min_height_above_array_ft=args.min_height_above_array_ft)
     logging.info('Built %d spheres, %d failures', len(records), len(failures))

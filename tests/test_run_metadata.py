@@ -316,3 +316,58 @@ def test_a_wind_needs_the_frame_bearing(tmp_path):
     with pytest.raises(ValueError, match='no true_heading'):
         na.build_sphere(test, '289108', str(tmp_path / 'x.nc'), board_correction='flat',
                         wind=dict(speed=5.0, direction_from_deg=0.0, units='kt', source='lidar'))
+
+
+def test_a_wind_turns_into_the_track_frame():
+    """On a 270 deg frame (+x west, +y south) a 10 kt wind from the west moves along -x."""
+    wind = na.normalize_wind(dict(speed=10.0, direction_from_deg=270.0, units='kt', source='lidar'))
+    np.testing.assert_allclose(na.wind_in_frame_ft_s(wind, 270.0), [-10.0 * fa.KNOT_MPS / 0.3048, 0.0, 0.0],
+                               atol=1e-12)
+    wind = na.normalize_wind(dict(east=0.0, north=-2.0, units='m/s', source='lidar'))
+    np.testing.assert_allclose(na.wind_in_frame_ft_s(wind, 270.0), [0.0, 2.0 / 0.3048, 0.0], atol=1e-12)
+
+
+def test_the_cli_builds_along_wind_carried_rays(tmp_path):
+    """--ray-model wind depropagates each run along rays its own wind carries: the manifest
+    names the wind in the track frame, and the sphere differs from the straight-ray one."""
+    import csv
+    from test_noise_abatement_2017 import _archive, _write_csv
+    _archive(tmp_path)
+    base = tmp_path / 'AS350B3'
+    _write_csv(base / 'AS350B3FullRefList.csv',
+               ['combined', 'test_cond', 'layout', 'bank_ang', 'accel_rate', 'utc_secs_from_mid_start',
+                'run_num', 'true_heading', 'gross_weight'],
+               [['289101', 'AMB', 'A', '0', '0', '60.0', '101', '270', ''],
+                ['289108', 'L1', 'A', '0', '0', '100.0', '108', '270', '4257']])
+    winds = tmp_path / 'winds.csv'
+    winds.write_text('run,speed,direction_from_deg,units,source\n289108,30,180,kt,lidar\n')
+    common = ['AS350B3', '--root', str(tmp_path), '--winds', str(winds), '--no-prefetch',
+              '--board-correction', 'flat']
+    levels = {}
+    for rays in ('straight', 'wind'):
+        manifest = tmp_path / (rays + '.csv')
+        assert na.main(common + [str(tmp_path / rays), '--ray-model', rays, '--manifest', str(manifest)]) == 0
+        with open(manifest, newline='') as handle:
+            row = next(csv.DictReader(handle))
+        levels[rays] = fa.mask_missing_levels(fa.load_nc_sphere(row['output'])[0])
+        if rays == 'straight':
+            assert row['rays'] == 'straight'
+        else:
+            # From the south: toward the north, which is -y on a 270 deg frame.
+            speed = 30.0 * fa.KNOT_MPS / 0.3048
+            assert row['rays'].startswith('uniform wind (') and row['rays'].endswith(', -{:.6g}, 0)'.format(speed))
+    both = np.isfinite(levels['straight']) & np.isfinite(levels['wind'])
+    assert both.sum() > 100
+    assert np.abs(levels['wind'][both] - levels['straight'][both]).max() > 0.01
+
+
+def test_wind_carried_rays_need_a_wind(tmp_path):
+    from test_noise_abatement_2017 import _archive
+    _archive(tmp_path)
+    test = na.NoiseAbatementTest('AS350B3', root=str(tmp_path))
+    with pytest.raises(ValueError, match="needs the run's wind"):
+        na.build_sphere(test, '289108', str(tmp_path / 'x.nc'), board_correction='flat', ray_model='wind')
+    with pytest.raises(ValueError, match="'wind'"):
+        na.build_sphere(test, '289108', str(tmp_path / 'x.nc'), board_correction='flat', ray_model='bent')
+    with pytest.raises(SystemExit):
+        na.main(['AS350B3', str(tmp_path / 'out'), '--root', str(tmp_path), '--ray-model', 'wind'])
