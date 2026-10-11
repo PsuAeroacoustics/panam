@@ -1496,6 +1496,10 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     stamp's ``settings_sha256``.
     """
     settings = dict(locals())
+    # The node statistics add diagnostic variables and change no level: left off, they stay
+    # out of the settings so that a default build keeps the hash it had before the option.
+    if not node_statistics:
+        del settings['node_statistics']
     inputs = dict(test=test.aircraft, run=str(run))
     for name in ('output_path', 'reference_sphere', 'norah2_directory', 'plate_table_directory',
                  'samples_path'):

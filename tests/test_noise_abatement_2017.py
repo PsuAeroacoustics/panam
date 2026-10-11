@@ -722,6 +722,24 @@ def test_the_cli_node_statistics_adds_variables_and_leaves_the_levels_alone(tmp_
             assert np.any(spread > 0.0)
 
 
+def test_node_statistics_left_off_keep_the_default_settings_hash(tmp_path):
+    """node_statistics=False stays out of the hashed settings, so a default build keeps the
+    hash of the same settings before the option existed; turned on, it is recorded."""
+    import json
+    from netCDF4 import Dataset
+    _archive(tmp_path)
+    test = na.NoiseAbatementTest('AS350B3', root=str(tmp_path))
+    plain = na.build_sphere(test, '289108', str(tmp_path / 'plain.nc'), board_correction='flat')
+    stats = na.build_sphere(test, '289108', str(tmp_path / 'stats.nc'), board_correction='flat',
+                            node_statistics=True)
+    with Dataset(plain['output']) as one, Dataset(stats['output']) as two:
+        plain_settings, stats_settings = json.loads(one.panam_settings), json.loads(two.panam_settings)
+    assert 'node_statistics' not in plain_settings
+    assert stats_settings.pop('node_statistics') is True
+    assert stats_settings == plain_settings
+    assert stats['settings_sha256'] != plain['settings_sha256']
+
+
 def test_tone_split_needs_tone_aware(tmp_path):
     _archive(tmp_path)
     test = na.NoiseAbatementTest('AS350B3', root=str(tmp_path))

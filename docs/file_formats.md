@@ -311,6 +311,8 @@ records `reference_sphere_given` (a reference sphere sets the grid and bands) an
 `build_empirical_database` records `hover_source_given`. Equal processing settings give
 equal text and an equal hash, so `panam_settings_sha256` alone says whether two spheres, or
 two databases, were built with the same settings, whatever their names or runs.
+`build_sphere` records `node_statistics` only when it is true: the node statistics add
+variables and change no level, so a default build keeps the hash it had before the option.
 
 `build_sphere`'s record, and the `--manifest` CSV, also carry the settings in
 `noise_abatement_2017.RECORDED_SETTINGS` as given, `panam_version` and `settings_sha256`.
