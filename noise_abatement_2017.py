@@ -62,6 +62,7 @@ from netCDF4 import Dataset
 
 import flight_acoustics as fa
 import local_paths
+import provenance
 
 #: Name under which :mod:`local_paths` finds the dataset root.
 DATA_ROOT_NAME = 'noise_abatement_2017'
@@ -1270,6 +1271,19 @@ def norah2_file_name(sphere_prefix, speed_knots, fpa_deg, run_number):
         sphere_prefix, procedure, speed_knots, round(abs(fpa_deg), 1), run_number)
 
 
+#: build_sphere settings copied, as given, into its record and the manifest; the
+#: rest are summarized there already (interpolation, rim_range, board_correction,
+#: min_elevation_deg, max_array_range_ft, azimuth_reference) or are in the sphere's
+#: provenance stamp only.
+RECORDED_SETTINGS = (
+    'band_snr_gate_db', 'gate_ambient', 'ambient_fallback_percentile',
+    'max_absorption_correction_db', 'max_response_correction_db', 'third_octave_method',
+    'tone_aware', 'remove_doppler', 'point_stride', 'r_ref_ft', 'window_time', 'window_overlap',
+    'azi_step', 'elv_step', 'rmax', 'apply_absorption_deprop', 'max_propagation_range_ft',
+    'min_steady_duration_s', 'nose_from_heading', 'flip_y_for_geometry', 'track_check',
+)
+
+
 def build_sphere(test, run, output_path, *, reference_sphere=None,
                  band_snr_gate_db=10.0, gate_ambient=True,
                  max_absorption_correction_db=30.0, max_response_correction_db=None,
@@ -1375,9 +1389,27 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     R66 day 231) is depropagated in a 20 C, 20 % RH, 101.325 kPa standard day with a logged
     warning, and its sphere records the air density as NaN with source ``'none'``.
 
+    The sphere carries the provenance stamp of :mod:`provenance`: the processing
+    arguments of this call as canonical JSON, and what identifies the sphere (the
+    aircraft, the run, and the output, reference, NORAH2, plate-table and samples
+    paths by file name) in ``panam_inputs``.  Equal processing settings give an
+    equal ``settings_sha256`` across runs.
+
     Returns a dict describing what was processed, so a batch caller can log and
-    audit it without re-opening the output.
+    audit it without re-opening the output.  It includes the settings of
+    :data:`RECORDED_SETTINGS` as given, the code version (``panam_version``) and the
+    stamp's ``settings_sha256``.
     """
+    settings = dict(locals())
+    inputs = dict(test=test.aircraft, run=str(run))
+    for name in ('output_path', 'reference_sphere', 'norah2_directory', 'plate_table_directory',
+                 'samples_path'):
+        value = settings.pop(name)
+        inputs[name] = None if value is None else os.path.basename(
+            os.path.normpath(os.path.expanduser(str(value))))
+    del settings['test'], settings['run']
+    # A reference sphere sets the grid and bands, so whether one was given is a setting.
+    settings['reference_sphere_given'] = reference_sphere is not None
     if rim_elevation_deg is None:
         rim_elevation_deg = DEFAULT_RIM_ELEVATION_DEG
     row = test.by_run[run]
@@ -1600,6 +1632,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
                  range_ft=scattered['range'], source_height_ft=scattered['source_height'], run=str(run))
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)) or '.', exist_ok=True)
+    stamp = provenance.build_provenance('noise_abatement_2017.build_sphere', settings, inputs=inputs)
     fa.write_aam_hemisphere_netcdf(
         output_path,
         hemisphere,
@@ -1615,6 +1648,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
         doppler_shift_removed=1.0 if remove_doppler else 0.0,
         azimuth_reference=azimuth_reference,
         run_metadata=run_metadata,
+        provenance=stamp,
     )
     norah2_output_path = None
     if norah2_directory is not None:
@@ -1663,7 +1697,10 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
                     max_rim_range_ft, rim_elevation_deg),
                 board_correction=board_correction if board_correction == 'flat' else
                 'plate_bem ' + ' '.join('{}={}'.format(k, v) for k, v in
-                                         sorted((ground or SITE_GROUND).items())))
+                                         sorted((ground or SITE_GROUND).items())),
+                panam_version=stamp['panam_version'],
+                settings_sha256=stamp['panam_settings_sha256'],
+                **{name: settings[name] for name in RECORDED_SETTINGS})
 
 
 # --------------------------------------------------------------------------
@@ -1840,7 +1877,8 @@ def write_manifest(path, records, failures):
               'relative_humidity', 'pressure_kpa', 'speed_of_sound_ft_s', 'board_correction',
               'rays', 'interpolation', 'gaps', 'rim_range', 'azimuth_reference', 'track_flags',
               'min_height_above_array_ft', 'gross_weight_lb', 'air_density_kg_m3', 'air_density_source',
-              'wind_source', 'wind_units', 'wind_along_track', 'wind_cross_track', 'airspeed_knots', 'error']
+              'wind_source', 'wind_units', 'wind_along_track', 'wind_cross_track', 'airspeed_knots',
+              *RECORDED_SETTINGS, 'panam_version', 'settings_sha256', 'error']
     with open(path, 'w', encoding='utf-8', newline='') as handle:
         writer = csv.DictWriter(handle, fieldnames=fields, extrasaction='ignore')
         writer.writeheader()

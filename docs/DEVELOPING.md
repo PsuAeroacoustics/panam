@@ -58,6 +58,7 @@ read the sphere files back.
 | `panam_acoustics/` | `signal_io` (recording loaders), `filters` (Butterworth helpers, the one-third-octave filter bank), `atmosphere` and `iso_9613_1_1993` (ISO 9613-1 absorption), `plotting` (`acoustic_plot_style`). See its `THIRD_PARTY_NOTICES.md` for the parts derived from python-acoustics |
 | `cli.py` | Argument types and figure output shared by the scripts: `colon_pair`, `colon_pair_or_single`, `save_or_show` |
 | `local_paths.py` | `data_path(name)`: where this machine keeps external data and the NICE-OPS executables |
+| `provenance.py` | `build_provenance(tool, settings)`: the code version, library versions and settings stamped on written spheres and databases |
 | `unit_conversion.py`, `default_units.py` | Aerospace unit conversions (third-party, BSD-style license in the file headers) |
 
 Scripts with a command line: `noise_abatement_2017.py` (the main pipeline),

@@ -41,7 +41,8 @@ from 10 Hz to 10 kHz. When it is given a `reference_sphere`, it uses the legacy 
 grid and bands instead. `AMPLITUDE` carries no `_FillValue`.
 
 Attributes: `title`, and when known `azimuth_reference` (`track` or `heading`; a reader takes
-a sphere without it as `track`).
+a sphere without it as `track`). Every sphere also carries the
+[provenance stamp](#provenance-stamp).
 
 **Per-run metadata.** When `build_sphere` passes `run_metadata`, the file also carries
 these f8 scalar variables after `AMPLITUDE`. A variable is left out when its value is
@@ -115,6 +116,11 @@ Attributes:
 | `hover_source` | when given: the hover source sphere's file name |
 | `source_spheres` | the file names of the spheres used, one per line, sorted (no directory); always written by `build_empirical_database` |
 | `excluded_spheres` | when `exclude` was given: the file names it left out, one per line |
+
+`build_empirical_database` also records `load_factors` (f8 array; left out with
+`load_factors=None`, which `fixed_load_factor` records) and `extended_flight_path_angles_deg`
+(f8 array, degrees; left out when not given). Both builders write the
+[provenance stamp](#provenance-stamp).
 
 A NORAH2 import adds the attributes `source_format`, `norah2_speed_mapping`,
 `norah2_mirror_rotor`, `norah2_ground_included_accepted`, `norah2_fill_empty` and
@@ -194,6 +200,49 @@ Instead, each of its groups carries `norah2_source` and the file's constants as
 
 Adding names leaves the version at 1. Bump it when the on-disk meaning of existing data
 changes, together with a matching change in NICE-OPS.
+
+## Provenance stamp
+
+The AAM sphere and the database root carry these optional text attributes, written by
+`provenance.build_provenance` and `provenance.write_provenance`. No reader requires them, and
+adding them left `DATABASE_FORMAT_VERSION` at 1. A file written before them has none.
+
+| attribute | content |
+| --- | --- |
+| `panam_tool` | the writer: `noise_abatement_2017.build_sphere`, `flight_acoustics.write_aam_hemisphere_netcdf` (called directly), `flight_acoustics.build_empirical_database` or `flight_acoustics.build_database_from_norah2` |
+| `panam_version` | `git describe --always --dirty` of the PANAM source directory; `unknown` without git |
+| `panam_created_utc` | when the file was written, UTC, ISO 8601 to the second, e.g. `2026-10-11T14:03:22Z` |
+| `panam_python`, `panam_numpy`, `panam_scipy`, `panam_netcdf4`, `panam_numba` | library versions; `not installed` when absent |
+| `panam_settings` | the writer's processing arguments as canonical JSON: keys sorted, no whitespace, ASCII |
+| `panam_settings_sha256` | SHA-256 (hex) of `panam_settings` |
+| `panam_inputs` | what identifies the file, as canonical JSON, not hashed: its own name and its inputs by file name (see below) |
+
+The settings are reduced to plain JSON before they are written: numpy arrays and scalars to
+lists and numbers, a non-finite number to the text `nan`, `inf` or `-inf` (the JSON is
+strict, with no `NaN` or `Infinity`), a callable to its qualified name (with its
+`description`, if it has one), an object such as an `Atmosphere` to its public attributes
+and type name. A path is reduced to its file name: the builders' path arguments always, and
+any other string that is an absolute path or starts with `~`. No stamp names a directory of
+the machine that wrote it.
+
+The file's identity is kept out of the hashed settings and written to `panam_inputs`
+instead:
+
+| writer | `panam_inputs` |
+| --- | --- |
+| `build_sphere` | `test` (the aircraft), `run`, `output_path`, `reference_sphere`, `norah2_directory`, `plate_table_directory`, `samples_path` |
+| `write_aam_hemisphere_netcdf` (called directly) | `filename` |
+| `build_empirical_database` | `directory_name`, `database_filename`, `hover_source` |
+| `build_database_from_norah2` | `hem_files`, `database_filename` |
+
+Where an identity changes the processing, the settings record that much: `build_sphere`
+records `reference_sphere_given` (a reference sphere sets the grid and bands) and
+`build_empirical_database` records `hover_source_given`. Equal processing settings give
+equal text and an equal hash, so `panam_settings_sha256` alone says whether two spheres, or
+two databases, were built with the same settings, whatever their names or runs.
+
+`build_sphere`'s record, and the `--manifest` CSV, also carry the settings in
+`noise_abatement_2017.RECORDED_SETTINGS` as given, `panam_version` and `settings_sha256`.
 
 ## How a bin's state travels
 
@@ -307,5 +356,7 @@ row, then one row per run:
   `AMPLITUDE_SD_DB`, and that they follow the AAM variables.
 - `tests/test_write_aam_hemisphere_netcdf.py` pins the AAM variable order, the -999
   sentinel, the masking conventions read back, and the root vehicle fields.
+- `tests/test_provenance.py` pins the provenance stamp: a stable hash for equal settings,
+  the reduction of paths, and that no written attribute names a directory of the machine.
 - `tests/test_golden_results.py` pins depropagated levels and the database built from them
   to 1e-6 dB.

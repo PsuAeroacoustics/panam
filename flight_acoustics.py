@@ -23,6 +23,7 @@ from matplotlib.pyplot import subplots, colorbar
 from netCDF4 import Dataset
 from pymap3d import geodetic2enu, enu2geodetic
 
+import provenance as _provenance
 import unit_conversion
 from panam_acoustics import filters as pa_filters
 from panam_acoustics.signal_io import (
@@ -2672,6 +2673,7 @@ def write_aam_hemisphere_netcdf(
         run_metadata: Optional[dict] = None,
         art_levels=None,
         extra_variables: Optional[dict] = None,
+        provenance: Optional[dict] = None,
 ):
     """Write a depropagated acoustic hemisphere to an AAM/RNM-style netCDF sphere.
 
@@ -2740,10 +2742,22 @@ def write_aam_hemisphere_netcdf(
             (PHI, THETA, FREQUENCY) variables, written after everything else, which
             AAM does not read.  Integer arrays are written as i4; anything else as f4,
             with non-finite values as -999.
+        provenance: the provenance stamp (:func:`provenance.build_provenance`) to
+            write as the ``panam_*`` global attributes.  None stamps the file with
+            this writer's own arguments as the settings (the level data in
+            hemisphere, art_levels and extra_variables, run_metadata and filename
+            left out) and the file name as its
+            ``panam_inputs``.  AAM reads none of them.
 
     Returns:
         None
     """
+    if provenance is None:
+        settings = {key: value for key, value in locals().items()
+                    if key not in ('hemisphere', 'run_metadata', 'provenance', 'filename',
+                                   'art_levels', 'extra_variables')}
+        provenance = _provenance.build_provenance('flight_acoustics.write_aam_hemisphere_netcdf',
+                                                  settings, inputs={'filename': _path_name(filename)})
 
     if azimuth_reference is not None and azimuth_reference not in AZIMUTH_REFERENCES:
         raise ValueError('azimuth_reference must be one of {}, not {!r}'.format(
@@ -2961,6 +2975,7 @@ def write_aam_hemisphere_netcdf(
                 values[~np.isfinite(values)] = missing_sentinel
                 variable[:, :, :] = values
             variable.unit = str(unit)
+        _provenance.write_provenance(ds, provenance)
     finally:
         ds.close()
 
@@ -3649,9 +3664,19 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
             spectral path needs.  Without them only dBA and EAA are written.
         overwrite: if False, refuse an existing ``database_filename``.
 
+    The root carries the provenance stamp of :mod:`provenance`: the processing
+    arguments of this call as canonical JSON, and the .hem files and the
+    database by name in ``panam_inputs``.
+
     Returns: list of dicts, one per written condition, in group order: source
         file, speed_knots, flight_path_angle_deg, advance_ratio.
     """
+    # File identity apart from the hashed settings; paths by file name only (a relative
+    # path's directories name this machine's layout too).
+    settings = {key: value for key, value in locals().items()
+                if key not in ('hem_files', 'database_filename')}
+    inputs = dict(hem_files=[_path_name(f) for f in hem_files],
+                  database_filename=_path_name(database_filename))
     if speed_mapping not in NORAH2_SPEED_MAPPINGS:
         raise ValueError('speed_mapping is required and must be one of {}: whether ACSPEED is an '
                          'indicated airspeed to convert to true airspeed or a ground speed. Got {!r}'
@@ -3818,7 +3843,10 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
                                thrust_air_density=float(thrust_air_density),
                                mirror_rotor=mirror_rotor,
                                accept_ground_included=accept_ground_included,
-                               fill_empty=fill_empty)
+                               fill_empty=fill_empty,
+                               provenance=_provenance.build_provenance(
+                                   'flight_acoustics.build_database_from_norah2', settings,
+                                   inputs=inputs))
         os.replace(temporary_path, database_path)
     except BaseException:
         if os.path.exists(temporary_path):
@@ -3864,7 +3892,7 @@ def _check_build_atmosphere(atmosphere):
 def _write_norah2_database(path, pending_groups, conditions, *, speed_mapping, atmosphere,
                            main_rotor_radius, main_rotor_tip_speed, vehicle_weight_newtons,
                            weight_coefficient, thrust_air_density, mirror_rotor,
-                           accept_ground_included, fill_empty):
+                           accept_ground_included, fill_empty, provenance=None):
     """Write the checked conditions of :func:`build_database_from_norah2` to ``path``."""
     ncdatabase = Dataset(path, 'w')
     try:
@@ -3873,7 +3901,7 @@ def _write_norah2_database(path, pending_groups, conditions, *, speed_mapping, a
                              atmosphere=atmosphere, main_rotor_radius=main_rotor_radius,
                              main_rotor_tip_speed=main_rotor_tip_speed,
                              vehicle_weight_newtons=vehicle_weight_newtons,
-                             azimuth_reference='track')
+                             azimuth_reference='track', provenance=provenance)
         ncdatabase.source_format = 'NORAH2 hemisphere (.hem)'
         ncdatabase.norah2_speed_mapping = speed_mapping
         ncdatabase.norah2_mirror_rotor = int(bool(mirror_rotor))
@@ -4555,7 +4583,31 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     condition_origin ('measured', 'extended_flight_path_angle' or
     'synthesized_hover').  NICE-OPS reads none of them; they are recorded so
     that air-referenced or per-run C_T labels can be tested without a rebuild.
+
+    The root also records the build itself: the text attributes of
+    :data:`provenance.PROVENANCE_ATTRIBUTES` (code version, library versions,
+    time, the processing arguments of this call as canonical JSON with its
+    SHA-256, and the directory, database, hover source, ``spheres`` and
+    ``exclude`` by file name in ``panam_inputs``), and, as float attributes, ``load_factors``
+    (omitted with ``load_factors=None``; ``fixed_load_factor`` says so) and
+    ``extended_flight_path_angles_deg`` (omitted when not given).
     """
+    # File identity apart from the hashed settings; paths by file name only (a relative
+    # path's directories name this machine's layout too).  Whether a hover source was
+    # given changes the build, so that much stays in the settings.
+    settings = {key: value for key, value in locals().items()
+                if key not in ('directory_name', 'database_filename', 'hover_source',
+                               'spheres', 'exclude')}
+    settings['hover_source_given'] = hover_source is not None
+    inputs = dict(directory_name=_path_name(directory_name),
+                  database_filename=_path_name(database_filename),
+                  hover_source=None if hover_source is None else _path_name(hover_source))
+    # Which spheres a build uses is its input, not a processing setting.
+    if spheres is not None and not isinstance(spheres, (str, os.PathLike)):
+        inputs['spheres'] = sorted(_path_name(sphere) for sphere in spheres)
+    if exclude is not None:
+        inputs['exclude'] = sorted(_path_name(pattern) for pattern in (
+            [exclude] if isinstance(exclude, (str, os.PathLike)) else exclude))
     # TODO add reinterpolation flag
 
     if speed_reference not in SPEED_REFERENCES:
@@ -4594,7 +4646,15 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                          main_rotor_radius=main_rotor_radius,
                          main_rotor_tip_speed=main_rotor_tip_speed,
                          vehicle_weight_newtons=read_vehicle_weight_newtons(directory_name),
-                         azimuth_reference=azimuth)
+                         azimuth_reference=azimuth,
+                         provenance=_provenance.build_provenance(
+                             'flight_acoustics.build_empirical_database', settings,
+                             inputs=inputs))
+    if not fixed_load_factor:
+        ncdatabase.load_factors = np.asarray(load_factors, dtype=np.float64).ravel()
+    if extended_flight_path_angles is not None:
+        ncdatabase.extended_flight_path_angles_deg = np.asarray(
+            extended_flight_path_angles, dtype=np.float64).ravel()
     if hover_correction is not None:
         ncdatabase.hover_correction = str(getattr(hover_correction, 'description', 'applied'))
     if hover_source is not None:
@@ -4790,15 +4850,22 @@ def _select_sphere_files(directory_name, spheres=None, exclude=None):
     return [f for f in candidates if f not in excluded], excluded
 
 
+def _path_name(path):
+    """The file (or directory) name of ``path``, for a provenance stamp."""
+    return os.path.basename(os.path.normpath(os.path.expanduser(os.fspath(path))))
+
+
 def _write_database_root(ncdatabase, *, fixed_load_factor, speed_reference, atmosphere,
                          main_rotor_radius, main_rotor_tip_speed, vehicle_weight_newtons,
-                         azimuth_reference):
+                         azimuth_reference, provenance=None):
     """Write the root flags, build atmosphere and vehicle data every database carries.
 
     Shared by :func:`build_empirical_database` and :func:`build_database_from_norah2`.
     The vehicle values are skipped when None.  azimuth_reference (one of
     :data:`AZIMUTH_REFERENCES`) is required, so that no database is written
     without saying which frame its spheres' azimuth is measured in.
+    provenance, a stamp from :func:`provenance.build_provenance`, is written
+    as the root ``panam_*`` text attributes; None writes none.
     """
     if speed_reference not in SPEED_REFERENCES:
         raise ValueError('speed_reference must be one of {}, not {!r}'.format(
@@ -4846,6 +4913,7 @@ def _write_database_root(ncdatabase, *, fixed_load_factor, speed_reference, atmo
     if vehicle_weight_newtons is not None:
         ncdatabase.createVariable("vehicle_weight_newtons", 'f8')
         ncdatabase['vehicle_weight_newtons'][:] = float(vehicle_weight_newtons)
+    _provenance.write_provenance(ncdatabase, provenance)
 
 
 def _write_shared_grid_and_frequency(ncdatabase, pending_groups):
