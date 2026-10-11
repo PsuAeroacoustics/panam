@@ -83,3 +83,65 @@ def test_a_doppler_shifted_tone_is_filed_at_its_emitted_frequency():
 def test_white_noise_matches_a_brick_wall_sum():
     psd = np.random.default_rng(8).exponential(1.0, (NOISE_F.size, 200))
     assert np.all(np.abs(_band_error_db(psd)) < 0.3)
+
+
+def _tone_in_noise_psd(f0=100.3, noise_psd=1e-3, columns=20, fs=1024.0, n=1024):
+    """Hann periodograms (1 Hz bins, columns of independent noise) of a 1 Pa^2 tone at
+    ``f0`` in white noise of ``noise_psd`` Pa^2/Hz."""
+    rng = np.random.default_rng(5)
+    t = np.arange(n) / fs
+    tone = np.sqrt(2.0) * np.sin(2 * np.pi * f0 * t)
+    noise = rng.standard_normal((columns, n)) * np.sqrt(noise_psd * fs / 2.0)
+    f, psd = scipy.signal.periodogram(tone + noise, fs, window='hann', scaling='density', axis=-1)
+    return f, psd.T
+
+
+
+BANDS_63_160 = fa.third_octave_band_edges(np.array([63.0, 80.0, 100.0, 125.0, 160.0]))
+
+
+def test_the_parts_split_a_tone_from_the_noise_under_it():
+    """The tonal part holds the tone's 1 Pa^2 in its band (100 Hz); the noise,
+    1e-3 Pa^2/Hz over each band's width, is in the broadband part there.  Elsewhere
+    noise peaks standing threshold_db over the floor are taken for tones too, so
+    there only the parts' sum is the noise."""
+    f, psd = _tone_in_noise_psd()
+    lower, upper = BANDS_63_160
+    tonal, broadband = fa.tone_aware_band_power(psd, f, lower, upper, return_parts=True)
+    assert tonal.shape == broadband.shape == (lower.size, psd.shape[1])
+    expected = 1e-3 * (upper - lower)
+    # Each column's tone reads within the noise's interference with its peak bins.
+    assert tonal[2].mean() == pytest.approx(1.0, rel=0.02)
+    np.testing.assert_allclose(tonal[2], 1.0, rtol=0.1)
+    assert broadband[2].mean() == pytest.approx(expected[2], rel=0.15)
+    others = [0, 1, 3, 4]
+    np.testing.assert_allclose((tonal + broadband)[others].mean(axis=1), expected[others], rtol=0.15)
+
+
+def test_the_parts_sum_to_the_total():
+    """Bit for bit where each band holds at most one tone per column (a tone over a
+    smooth floor); to rounding where two tones share one, since they are added to the
+    broadband part in a different order.  Asking for the parts leaves the total alone."""
+    lower, upper = BANDS_63_160
+    f, tone = _tone_psd(100.3)
+    _, second = _tone_psd(147.0)
+    psd = (tone + second + 1e-3)[:, None]
+    total = fa.tone_aware_band_power(psd, f, lower, upper)
+    tonal, broadband = fa.tone_aware_band_power(psd, f, lower, upper, return_parts=True)
+    np.testing.assert_allclose(tonal[[2, 4], 0], 1.0, rtol=2e-3)
+    np.testing.assert_array_equal(tonal + broadband, total)
+
+    f, psd = _tone_in_noise_psd()
+    total = fa.tone_aware_band_power(psd, f, lower, upper)
+    tonal, broadband = fa.tone_aware_band_power(psd, f, lower, upper, return_parts=True)
+    np.testing.assert_allclose(tonal + broadband, total, rtol=1e-14)
+
+
+def test_a_tone_under_the_threshold_stays_broadband():
+    """The split is set by threshold_db: a tone standing less than it above the floor
+    is not located and is left in the broadband part."""
+    f, psd = _tone_in_noise_psd()
+    lower, upper = fa.third_octave_band_edges(np.array([80.0, 100.0, 125.0]))
+    tonal, broadband = fa.tone_aware_band_power(psd, f, lower, upper, threshold_db=60.0, return_parts=True)
+    np.testing.assert_array_equal(tonal, 0.0)
+    np.testing.assert_array_equal(broadband, fa.tone_aware_band_power(psd, f, lower, upper, threshold_db=60.0))
