@@ -2666,6 +2666,85 @@ def mask_missing_levels(amplitude):
     return amplitude
 
 
+def interpolate_hemisphere_power(levels_db, elv_grid_deg, azi_grid_deg, azi_q_deg, elv_q_deg):
+    """Band power of a gridded hemisphere at arbitrary directions, interpolated in energy.
+
+    Each band is interpolated bilinearly over the UMAPR (elevation, azimuth)
+    grid in linear power over the measured cells only.  Unmeasured (NaN) cells
+    carry no weight: which cells are measured is interpolated alongside the
+    power and the power renormalized by it, so a level next to a coverage gap
+    is not pulled toward zero energy.  A direction weighted mostly by
+    unmeasured cells, or off the grid, is not covered.  Azimuth is periodic:
+    a seam column at the first azimuth + 360 deg is used if present (its
+    values replaced by the first column's) and appended if not.
+
+    Args:
+        levels_db: (Nf, Nelv, Nazi) levels, dB (-inf no energy, NaN no data).
+        elv_grid_deg: (Nelv,) strictly increasing UMAPR elevations, deg.
+        azi_grid_deg: (Nazi,) strictly increasing UMAPR azimuths, deg.
+        azi_q_deg, elv_q_deg: UMAPR query directions, deg, any matching shape.
+
+    Returns:
+        (power, covered), each shaped ``azi_q_deg.shape + (Nf,)``: the power
+        relative to the reference of ``levels_db`` (0 where not covered), and
+        True where the direction is covered (the measured cells' interpolated
+        weight is at least 0.5).
+    """
+    levels_db = np.asarray(levels_db, dtype=float)
+    azi_axis = np.asarray(azi_grid_deg, dtype=float).ravel()
+    elv_grid_deg = np.asarray(elv_grid_deg, dtype=float).ravel()
+    if levels_db.ndim != 3 or levels_db.shape[1] != elv_grid_deg.size or levels_db.shape[2] != azi_axis.size:
+        raise ValueError('Spectrum grid shape does not match elv_grid_deg/azi_grid_deg')
+
+    # Ensure azimuth periodicity is represented in the interpolation grid.
+    # We need the seam column at (azi0 + 360 deg) with values matching azi0,
+    # otherwise points near 360 deg can fall out-of-bounds and become missing.
+    if np.any(np.diff(azi_axis) <= 0.0) or np.any(np.diff(elv_grid_deg) <= 0.0):
+        raise ValueError('azi_grid_deg and elv_grid_deg must be strictly increasing')
+
+    azi0 = float(azi_axis[0])
+    azi_end = azi0 + 360.0
+    if np.isclose(azi_axis[-1], azi_end, rtol=0.0, atol=1e-6):
+        # Seam column present; ensure the last column matches the first.
+        levels_db = levels_db.copy()
+        levels_db[:, :, -1] = levels_db[:, :, 0]
+    else:
+        # No seam column; append one.
+        azi_axis = np.concatenate((azi_axis, np.array([azi_end], dtype=float)))
+        seam_col = levels_db[:, :, 0:1]
+        levels_db = np.concatenate((levels_db, seam_col), axis=2)
+
+    query_shape = np.shape(azi_q_deg)
+    # Wrap query azimuths into the interpolation axis range [azi0, azi0+360)
+    azi_q = (np.asarray(azi_q_deg, dtype=float).reshape(-1) - azi0) % 360.0 + azi0
+    elv_q = np.asarray(elv_q_deg, dtype=float).reshape(-1)
+    # Query points are (elv, azi) pairs in degrees
+    pts = np.column_stack((elv_q, azi_q))
+
+    nfreq = levels_db.shape[0]
+
+    # Interpolate every band at once in linear power.  Unmeasured (NaN) cells
+    # carry no weight: interpolate which cells are measured alongside the
+    # power and renormalize by it, so a level next to a coverage gap is not
+    # pulled toward zero energy.  A direction weighted mostly by unmeasured
+    # cells (or off the grid) is missing, which puts the edge of coverage
+    # halfway between measured and unmeasured cells.
+    P = np.moveaxis(np.power(10.0, levels_db / 10.0), 0, -1)       # (Nelv, Nazi, Nf)
+    measured = np.isfinite(P)
+    P = np.where(measured, P, 0.0)
+    interp = RegularGridInterpolator(
+        (elv_grid_deg, azi_axis),
+        np.concatenate((P, measured.astype(float)), axis=-1),
+        bounds_error=False,
+        fill_value=0.0,
+    )
+    sampled = interp(pts)
+    Pq, weight = sampled[:, :nfreq], sampled[:, nfreq:]
+    covered = weight >= 0.5
+    Pq = np.divide(Pq, weight, out=np.zeros_like(Pq), where=covered)
+    return Pq.reshape(query_shape + (nfreq,)), covered.reshape(query_shape + (nfreq,))
+
+
 def _sample_hemisphere_levels(hemisphere, mode, azi_q_deg, elv_q_deg, minimum_level_db):
     """Band levels of a :func:`depropagate_hemisphere` result at arbitrary directions.
 
@@ -2734,56 +2813,8 @@ def _sample_hemisphere_levels(hemisphere, mode, azi_q_deg, elv_q_deg, minimum_le
     else:
         raise ValueError('hemisphere must include third_octave or narrowband data; run depropagate_hemisphere with third_octave=True and/or narrowband=True')
 
-    if levels_db_umapr.shape[1] != elv_grid_deg.size or levels_db_umapr.shape[2] != azi_grid_deg.size:
-        raise ValueError('Spectrum grid shape does not match elv_grid_deg/azi_grid_deg')
-
-    # Ensure azimuth periodicity is represented in the interpolation grid.
-    # We need the seam column at (azi0 + 360 deg) with values matching azi0,
-    # otherwise points near 360 deg can fall out-of-bounds and become missing.
-    azi_axis = np.asarray(azi_grid_deg, dtype=float).ravel()
-    if np.any(np.diff(azi_axis) <= 0.0) or np.any(np.diff(elv_grid_deg) <= 0.0):
-        raise ValueError('azi_grid_deg and elv_grid_deg must be strictly increasing')
-
-    azi0 = float(azi_axis[0])
-    azi_end = azi0 + 360.0
-    if np.isclose(azi_axis[-1], azi_end, rtol=0.0, atol=1e-6):
-        # Seam column present; ensure the last column matches the first.
-        levels_db_umapr = levels_db_umapr.copy()
-        levels_db_umapr[:, :, -1] = levels_db_umapr[:, :, 0]
-    else:
-        # No seam column; append one.
-        azi_axis = np.concatenate((azi_axis, np.array([azi_end], dtype=float)))
-        seam_col = levels_db_umapr[:, :, 0:1]
-        levels_db_umapr = np.concatenate((levels_db_umapr, seam_col), axis=2)
-
-    query_shape = np.shape(azi_q_deg)
-    # Wrap query azimuths into the interpolation axis range [azi0, azi0+360)
-    azi_q = (np.asarray(azi_q_deg, dtype=float).reshape(-1) - azi0) % 360.0 + azi0
-    elv_q = np.asarray(elv_q_deg, dtype=float).reshape(-1)
-    # Query points are (elv, azi) pairs in degrees
-    pts = np.column_stack((elv_q, azi_q))
-
-    nfreq = int(np.asarray(frequency_hz).size)
-
-    # Interpolate every band at once in linear power.  Unmeasured (NaN) cells
-    # carry no weight: interpolate which cells are measured alongside the
-    # power and renormalize by it, so a level next to a coverage gap is not
-    # pulled toward zero energy.  A direction weighted mostly by unmeasured
-    # cells (or off the grid) is missing, which puts the edge of coverage
-    # halfway between measured and unmeasured cells.
-    P = np.moveaxis(np.power(10.0, levels_db_umapr / 10.0), 0, -1)       # (Nelv, Nazi, Nf)
-    measured = np.isfinite(P)
-    P = np.where(measured, P, 0.0)
-    interp = RegularGridInterpolator(
-        (elv_grid_deg, azi_axis),
-        np.concatenate((P, measured.astype(float)), axis=-1),
-        bounds_error=False,
-        fill_value=0.0,
-    )
-    sampled = interp(pts)
-    Pq, weight = sampled[:, :nfreq], sampled[:, nfreq:]
-    covered = weight >= 0.5
-    Pq = np.divide(Pq, weight, out=np.zeros_like(Pq), where=covered)
+    Pq, covered = interpolate_hemisphere_power(levels_db_umapr, elv_grid_deg, azi_grid_deg, azi_q_deg, elv_q_deg)
+    Pq = np.where(covered, Pq, 0.0)
     eps = np.finfo(float).tiny
     levels_db = np.full_like(Pq, -np.inf)
     pos = Pq > 0.0
@@ -2791,7 +2822,7 @@ def _sample_hemisphere_levels(hemisphere, mode, azi_q_deg, elv_q_deg, minimum_le
     if np.isfinite(minimum_level_db):
         levels_db[levels_db < float(minimum_level_db)] = -np.inf
 
-    return frequency_hz, levels_db.reshape(query_shape + (nfreq,))
+    return frequency_hz, levels_db
 
 
 def write_aam_hemisphere_netcdf(
