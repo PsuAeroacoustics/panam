@@ -92,6 +92,9 @@ def test_vold_kalman_filter_demo_runs(tmp_path):
     plots = tmp_path / 'demo_plots'
     assert (plots / 'vkf_example.png').stat().st_size > 0
     assert len(list(plots.glob('vkf_spectrogram_*.png'))) == 10
+    result = run_here('vold_kalman_filter.py', '-o', 'elsewhere', cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert len(list((tmp_path / 'elsewhere').glob('vkf_*.png'))) == 11
 
 
 def _spectrogram_call(path, *options):
@@ -357,3 +360,40 @@ def test_sphere_to_norah2_runs(tmp_path):
     result = run_here('sphere_to_norah2.py', str(EXAMPLE_SPHERE), '-o', 'pa.hem', '--temperature', '288.15',
                       '--pressure', '101325', '--humidity', '70', cwd=tmp_path)
     assert result.returncode == 1 and 'kPa' in result.stderr and not (tmp_path / 'pa.hem').exists()
+
+
+def test_always_writing_plot_scripts_take_plot(tmp_path):
+    """atmomap.py, ega_plot.py and board_field_plot.py had no option to open a
+    window; -p stays --pressure and --plot-type in the first two."""
+    result = run_here('atmomap.py', '-p', '1:2', '-o', 'out/atm.png', '--plot', cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / 'out' / 'atm.png').stat().st_size > 0
+    result = run_here('ega_plot.py', '-p', 'frequency', '-d', '100', '-o', 'ega.png', '--plot', cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / 'ega.png').stat().st_size > 0
+    result = run_here('board_field_plot.py', '--frequency', '1000', '--grid', '21x9', '-o', 'board.png', '-p',
+                      cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / 'board.png').stat().st_size > 0
+
+
+def test_example_scripts_take_help_without_running(tmp_path):
+    """hexacopter_vkf_example.py, vold_kalman_filter.py and as350_flip_check.py
+    had no options and ran as soon as they started, -h included."""
+    expected = {'hexacopter_vkf_example.py': ['--mat-file', '--output-dir', '--plot'],
+                'vold_kalman_filter.py': ['--output-dir'],
+                'as350_flip_check.py': ['--basepath'],
+                'AS350_289108_demo.py': ['--output-dir', '--outdir', '--plot', '--show', '--basepath']}
+    for script, options in expected.items():
+        result = run_here(script, '--help', cwd=tmp_path)
+        assert result.returncode == 0, (script, result.stderr)
+        assert all(option in result.stdout for option in options), (script, result.stdout)
+    assert not list(tmp_path.iterdir())
+
+
+def test_as350_flip_check_finds_the_demo_data(monkeypatch, tmp_path):
+    """The path was resolved on import, which raised without the data configured."""
+    import as350_flip_check as check
+    monkeypatch.setenv('AS350_DEMO_PATH', str(tmp_path / 'env'))
+    assert check.demo_data_path() == str(tmp_path / 'env')
+    assert check.demo_data_path(str(tmp_path / 'cli')) == str(tmp_path / 'cli')

@@ -9,10 +9,22 @@ on:
 
 jobs:
   tests:
-    runs-on: ubuntu-latest
+    name: tests (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest]
         python-version: ["3.11", "3.14"]
+        include:
+          # One macOS job, on the newest supported Python.
+          - os: macos-latest
+            python-version: "3.14"
+    env:
+      # Numba's on-disk cache (ground_plane, axisymmetric_bem), kept between
+      # runs by the cache step below instead of in __pycache__.
+      NUMBA_CACHE_DIR: ${{ github.workspace }}/.numba_cache
+      MPLBACKEND: Agg
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,16 +40,18 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install pytest-cov
 
       - name: Print binary dependency versions
         run: |
           python - <<'PY'
           import platform, sys
-          import numpy, scipy, h5py, netCDF4
+          import numpy, scipy, h5py, netCDF4, numba
           print('python:', sys.version.replace('\n', ' '))
           print('platform:', platform.platform())
           print('numpy:', numpy.__version__)
           print('scipy:', scipy.__version__)
+          print('numba:', numba.__version__)
           print('h5py:', h5py.__version__)
           print('hdf5 (h5py):', h5py.version.hdf5_version)
           print('netCDF4:', netCDF4.__version__)
@@ -45,14 +59,38 @@ jobs:
           print('hdf5 (netCDF4):', getattr(netCDF4, '__hdf5libversion__', 'n/a'))
           PY
 
+      # Numba keys a cached function on its source file's modification time,
+      # which a fresh checkout sets to now; a fixed time lets the restored cache
+      # match.  The cache also keys each function on its bytecode, so an edit
+      # still recompiles it.
+      - name: Pin the Numba sources' timestamps
+        run: touch -t 202001010000 ground_plane.py axisymmetric_bem.py
+
+      - name: Restore the Numba cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.NUMBA_CACHE_DIR }}
+          key: numba-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('ground_plane.py', 'axisymmetric_bem.py', 'requirements.txt') }}
+          restore-keys: |
+            numba-${{ runner.os }}-py${{ matrix.python-version }}-
+
       - name: Run tests
         run: |
-          python -m pytest -q
+          python -m pytest -q --durations=20 --cov=. --cov-report=term-missing:skip-covered
+
+      # A summary only; no coverage threshold fails the job.
+      - name: Coverage summary
+        if: always()
+        run: |
+          if [ -f .coverage ]; then
+            python -m coverage report --format=markdown --skip-covered >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Upload test results (artifact)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pytest-logs-${{ matrix.python-version }}
+          name: pytest-logs-${{ matrix.os }}-${{ matrix.python-version }}
           path: ./.pytest_cache
+          include-hidden-files: true
           if-no-files-found: ignore

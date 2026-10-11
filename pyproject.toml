@@ -1,0 +1,43 @@
+# Project metadata for PANAM.
+#
+# PANAM is a set of modules and scripts run from the repository root, not an
+# installed package, and this file builds nothing: it has no [build-system]
+# table and `pip install .` is not supported.  It records the project's
+# metadata, the supported Python versions and the dependencies, which mirror
+# requirements.txt; keep the two lists in step.  Install with
+# `pip install -r requirements.txt`.  The pytest settings stay in pytest.ini.
+
+[project]
+name = "panam"
+version = "0.1.0"
+description = "Rotorcraft aeroacoustics: flight-test recordings to source noise spheres and NICE-OPS databases"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "Eric Greenwood" }]
+dependencies = [
+    "numpy",
+    "h5py",
+    "openpyxl",
+    "scipy",
+    "numba",
+    "simplekml",
+    "palettable",
+    "matplotlib",
+    "netCDF4",
+    "pyuff",
+    "pymap3d",
+]
+
+[project.optional-dependencies]
+# requirements.txt also installs pytest, so one install serves CI and local runs.
+test = ["pytest", "pytest-cov"]
+# vold_kalman_filter's sparse fallback solve and solver='umfpack'.
+umfpack = ["scikit-umfpack"]
+
+[project.urls]
+Repository = "https://github.com/PsuAeroacoustics/panam"
+
+[tool.coverage.run]
+# CI reports coverage of the modules and scripts, not of the tests.
+omit = ["tests/*"]

@@ -9,6 +9,8 @@ Instructions for AI coding tools working on PANAM. Human developers: see
   `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`.
 - Run everything from the repository root. Modules are imported by name
   (`import flight_acoustics as fa`); there is no installed package.
+  `pyproject.toml` is metadata only (no build system, no entry points); its
+  dependencies mirror `requirements.txt`, so change both together.
 - Tests: `pytest`, or `pytest -q -m "not data"` to skip the external-data tests.
   One file: `pytest tests/test_ega.py`.
 - `pytest.ini` puts `.` and `tests/` on `sys.path`. Scripts find their own
@@ -51,7 +53,8 @@ Instructions for AI coding tools working on PANAM. Human developers: see
   and time weighting, Lmax, Leq), `plotting` (`acoustic_plot_style`),
   `impulsiveness` (BVI crest factor, kurtosis, harmonic ratio),
   `psychoacoustics` (ISO 532-1 loudness, DIN 45692 sharpness).
-- `cli.py`: `colon_pair`, `colon_pair_or_single`, `save_or_show`.
+- `cli.py`: `colon_pair`, `colon_pair_or_single`, `add_output_options`,
+  `save_or_show`, `save_all_or_show`.
 - `provenance.py`: the `panam_*` provenance stamp on written files.
 - `build_recipe.py`: TOML build recipes (`load_recipe`) for `--recipe` on
   `noise_abatement_2017.py` and `build_empirical_database.py`;
@@ -85,7 +88,8 @@ Instructions for AI coding tools working on PANAM. Human developers: see
 - `open_h5_signal` is a context manager; `load_h5_signal` leaves a file open.
 - `sound_exposure_level(..., missing='omit')` integrates around NaN samples.
 - New CLI: argparse with `description=`, units and defaults in every help
-  string, `cli.colon_pair` for ranges, `cli.save_or_show` for figures, a
+  string, `cli.colon_pair` for ranges, `cli.add_output_options` and
+  `cli.save_or_show` (`-o/--output`, `-p/--plot`) for figures, a
   smoke test in `tests/test_cli_scripts.py` (`run_here`), and a row in the
   README's tools table.
 - File contracts (sphere netCDF, `.nod`, `vehicle.cfg`): `docs/file_formats.md`.
@@ -103,8 +107,9 @@ Instructions for AI coding tools working on PANAM. Human developers: see
 - Shared fixtures: `tests/sphere_helpers.py`. Tests use the `Agg` backend.
   `tests/conftest.py` validates every database built through `fa.build_...`.
 - Skips: `@pytest.mark.data` (external datasets), NICE-OPS executables not
-  configured, example data missing. CI (`.github/workflows/tests.yml`, Python
-  3.11 and 3.14) has no data, so those skip there: run them locally when you
+  configured, example data missing. CI (`.github/workflows/tests.yml`: Ubuntu
+  with Python 3.11 and 3.14, macOS with 3.14; coverage and `--durations=20`
+  reported, no threshold) has no data, so those skip there: run them locally when you
   touch the build, the database writers or the NORAH2 import.
 - Numba compiles on first call and caches in `__pycache__`. Plate tables are
   cached as `.npz` in `~/.cache/panam/plate_tables` (15-45 s each to

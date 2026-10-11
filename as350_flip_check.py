@@ -19,14 +19,16 @@ counter-clockwise rotor in them is louder at phi > 0 in descent, the
 clockwise EC130 and Mi-8 at phi < 0.  With the sign corrected the same
 residuals favor no flip, which is now the demo's setting.
 
-Run:  python as350_flip_check.py
+Run:  python as350_flip_check.py [--basepath DIR]
 
-The demo data are found through the ``as350_demo`` entry of local_paths
-(``AS350_DEMO_PATH`` is still honored and takes precedence).
+The demo data are found from --basepath, then the older variable
+``AS350_DEMO_PATH``, then the ``as350_demo`` entry of local_paths.  The check
+prints a table and writes nothing.
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 
 import numpy as np
@@ -35,17 +37,23 @@ import flight_acoustics as fa
 import local_paths
 import AS350_289108_demo as demo
 
-BASE = local_paths.data_path("as350_demo", os.environ.get("AS350_DEMO_PATH"))
-REF = os.path.join(BASE, "AAM", "AS350B3108.nc")
+REFERENCE_SPHERE = os.path.join("AAM", "AS350B3108.nc")   # relative to the demo data
 FREQS = (0.0, 2000.0)
 R_REF_FT = 100.0
 AZI_STEP = ELV_STEP = 10.0
 RMAX = 25.0
 
 
-def _reference_on_grid(azi_grid, elv_grid):
-    """Reference AAM sphere OASPL interpolated onto our grid (dB at r_ref)."""
-    amp, phi, theta, f, radius_ft, _, _ = fa.load_nc_sphere(REF)
+def demo_data_path(basepath=None):
+    """The AS350 demo data directory: ``basepath``, else ``AS350_DEMO_PATH``,
+    else the ``as350_demo`` entry of local_paths."""
+    return local_paths.data_path("as350_demo", basepath or os.environ.get("AS350_DEMO_PATH"))
+
+
+def _reference_on_grid(azi_grid, elv_grid, base):
+    """Reference AAM sphere OASPL interpolated onto our grid (dB at r_ref);
+    ``base`` is the demo data directory."""
+    amp, phi, theta, f, radius_ft, _, _ = fa.load_nc_sphere(os.path.join(base, REFERENCE_SPHERE))
     amp = amp.astype(float)
     amp = fa.mask_missing_levels(amp)
     radius_ft = float(np.asarray(radius_ft, dtype=float).ravel()[0])
@@ -69,13 +77,14 @@ def _reference_on_grid(azi_grid, elv_grid):
     return out
 
 
-def measured(flip):
-    """Measured hemisphere from the demo's own inputs, one flip setting."""
-    files = demo.gather_acoustic_files(os.path.join(BASE, "Acoustic"))
+def measured(flip, base):
+    """Measured hemisphere from the demo's own inputs, one flip setting;
+    ``base`` is the demo data directory."""
+    files = demo.gather_acoustic_files(os.path.join(base, "Acoustic"))
     miclocs, pressures, times = demo.load_microphones(files)
     miclocs, pressures, times = demo.filter_microphones(
         files, miclocs, pressures, times)
-    _, ft = demo.load_track(BASE)
+    _, ft = demo.load_track(base)
     src, vel = demo.track_kinematics(ft)
     atmosphere, speed_of_sound_ft_s = demo.demo_atmosphere()
     return fa.depropagate_hemisphere(
@@ -89,16 +98,26 @@ def measured(flip):
         atmosphere=atmosphere, flip_y_for_geometry=flip)
 
 
-def main():
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Check the AS350 demo's lateral sign: depropagate the demo run with and "
+                    "without flip_y_for_geometry and compare each with the reference AAM sphere "
+                    "and its mirror (overall level, 0 to 2 kHz, at 100 ft). Prints a table; "
+                    "writes nothing.")
+    parser.add_argument("--basepath", default=None,
+                        help="AS350 demo data directory, holding Acoustic/, AAM/ and Tracking/ "
+                             "(default: AS350_DEMO_PATH, then the as350_demo entry of local_paths)")
+    args = parser.parse_args(argv)
+    base = demo_data_path(args.basepath)
     out = {}
     for flip in (False, True):
-        h = measured(flip)
+        h = measured(flip, base)
         azi, elv = h["azi_grid_deg"], h["elv_grid_deg"]
         AZ, EL = np.meshgrid(azi, elv)
-        ref = _reference_on_grid(AZ, EL)
+        ref = _reference_on_grid(AZ, EL, base)
         # the same reference read backwards in azimuth: what a lateral sign
         # error would make the measurement look like
-        ref_mirror = _reference_on_grid(np.remainder(-AZ, 360.0), EL)
+        ref_mirror = _reference_on_grid(np.remainder(-AZ, 360.0), EL, base)
         m = h["oaspl_db"]
         out[flip] = {}
         for name, r in (("reference", ref), ("mirrored reference", ref_mirror)):

@@ -7,7 +7,8 @@ to the same format, and plots spheres, footprints and spectrograms.
 
 ## Install
 
-Python 3.11 or newer is required (CI tests 3.11 and 3.14).
+Python 3.11 or newer is required (CI tests 3.11 and 3.14 on Linux, and 3.14
+on macOS).
 
 ```
 python3 -m venv .venv
@@ -15,7 +16,11 @@ source .venv/bin/activate          # Windows PowerShell: .venv\Scripts\Activate.
 pip install -r requirements.txt
 ```
 
-`requirements.txt` covers every import and includes pytest. The optional
+`requirements.txt` covers every import and includes pytest. PANAM is not an
+installed package: run the scripts from the checkout. `pyproject.toml` records
+the project's metadata, the supported Python versions and the same dependency
+list, for tools that read it; it builds nothing, so `pip install .` is not
+supported. The optional
 `scikits.umfpack` package is used by `vold_kalman_filter`'s sparse fallback solve
 (narrow bands, or a system that is not positive definite) and by
 `solver='umfpack'`; without it the fallback uses SciPy's SuperLU.
@@ -73,10 +78,8 @@ It prints the median and largest recovered-minus-true difference and writes
 of `example_data/vehicle.cfg`) and `tutorial.nod`. With the defaults the
 difference stays within 1 dB. Read the script to see each step's API call.
 
-The tools and plotting scripts, `depropagation_tutorial.py` and
-`AS350_289108_demo.py` take `-h`. Three
-scripts take no options and run as soon as they start, `-h` included:
-`hexacopter_vkf_example.py`, `vold_kalman_filter.py` and `as350_flip_check.py`.
+Every script, tool, plotting script and example, takes `-h`. Run with no
+options, each example does what it did before it had options.
 
 ## Tools
 
@@ -103,13 +106,16 @@ scripts take no options and run as soon as they start, `-h` included:
 | `vold_kalman_filter.py` | Run as a script: Vold-Kalman filter examples on synthetic signals | No |
 | `as350_flip_check.py` | Diagnostic: check the AS350 demo's lateral sign against its reference | Yes: AS350 demo data |
 
-`atmomap.py`, `ega_plot.py` and `board_field_plot.py` always write a file
-(defaults `demo_plots/atmomap.pdf`, `demo_plots/ega_plot.pdf` and
-`board_field.png` in the current directory); in the first two `-p` means
-something else (`--pressure`, `--plot-type`). The other plotting scripts write
-the file named by `-o`, open a window without it, and with `-o` and `-p/--plot`
-do both. The examples write to `demo_plots/` in the current directory;
-`hexacopter_vkf_example.py` must be run from the repository root.
+The plotting scripts write the file named by `-o/--output`, open a window
+without it, and with `-o` and `-p/--plot` do both. `atmomap.py`, `ega_plot.py`
+and `board_field_plot.py` always write a file (defaults
+`demo_plots/atmomap.pdf`, `demo_plots/ega_plot.pdf` and `board_field.png` in
+the current directory) and open it too with `--plot`; in the first two `-p`
+means something else (`--pressure`, `--plot-type`). The examples that write
+several files take `-o/--output-dir` (default `demo_plots/` in the current
+directory; `AS350_289108_demo.py` still accepts `--outdir`) and, except
+`vold_kalman_filter.py`, `-p/--plot` to also open the figures. The examples find `example_data/` beside the script, so
+they run from any directory.
 
 Loudness and sharpness of a one-third-octave spectrum are library functions, not a
 script: `panam_acoustics.psychoacoustics.loudness_zwicker` (ISO 532-1:2017, stationary,
@@ -127,7 +133,7 @@ variable `PANAM_<NAME>` (for example `PANAM_NORAH2`), then `local_paths.toml`.
 | Name | What it is | Used by |
 |---|---|---|
 | `noise_abatement_2017` | 2017 FAA/NASA Noise Abatement flight test archive | `noise_abatement_2017.py` (or `--root`), track-check tests |
-| `as350_demo` | AS350 demo data (`Acoustic/`, `Ambient/`, `AAM/`, `Tracking/`) | `AS350_289108_demo.py` (or `--basepath`), `as350_flip_check.py` |
+| `as350_demo` | AS350 demo data (`Acoustic/`, `Ambient/`, `AAM/`, `Tracking/`) | `AS350_289108_demo.py` and `as350_flip_check.py` (or `--basepath`) |
 | `norah2` | EASA NORAH2 public distribution (`Hemispheres/`) | NORAH2 tests |
 | `niceops` | NICE-OPS executable | tests that load PANAM databases in NICE-OPS |
 | `niceops_ray_geometry` | NICE-OPS ray-geometry executable | refracted-ray tests |
