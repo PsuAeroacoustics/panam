@@ -850,6 +850,15 @@ file's nominal values. The run's own thrust coefficient, from its weight and air
 air-referenced advance ratio, when a wind was given, are recorded as metadata but do not label the
 sphere.
 
+NICE-OPS takes one sphere per condition, so `build_empirical_database` refuses two spheres at one
+speed and flight path angle (to 1e-9 kt and deg). With `merge_repeats=True` it energy-averages
+them instead, cell by cell over the runs that cover each cell (§10, repeat-run averaging), into
+one condition at their mean speed before forming dBA and EAA; a cell no run covers becomes no
+energy, as a -999 does in a single sphere. `merge_speed_tolerance` (kt) also merges spheres at one
+flight path angle whose speeds lie within it of the slowest of the group. The merged condition
+carries the runs' mean numeric run metadata, with NaN winds if the runs' wind units or reference
+directions differ.
+
 ### 7.2 Excess atmospheric attenuation
 
 A NICE-OPS broadband run carries the A-weighted level to the ground with one attenuation
@@ -1317,7 +1326,9 @@ These are in PANAM but not used to build the databases.
   applies only to an in-memory $-\infty$ or with `missing='no_energy'`. The spread is the sample
   standard deviation of the finite $L_i$, in dB. Files whose grid, bands, radius, azimuth
   reference or Doppler flag differ are refused, as are files whose speeds (or, on request,
-  flight path angles) spread by more than a tolerance.
+  flight path angles) spread by more than a tolerance. This average is the one model of this
+  section that can enter a database build: `build_empirical_database` uses it to merge repeat
+  runs when `merge_repeats=True` (§7.1).
 - **Sphere comparison** (`sphere_statistics.compare_spheres`). Per band, the difference
   $\Delta L = L_B - L_A$ over the cells finite in both spheres gives the mean, root mean square,
   5th and 95th percentiles and an area-weighted mean,
@@ -1373,7 +1384,7 @@ Functions are in `flight_acoustics.py` unless another module is named. Tests are
 | §6.2 Adaptive radius | `adaptive_idw_weights`, `ADAPTIVE_INTERPOLATION` | `test_adaptive_interpolation.py`, `test_hemisphere_geometry_accuracy.py` |
 | §6.3 Output grids | `write_aam_hemisphere_netcdf`, `_sample_hemisphere_levels`, `interpolate_hemisphere_power`, `mask_missing_levels`, `lambert_ea`, `lambert_lon` | `test_write_aam_hemisphere_netcdf.py`, `test_hemisphere_sampling.py`, `test_no_data.py`, `test_lambert_geometry.py` |
 | §6.4 Node statistics | `sphere_statistics.node_statistics`, `idw_weight_matrix`, `node_statistics_variables`; `depropagate_hemisphere` (`return_statistics`), `noise_abatement_2017.build_sphere` (`node_statistics`) | `test_node_statistics.py`, `test_noise_abatement_2017.py` |
-| §7.1–7.2 Condition, EAA | `build_empirical_database`, `read_vehicle_data`, `add_sphere_group`, `extract_SPL`, `spla_and_eaa_from_spectrum`, `_finite_sphere_levels`, `_measured_bins` | `test_spla_and_eaa.py`, `test_database_provenance.py`, `test_vehicle_data.py` |
+| §7.1–7.2 Condition, EAA | `build_empirical_database`, `read_vehicle_data`, `add_sphere_group`, `extract_SPL`, `spla_and_eaa_from_spectrum`, `_finite_sphere_levels`, `_measured_bins`; repeat runs: `_group_repeat_conditions`, `_extract_condition_SPL`, `_merged_run_metadata` | `test_spla_and_eaa.py`, `test_database_provenance.py`, `test_vehicle_data.py`, `test_merge_repeats.py` |
 | §7.3 Load factor | `add_sphere_group` | `test_load_factor_scaling.py`, `test_write_aam_hemisphere_netcdf.py` |
 | §7.4 Hover | `average_fore_and_aft`, `_fore_aft_measured`, `_synthesized_hover_sphere`, `_hover_source_index`, `_hover_flight_path_angles` | `test_hover_averaging.py`, `test_sphere_completion_integration.py`, `test_empirical_database_hover_selection.py`, `test_database_provenance.py`, `test_norah2_import.py` |
 | §7.5 Completion | `mirror_phi_to_upper_surface`, `_complete_sphere_with_coverage` | `test_mirror_phi.py`, `test_sphere_completion_integration.py` |
@@ -1390,7 +1401,7 @@ Functions are in `flight_acoustics.py` unless another module is named. Tests are
 | §10 Array planning | `linear_array_plan` (through the `array_planner.py design` CLI); `array_coverage`, `hover_array_coverage`, `takeoff_array_coverage` (through `array_planner.py coverage`, `hover` and `takeoff`) | `test_array_coverage.py` (the coverage functions on known geometry), `test_array_planner.py` (the CLI's spacing, options and case files), `test_cli_scripts.py` (smoke) |
 | §10 Footprint, fried egg | `project_sphere`, `project_directory`, `fried_egg_plot`, `is_noisy` | `test_projection.py`, `test_no_data.py`, `test_cli_scripts.py` (smoke) |
 | §10 De-Dopplerization | `dedopplerize` | `test_acoustics.py` |
-| §10 Repeat-run averaging, comparison | `sphere_statistics.average_spheres`, `write_averaged_sphere`, `compare_spheres`, `cell_solid_angles`, `plot_sphere_difference` | `test_sphere_statistics.py`, `test_cli_scripts.py` (smoke) |
+| §10 Repeat-run averaging, comparison | `sphere_statistics.average_spheres`, `write_averaged_sphere`, `compare_spheres`, `cell_solid_angles`, `plot_sphere_difference`; in a database build, `build_empirical_database(merge_repeats=True)` (`_group_repeat_conditions`, `_extract_condition_SPL`) | `test_sphere_statistics.py`, `test_merge_repeats.py`, `test_cli_scripts.py` (smoke) |
 
 ## References
 

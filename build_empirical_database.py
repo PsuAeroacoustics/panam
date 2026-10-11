@@ -71,6 +71,13 @@ def make_parser():
     selection.add_argument('--exclude', action='append', default=None, metavar='PATTERN',
                            help='leave out spheres whose file name matches this name or shell pattern '
                                 '(e.g. "Be407285236.nc" or "*_hover*.nc"); repeat for each one')
+    selection.add_argument('--merge-repeats', action='store_true',
+                           help='energy-average spheres at the same speed and flight path angle into one '
+                                'condition (default: refuse them, since NICE-OPS takes one sphere per '
+                                'condition)')
+    selection.add_argument('--merge-speed-tolerance', type=float, default=0.0, metavar='KT',
+                           help='with --merge-repeats: also merge spheres at one flight path angle whose '
+                                'speeds lie within this of the slowest, kt (default %(default)g)')
 
     load = parser.add_mutually_exclusive_group()
     load.add_argument('--load-factors', type=_float_list, default=None, metavar='N1,N2,...',
@@ -129,6 +136,10 @@ def parse_arguments(argv=None, parser=None):
 
     if args.skip_flagged and args.manifest is None:
         parser.error('--skip-flagged applies to --manifest only')
+    if args.merge_speed_tolerance != 0.0 and not args.merge_repeats:
+        parser.error('--merge-speed-tolerance applies to --merge-repeats only')
+    if not args.merge_speed_tolerance >= 0.0:
+        parser.error('--merge-speed-tolerance must be at least 0 kt')
     if args.manifest is not None and args.spheres is not None:
         parser.error('give --manifest or --sphere, not both')
     if os.path.exists(args.database_file) and not args.overwrite:
@@ -158,6 +169,8 @@ def build_options(args):
         spheres=args.spheres,
         exclude=args.exclude,
         absorption_band_method=args.absorption_band_method,
+        merge_repeats=args.merge_repeats,
+        merge_speed_tolerance=args.merge_speed_tolerance,
     )
     if args.fixed_load_factor:
         options['load_factors'] = None

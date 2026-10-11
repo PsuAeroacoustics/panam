@@ -195,7 +195,11 @@ and each has its units in a text attribute `<name>_units`:
 | `thrust_coefficient_run` | 1 | `gross_weight` / (`air_density` π R² V_tip²): the run's own C_T, not scaled by the group's load factor |
 
 The text attributes are `wind_source`, `wind_units`, `wind_reference_direction`,
-`air_density_source`, `source_sphere` (the sphere file's name) and `condition_origin`.
+`air_density_source`, `source_sphere` (the sphere file's name; for a condition that
+`merge_repeats` averaged from repeat runs, every run's file name, one per line, with the runs'
+mean numeric values (NaN winds if their wind units or reference directions differ), every
+source any run named in `wind_source`, and the first run's other text values) and
+`condition_origin`.
 `condition_origin` takes one of three values:
 
 - `measured`: one of the sphere's own conditions, at any load factor;
@@ -317,7 +321,7 @@ instead:
 | --- | --- |
 | `build_sphere` | `test` (the aircraft), `run`, `output_path`, `reference_sphere`, `norah2_directory`, `plate_table_directory`, `samples_path` |
 | `write_aam_hemisphere_netcdf` (called directly) | `filename` |
-| `build_empirical_database` | `directory_name`, `database_filename`, `hover_source`, and `spheres` and `exclude` when given |
+| `build_empirical_database` | `directory_name`, `database_filename`, `hover_source`, `spheres` and `exclude` when given, and `merged_spheres` (a list of file-name lists, one per condition `merge_repeats` averaged) when any were merged |
 | `build_database_from_norah2` | `hem_files`, `database_filename` |
 
 Where an identity changes the processing, the settings record that much: `build_sphere`

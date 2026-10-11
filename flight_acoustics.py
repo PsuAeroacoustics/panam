@@ -5001,7 +5001,8 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                              hover_correction=None, hover_source=None,
                              speed_reference='ground', doppler_shift_removed=None,
                              azimuth_reference=None, spheres=None, exclude=None,
-                             absorption_band_method='center'):
+                             absorption_band_method='center', merge_repeats=False,
+                             merge_speed_tolerance=0.0):
     """Build a NICE-OPS sphere database from a directory of sphere files.
 
     directory_name holds vehicle.cfg and, unless ``spheres`` says otherwise,
@@ -5140,6 +5141,20 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     the ISO 9613-1 coefficient at the band center), 'arp5534' (SAE ARP 5534) or
     'integrated' (ISO 9613-1 integrated over the band, flat band levels).  The
     database records it only in the provenance settings.
+
+    NICE-OPS takes one sphere per flight condition, so two spheres with the
+    same SPEED and FLIGHT_PATH_ANGLE (equal to 1e-9 kt and deg) are refused.
+    merge_repeats=True energy-averages them instead, with
+    :func:`sphere_statistics.average_spheres` (a -999 cell is no data, left out
+    of that cell's average), into one condition at the runs' mean speed; with
+    it, merge_speed_tolerance (kt, default 0) also merges spheres at one flight
+    path angle whose speeds lie within it of the slowest of the group.  A merged
+    condition's groups carry the runs' mean numeric run metadata (NaN winds
+    if the runs' wind units or reference directions differ), the first run's
+    text metadata but every run's wind_source, and every run's file name in
+    source_sphere, one per line; ``panam_inputs`` lists each merged set as ``merged_spheres``.  The
+    hover is synthesized from a merged condition's averaged levels when that
+    condition is the slowest near-level one.
     """
     # File identity apart from the hashed settings; paths by file name only (a relative
     # path's directories name this machine's layout too).  Whether a hover source was
@@ -5175,14 +5190,37 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     (main_rotor_radius, main_rotor_area, main_rotor_tip_speed,
      _, _, _, _, _, _, weight_coefficient, _, _, _, _) = read_vehicle_data(directory_name)
 
-    def run_metadata(filename, origin='measured'):
-        return group_run_metadata(filename, main_rotor_area, main_rotor_tip_speed, origin)
+    def run_metadata(filenames, origin='measured'):
+        return _merged_run_metadata([group_run_metadata(filename, main_rotor_area,
+                                                        main_rotor_tip_speed, origin)
+                                     for filename in filenames])
+
+    def condition_levels(filenames):
+        return _extract_condition_SPL(filenames, infreqs, distance, atmosphere,
+                                      absorption_band_method, merge_speed_tolerance)
 
     # Sorted, so group numbering and hover-sphere ties do not depend on the
     # order the filesystem happens to list the directory in.
     file_list, excluded = _select_sphere_files(directory_name, spheres, exclude)
     if not file_list:
         raise ValueError('No sphere files found in ' + str(directory_name))
+    if not merge_speed_tolerance >= 0.0:
+        raise ValueError('merge_speed_tolerance must be at least 0 kt, not {!r}'.format(
+            merge_speed_tolerance))
+    if merge_speed_tolerance != 0.0 and not merge_repeats:
+        raise ValueError('merge_speed_tolerance applies to merge_repeats=True only')
+    # One entry per condition to write: a tuple of the sphere files averaged into it.
+    condition_files = _group_repeat_conditions(
+        file_list, merge_speed_tolerance if merge_repeats else 0.0)
+    repeats = [files for files in condition_files if len(files) > 1]
+    if repeats and not merge_repeats:
+        speed, angle = _sphere_condition(repeats[0][0])
+        raise ValueError('{} have the same flight condition ({:.4g} kt, {:.4g} deg); NICE-OPS takes '
+                         'one sphere per condition, so merge or drop one (merge_repeats=True, '
+                         'or --merge-repeats, energy-averages them)'.format(
+                             ' and '.join(os.path.basename(f) for f in repeats[0]), speed, angle))
+    if repeats:
+        inputs['merged_spheres'] = [[os.path.basename(f) for f in files] for files in repeats]
     # Settled before the output exists, so a refused mix of sources leaves no
     # half-written database behind.
     doppler = _resolve_doppler_shift_removed(file_list, doppler_shift_removed)
@@ -5222,11 +5260,10 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
         # _grid_and_frequency_are_shared) is known before the first group is
         # written -- not discovered partway through and left to redo.
         pending_groups = []
-        for filename in file_list:
-            # Load the sphere data
+        for filenames in condition_files:
+            # Load the sphere data (the energy average of repeat runs, when merged)
             (_, _, phi_list, theta_list, radius, _, SPLA, EAA, speed, flight_path_angle,
-             frequency, amplitude) = extract_SPL(filename, infreqs, distance, atmosphere,
-                                                          absorption_band_method)
+             frequency, amplitude) = condition_levels(filenames)
             # Which bins carry a measurement.  Taken before the clamp, and before the
             # completion fills the upper surface, so a gated bin is recorded as such.
             measured = _measured_bins(amplitude, EAA)
@@ -5241,9 +5278,9 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
             # extended flight path angles below.
             if extended_flight_path_angles is not None and np.abs(flight_path_angle) < level_flight_tolerance:
                 level_conditions.append((phi_full, theta_full, radius, SPLA_full, EAA_full,
-                                         speed, frequency, amplitude_full, coverage_full, filename))
+                                         speed, frequency, amplitude_full, coverage_full, filenames))
             # Augment load factor data
-            measured_metadata = run_metadata(filename)
+            measured_metadata = run_metadata(filenames)
             for load_factor in load_factors_to_write:
                 groupname = "sphere" + str(sphere_index)
                 sphere_index = sphere_index + 1
@@ -5253,19 +5290,16 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                     frequency if store_spectrum else None,
                     amplitude_full if store_spectrum else None, coverage_full, measured_metadata))
 
-        if not file_list:
-            raise ValueError('No sphere files found in ' + str(directory_name))
-        min_speed_file = file_list[_hover_source_index(source_conditions, level_flight_tolerance)]
+        min_speed_files = condition_files[_hover_source_index(source_conditions, level_flight_tolerance)]
 
         if hover_source is not None:
             # Its DOPPLER_SHIFT_REMOVED does not enter the database's flag: a hover
             # has no Doppler shift, so its emitted and received frequencies are one
             # and the group is received-frame like the flight spheres around it.
-            min_speed_file = os.path.abspath(os.path.expanduser(hover_source))
+            min_speed_files = (os.path.abspath(os.path.expanduser(hover_source)),)
         # Now, adapt the lowest speed sphere to a hover sphere by averaging from fore to aft
         (_, _, phi_list, theta_list, radius, _, _, eaa_source, _, _,
-         frequency, amplitude) = extract_SPL(min_speed_file, infreqs, distance, atmosphere,
-                                           absorption_band_method)
+         frequency, amplitude) = condition_levels(min_speed_files)
         phi_full, theta_full, SPLA_full, EAA_full, amplitude_full, coverage_full = _synthesized_hover_sphere(
             phi_list, theta_list, amplitude, _measured_bins(amplitude, eaa_source), frequency,
             distance, atmosphere, hover_correction=hover_correction,
@@ -5276,7 +5310,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
         speed = 0
         flight_path_angles = _hover_flight_path_angles(extended_flight_path_angles)
         # Augment load factor data
-        hover_metadata = run_metadata(min_speed_file, 'synthesized_hover')
+        hover_metadata = run_metadata(min_speed_files, 'synthesized_hover')
         for load_factor in load_factors_to_write:
             for flight_path_angle in flight_path_angles:
                 groupname = "sphere" + str(sphere_index)
@@ -5292,10 +5326,10 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
         # already covered above, so skip any condition at zero airspeed.
         if extended_flight_path_angles is not None:
             for (phi_full, theta_full, radius, SPLA_full, EAA_full,
-                 level_speed, frequency, amplitude_full, coverage_full, source_file) in level_conditions:
+                 level_speed, frequency, amplitude_full, coverage_full, source_files) in level_conditions:
                 if level_speed == 0:
                     continue
-                extended_metadata = run_metadata(source_file, 'extended_flight_path_angle')
+                extended_metadata = run_metadata(source_files, 'extended_flight_path_angle')
                 for extended_angle in extended_flight_path_angles:
                     for load_factor in load_factors_to_write:
                         groupname = "sphere" + str(sphere_index)
@@ -5324,6 +5358,88 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                              write_grid_and_frequency=not shared_grid_and_frequency,
                              doppler_shift_removed=doppler, coverage=condition.coverage,
                              run_metadata=condition.run_metadata)
+
+
+def _sphere_condition(filename):
+    """The (SPEED kt, FLIGHT_PATH_ANGLE deg) a sphere file records, NaN where unreadable."""
+    with Dataset(filename, mode='r') as handle:
+        with np.errstate(invalid='ignore'):
+            return tuple(float(np.ravel(np.ma.filled(np.ma.asarray(
+                handle.variables[name][...], dtype=float), np.nan))[0])
+                for name in ('SPEED', 'FLIGHT_PATH_ANGLE'))
+
+
+def _group_repeat_conditions(filenames, speed_tolerance_knots=0.0):
+    """Group sphere files by flight condition, for :func:`build_empirical_database`.
+
+    Two files share a condition when their FLIGHT_PATH_ANGLE agrees to 1e-9 deg
+    and their SPEED agrees to 1e-9 kt, or lies within speed_tolerance_knots (kt)
+    of the slowest file of the group.  Returns a list of tuples of file names,
+    each in the order of ``filenames``, ordered by its first file, so that
+    files with no repeat give one 1-tuple each, in their own order.
+    """
+    conditions = [_sphere_condition(f) for f in filenames]
+    order = sorted(range(len(filenames)),
+                   key=lambda i: (round(conditions[i][1], 9), conditions[i][0], i))
+    groups = []
+    for i in order:
+        speed, angle = conditions[i]
+        if groups:
+            first_speed, first_angle = conditions[groups[-1][0]]
+            if round(angle, 9) == round(first_angle, 9) and (
+                    round(speed, 9) == round(first_speed, 9)
+                    or speed - first_speed <= speed_tolerance_knots):
+                groups[-1].append(i)
+                continue
+        groups.append([i])
+    return [tuple(filenames[i] for i in sorted(group)) for group in sorted(groups, key=min)]
+
+
+def _extract_condition_SPL(filenames, infreqs, distance, atmosphere, absorption_band_method,
+                           speed_tolerance_knots=0.0):
+    """:func:`extract_SPL` for one condition: one sphere file, or the energy average of several.
+
+    Several files are averaged by :func:`sphere_statistics.average_spheres`, a -999
+    cell read as no data, after which a cell no run covers is no energy, as
+    :func:`extract_SPL` reads a -999.  speed_tolerance_knots (kt) is the SPEED
+    spread allowed between them.  The speed returned is the runs' mean, kt.
+    """
+    if len(filenames) == 1:
+        return extract_SPL(filenames[0], infreqs, distance, atmosphere, absorption_band_method)
+    import sphere_statistics            # here: it imports this module
+    average = sphere_statistics.average_spheres(
+        filenames, speed_tolerance_knots=max(float(speed_tolerance_knots), 1e-9),
+        flight_path_angle_tolerance_deg=1e-9)
+    return _reduce_sphere_levels(
+        average['levels_db'], average['phi_deg'], average['theta_deg'], average['frequency_hz'],
+        np.asarray(average['radius_ft']), np.asarray(average['speed_knots']),
+        np.asarray(average['flight_path_angle_deg']), infreqs, distance, atmosphere,
+        absorption_band_method)
+
+
+def _merged_run_metadata(rows):
+    """One condition's run metadata from the :func:`group_run_metadata` of each run averaged into it.
+
+    One row is returned as it is.  Several give the mean of each numeric value (NaN
+    if any run's is unknown, and for the winds if the runs declare different wind
+    units or wind reference directions, which make their winds incommensurable),
+    the first run's text values, except wind_source, which names every source the
+    runs used, '+'-joined in run order ('none' only if no run had one), and every
+    run's source_sphere, one per line.
+    """
+    if len(rows) == 1:
+        return rows[0]
+    merged = dict(rows[0])
+    for name, _ in GROUP_RUN_METADATA_NUMBERS:
+        merged[name] = float(np.mean([row[name] for row in rows]))
+    if any(len({row[key] for row in rows}) > 1
+           for key in ('wind_units', 'wind_reference_direction')):
+        merged.update(wind_along_track=float('nan'), wind_cross_track=float('nan'))
+    sources = [part for row in rows for part in row['wind_source'].split('+')
+               if part not in ('', 'none')]
+    merged['wind_source'] = '+'.join(dict.fromkeys(sources)) or 'none'
+    merged['source_sphere'] = '\n'.join(row['source_sphere'] for row in rows)
+    return merged
 
 
 def _select_sphere_files(directory_name, spheres=None, exclude=None):
@@ -5910,8 +6026,17 @@ def extract_SPL(filename, infreqs=None, distance=1000,
     ``distance`` (m) and ``atmosphere`` set the EAA, with each band's attenuation
     formed by ``absorption_band_method`` (see :func:`spla_and_eaa_from_spectrum`).
     """
-    # Get data from netCDF file
-    amplitude, phi, theta, frequency, radius, speed, flight_path_angle = load_nc_sphere(filename)
+    return _reduce_sphere_levels(*load_nc_sphere(filename), infreqs, distance, atmosphere,
+                                 absorption_band_method)
+
+
+def _reduce_sphere_levels(amplitude, phi, theta, frequency, radius, speed, flight_path_angle,
+                          infreqs, distance, atmosphere, absorption_band_method):
+    """:func:`extract_SPL` from levels already read, as :func:`load_nc_sphere` returns them.
+
+    amplitude is dB (phi, theta, frequency), any sentinel or NaN read as no energy;
+    radius is ft, speed kt, angles deg.  Returns what :func:`extract_SPL` returns.
+    """
     # Convert radius to meters
     radius = radius * 0.3048
     # Replace masked values with no-energy SPL
