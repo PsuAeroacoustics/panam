@@ -234,11 +234,6 @@ def oaspl_grids(band_centers, bands_db, freq_range):
     )
 
 
-def save_figures(figs, outdir, names, plot=False):
-    """Write each figure to ``outdir/<name>.png`` (300 dpi); with ``plot``, also show them."""
-    for path in save_all_or_show(dict(zip(names, figs)), outdir, plot, dpi=300, bbox_inches='tight'):
-        logging.info(f"Saved {path}")
-
 def main(argv=None):
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -566,11 +561,12 @@ def main(argv=None):
     figs.append(plot_reference_hemisphere(AAM_path, AAM_sphere, freqs, SPL_range=hemisphere_spl_range))
     names.append('reference_hemisphere')
 
+    # Each figure to output_dir/<name>.png (300 dpi); with --show, only shown.
+    for path in save_all_or_show(dict(zip(names, figs)), args.output_dir if save_outputs else None, args.plot,
+                                 dpi=300, bbox_inches='tight'):
+        logging.info(f"Saved {path}")
     if save_outputs:
-        save_figures(figs, args.output_dir, names, args.plot)
         logging.info(f"Done. Saved {len(figs)} figures to {args.output_dir}")
-    else:
-        save_all_or_show(dict(zip(names, figs)))
 
 if __name__ == '__main__':
     main()

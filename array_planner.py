@@ -142,13 +142,17 @@ def _plot_coverage_points(
 	marker_size: float,
 	marker_alpha: float,
 	label_offsets: bool,
+	style: str = 'k.',
+	zorder: float = 2,
 ) -> None:
+	"""Draw coverage points (x offset, UMAPR azimuth and elevation in deg) on a
+	Lambert axes: one set in ``style`` at ``zorder``, several in tab10 colors."""
 	if len(coverage) == 1:
 		_, az_deg, el_deg = coverage[0]
 		az = np.deg2rad(np.asarray(az_deg, dtype=float).ravel())
 		el = np.deg2rad(np.asarray(el_deg, dtype=float).ravel())
 		x, y = fa.lambert_ea(el, fa.lambert_lon(az))
-		ax.plot(x, y, 'k.', markersize=marker_size, alpha=marker_alpha)
+		ax.plot(x, y, style, markersize=marker_size, alpha=marker_alpha, zorder=zorder)
 		return
 
 	import matplotlib
@@ -462,9 +466,8 @@ def _apply_case(args: argparse.Namespace, defaults: dict) -> None:
 	# --mic-azimuths and --nmics are two ways to place the same microphones:
 	# when the command line gives either, the case file's values of both are
 	# ignored, so that the command line overrides the case file's layout.
-	layout = [key for key in _RING_LAYOUT if key in defaults]
-	if any(getattr(args, key) is not None for key in layout):
-		for key in layout:
+	if any(getattr(args, key) is not None for key in _RING_LAYOUT):
+		for key in _RING_LAYOUT:
 			case.pop(key, None)
 	for key, default in defaults.items():
 		if getattr(args, key) is None:
@@ -532,20 +535,22 @@ def _ring_local_coords(radii: np.ndarray, azimuths_deg: np.ndarray, mic_height: 
 	return np.column_stack((radii * np.cos(az), radii * np.sin(az), np.full(radii.size, float(mic_height))))
 
 
-def _plot_ring_coverage(azimuth_deg: np.ndarray, elevation_deg: np.ndarray, args: argparse.Namespace) -> None:
+def _finish_ring(args: argparse.Namespace, radii: np.ndarray, azimuths: np.ndarray, mic_height: float,
+				 azimuth_deg: np.ndarray, elevation_deg: np.ndarray) -> int:
 	"""Draw the coverage points (UMAPR azimuth and elevation, deg) and save or
-	show them; skip the figure when only a KMZ was asked for (--kmz without -o
-	or -p)."""
-	if args.kmz and not (args.output or args.plot):
-		return
-	fig, ax, _ = fa.lambert_ea_points(np.array([], dtype=float), np.array([], dtype=float))
-	az = np.deg2rad(np.asarray(azimuth_deg, dtype=float).ravel())
-	el = np.deg2rad(np.asarray(elevation_deg, dtype=float).ravel())
-	x, y = fa.lambert_ea(el, fa.lambert_lon(az))
-	# Above the grid: ring microphones at multiples of 45 deg sit on its meridians.
-	ax.plot(x, y, 'ro', markersize=_RING_MARKER_SIZE, alpha=0.7, zorder=10)
-	_set_window_title(fig, args.title)
-	save_or_show(fig, args.output, args.plot, bbox_inches='tight', facecolor='none', dpi=args.dpi)
+	show them, skipping the figure when only a KMZ was asked for (--kmz without
+	-o or -p); then write the ring microphones (radii and mic_height in the
+	length unit, azimuths in deg) to --kmz, if given.  Returns 0."""
+	if args.output or args.plot or not args.kmz:
+		fig, ax, _ = fa.lambert_ea_points(np.array([], dtype=float), np.array([], dtype=float))
+		# Above the grid: ring microphones at multiples of 45 deg sit on its meridians.
+		_plot_coverage_points(ax=ax, coverage=[(0.0, azimuth_deg, elevation_deg)], marker_size=_RING_MARKER_SIZE,
+							  marker_alpha=0.7, label_offsets=False, style='ro', zorder=10)
+		_set_window_title(fig, args.title)
+		save_or_show(fig, args.output, args.plot, bbox_inches='tight', facecolor='none', dpi=args.dpi)
+	if args.kmz:
+		_write_kmz(_ring_local_coords(radii, azimuths, mic_height), args)
+	return 0
 
 
 def _check_site(args: argparse.Namespace) -> None:
@@ -577,10 +582,7 @@ def cmd_hover(args: argparse.Namespace) -> int:
 	_check_site(args)
 	# hover_array_coverage puts the microphones at z = 0: heights above them.
 	azimuth, elevation, _ = fa.hover_array_coverage(radii, azimuths, altitudes - mic_height, headings)
-	_plot_ring_coverage(azimuth, elevation, args)
-	if args.kmz:
-		_write_kmz(_ring_local_coords(radii, azimuths, mic_height), args)
-	return 0
+	return _finish_ring(args, radii, azimuths, mic_height, azimuth, elevation)
 
 
 def cmd_takeoff(args: argparse.Namespace) -> int:
@@ -617,10 +619,7 @@ def cmd_takeoff(args: argparse.Namespace) -> int:
 		heading=float(args.vehicle_heading),
 		source_origin_xy=_float_pair(args.origin, '--origin'),
 	)
-	_plot_ring_coverage(azimuth, elevation, args)
-	if args.kmz:
-		_write_kmz(_ring_local_coords(radii, azimuths, mic_height), args)
-	return 0
+	return _finish_ring(args, radii, azimuths, mic_height, azimuth, elevation)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -667,6 +666,9 @@ def build_parser() -> argparse.ArgumentParser:
 	output.add_argument('--title', type=str, default=None, help='Optional window title (not drawn on the plot).')
 
 	common = argparse.ArgumentParser(add_help=False, parents=[output])
+	# Every overflight subcommand checks its design inputs first; argparse
+	# copies a parent's defaults into each subparser built from it.
+	common.set_defaults(check=_check_overflight)
 
 	# Shared design inputs
 	common.add_argument('--altitude', type=float, required=True,
@@ -755,11 +757,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 	p_design = sub.add_parser('design', parents=[common], help='Print designed mic sideline positions (ymics).')
 	p_design.add_argument('--format', choices=['csv', 'json'], default='csv', help='Output format. Default: csv.')
-	p_design.set_defaults(func=cmd_design, check=_check_overflight)
+	p_design.set_defaults(func=cmd_design)
 
 	p_cov = sub.add_parser('coverage', parents=[common],
 						   help='Plot Lambert coverage points only (no hemisphere background).')
-	p_cov.set_defaults(func=cmd_coverage, check=_check_overflight)
+	p_cov.set_defaults(func=cmd_coverage)
 
 	p_ov = sub.add_parser('overlay', parents=[common],
 						  help='Overlay coverage points on a depropagated hemisphere (.npz).')
@@ -775,7 +777,7 @@ def build_parser() -> argparse.ArgumentParser:
 	p_ov.add_argument('--spl-range', type=colon_pair, default=None, help='Color range as "min:max" (dB).')
 	p_ov.add_argument('--marker-size', type=float, default=2.0, help='Overlay marker size. Default: 2.')
 	p_ov.add_argument('--marker-alpha', type=float, default=0.4, help='Overlay marker alpha. Default: 0.4.')
-	p_ov.set_defaults(func=cmd_overlay, check=_check_overflight)
+	p_ov.set_defaults(func=cmd_overlay)
 
 	p_kml = sub.add_parser('kml', parents=[common], help='Write microphone coordinates to a KMZ file.')
 	p_kml.add_argument('--kmz', type=str, required=True, help='Output KMZ filename (e.g., array.kmz).')
@@ -788,7 +790,7 @@ def build_parser() -> argparse.ArgumentParser:
 	p_kml.add_argument('--mic-height', type=float, default=0.0, help='Microphone height above reference in local units. Default: 0.')
 	p_kml.add_argument('--name', type=str, default='Array', help='KML document name. Default: Array.')
 	p_kml.add_argument('--prefix', type=str, default='M', help='Placemark name prefix. Default: M (M1, M2, ...).')
-	p_kml.set_defaults(func=cmd_kml, check=_check_overflight)
+	p_kml.set_defaults(func=cmd_kml)
 
 	p_hover = sub.add_parser(
 		'hover', parents=[ring, output],

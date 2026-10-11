@@ -708,37 +708,25 @@ if __name__ == "__main__":
         from flight_acoustics import plot_spectrogram
         
         print("\nGenerating spectrograms...")
-        
-        # Spectrogram of clean signal
-        figures['vkf_spectrogram_clean'] = plot_spectrogram(x_clean_chirp, fs, window_time=0.2, title='Spectrogram: Clean Chirp Signal (50-150 Hz)', clim=[20, 80], flim=[0, 400])[0]
-        
-        # Spectrogram of noisy signal
-        figures['vkf_spectrogram_noisy'] = plot_spectrogram(x_noisy_chirp, fs, window_time=0.2, title='Spectrogram: Noisy Signal', clim=[20, 80], flim=[0, 400])[0]
-        
-        # Spectrogram of filtered signal (with correct adaptive bandwidth)
-        figures['vkf_spectrogram_filtered'] = plot_spectrogram(x_filtered_correct, fs, window_time=0.2, title='Spectrogram: Filtered Signal (Adaptive BW=10%*freq)', clim=[20, 80], flim=[0, 400])[0]
-        
-        # Clean multi-order signal (sum of all three orders)
-        figures['vkf_spectrogram_multiorder_clean'] = plot_spectrogram(x_clean_multi, fs, window_time=0.2, title='Clean Multi-Order Signal (1x+2x+3x)', clim=[20, 80], flim=[0, 400])[0]
-        
-        # Noisy input signal with all orders plus noise and interference
-        figures['vkf_spectrogram_multiorder_noisy'] = plot_spectrogram(x_noisy_multi, fs, window_time=0.2, title='Noisy Multi-Order Signal (1x+2x+3x+noise+interference)', clim=[20, 80], flim=[0, 400])[0]
-        
-        # Reconstructed signal (sum of all filtered orders)
+
+        # Each signal's figure name and title, all on one display scale.
         x_reconstructed_multi = x_filtered_1x + x_filtered_2x + x_filtered_3x
-        figures['vkf_spectrogram_multiorder_filtered'] = plot_spectrogram(x_reconstructed_multi, fs, window_time=0.2, title='Reconstructed Multi-Order Signal (filtered 1x+2x+3x)', clim=[20, 80], flim=[0, 400])[0]
-        
-        # Individual extracted orders
-        figures['vkf_spectrogram_multiorder_1x'] = plot_spectrogram(x_filtered_1x, fs, window_time=0.2, title='Extracted: 1x Order', clim=[20, 80], flim=[0, 400])[0]
-        
-        figures['vkf_spectrogram_multiorder_2x'] = plot_spectrogram(x_filtered_2x, fs, window_time=0.2, title='Extracted: 2x Order', clim=[20, 80], flim=[0, 400])[0]
-        
-        figures['vkf_spectrogram_multiorder_3x'] = plot_spectrogram(x_filtered_3x, fs, window_time=0.2, title='Extracted: 3x Order', clim=[20, 80], flim=[0, 400])[0]
-        
-        # Extracted interference order
-        figures['vkf_spectrogram_multiorder_interference'] = plot_spectrogram(x_filtered_interference_multi, fs, window_time=0.2, title='Extracted: Interference Order (70-30 Hz)', clim=[20, 80], flim=[0, 400])[0]
-        
-        
+        spectrograms = [
+            ('clean', x_clean_chirp, 'Spectrogram: Clean Chirp Signal (50-150 Hz)'),
+            ('noisy', x_noisy_chirp, 'Spectrogram: Noisy Signal'),
+            ('filtered', x_filtered_correct, 'Spectrogram: Filtered Signal (Adaptive BW=10%*freq)'),
+            ('multiorder_clean', x_clean_multi, 'Clean Multi-Order Signal (1x+2x+3x)'),
+            ('multiorder_noisy', x_noisy_multi, 'Noisy Multi-Order Signal (1x+2x+3x+noise+interference)'),
+            ('multiorder_filtered', x_reconstructed_multi, 'Reconstructed Multi-Order Signal (filtered 1x+2x+3x)'),
+            ('multiorder_1x', x_filtered_1x, 'Extracted: 1x Order'),
+            ('multiorder_2x', x_filtered_2x, 'Extracted: 2x Order'),
+            ('multiorder_3x', x_filtered_3x, 'Extracted: 3x Order'),
+            ('multiorder_interference', x_filtered_interference_multi, 'Extracted: Interference Order (70-30 Hz)'),
+        ]
+        for name, signal, title in spectrograms:
+            figures[f'vkf_spectrogram_{name}'] = plot_spectrogram(signal, fs, window_time=0.2, title=title,
+                                                                  clim=[20, 80], flim=[0, 400])[0]
+
     except Exception as e:
         print(f"  Spectrogram generation skipped: {e}")
     

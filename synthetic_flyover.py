@@ -16,8 +16,6 @@ elevation positive below the horizon.
 """
 
 import numpy as np
-from matplotlib.colors import BoundaryNorm
-from matplotlib.pyplot import colorbar, subplots
 
 import flight_acoustics as fa
 from panam_acoustics.plotting import acoustic_plot_style
@@ -112,11 +110,15 @@ def synthesize_pass(mic_locations, *, speed=150.0, height=300.0, duration=6.0, s
         time = np.asarray(time, dtype=float)
         return np.column_stack([speed * (time - overhead), np.zeros(time.size), np.full(time.size, height)])
 
+    velocity = np.tile([speed, 0.0, 0.0], (t.size, 1))
     pressure = []
     for mic in mics:
+        # The source moves along x only: its y and z offsets from the microphone are fixed.
+        dy, dz = 0.0 - mic[1], height - mic[2]
         t_e = t.copy()
         for _ in range(30):
-            t_e = t - np.linalg.norm(position(t_e) - mic, axis=1) / c
+            dx = speed * (t_e - overhead) - mic[0]
+            t_e = t - np.sqrt(dx * dx + dy * dy + dz * dz) / c
         source_position = position(t_e)
         r = np.linalg.norm(source_position - mic, axis=1)
         source = np.zeros(t.size)
@@ -126,8 +128,7 @@ def synthesize_pass(mic_locations, *, speed=150.0, height=300.0, duration=6.0, s
             source = source + broadband * rng.standard_normal(t.size)
         scale = source_strength / r
         if directivity_db is not None:
-            azimuth, elevation, _, _, _ = fa.hemigen(t_e, source_position, np.tile([speed, 0.0, 0.0], (t.size, 1)),
-                                                     mic[None, :], c)
+            azimuth, elevation, _, _, _ = fa.hemigen(t_e, source_position, velocity, mic[None, :], c)
             scale = scale * 10.0 ** (np.asarray(directivity_db(azimuth[:, 0], elevation[:, 0])) / 20.0)
         pressure.append(scale * source + noise * rng.standard_normal(t.size))
     if track_time is None:
@@ -184,15 +185,9 @@ def plot_level_difference(azi_grid_deg, elv_grid_deg, difference_db, limit_db=2.
         The figure.
     """
     difference = np.array(difference_db, dtype=float)
-    difference[~np.isfinite(difference)] = np.nan
+    difference[~np.isfinite(difference)] = np.nan          # blank, not clipped to an end color
     azimuth, elevation = np.meshgrid(np.radians(azi_grid_deg), np.radians(elv_grid_deg))
-    x, y = fa.lambert_ea(elevation, fa.lambert_lon(azimuth))
     levels = np.arange(-limit_db, limit_db + step_db / 2.0, step_db)
-    fig, ax = subplots(facecolor='white')
-    ax.patch.set_visible(False)
-    contours = ax.contourf(x, y, np.clip(difference, -limit_db, limit_db), levels=levels, cmap='RdBu_r',
-                           norm=BoundaryNorm(levels, 256), extend='neither')
-    fa._configure_lambert_axes(ax)
-    fa._draw_lambert_grid(ax)
-    colorbar(contours, pad=0.1, ticks=fa.colorbar_ticks(levels)).set_label(label)
+    fig, _, _ = fa.plot_lambert_ea(azimuth, elevation, np.clip(difference, -limit_db, limit_db), levels=levels,
+                                   cmap='RdBu_r', colorbar_label=label)
     return fig

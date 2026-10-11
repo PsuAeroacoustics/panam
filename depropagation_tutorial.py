@@ -23,7 +23,7 @@ import numpy as np
 
 import flight_acoustics as fa
 import synthetic_flyover as sf
-from cli import colon_pair, save_or_show
+from cli import add_output_options, colon_pair, save_or_show
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 #: ft/s in one knot.
@@ -32,9 +32,7 @@ FT_PER_S_PER_KNOT = fa.KNOT_MPS / 0.3048
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument('-o', '--output-dir', default='demo_plots',
-                        help='directory for the figure, the sphere directory and the database (default demo_plots)')
-    parser.add_argument('-p', '--plot', action='store_true', help='also open the figure in a window')
+    add_output_options(parser, 'demo_plots', directory=True)
     parser.add_argument('--mics', type=int, default=7, help='number of microphones (default 7)')
     parser.add_argument('--mic-y', type=colon_pair, default=(-600.0, 600.0),
                         help='lateral extent of the microphone line "low:high", ft (default -600:600)')

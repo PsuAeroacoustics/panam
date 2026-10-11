@@ -432,10 +432,9 @@ def separate_hexacopter_acoustics(mat_file_path, mic_range=16,
     print(f"Processing microphone {mic_range} (index {mic_idx})")
     print(f"Signal shape: {xo.shape}")
     
-    # Interpolate RPM to acoustic time samples
-    rpmo = interpolate_rpm_to_acoustic_time(aircraft_time, aircraft_rpm, to)
-    if receiver is not None:
-        rpmo = heard_rotor_speed(data, to, receiver, sound_speed)
+    # Rotor speeds at the acoustic samples: as the receiver hears them, if given
+    rpmo = (heard_rotor_speed(data, to, receiver, sound_speed) if receiver is not None
+            else interpolate_rpm_to_acoustic_time(aircraft_time, aircraft_rpm, to))
     n_rotors = rpmo.shape[1]
     
     # Set up segmentation

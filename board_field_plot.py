@@ -52,22 +52,16 @@ def level_re_free_field(frequency, elevation, x_m, z_m, sound_speed=1125.0, flow
     return lev(pd + rp * pr), lev(bare)
 
 
-def plot(frequency, elevation, flow_resistance, output, x_range=(-0.4, 0.4), z_top=0.2, grid=(201, 101),
-         mic_height_m=gp.PLATE_MIC_HEIGHT_FT * FT, sound_speed=1125.0, levels=(-15.0, 10.0), ground=None,
-         **geometry):
-    """Draw the map and the level at the microphone's height to ``output``.
+def plot(frequency, elevation, flow_resistance, output, **options):
+    """Draw the map and the level at the microphone's height to ``output`` (200 dpi).
 
-    ``ground`` (a :func:`ground_plane.surface_admittance` model dict) replaces
-    Delany-Bazley at ``flow_resistance``; ``geometry`` goes to
-    :func:`axisymmetric_bem.field` (radius, thickness, edge_thickness,
-    taper_length, in feet as there).  The figure is drawn without pyplot, so
-    the session's Matplotlib backend and open figures are left alone.
-    Arguments and units as :func:`field_figure`.  Returns ``output``.
+    ``options`` are :func:`field_figure`'s keywords (``x_range``, ``z_top``,
+    ``grid``, ``mic_height_m``, ``sound_speed``, ``levels``, ``ground`` and the
+    plate geometry), with its units and defaults.  The figure is drawn without
+    pyplot, so the session's Matplotlib backend and open figures are left
+    alone.  Returns ``output``.
     """
-    fig = field_figure(frequency, elevation, flow_resistance, x_range=x_range, z_top=z_top, grid=grid,
-                       mic_height_m=mic_height_m, sound_speed=sound_speed, levels=levels, ground=ground,
-                       **geometry)
-    fig.savefig(output, dpi=200)
+    field_figure(frequency, elevation, flow_resistance, **options).savefig(output, dpi=200)
     return output
 
 
@@ -108,10 +102,7 @@ def field_figure(frequency, elevation, flow_resistance, x_range=(-0.4, 0.4), z_t
     xl = np.linspace(*x_range, 4 * grid[0])
     Ll, Ll0 = level_re_free_field(frequency, elevation, xl, np.full_like(xl, zm), sound_speed, flow_resistance,
                                   ground, **geometry)
-    if figure is None:
-        fig = Figure(figsize=FIGURE_SIZE, layout='constrained')
-    else:
-        fig = figure
+    fig = figure if figure is not None else Figure(figsize=FIGURE_SIZE, layout='constrained')
     ax, bx = fig.subplots(2, 1, sharex=True, height_ratios=(2.2, 1.4))
     im = ax.pcolormesh(x, z * 100, np.clip(L, *levels), cmap='magma', vmin=levels[0], vmax=levels[1],
                        shading='auto', rasterized=True)

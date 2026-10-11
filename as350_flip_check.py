@@ -50,9 +50,10 @@ def demo_data_path(basepath=None):
     return local_paths.data_path("as350_demo", basepath or os.environ.get("AS350_DEMO_PATH"))
 
 
-def _reference_on_grid(azi_grid, elv_grid, base):
-    """Reference AAM sphere OASPL interpolated onto our grid (dB at r_ref);
-    ``base`` is the demo data directory."""
+def _reference_samples(base):
+    """The reference AAM sphere's OASPL as power at r_ref and its UMAPR
+    directions (deg), repeated a turn either side for periodic azimuth;
+    ``base`` is the demo data directory.  Returns (azimuth, elevation, power)."""
     amp, phi, theta, f, radius_ft, _, _ = fa.load_nc_sphere(os.path.join(base, REFERENCE_SPHERE))
     amp = amp.astype(float)
     amp = fa.mask_missing_levels(amp)
@@ -68,6 +69,13 @@ def _reference_on_grid(azi_grid, elv_grid, base):
     a = np.concatenate([azi_d, azi_d + 360.0, azi_d - 360.0])
     e = np.concatenate([elv_d, elv_d, elv_d])
     p = np.concatenate([pw, pw, pw])
+    return a, e, p
+
+
+def _reference_on_grid(azi_grid, elv_grid, reference):
+    """Reference AAM sphere OASPL interpolated onto our grid (dB at r_ref);
+    ``reference`` is :func:`_reference_samples`'s result."""
+    a, e, p = reference
     # NaN where the reference has no data within RMAX, -inf where it has no
     # energy: np.isfinite in main() then leaves both out of the statistics.
     g = fa.shepIDW(elv_grid, azi_grid, e, a, p, rmax=RMAX)
@@ -77,9 +85,10 @@ def _reference_on_grid(azi_grid, elv_grid, base):
     return out
 
 
-def measured(flip, base):
-    """Measured hemisphere from the demo's own inputs, one flip setting;
-    ``base`` is the demo data directory."""
+def demo_inputs(base):
+    """The demo's microphones, track and atmosphere, read once from the demo
+    data directory ``base``: keyword arguments of ``depropagate_hemisphere``
+    (ft, ft/s, Pa)."""
     files = demo.gather_acoustic_files(os.path.join(base, "Acoustic"))
     miclocs, pressures, times = demo.load_microphones(files)
     miclocs, pressures, times = demo.filter_microphones(
@@ -87,15 +96,20 @@ def measured(flip, base):
     _, ft = demo.load_track(base)
     src, vel = demo.track_kinematics(ft)
     atmosphere, speed_of_sound_ft_s = demo.demo_atmosphere()
+    return dict(mic_locations=miclocs, pressure=pressures, time=times, track_time=ft["time"],
+                track_position=src, track_velocity=vel, speed_of_sound=speed_of_sound_ft_s,
+                atmosphere=atmosphere)
+
+
+def measured(flip, inputs):
+    """Measured hemisphere from the demo's own inputs (:func:`demo_inputs`),
+    one flip setting."""
     return fa.depropagate_hemisphere(
-        mic_locations=miclocs,
-        pressure=[np.asarray(p, dtype=float) * 0.5 for p in pressures],
-        time=times, track_time=ft["time"], track_position=src,
-        track_velocity=vel, speed_of_sound=speed_of_sound_ft_s, length_units="ft",
-        r_ref=R_REF_FT, freq_range=FREQS, window_time=0.5,
+        **dict(inputs, pressure=[np.asarray(p, dtype=float) * 0.5 for p in inputs["pressure"]]),
+        length_units="ft", r_ref=R_REF_FT, freq_range=FREQS, window_time=0.5,
         window_overlap=0.5, point_stride=1, azi_step=AZI_STEP,
         elv_step=ELV_STEP, rmax=RMAX, apply_absorption_deprop=True,
-        atmosphere=atmosphere, flip_y_for_geometry=flip)
+        flip_y_for_geometry=flip)
 
 
 def main(argv=None):
@@ -109,15 +123,17 @@ def main(argv=None):
                              "(default: AS350_DEMO_PATH, then the as350_demo entry of local_paths)")
     args = parser.parse_args(argv)
     base = demo_data_path(args.basepath)
+    inputs = demo_inputs(base)
+    reference = _reference_samples(base)
     out = {}
     for flip in (False, True):
-        h = measured(flip, base)
+        h = measured(flip, inputs)
         azi, elv = h["azi_grid_deg"], h["elv_grid_deg"]
         AZ, EL = np.meshgrid(azi, elv)
-        ref = _reference_on_grid(AZ, EL, base)
+        ref = _reference_on_grid(AZ, EL, reference)
         # the same reference read backwards in azimuth: what a lateral sign
         # error would make the measurement look like
-        ref_mirror = _reference_on_grid(np.remainder(-AZ, 360.0), EL, base)
+        ref_mirror = _reference_on_grid(np.remainder(-AZ, 360.0), EL, reference)
         m = h["oaspl_db"]
         out[flip] = {}
         for name, r in (("reference", ref), ("mirrored reference", ref_mirror)):
