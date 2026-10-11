@@ -115,10 +115,35 @@ def doppler_shift_band_power(power, band_centers_hz, doppler):
     return np.where(covered, out, np.nan)
 
 
+#: Frequencies per band at which :func:`_bin_band_absorption_db` averages the pure-tone
+#: attenuation: the midpoints of equal slices of [f_l, f_u).
+BIN_ABSORPTION_POINTS = 32
+
+
+def _bin_band_absorption_db(tone_db, band_centers_hz):
+    """Band attenuation, dB, (Nb,) + path shape, of a band whose FFT bins were
+    corrected one by one: -10 lg of the mean over [f_l, f_u) of 10^(-delta_t(f) / 10).
+
+    ``tone_db(f)`` returns the pure-tone attenuation over the path(s), dB, shaped
+    ``f.shape + path shape``, for a 1-D array ``f`` in Hz.  The mean is over
+    :data:`BIN_ABSORPTION_POINTS` frequencies spread evenly in frequency, as FFT bins
+    are, so it is exact for a spectrum flat within the band.
+    """
+    lower, upper = fa.third_octave_band_edges(band_centers_hz)
+    fraction = (np.arange(BIN_ABSORPTION_POINTS) + 0.5) / BIN_ABSORPTION_POINTS
+    frequency = lower[:, None] + (upper - lower)[:, None] * fraction[None, :]      # (Nb, K)
+    tone = np.asarray(tone_db(frequency.ravel()), dtype=float)
+    tone = tone.reshape(frequency.shape + tone.shape[1:])
+    # Relative to the least-attenuated frequency, so a long path does not underflow.
+    least = np.min(tone, axis=1)
+    return least - 10.0 * np.log10(np.mean(10.0 ** (-(tone - np.expand_dims(least, 1)) / 10.0), axis=1))
+
+
 def synthesize_band_histories(sphere, track, mics, *, times=None, speed_of_sound=1135.0, r_ref=None,
                               length_units=None, ray_model=None, apply_absorption=False, atmosphere=None,
                               absorption_band_method='center', absorption_profile=None, receiver_response_db=None,
-                              doppler_shift=False, air_relative_doppler=False, flip_y_for_geometry=None):
+                              doppler_shift=False, air_relative_doppler=False, flip_y_for_geometry=None,
+                              absorption_per_bin=False):
     """Predict one-third octave band-level time histories at microphones from a source hemisphere.
 
     For each microphone and reception time t the emission time t_e solves
@@ -182,6 +207,14 @@ def synthesize_band_histories(sphere, track, mics, *, times=None, speed_of_sound
             on the same mirrored geometry (``mics`` and ``track`` stay as
             measured).  Default None: the sphere's
             ``metadata['flip_y_for_geometry']``, else False.
+        absorption_per_bin: the hemisphere's absorption was corrected FFT bin by
+            bin (``depropagate_hemisphere(third_octave_method='fft')``, which
+            refers each bin to ``r_ref`` with alpha at its own frequency): delta_b
+            is then -10 lg of the mean of 10^(-delta(f) / 10) over the band's
+            frequencies, for both l and ``r_ref`` (:func:`_bin_band_absorption_db`),
+            rather than the band-center value, which over-attenuates high bands
+            on long paths.  Exact for a spectrum flat within the band.  Needs
+            ``absorption_band_method='center'``.  Default False.
 
     Returns:
         dict of ``time`` (N,) s, ``band_centers_hz`` (Nb,) Hz, ``bands_db``
@@ -224,11 +257,21 @@ def synthesize_band_histories(sphere, track, mics, *, times=None, speed_of_sound
     times = track_time.copy() if times is None else np.asarray(times, dtype=float).ravel()
     c = float(speed_of_sound)
 
+    if absorption_per_bin and absorption_band_method != 'center':
+        raise ValueError("absorption_per_bin corrects FFT bins one by one: it needs absorption_band_method='center'")
+
+    def band_absorption(tone_db):
+        """delta_b from ``tone_db(frequencies, method)``: by bins or by ``absorption_band_method``."""
+        if absorption_per_bin:
+            return _bin_band_absorption_db(lambda f: tone_db(f, 'center'), centers)
+        return tone_db(centers, absorption_band_method)
+
     absorption_reference = None
     if apply_absorption:
         weather = (atmosphere.temperature, atmosphere.pressure, atmosphere.relative_humidity)
         r_ref_m = float(len_conv(r_ref, from_units=length_units, to_units='m'))
-        absorption_reference = band_absorption_db(r_ref_m, centers, *weather, method=absorption_band_method)
+        absorption_reference = band_absorption(
+            lambda f, method: band_absorption_db(r_ref_m, f, *weather, method=method))
 
     fields = ('emission_time', 'azimuth_deg', 'elevation_deg', 'range', 'spreading_range', 'doppler')
     out = {key: np.full((mics.shape[0], times.size), np.nan) for key in fields}
@@ -280,14 +323,15 @@ def synthesize_band_histories(sphere, track, mics, *, times=None, speed_of_sound
         if apply_absorption:
             if absorption_profile is None:
                 path_m = np.asarray(len_conv(path, from_units=length_units, to_units='m'), dtype=float)
-                delta = band_absorption_db(path_m, centers, *weather, method=absorption_band_method)
+                delta = band_absorption(lambda f, method: band_absorption_db(path_m, f, *weather, method=method))
             else:
                 def to_ft(value):
                     return np.asarray(len_conv(np.asarray(value, dtype=float), from_units=length_units,
                                                to_units='ft'), dtype=float)
                 ray = dict(source_altitude_ft=to_ft(x[:, 2]), receiver_altitude_ft=to_ft(mic[2]),
                            path_length_ft=to_ft(path))
-                delta = layered_attenuation_db(absorption_profile, ray, centers, method=absorption_band_method)
+                delta = band_absorption(lambda f, method: layered_attenuation_db(absorption_profile, ray, f,
+                                                                                  method=method))
             power = power * 10.0 ** (-(delta - absorption_reference[:, None]) / 10.0)
         power = np.where(valid[None, :], power, np.nan)
         out['bands_db'][im] = fa.power_to_db(power)
@@ -450,7 +494,9 @@ def leave_mics_out(mic_locations, pressure, time, track_time, track_position, tr
     compared with its measured bands (:func:`measured_band_histories`).  The
     synthesis takes the depropagation's speed of sound, ray model, receiver
     response, absorption (``apply_absorption_deprop``, ``atmosphere``,
-    ``absorption_band_method``, ``absorption_profile``), Doppler convention
+    ``absorption_band_method``, ``absorption_profile``; with
+    ``third_octave_method='fft'``, whose bins were corrected one by one, the
+    band absorption is the bins' mean, ``absorption_per_bin``), Doppler convention
     (``remove_doppler``, ``air_relative_doppler``), ``flip_y_for_geometry``
     and ``track_nose``; frames the depropagation would have dropped
     (``min_elevation_deg``, ``max_range`` with ``rim_range``) are left out of
@@ -498,7 +544,8 @@ def leave_mics_out(mic_locations, pressure, time, track_time, track_position, tr
         absorption_profile=depropagation.get('absorption_profile'),
         doppler_shift=depropagation.get('remove_doppler', False),
         air_relative_doppler=depropagation.get('air_relative_doppler', False),
-        flip_y_for_geometry=bool(depropagation.get('flip_y_for_geometry', False)))
+        flip_y_for_geometry=bool(depropagation.get('flip_y_for_geometry', False)),
+        absorption_per_bin=depropagation.get('third_octave_method', 'fft') == 'fft')
     measurement = dict(window_time=depropagation.get('window_time', 0.5),
                        window_overlap=depropagation.get('window_overlap', 0.5),
                        ambient_time_range=depropagation.get('ambient_time_range'),

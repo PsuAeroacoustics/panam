@@ -68,6 +68,50 @@ def test_absorption_beyond_the_sphere_radius():
     np.testing.assert_allclose(plain['bands_db'][0, :, 0] - absorbed['bands_db'][0, :, 0], expected, rtol=1e-9)
 
 
+def test_absorption_per_bin_matches_an_fft_depropagated_band():
+    """An FFT depropagation refers each bin to r_ref with alpha at its own frequency, so
+    the hemisphere band holds int S(f) 10^(-alpha(f) r_ref / 10) df.  The synthesis must
+    carry that band to the microphone as the band of the bins carried there: for a
+    spectrum flat within the band, within 0.05 dB at 8-10 kHz over 2000 ft, where the
+    band-center rule over-attenuates by several dB."""
+    weather = Atmosphere(temperature=293.15, pressure=101.325, relative_humidity=20.0)
+    centers = np.array([4000.0, 8000.0, 10000.0])
+    lower, upper = fa.third_octave_band_edges(centers)
+    r_ref_m, path_ft = 100.0 * 0.3048, 2000.0
+    bins = [np.arange(lo, hi, 1.0) + 0.5 for lo, hi in zip(lower, upper)]         # 1 Hz bins, flat PSD
+
+    def band_db(distance_m):
+        alpha = [np.asarray(weather.attenuation_coefficient(f), dtype=float) for f in bins]
+        return np.array([10.0 * np.log10(np.sum(10.0 ** (-a * distance_m / 10.0))) for a in alpha])
+    hemisphere_db = band_db(r_ref_m)
+    measured_db = band_db(path_ft * 0.3048) - 20.0 * np.log10(path_ft / 100.0)
+    sphere = _sphere(lambda a, e: hemisphere_db[:, None, None] + np.zeros(a.shape), centers=centers)
+    mic = np.array([[0.0, 0.0, 300.0 - path_ft]])                                 # straight below
+    common = dict(times=[3.0], speed_of_sound=C, apply_absorption=True, atmosphere=weather)
+    per_bin = sy.synthesize_band_histories(sphere, _hover(), mic, absorption_per_bin=True, **common)
+    np.testing.assert_allclose(per_bin['bands_db'][0, :, 0], measured_db, atol=0.05)
+    center = sy.synthesize_band_histories(sphere, _hover(), mic, **common)
+    assert np.all(measured_db[1:] - center['bands_db'][0, 1:, 0] > 2.0)
+    with pytest.raises(ValueError, match='absorption_per_bin'):
+        sy.synthesize_band_histories(sphere, _hover(), mic, absorption_per_bin=True,
+                                     absorption_band_method='arp5534', **common)
+
+
+@pytest.mark.parametrize('method, per_bin', [('fft', True), ('filter_bank', False)])
+def test_leave_mics_out_takes_the_bin_absorption_of_an_fft_depropagation(monkeypatch, method, per_bin):
+    scenario, ambient = sf.synthesize_pass(LINE[:3], duration=8.0, directivity_db=sf.example_directivity_db, seed=2)
+    seen = []
+    original = sy.synthesize_band_histories
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs.get('absorption_per_bin'))
+        return original(*args, **kwargs)
+    monkeypatch.setattr(sy, 'synthesize_band_histories', spy)
+    sy.leave_mics_out(**scenario, ambient_pressure=ambient, held_out=[[1]], apply_absorption_deprop=True,
+                      **dict(DEPROPAGATION, third_octave_method=method))
+    assert seen == [per_bin]
+
+
 def test_receiver_response_is_added():
     mic = np.array([[100.0, 0.0, 0.0]])
     seen = []

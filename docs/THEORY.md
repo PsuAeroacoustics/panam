@@ -685,7 +685,18 @@ receiver response in dB re free field (the same `receiver_response_db` callable 
 divides out, §4.5), optional; $r_s$ the straight distance or the ray tube's range; and $\delta_b$
 the band's absorption (`apply_absorption`, §5.4) over the straight distance or the arc length $\ell$,
 in the uniform atmosphere or a layered `absorption_profile`, less that over $r_\mathrm{ref}$ in the
-uniform atmosphere, which the hemisphere keeps. The ambient gate has no inverse. A hemisphere filed
+uniform atmosphere, which the hemisphere keeps. A hemisphere whose FFT bins were corrected one by
+one (`third_octave_method='fft'`, §5.1) keeps $\int S(f)\,10^{-\alpha(f) r_\mathrm{ref}/10}\,df$
+in each band, not the band-center loss, so with `absorption_per_bin` both terms are the bins' mean,
+
+$$
+\delta_b(s) = -10\lg\left[\frac{1}{K}\sum_{k=1}^{K} 10^{-\delta(f_k, s)/10}\right],
+$$
+
+over $K = 32$ frequencies spread evenly across $[f_l, f_u)$, as FFT bins are, with $\delta(f, s)$
+the pure-tone attenuation over $s$. This is exact for a spectrum flat within the band. The
+band-center rule would over-attenuate: alpha is convex in frequency, so at 8 kHz over 300 m of
+excess path it loses about 3 dB more than the bins do. The ambient gate has no inverse. A hemisphere filed
 with `flip_y_for_geometry` is read on the same mirrored geometry: the emission time and the ray are
 found on the measured geometry, whose travel times the mirror does not change, and the direction,
 the Doppler factor and the receiver's source offset on the mirrored one, as depropagation files
@@ -708,8 +719,9 @@ with its measured bands (`measured_band_histories`). These are formed at receive
 the depropagation forms its bands: brick-wall sums of the spectrogram, tone-aware sums with
 `tone_aware`, or the filter bank with `third_octave_method='filter_bank'`; each bin or band is gated
 and ambient-subtracted against the same ambient (`ambient_pressure`, `ambient_time_range` or
-`ambient_percentile`). The synthesis takes the depropagation's absorption, layered profile,
-Doppler convention and mirror flag. Frames the depropagation would
+`ambient_percentile`). The synthesis takes the depropagation's absorption (by the bins' mean,
+`absorption_per_bin`, after an FFT depropagation), layered profile, Doppler convention and mirror
+flag. Frames the depropagation would
 drop (elevation floor, range limit with the rim range) are left out. The residual is synthesized
 minus measured, in dB, over the frames where both are finite, and is summarized per band and
 overall by its count, mean, median, root mean square, sample standard deviation and 5th and 95th
@@ -1379,7 +1391,7 @@ Functions are in `flight_acoustics.py` unless another module is named. Tests are
 | §5.3 Rays | `refracted_rays.external_ray_model`, `straight_ray_model`, `uniform_wind_ray_model`; `noise_abatement_2017.wind_in_frame_ft_s` (`build_sphere(ray_model='wind')`) | `test_refracted_rays.py`, `test_run_metadata.py` |
 | §5.4 Atmosphere | `panam_acoustics.iso_9613_1_1993`, `panam_acoustics.atmosphere.Atmosphere`, `atmosorb`; `noise_abatement_2017.run_atmosphere`, `air_density_kg_m3` | `test_acoustics.py`, `test_python_acoustics_equivalence.py`, `test_run_metadata.py`, `test_noise_abatement_2017.py` |
 | §5.4 Band and layered absorption | `panam_acoustics.atmosphere.band_absorption_db`, `arp5534_band_attenuation`, `exact_midband_frequency`, `layered_attenuation_db`, `check_absorption_profile`; `depropagate_hemisphere` (`absorption_band_method`, `absorption_profile`), `noise_abatement_2017.build_sphere`, `spla_and_eaa_from_spectrum`, `norah2_levels_at_radius` | `test_band_absorption.py`, `test_spla_and_eaa.py`, `test_norah2_import.py` |
-| §5.5 Forward synthesis | `synthesis.synthesize_band_histories`, `doppler_shift_band_power`, `measured_band_histories`, `leave_mics_out`, `residual_statistics`; `interpolate_hemisphere_power` | `test_synthesis.py` |
+| §5.5 Forward synthesis | `synthesis.synthesize_band_histories`, `_bin_band_absorption_db`, `doppler_shift_band_power`, `measured_band_histories`, `leave_mics_out`, `residual_statistics`; `interpolate_hemisphere_power` | `test_synthesis.py` |
 | §6.1 Fixed radius | `shepIDW`, `shepIDW_weights`, `shepIDW_apply`, `geodist` | `test_shep_idw.py`, `test_no_data.py`, `test_hemisphere_geometry_accuracy.py` |
 | §6.2 Adaptive radius | `adaptive_idw_weights`, `ADAPTIVE_INTERPOLATION` | `test_adaptive_interpolation.py`, `test_hemisphere_geometry_accuracy.py` |
 | §6.3 Output grids | `write_aam_hemisphere_netcdf`, `_sample_hemisphere_levels`, `interpolate_hemisphere_power`, `mask_missing_levels`, `lambert_ea`, `lambert_lon` | `test_write_aam_hemisphere_netcdf.py`, `test_hemisphere_sampling.py`, `test_no_data.py`, `test_lambert_geometry.py` |
