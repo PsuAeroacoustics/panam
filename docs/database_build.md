@@ -96,7 +96,8 @@ when its sphere exists, with its NORAH2 file under `--norah2-directory` and its 
 `--tone-split`. `--skip-unchanged` also needs the sphere's `panam_settings_sha256` to equal this
 build's and its `panam_input_signature` to equal the signature of the run's input files now:
 the track, the run and ambient recordings, the reference and microphone lists, the day's
-weather station files and the reference sphere, by name, size and modification time. A
+weather station files, the reference sphere and the run's `--ray-profiles` CSV, by name, size
+and modification time. A
 skipped run keeps its files and is listed in the manifest, with `skipped` set to `exists` or
 `unchanged`, and in the NORAH2 triangulation. Its manifest row is the one its original build
 wrote, track flags included, read from the sphere's `panam_build_record`, so `--skip-flagged`

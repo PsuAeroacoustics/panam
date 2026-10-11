@@ -964,6 +964,48 @@ def test_skip_unchanged_with_no_overwrite_skips_a_default_build(monkeypatch, tmp
     assert records[0]['settings_sha256'] == first[0]['settings_sha256']
 
 
+def test_skip_unchanged_rebuilds_a_run_whose_ray_profile_changed(monkeypatch, tmp_path):
+    """The atmospheric profile a ray model reads is one of the run's inputs: an edited
+    profile under the same name rebuilds the run under skip_unchanged."""
+    import refracted_rays
+    _archive(tmp_path)
+    out = tmp_path / 'out'
+    profile = tmp_path / 'profiles' / '289108.csv'
+    profile.parent.mkdir()
+    profile.write_text('height_ft,temperature_K\n0,288\n')
+    model = refracted_rays.straight_ray_model(1116.0)
+    model.description = 'niceops_ray_geometry stratified plate 289108.csv'
+    model.source_files = (str(profile),)
+    arguments = dict(root=str(tmp_path), prefetch=False, board_correction='flat', point_stride=2,
+                     ray_models=lambda run: model)
+    first, failures = na.build_all('AS350B3', str(out), **arguments)
+    assert failures == []
+
+    built = []
+    build_sphere = na.build_sphere
+
+    def counting(test, run, *args, **kwargs):
+        built.append(run)
+        return build_sphere(test, run, *args, **kwargs)
+    monkeypatch.setattr(na, 'build_sphere', counting)
+    records, _ = na.build_all('AS350B3', str(out), skip_unchanged=True, **arguments)
+    assert built == [] and records[0]['skipped'] == 'unchanged'
+    profile.write_text('height_ft,temperature_K\n0,290\n1000,285\n')
+    records, _ = na.build_all('AS350B3', str(out), skip_unchanged=True, **arguments)
+    assert built == ['289108'] and 'skipped' not in records[0]
+
+
+def test_an_external_ray_model_names_its_profile_as_an_input(tmp_path):
+    import refracted_rays
+    profile = tmp_path / '289108.csv'
+    model = refracted_rays.external_ray_model('niceops_ray_geometry', str(profile))
+    assert model.source_files == (str(profile),)
+    _archive(tmp_path)
+    test = na.NoiseAbatementTest('AS350B3', root=str(tmp_path))
+    assert str(profile) in na.run_input_files(test, '289108', ray_model=model)
+    assert str(profile) not in na.run_input_files(test, '289108')
+
+
 def test_a_skipped_run_keeps_the_manifest_row_of_its_build(monkeypatch, tmp_path):
     """A resumed build lists a skipped run as its original build did: its track flags
     (so --skip-flagged still leaves a flagged run out), its rays, window and settings,

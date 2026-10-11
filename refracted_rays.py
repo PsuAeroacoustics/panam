@@ -133,6 +133,8 @@ def external_ray_model(executable, atmosphere_path, *, frame_bearing_deg=90.0, r
     same ground under each microphone.  Lengths are in ``length_units`` ('ft' or 'm').
     ``executable`` is a path (relative to the current directory) or a name looked
     up on PATH; the tracer runs in ``cwd``, by default a scratch directory.
+    The model's ``source_files`` names the profile, so that a build's input
+    signature (``noise_abatement_2017.run_input_files``) covers its contents.
     """
     executable = os.fspath(executable)
     if os.sep in executable or (os.altsep and os.altsep in executable):
@@ -192,4 +194,5 @@ def external_ray_model(executable, atmosphere_path, *, frame_bearing_deg=90.0, r
                    valid=(grid('lit') == 1) & np.isfinite(launch) & (grid('range') > 0.0))
         return out
     model.description = 'niceops_ray_geometry {} {} {}'.format(refraction, receiver, os.path.basename(atmosphere_path))
+    model.source_files = (os.path.abspath(os.fspath(atmosphere_path)),)
     return model

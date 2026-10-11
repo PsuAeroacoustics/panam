@@ -1552,7 +1552,8 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     if tone_split and not tone_aware:
         raise ValueError('tone_split needs tone_aware=True')
     row = test.by_run[run]
-    input_signature = provenance.file_signature(run_input_files(test, run, gate_ambient, reference_sphere))
+    input_signature = provenance.file_signature(run_input_files(test, run, gate_ambient, reference_sphere,
+                                                                 ray_model))
     track = load_track(test.track_path(run))
     if nose_from_heading:
         # A hover's flight path angle is the direction of its drift, erratic at a few tenths
@@ -1939,10 +1940,12 @@ def _prefetch_run(test, run, gate_ambient=True, done=None):
     _prefetch(paths)
 
 
-def run_input_files(test, run, gate_ambient=True, reference_sphere=None):
+def run_input_files(test, run, gate_ambient=True, reference_sphere=None, ray_model=None):
     """Every file :func:`build_sphere` reads for ``run``, sorted: the track, the
     run's and its ambient run's recordings (:func:`_run_file_paths`), the reference
-    and microphone lists, the day's weather station files and ``reference_sphere``.
+    and microphone lists, the day's weather station files, ``reference_sphere`` and
+    the files ``ray_model`` names in its ``source_files`` (the atmospheric profile of
+    :func:`refracted_rays.external_ray_model`).
     :func:`provenance.file_signature` of them is the sphere's input signature."""
     paths = [test.track_path(run)] + _run_file_paths(test, run, gate_ambient)
     for pattern in ('*FullRefList.csv', '*MicFullList.csv', '*StaticList.csv'):
@@ -1950,6 +1953,7 @@ def run_input_files(test, run, gate_ambient=True, reference_sphere=None):
     paths += _weather_station_files(test, run)
     if reference_sphere is not None:
         paths.append(os.fspath(reference_sphere))
+    paths += [os.fspath(path) for path in getattr(ray_model, 'source_files', ())]
     return sorted(set(paths))
 
 
@@ -2008,7 +2012,8 @@ def _skip_reason(test, run, output_path, call, skip_existing, skip_unchanged, ra
     bound.apply_defaults()
     settings, _ = _sphere_settings(bound.arguments)
     signature = provenance.file_signature(run_input_files(
-        test, run, arguments.get('gate_ambient', True), arguments.get('reference_sphere')))
+        test, run, arguments.get('gate_ambient', True), arguments.get('reference_sphere'),
+        arguments['ray_model']))
     try:
         with Dataset(output_path) as sphere:
             stamp = {name: sphere.getncattr(name) for name in sphere.ncattrs()}
