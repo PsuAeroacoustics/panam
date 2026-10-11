@@ -790,10 +790,46 @@ threshold is never one), $\mathrm{SEL} = 10\lg\left(\sum_k 10^{L_k/10}\Delta t/1
 result is flagged `clipped` when the window touches either end of the record. Unlike NICE-OPS,
 PANAM's samples are already in reception time.
 
-**Maximum levels.** PANAM has no exponentially time-weighted level (no $L_{AF\max}$ or
-$L_{AS\max}$). `level_history` gives levels of consecutive, non-overlapping blocks (`period`,
-default 1 s), each from `overall_SPL`, and `sound_exposure_level`'s `lmax` is the maximum of the
-samples passed in. Neither is directly comparable with NICE-OPS's $L_{AF\max}$.
+**Time-weighted levels** (`panam_acoustics.time_weighting`). A pressure history is weighted in
+frequency, then in time, as IEC 61672-1 [10] defines a sound level meter. The A and C weightings
+are the analog filters of its Annex E, with poles at $f_1 = 20.598997$, $f_2 = 107.65265$,
+$f_3 = 737.86223$ and $f_4 = 12194.217$ Hz:
+
+$$
+H_A(s) = \frac{k_A\, s^4}{(s + 2\pi f_1)^2 (s + 2\pi f_2)(s + 2\pi f_3)(s + 2\pi f_4)^2}, \qquad
+H_C(s) = \frac{k_C\, s^2}{(s + 2\pi f_1)^2 (s + 2\pi f_4)^2},
+$$
+
+and Z is flat. `frequency_weighting_sos` maps the zeros and poles to the $z$ plane by the bilinear
+transform $s = 2f_s(z-1)/(z+1)$ without pre-warping and sets the gain to give exactly 0 dB at
+1 kHz. The response meets the class 1 acceptance limits of Table 3 for nominal frequencies up to
+$f_s/4$, and over the whole table (10 Hz to 20 kHz) for $f_s \ge 44.1$ kHz. Near the Nyquist
+frequency the bilinear response falls below the analog one, where the negative tolerances are
+wide. Pre-warping the $f_4$ poles, or the matched-$z$ transform, reads high there instead, by up
+to 4.5 dB, where the positive tolerances are narrow.
+
+The time weightings F and S are exponential averages of the squared weighted pressure $p_w$,
+
+$$
+\overline{p^2}(t) = \frac{1}{\tau}\int_{-\infty}^{t} p_w^2(\xi)\, e^{-(t-\xi)/\tau}\,d\xi,
+\qquad \tau_F = 0.125\ \mathrm{s},\ \tau_S = 1\ \mathrm{s},
+$$
+
+discretized as $y_n = a y_{n-1} + (1-a) p_{w,n}^2$, $a = e^{-1/(f_s\tau)}$, from $y = 0$ before
+the first sample (`time_weighted_square`). I is the impulse detector of the withdrawn IEC 60651
+[51]: a 35 ms exponential average followed by a peak hold that decays with a 1.5 s time constant.
+`time_weighted_level` returns the level $10\lg(\overline{p^2}/p_\mathrm{ref}^2)$ at every sample,
+its maximum (e.g. $L_{AF\max}$, $L_{AS\max}$) and the time of the maximum. A 4 kHz tone burst of
+duration $T_b$ reads $10\lg(1 - e^{-T_b/\tau})$ below the steady tone's level, the reference
+values of Table 4. `leq` gives
+$L_{\mathrm{eq},T} = 10\lg\left(\frac{1}{T}\sum_n p_{w,n}^2/f_s\ /\ p_\mathrm{ref}^2\right)$
+(e.g. $L_{A\mathrm{eq},T}$), with $T$ the record length or a longer period, outside the record
+counted as silence.
+
+These functions take pressure histories. `level_history` instead gives levels of consecutive,
+non-overlapping blocks (`period`, default 1 s), each from `overall_SPL`, and
+`sound_exposure_level`'s `lmax` is the maximum of the samples passed in; neither is a
+time-weighted level.
 
 **EPNL** (`effective_perceived_noise_level`) follows 14 CFR 36, Appendix A, §A36.4 [41],
 identical to ICAO Annex 16 [42]. Its input is a history of 24 one-third-octave band levels,
@@ -952,6 +988,7 @@ Functions are in `flight_acoustics.py` unless another module is named. Tests are
 | §7.5 Completion | `mirror_phi_to_upper_surface`, `_complete_sphere_with_coverage` | `test_mirror_phi.py`, `test_sphere_completion_integration.py` |
 | §8 NORAH2 | `build_database_from_norah2`, `norah2_levels_at_radius`, `norah2_speed_knots`, `humid_air_density`, `fill_norah2_empty_cells`, `write_norah2_hemisphere`, `write_norah2_triangulation`, `norah2umapr` | `test_norah2_import.py`, `test_write_norah2_hemisphere.py` |
 | §9 Metrics | `sound_exposure_level`, `ten_db_down_interval`, `noys`, `perceived_noise_level`, `tone_correction`, `effective_perceived_noise_level`, `mil_std_1474e_nondetectability_distance` | `test_sound_exposure_level.py`, `test_pnl_epnl.py`, `test_mil_std_nondetectability.py` |
+| §9 Time-weighted levels | `panam_acoustics.time_weighting.frequency_weighting_sos`, `apply_frequency_weighting`, `time_weighted_square`, `time_weighted_level`, `leq` | `test_time_weighting.py` |
 | §10 VKF | `vold_kalman_filter.vold_kalman_filter` | `test_vold_kalman_filter.py` |
 | §10 Ground-board models, two-path fit | `ground_plane.board_*`, `disc_bem_scattered`, `raised_plate_scattering`, `fit_two_path`, `height_from_path_difference` | `test_ground_plane.py`, `test_ground_validation.py`, `test_axisymmetric_bem.py` |
 | §10 Array planning | `linear_array_plan` (through the `array_planner.py design` CLI); `array_coverage`, `hover_array_coverage`, `takeoff_array_coverage` | `test_array_planner.py` (the CLI's spacing and options); the coverage functions: none |
@@ -1010,3 +1047,4 @@ Functions are in `flight_acoustics.py` unless another module is named. Tests are
 48. Boulanger, P., Waters-Fuller, T., Attenborough, K., and Li, K. M., "Models and Measurements of Sound Propagation from a Point Source over Mixed Impedance Ground," *Journal of the Acoustical Society of America*, Vol. 102, No. 3, 1997, pp. 1432–1442. https://doi.org/10.1121/1.420101
 49. de Jong, B. A., Moerkerken, A., and van der Toorn, J. D., "Propagation of Sound over Grassland and over an Earth Barrier," *Journal of Sound and Vibration*, Vol. 86, No. 1, 1983, pp. 23–46. https://doi.org/10.1016/0022-460X(83)90941-0
 50. Lam, Y. W., and Monazzam, M. R., "On the Modeling of Sound Propagation over Multi-Impedance Discontinuities Using a Semiempirical Diffraction Formulation," *Journal of the Acoustical Society of America*, Vol. 120, No. 2, 2006, pp. 686–698. https://doi.org/10.1121/1.2216905
+51. "Sound Level Meters," IEC 60651:1979, International Electrotechnical Commission, Geneva, 1979 (withdrawn; replaced by IEC 61672-1).
