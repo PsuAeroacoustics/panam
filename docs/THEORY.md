@@ -659,6 +659,67 @@ with $p$ the station pressure and $p_v$ the vapor pressure, both in Pa, $R_d = 2
 $p_\mathrm{sat}$ the ISO 9613-1 saturation pressure, and $z$ the aircraft's mean height above the
 array. The hydrostatic factor multiplies the whole density, vapor term included.
 
+### 5.5 Forward synthesis and held-out microphones
+
+`synthesis.synthesize_band_histories` runs depropagation backward: from a gridded hemisphere it
+predicts the one-third octave band levels a microphone receives. For a reception time $t$ at
+$\mathbf{x}_m$ the emission time solves $t = t_e + \tau$, with
+$\tau = \lvert\mathbf{x}_s(t_e) - \mathbf{x}_m\rvert/c$ by fixed-point iteration
+(`ground_plane.emission_times`, §3.1) or, with a ray model (§5.3), the ray's travel time, the
+straight solution starting the same iteration. The track is interpolated linearly. The hemisphere
+is read at the direction the sound left along: `hemigen`'s azimuth and elevation at $t_e$ (§3.2),
+or the ray's launch depression and, for a uniform wind, the azimuth turned to the wavefront normal,
+exactly as depropagation files a sample. Each band's power is interpolated bilinearly over the
+UMAPR grid in energy, over the measured cells only (`interpolate_hemisphere_power`, the same
+interpolation the sphere writers use, §6.3); a direction weighted less than half by measured cells
+has no data. The band power at the microphone is then
+
+$$
+P_b = S_b(D)\;10^{G_b/10}\left(\frac{r_\mathrm{ref}}{r_s}\right)^2
+10^{-[\delta_b(\ell) - \delta_b(r_\mathrm{ref})]/10},
+$$
+
+the inverse of §5.1 in reverse order: $S_b(D)$ the Doppler band shift, applied only to a hemisphere
+filed at emitted frequencies (`doppler_shift`, the inverse of `remove_doppler`, §3.3); $G_b$ the
+receiver response in dB re free field (the same `receiver_response_db` callable depropagation
+divides out, §4.5), optional; $r_s$ the straight distance or the ray tube's range; and $\delta_b$
+the band's absorption (`apply_absorption`, §5.4) over the straight distance or the arc length $\ell$,
+in the uniform atmosphere or a layered `absorption_profile`, less that over $r_\mathrm{ref}$ in the
+uniform atmosphere, which the hemisphere keeps. The ambient gate has no inverse. A hemisphere filed
+with `flip_y_for_geometry` is read on the same mirrored geometry: the emission time and the ray are
+found on the measured geometry, whose travel times the mirror does not change, and the direction,
+the Doppler factor and the receiver's source offset on the mirrored one, as depropagation files
+them. The flag defaults to the hemisphere's metadata.
+
+The Doppler shift takes each emitted band's power as spread evenly over $[f_l, f_u]$; it arrives
+over $[Df_l, Df_u]$, and received band $k$ collects the overlapping fractions,
+
+$$
+S_k = \sum_b P_b\,\frac{\lvert[Df_{l,b}, Df_{u,b}] \cap [f_{l,k}, f_{u,k}]\rvert}{D\,(f_{u,b} - f_{l,b})},
+$$
+
+which conserves power. A received band partly fed from outside the hemisphere's bands has no data.
+A tone is smeared over its shifted band, so a hemisphere of emitted frequencies with strong tones
+synthesizes their bands only approximately.
+
+`synthesis.leave_mics_out` depropagates with groups of microphones held out in turn (by default
+each one alone), synthesizes each held-out microphone at its spectrogram frame times, and compares
+with its measured bands (`measured_band_histories`). These are formed at received frequencies as
+the depropagation forms its bands: brick-wall sums of the spectrogram, tone-aware sums with
+`tone_aware`, or the filter bank with `third_octave_method='filter_bank'`; each bin or band is gated
+and ambient-subtracted against the same ambient (`ambient_pressure`, `ambient_time_range` or
+`ambient_percentile`). The synthesis takes the depropagation's absorption, layered profile,
+Doppler convention and mirror flag. Frames the depropagation would
+drop (elevation floor, range limit with the rim range) are left out. The residual is synthesized
+minus measured, in dB, over the frames where both are finite, and is summarized per band and
+overall by its count, mean, median, root mean square, sample standard deviation and 5th and 95th
+percentiles (`residual_statistics`). The held-out microphone's directions are covered only by its
+neighbors' samples, so the residual measures how well the gridding (§6: `rmax`, the adaptive
+kernel, `rim_range`) interpolates between microphones, without building a database. On the
+synthetic pass of `synthetic_flyover` the true directivity reproduces the band histories within
+0.15 dB in energy, a depropagated hemisphere reproduces its own microphones within 0.3 dB, and
+widening `rmax` from 20° to 60° raises the held-out RMS residual.
+
 ## 6. Gridding onto the sphere
 
 ### 6.1 Inverse-distance weighting in energy
@@ -1307,9 +1368,10 @@ Functions are in `flight_acoustics.py` unless another module is named. Tests are
 | §5.3 Rays | `refracted_rays.external_ray_model`, `straight_ray_model`, `uniform_wind_ray_model`; `noise_abatement_2017.wind_in_frame_ft_s` (`build_sphere(ray_model='wind')`) | `test_refracted_rays.py`, `test_run_metadata.py` |
 | §5.4 Atmosphere | `panam_acoustics.iso_9613_1_1993`, `panam_acoustics.atmosphere.Atmosphere`, `atmosorb`; `noise_abatement_2017.run_atmosphere`, `air_density_kg_m3` | `test_acoustics.py`, `test_python_acoustics_equivalence.py`, `test_run_metadata.py`, `test_noise_abatement_2017.py` |
 | §5.4 Band and layered absorption | `panam_acoustics.atmosphere.band_absorption_db`, `arp5534_band_attenuation`, `exact_midband_frequency`, `layered_attenuation_db`, `check_absorption_profile`; `depropagate_hemisphere` (`absorption_band_method`, `absorption_profile`), `noise_abatement_2017.build_sphere`, `spla_and_eaa_from_spectrum`, `norah2_levels_at_radius` | `test_band_absorption.py`, `test_spla_and_eaa.py`, `test_norah2_import.py` |
+| §5.5 Forward synthesis | `synthesis.synthesize_band_histories`, `doppler_shift_band_power`, `measured_band_histories`, `leave_mics_out`, `residual_statistics`; `interpolate_hemisphere_power` | `test_synthesis.py` |
 | §6.1 Fixed radius | `shepIDW`, `shepIDW_weights`, `shepIDW_apply`, `geodist` | `test_shep_idw.py`, `test_no_data.py`, `test_hemisphere_geometry_accuracy.py` |
 | §6.2 Adaptive radius | `adaptive_idw_weights`, `ADAPTIVE_INTERPOLATION` | `test_adaptive_interpolation.py`, `test_hemisphere_geometry_accuracy.py` |
-| §6.3 Output grids | `write_aam_hemisphere_netcdf`, `_sample_hemisphere_levels`, `mask_missing_levels`, `lambert_ea`, `lambert_lon` | `test_write_aam_hemisphere_netcdf.py`, `test_hemisphere_sampling.py`, `test_no_data.py`, `test_lambert_geometry.py` |
+| §6.3 Output grids | `write_aam_hemisphere_netcdf`, `_sample_hemisphere_levels`, `interpolate_hemisphere_power`, `mask_missing_levels`, `lambert_ea`, `lambert_lon` | `test_write_aam_hemisphere_netcdf.py`, `test_hemisphere_sampling.py`, `test_no_data.py`, `test_lambert_geometry.py` |
 | §6.4 Node statistics | `sphere_statistics.node_statistics`, `idw_weight_matrix`, `node_statistics_variables`; `depropagate_hemisphere` (`return_statistics`), `noise_abatement_2017.build_sphere` (`node_statistics`) | `test_node_statistics.py`, `test_noise_abatement_2017.py` |
 | §7.1–7.2 Condition, EAA | `build_empirical_database`, `read_vehicle_data`, `add_sphere_group`, `extract_SPL`, `spla_and_eaa_from_spectrum`, `_finite_sphere_levels`, `_measured_bins` | `test_spla_and_eaa.py`, `test_database_provenance.py`, `test_vehicle_data.py` |
 | §7.3 Load factor | `add_sphere_group` | `test_load_factor_scaling.py`, `test_write_aam_hemisphere_netcdf.py` |

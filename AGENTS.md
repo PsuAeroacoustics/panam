@@ -42,6 +42,9 @@ Instructions for AI coding tools working on PANAM. Human developers: see
   `nod_tool.py` (`plot_condition`, `plot_envelope`).
 - `synthetic_flyover.py`: synthetic straight-line passes of a source of known
   directivity (`synthesize_pass`, `source_level_db`); the golden results' input.
+- `synthesis.py`: forward synthesis of microphone band histories from a
+  hemisphere (`synthesize_band_histories`) and the leave-microphones-out check
+  (`leave_mics_out`).
 - `panam_acoustics/`: `signal_io` (loaders), `filters`, `atmosphere` and
   `iso_9613_1_1993` (ISO 9613-1), `time_weighting` (IEC 61672-1 frequency
   and time weighting, Lmax, Leq), `plotting` (`acoustic_plot_style`),
