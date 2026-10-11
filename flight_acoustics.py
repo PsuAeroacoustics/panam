@@ -3554,9 +3554,12 @@ def write_norah2_levels(
         for j, theta in enumerate(NORAH2_THETA_DEG):
             lines.append(f'{theta:g}\t' + '\t'.join(f'{v:.1f}' for v in to_write[i, j, :]))
 
-    # CRLF, as every shipped file has: NORAH2 is a Windows program.
-    with open(filename, 'w', encoding='ascii', newline='\r\n') as handle:
-        handle.write('\n'.join(lines) + '\n')
+    # CRLF, as every shipped file has: NORAH2 is a Windows program.  Written in full or
+    # not at all (_atomic_output): a build resumed with skip_existing takes any .hem it
+    # finds as complete.
+    with _atomic_output(filename) as temporary:
+        with open(temporary, 'w', encoding='ascii', newline='\r\n') as handle:
+            handle.write('\n'.join(lines) + '\n')
     return levels_db
 
 

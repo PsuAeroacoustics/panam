@@ -105,7 +105,7 @@ wrote, track flags included, read from the sphere's `panam_build_record`, so `--
 still leaves out a run that build flagged. A sphere written before build records were has
 `track_flags` set to `unknown: the sphere has no build record`, which `--skip-flagged` also
 leaves out. A change to the PANAM code does not count as a change: after updating PANAM,
-rebuild without `--skip-unchanged`. Every sphere and database is written to a
+rebuild without `--skip-unchanged`. Every sphere, NORAH2 file and database is written to a
 temporary file and moved into place when complete, so an interrupted build leaves no partial
 sphere for either option to keep.
 

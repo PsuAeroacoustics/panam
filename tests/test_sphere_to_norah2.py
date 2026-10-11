@@ -1,5 +1,7 @@
 """AAM sphere netCDF to NORAH2 .hem (sphere_to_norah2.py)."""
 
+import os
+
 import numpy as np
 import pytest
 
@@ -169,3 +171,20 @@ def test_write_norah2_levels_checks_the_grid(tmp_path):
         fa.write_norah2_levels(str(tmp_path / 'x.hem'), BANDS, np.zeros((19, 37, 31)),
                                r_ref_m=30.48, measurement_atmosphere=MEASURED,
                                speed_knots=60.0, flight_path_angle_deg=0.0)
+
+
+def test_a_failed_hem_write_leaves_no_partial_file(tmp_path):
+    """The .hem is written in full or not at all: a write that fails (here, a title
+    that is not ASCII) keeps an existing file and leaves no truncated one."""
+    arguments = dict(r_ref_m=30.48, measurement_atmosphere=MEASURED, speed_knots=60.0,
+                     flight_path_angle_deg=0.0)
+    levels = np.full((19, 19, BANDS.size), 80.0)
+    path = tmp_path / 'x.hem'
+    fa.write_norah2_levels(str(path), BANDS, levels, **arguments)
+    good = path.read_bytes()
+    with pytest.raises(UnicodeEncodeError):
+        fa.write_norah2_levels(str(path), BANDS, levels, title='M\u00fcnchen', **arguments)
+    assert path.read_bytes() == good
+    with pytest.raises(UnicodeEncodeError):
+        fa.write_norah2_levels(str(tmp_path / 'y.hem'), BANDS, levels, title='M\u00fcnchen', **arguments)
+    assert sorted(os.listdir(tmp_path)) == ['x.hem']
