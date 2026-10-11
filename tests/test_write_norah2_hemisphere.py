@@ -7,7 +7,7 @@ import pytest
 
 import flight_acoustics as fa
 import local_paths
-from panam_acoustics.atmosphere import Atmosphere
+from panam_acoustics.atmosphere import Atmosphere, band_absorption_db
 
 _NORAH2 = local_paths.data_path('norah2', required=False)
 NORAH2_HEMISPHERES = os.path.join(_NORAH2, 'Hemispheres') if _NORAH2 else ''
@@ -87,6 +87,29 @@ def test_levels_converted_to_60m_with_icao_absorption(tmp_path):
     # Bands the hemisphere does not have are NORAH2's no-value.
     assert np.all(np.isneginf(levels[:, :, 0]))
     assert np.all(np.isneginf(levels[:, :, 28:]))
+
+
+@pytest.mark.parametrize('method', ['arp5534', 'integrated'])
+def test_band_method_sphere_takes_out_its_own_r_ref_absorption(tmp_path, method):
+    """A sphere depropagated with a band method keeps that method's attenuation over
+    r_ref, so the export takes out that amount, not alpha(fc) r_ref."""
+    hemisphere = synthetic_hemisphere(level_db=70.0)
+    hemisphere['metadata']['absorption_band_method'] = method
+    written = fa.write_norah2_hemisphere(str(tmp_path / 'b.hem'), hemisphere, speed_knots=80.0,
+                                         flight_path_angle_deg=0.0, minimum_level_db=-np.inf)
+    reference = Atmosphere(temperature=298.15, pressure=101.325, relative_humidity=70.0)
+    r_ref_m = 100.0 * 0.3048
+    exact = hemisphere['third_octave']['band_centers_hz']
+    nominal = fa.NORAH2_BAND_CENTERS_HZ[1:28]
+    measured_db = band_absorption_db(r_ref_m, exact, MEASURED['temperature_k'], MEASURED['pressure_kpa'],
+                                     MEASURED['relative_humidity'], method=method)
+    expected = (70.0 + 20.0 * np.log10(r_ref_m / 60.0) + measured_db
+                - reference.attenuation_coefficient(nominal) * 60.0)
+    assert np.allclose(written[:, :, 1:28], expected[None, None, :], atol=1e-6)
+    center = synthetic_hemisphere(level_db=70.0)
+    center_written = fa.write_norah2_hemisphere(str(tmp_path / 'c.hem'), center, speed_knots=80.0,
+                                                flight_path_angle_deg=0.0, minimum_level_db=-np.inf)
+    assert np.abs(written[:, :, 1:28] - center_written[:, :, 1:28]).max() > 1e-3
 
 
 def test_starboard_stays_starboard(tmp_path):

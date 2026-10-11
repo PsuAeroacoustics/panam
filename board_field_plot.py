@@ -18,10 +18,13 @@ import argparse
 
 import numpy as np
 
+from cli import add_output_options, save_or_show
+
 import axisymmetric_bem as ab
 import ground_plane as gp
 
 FT = 0.3048
+FIGURE_SIZE = (12.5, 5.6)   # in
 
 
 def plane_wave_reflection(frequency, elevation, sound_speed, flow_resistance, ground=None):
@@ -49,16 +52,42 @@ def level_re_free_field(frequency, elevation, x_m, z_m, sound_speed=1125.0, flow
     return lev(pd + rp * pr), lev(bare)
 
 
-def plot(frequency, elevation, flow_resistance, output, x_range=(-0.4, 0.4), z_top=0.2, grid=(201, 101),
-         mic_height_m=gp.PLATE_MIC_HEIGHT_FT * FT, sound_speed=1125.0, levels=(-15.0, 10.0), ground=None,
-         **geometry):
-    """Draw the map and the level at the microphone's height to ``output``.
+def plot(frequency, elevation, flow_resistance, output, **options):
+    """Draw the map and the level at the microphone's height to ``output`` (200 dpi).
 
-    ``ground`` (a :func:`ground_plane.surface_admittance` model dict) replaces
-    Delany-Bazley at ``flow_resistance``; ``geometry`` goes to
-    :func:`axisymmetric_bem.field` (radius, thickness, edge_thickness,
-    taper_length, in feet as there).  The figure is drawn without pyplot, so
-    the session's Matplotlib backend and open figures are left alone.
+    ``options`` are :func:`field_figure`'s keywords (``x_range``, ``z_top``,
+    ``grid``, ``mic_height_m``, ``sound_speed``, ``levels``, ``ground`` and the
+    plate geometry), with its units and defaults.  The figure is drawn without
+    pyplot, so the session's Matplotlib backend and open figures are left
+    alone.  Returns ``output``.
+    """
+    field_figure(frequency, elevation, flow_resistance, **options).savefig(output, dpi=200)
+    return output
+
+
+def field_figure(frequency, elevation, flow_resistance, x_range=(-0.4, 0.4), z_top=0.2, grid=(201, 101),
+                 mic_height_m=gp.PLATE_MIC_HEIGHT_FT * FT, sound_speed=1125.0, levels=(-15.0, 10.0),
+                 ground=None, figure=None, **geometry):
+    """The map and the level at the microphone's height, as a figure.
+
+    Args:
+        frequency: Hz.
+        elevation: Incidence elevation of the plane wave, deg.
+        flow_resistance: Delany-Bazley flow resistivity, kPa s/m^2.
+        x_range: Horizontal extent of the map, m.
+        z_top: Top of the map, m.
+        grid: Map points (NX, NZ).
+        mic_height_m: Microphone height above the plate top, m.
+        sound_speed: ft/s.
+        levels: Color range, dB re the free-field wave.
+        ground: A :func:`ground_plane.surface_admittance` model dict, which
+            replaces Delany-Bazley at ``flow_resistance``.
+        figure: A Matplotlib figure to draw into (e.g. one made by pyplot,
+            to show it); None (default) makes one without pyplot.
+        **geometry: Plate geometry for :func:`axisymmetric_bem.field`, ft.
+
+    Returns:
+        The figure.
     """
     from matplotlib.figure import Figure
     radius = geometry.get('radius', gp.PLATE_RADIUS_FT) * FT
@@ -73,7 +102,7 @@ def plot(frequency, elevation, flow_resistance, output, x_range=(-0.4, 0.4), z_t
     xl = np.linspace(*x_range, 4 * grid[0])
     Ll, Ll0 = level_re_free_field(frequency, elevation, xl, np.full_like(xl, zm), sound_speed, flow_resistance,
                                   ground, **geometry)
-    fig = Figure(figsize=(12.5, 5.6), layout='constrained')
+    fig = figure if figure is not None else Figure(figsize=FIGURE_SIZE, layout='constrained')
     ax, bx = fig.subplots(2, 1, sharex=True, height_ratios=(2.2, 1.4))
     im = ax.pcolormesh(x, z * 100, np.clip(L, *levels), cmap='magma', vmin=levels[0], vmax=levels[1],
                        shading='auto', rasterized=True)
@@ -98,8 +127,7 @@ def plot(frequency, elevation, flow_resistance, output, x_range=(-0.4, 0.4), z_t
     bx.set_xlim(*x_range)
     bx.set_xlabel('Horizontal distance from the plate center, along the incidence direction (m)')
     bx.legend(loc='lower left', frameon=False)
-    fig.savefig(output, dpi=200)
-    return output
+    return fig
 
 
 def main(argv=None):
@@ -111,11 +139,17 @@ def main(argv=None):
     ap.add_argument('--mic-height', type=float, default=gp.PLATE_MIC_HEIGHT_FT * FT,
                     help='microphone height above the plate top, m (default flush; 0.007 for an inverted mic)')
     ap.add_argument('--grid', default='201x101', help='map points, NXxNZ (default 201x101)')
-    ap.add_argument('-o', '--output', default='board_field.png',
-                    help='image file to write, always written (default board_field.png)')
+    add_output_options(ap, 'board_field.png')
     a = ap.parse_args(argv)
     nx, nz = (int(v) for v in a.grid.lower().split('x'))
-    print(plot(a.frequency, a.elevation, a.flow_resistance, a.output, grid=(nx, nz), mic_height_m=a.mic_height))
+    figure = None
+    if a.plot:                     # a pyplot figure, which a window can show
+        import matplotlib.pyplot as plt
+        figure = plt.figure(figsize=FIGURE_SIZE, layout='constrained')
+    fig = field_figure(a.frequency, a.elevation, a.flow_resistance, grid=(nx, nz), mic_height_m=a.mic_height,
+                       figure=figure)
+    save_or_show(fig, a.output, a.plot, dpi=200)
+    print(a.output)
 
 
 if __name__ == '__main__':

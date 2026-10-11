@@ -166,3 +166,6 @@ demo_audio/
 
 # This machine's data locations (see local_paths.example.toml)
 local_paths.toml
+
+# Numba cache directory when NUMBA_CACHE_DIR points here (CI)
+.numba_cache/

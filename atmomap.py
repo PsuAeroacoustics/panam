@@ -1,15 +1,18 @@
 #!/usr/bin/env python
+"""Map the atmospheric absorption at one frequency over temperature and pressure."""
 import argparse
-import os
 import numpy as np
 import matplotlib.pyplot as plt
 
-from cli import colon_pair
+from cli import add_output_options, colon_pair, save_or_show
 from flight_acoustics import atmosorb
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Generate atmospheric absorption map')
+    parser = argparse.ArgumentParser(
+        description='Map the atmospheric absorption (dB/m, ISO 9613-1) at one frequency over '
+                    'temperature and pressure. Always writes a file (default demo_plots/atmomap.pdf '
+                    'in the current directory).')
     parser.add_argument('-t', '--temperature', type=colon_pair, default='0:40',
                         help='Temperature range in °C as "min:max" (default: 0:40)')
     parser.add_argument('-p', '--pressure', type=colon_pair, default='1:30',
@@ -18,8 +21,8 @@ def main():
                         help='Frequency in Hz (default: 10000.0)')
     parser.add_argument('-H', '--humidity', type=float, default=10.0,
                         help='Relative humidity in percent (default: 10.0)')
-    parser.add_argument('-o', '--output', type=str, default='demo_plots/atmomap.pdf',
-                        help='Output filename (default: demo_plots/atmomap.pdf)')
+    # -p is --pressure here, so the window option is --plot alone.
+    add_output_options(parser, 'demo_plots/atmomap.pdf', plot_flags=('--plot',))
     
     args = parser.parse_args()
     
@@ -61,8 +64,7 @@ def main():
     ax.set_title(f"{title_line1}\n{title_line2}")
 
     fig.tight_layout()
-    os.makedirs(os.path.dirname(args.output) or '.', exist_ok=True)
-    fig.savefig(args.output, bbox_inches='tight')
+    save_or_show(fig, args.output, args.plot, bbox_inches='tight')
 
 if __name__ == '__main__':
     main()

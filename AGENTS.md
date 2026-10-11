@@ -9,6 +9,8 @@ Instructions for AI coding tools working on PANAM. Human developers: see
   `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`.
 - Run everything from the repository root. Modules are imported by name
   (`import flight_acoustics as fa`); there is no installed package.
+  `pyproject.toml` is metadata only (no build system, no entry points); its
+  dependencies mirror `requirements.txt`, so change both together.
 - Tests: `pytest`, or `pytest -q -m "not data"` to skip the external-data tests.
   One file: `pytest tests/test_ega.py`.
 - `pytest.ini` puts `.` and `tests/` on `sys.path`. Scripts find their own
@@ -33,15 +35,37 @@ Instructions for AI coding tools working on PANAM. Human developers: see
 - `refracted_rays.py`: ray models for depropagation; wraps NICE-OPS's
   `niceops_ray_geometry`.
 - `vold_kalman_filter.py`: Vold-Kalman order tracking.
+- `order_tracking.py`: Doppler-predicted order tracks at a fixed microphone,
+  ridge tracking, clock offsets.
+- `sphere_statistics.py`: energy averaging of repeat-run spheres,
+  band-by-band sphere comparison (CLI `sphere_diff.py`) and per-node sample
+  statistics (`node_statistics`).
+- `nod_database.py`: reads `.nod` databases: `load_nod`, `validate_nod`,
+  `compare_databases`, `to_frame`, and the maps and summaries of
+  `nod_tool.py` (`plot_condition`, `plot_envelope`).
+- `synthetic_flyover.py`: synthetic straight-line passes of a source of known
+  directivity (`synthesize_pass`, `source_level_db`); the golden results' input.
+- `synthesis.py`: forward synthesis of microphone band histories from a
+  hemisphere (`synthesize_band_histories`) and the leave-microphones-out check
+  (`leave_mics_out`).
 - `panam_acoustics/`: `signal_io` (loaders), `filters`, `atmosphere` and
-  `iso_9613_1_1993` (ISO 9613-1), `plotting` (`acoustic_plot_style`).
-- `cli.py`: `colon_pair`, `colon_pair_or_single`, `save_or_show`.
+  `iso_9613_1_1993` (ISO 9613-1), `time_weighting` (IEC 61672-1 frequency
+  and time weighting, Lmax, Leq), `plotting` (`acoustic_plot_style`),
+  `impulsiveness` (BVI crest factor, kurtosis, harmonic ratio),
+  `psychoacoustics` (ISO 532-1 loudness, DIN 45692 sharpness).
+- `cli.py`: `colon_pair`, `colon_pair_or_single`, `add_output_options`,
+  `save_or_show`, `save_all_or_show`.
+- `provenance.py`: the `panam_*` provenance stamp on written files.
+- `build_recipe.py`: TOML build recipes (`load_recipe`) for `--recipe` on
+  `noise_abatement_2017.py` and `build_empirical_database.py`;
+  `docs/recipes/release_2017.toml` is the 2017 release.
 - `local_paths.py`: data lookup. `unit_conversion.py`, `default_units.py`:
   third-party unit conversions.
 - Tools: `noise_abatement_2017.py`, `build_empirical_database.py`,
-  `norah2_to_nod.py`, `array_planner.py`, plotting scripts. Examples and
-  diagnostics: `AS350_289108_demo.py`, `hexacopter_vkf_example.py`,
-  `as350_flip_check.py`.
+  `norah2_to_nod.py`, `sphere_to_norah2.py`, `compare_databases.py`, `array_planner.py`,
+  `sphere_diff.py`, plotting scripts. Examples and
+  diagnostics: `depropagation_tutorial.py`, `AS350_289108_demo.py`,
+  `hexacopter_vkf_example.py`, `as350_flip_check.py`.
 
 ## Conventions
 
@@ -64,7 +88,8 @@ Instructions for AI coding tools working on PANAM. Human developers: see
 - `open_h5_signal` is a context manager; `load_h5_signal` leaves a file open.
 - `sound_exposure_level(..., missing='omit')` integrates around NaN samples.
 - New CLI: argparse with `description=`, units and defaults in every help
-  string, `cli.colon_pair` for ranges, `cli.save_or_show` for figures, a
+  string, `cli.colon_pair` for ranges, `cli.add_output_options` and
+  `cli.save_or_show` (`-o/--output`, `-p/--plot`) for figures, a
   smoke test in `tests/test_cli_scripts.py` (`run_here`), and a row in the
   README's tools table.
 - File contracts (sphere netCDF, `.nod`, `vehicle.cfg`): `docs/file_formats.md`.
@@ -80,12 +105,17 @@ Instructions for AI coding tools working on PANAM. Human developers: see
   `PANAM_REGENERATE_GOLDEN=1 python -m pytest tests/test_golden_results.py`.
 - Never regenerate `tests/data/python_acoustics_reference.npz` from PANAM.
 - Shared fixtures: `tests/sphere_helpers.py`. Tests use the `Agg` backend.
+  `tests/conftest.py` validates every database built through `fa.build_...`.
 - Skips: `@pytest.mark.data` (external datasets), NICE-OPS executables not
-  configured, example data missing. CI (`.github/workflows/tests.yml`, Python
-  3.11 and 3.14) has no data, so those skip there: run them locally when you
+  configured, example data missing. CI (`.github/workflows/tests.yml`: Ubuntu
+  with Python 3.11 and 3.14, macOS with 3.14; coverage and `--durations=20`
+  reported, no threshold) has no data, so those skip there: run them locally when you
   touch the build, the database writers or the NORAH2 import.
 - Numba compiles on first call and caches in `__pycache__`. Plate tables are
-  cached in `~/.cache/panam/plate_tables` (15-45 s each to compute).
+  cached as `.npz` in `~/.cache/panam/plate_tables` (15-45 s each to
+  compute), keyed on `axisymmetric_bem.PLATE_TABLE_VERSION` and every
+  setting. Bump the version in a commit that changes plate-table numbers.
+  `noise_abatement_2017.py --plate-cache list|clear` inspects or empties it.
 - The 2017 archive and the AS350 demo data are not distributed with PANAM.
   Do not invent a download location.
 - Running an example or a build writes files that `.gitignore` does not cover
@@ -117,7 +147,7 @@ Instructions for AI coding tools working on PANAM. Human developers: see
 
 ## Never do
 
-- Never commit data, results or machine paths: no `local_paths.toml`, no flight-test recordings, spheres or databases, no absolute paths from your machine, no credentials. Never `git add -f` an ignored file (`example_data/*.mat` and `mil_std_1474e_table_c1_full.csv` are tracked on purpose; add no others).
+- Never commit data, results or machine paths: no `local_paths.toml`, no flight-test recordings, spheres or databases, no absolute paths from your machine, no credentials. Never `git add -f` an ignored file (`example_data/*.mat`, `example_data/vehicle.cfg` and `mil_std_1474e_table_c1_full.csv` are tracked on purpose; add no others).
 - Never commit flight-test data or results from the private validation repository, or cite its file paths. PANAM is public: restate the fact inline.
 - Never prefix commands with `PYTHONPATH=.`; run from the repository root.
 - Never change behavior or results without a test; never regenerate the golden results to make a refactor pass.

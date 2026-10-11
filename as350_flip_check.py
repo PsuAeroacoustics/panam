@@ -19,14 +19,16 @@ counter-clockwise rotor in them is louder at phi > 0 in descent, the
 clockwise EC130 and Mi-8 at phi < 0.  With the sign corrected the same
 residuals favor no flip, which is now the demo's setting.
 
-Run:  python as350_flip_check.py
+Run:  python as350_flip_check.py [--basepath DIR]
 
-The demo data are found through the ``as350_demo`` entry of local_paths
-(``AS350_DEMO_PATH`` is still honored and takes precedence).
+The demo data are found from --basepath, then the older variable
+``AS350_DEMO_PATH``, then the ``as350_demo`` entry of local_paths.  The check
+prints a table and writes nothing.
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 
 import numpy as np
@@ -35,17 +37,24 @@ import flight_acoustics as fa
 import local_paths
 import AS350_289108_demo as demo
 
-BASE = local_paths.data_path("as350_demo", os.environ.get("AS350_DEMO_PATH"))
-REF = os.path.join(BASE, "AAM", "AS350B3108.nc")
+REFERENCE_SPHERE = os.path.join("AAM", "AS350B3108.nc")   # relative to the demo data
 FREQS = (0.0, 2000.0)
 R_REF_FT = 100.0
 AZI_STEP = ELV_STEP = 10.0
 RMAX = 25.0
 
 
-def _reference_on_grid(azi_grid, elv_grid):
-    """Reference AAM sphere OASPL interpolated onto our grid (dB at r_ref)."""
-    amp, phi, theta, f, radius_ft, _, _ = fa.load_nc_sphere(REF)
+def demo_data_path(basepath=None):
+    """The AS350 demo data directory: ``basepath``, else ``AS350_DEMO_PATH``,
+    else the ``as350_demo`` entry of local_paths."""
+    return local_paths.data_path("as350_demo", basepath or os.environ.get("AS350_DEMO_PATH"))
+
+
+def _reference_samples(base):
+    """The reference AAM sphere's OASPL as power at r_ref and its UMAPR
+    directions (deg), repeated a turn either side for periodic azimuth;
+    ``base`` is the demo data directory.  Returns (azimuth, elevation, power)."""
+    amp, phi, theta, f, radius_ft, _, _ = fa.load_nc_sphere(os.path.join(base, REFERENCE_SPHERE))
     amp = amp.astype(float)
     amp = fa.mask_missing_levels(amp)
     radius_ft = float(np.asarray(radius_ft, dtype=float).ravel()[0])
@@ -60,6 +69,13 @@ def _reference_on_grid(azi_grid, elv_grid):
     a = np.concatenate([azi_d, azi_d + 360.0, azi_d - 360.0])
     e = np.concatenate([elv_d, elv_d, elv_d])
     p = np.concatenate([pw, pw, pw])
+    return a, e, p
+
+
+def _reference_on_grid(azi_grid, elv_grid, reference):
+    """Reference AAM sphere OASPL interpolated onto our grid (dB at r_ref);
+    ``reference`` is :func:`_reference_samples`'s result."""
+    a, e, p = reference
     # NaN where the reference has no data within RMAX, -inf where it has no
     # energy: np.isfinite in main() then leaves both out of the statistics.
     g = fa.shepIDW(elv_grid, azi_grid, e, a, p, rmax=RMAX)
@@ -69,36 +85,55 @@ def _reference_on_grid(azi_grid, elv_grid):
     return out
 
 
-def measured(flip):
-    """Measured hemisphere from the demo's own inputs, one flip setting."""
-    files = demo.gather_acoustic_files(os.path.join(BASE, "Acoustic"))
+def demo_inputs(base):
+    """The demo's microphones, track and atmosphere, read once from the demo
+    data directory ``base``: keyword arguments of ``depropagate_hemisphere``
+    (ft, ft/s, Pa)."""
+    files = demo.gather_acoustic_files(os.path.join(base, "Acoustic"))
     miclocs, pressures, times = demo.load_microphones(files)
     miclocs, pressures, times = demo.filter_microphones(
         files, miclocs, pressures, times)
-    _, ft = demo.load_track(BASE)
+    _, ft = demo.load_track(base)
     src, vel = demo.track_kinematics(ft)
     atmosphere, speed_of_sound_ft_s = demo.demo_atmosphere()
+    return dict(mic_locations=miclocs, pressure=pressures, time=times, track_time=ft["time"],
+                track_position=src, track_velocity=vel, speed_of_sound=speed_of_sound_ft_s,
+                atmosphere=atmosphere)
+
+
+def measured(flip, inputs):
+    """Measured hemisphere from the demo's own inputs (:func:`demo_inputs`),
+    one flip setting."""
     return fa.depropagate_hemisphere(
-        mic_locations=miclocs,
-        pressure=[np.asarray(p, dtype=float) * 0.5 for p in pressures],
-        time=times, track_time=ft["time"], track_position=src,
-        track_velocity=vel, speed_of_sound=speed_of_sound_ft_s, length_units="ft",
-        r_ref=R_REF_FT, freq_range=FREQS, window_time=0.5,
+        **dict(inputs, pressure=[np.asarray(p, dtype=float) * 0.5 for p in inputs["pressure"]]),
+        length_units="ft", r_ref=R_REF_FT, freq_range=FREQS, window_time=0.5,
         window_overlap=0.5, point_stride=1, azi_step=AZI_STEP,
         elv_step=ELV_STEP, rmax=RMAX, apply_absorption_deprop=True,
-        atmosphere=atmosphere, flip_y_for_geometry=flip)
+        flip_y_for_geometry=flip)
 
 
-def main():
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Check the AS350 demo's lateral sign: depropagate the demo run with and "
+                    "without flip_y_for_geometry and compare each with the reference AAM sphere "
+                    "and its mirror (overall level, 0 to 2 kHz, at 100 ft). Prints a table; "
+                    "writes nothing.")
+    parser.add_argument("--basepath", default=None,
+                        help="AS350 demo data directory, holding Acoustic/, AAM/ and Tracking/ "
+                             "(default: AS350_DEMO_PATH, then the as350_demo entry of local_paths)")
+    args = parser.parse_args(argv)
+    base = demo_data_path(args.basepath)
+    inputs = demo_inputs(base)
+    reference = _reference_samples(base)
     out = {}
     for flip in (False, True):
-        h = measured(flip)
+        h = measured(flip, inputs)
         azi, elv = h["azi_grid_deg"], h["elv_grid_deg"]
         AZ, EL = np.meshgrid(azi, elv)
-        ref = _reference_on_grid(AZ, EL)
+        ref = _reference_on_grid(AZ, EL, reference)
         # the same reference read backwards in azimuth: what a lateral sign
         # error would make the measurement look like
-        ref_mirror = _reference_on_grid(np.remainder(-AZ, 360.0), EL)
+        ref_mirror = _reference_on_grid(np.remainder(-AZ, 360.0), EL, reference)
         m = h["oaspl_db"]
         out[flip] = {}
         for name, r in (("reference", ref), ("mirrored reference", ref_mirror)):

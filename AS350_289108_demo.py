@@ -6,14 +6,16 @@ Needs the AS350 demo data (the ``as350_demo`` entry of local_paths, or --basepat
 the directory holding ``Acoustic/``, ``Ambient/``, ``AAM/`` and ``Tracking/``), which is not
 distributed with PANAM.  Writes its figures, the gridded hemisphere
 (``hemisphere_third_octave.npz``, which ``array_planner.py overlay`` reads) and an
-AAM-style sphere to --outdir.
+AAM-style sphere to --output-dir (default demo_plots in the current directory).
 """
 
 import os
 import argparse
 import flight_acoustics as fa
 import local_paths
+from cli import add_output_options, save_all_or_show
 import noise_abatement_2017 as na
+import sphere_statistics
 import matplotlib.pyplot as plt
 import numpy as np
 import logging
@@ -62,6 +64,21 @@ def compare_aam_netcdf_fields(reference_nc, candidate_nc):
             logging.info("Unit attribute differences ('unit') for common variables:")
             for name, ru, cu in unit_mismatch:
                 logging.info(f'  {name}: ref unit={ru!r} vs cand unit={cu!r}')
+
+def log_level_differences(reference_nc, candidate_nc):
+    """Log the band-by-band level difference candidate - reference (dB).
+
+    Returns the :func:`sphere_statistics.compare_spheres` result, or None (logged)
+    when the two spheres are not on the same grid and bands.
+    """
+    try:
+        result = sphere_statistics.compare_spheres(reference_nc, candidate_nc)
+    except ValueError as error:
+        logging.info(f'Level differences not compared: {error}')
+        return None
+    logging.info('Level differences, candidate - reference:\n' + sphere_statistics.format_comparison(result))
+    return result
+
 
 def plot_ambient_spectra(ambient_path):
     nc_files = []
@@ -217,14 +234,7 @@ def oaspl_grids(band_centers, bands_db, freq_range):
     )
 
 
-def save_figures(figs, outdir, names):
-    os.makedirs(outdir, exist_ok=True)
-    for fig, name in zip(figs, names):
-        path = os.path.join(outdir, f"{name}.png")
-        fig.savefig(path, dpi=300, bbox_inches='tight')
-        logging.info(f"Saved {path}")
-
-def main():
+def main(argv=None):
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
@@ -234,12 +244,12 @@ def main():
                     'and compare it with the reference AAM sphere for the same run.')
     parser.add_argument('--show', action='store_true',
                         help='Open the plots in windows instead of saving them; nothing is written.')
-    parser.add_argument('--outdir', default='demo_plots',
-                        help='Directory for the figures, hemisphere_third_octave.npz and the AAM-style '
-                             'sphere (default demo_plots).')
+    # -o/--output-dir (old spelling --outdir): the figures, hemisphere_third_octave.npz
+    # and the AAM-style sphere; -p/--plot also opens the figures.
+    add_output_options(parser, 'demo_plots', directory=True, aliases=('--outdir',))
     parser.add_argument('--basepath', default=None,
                         help='Base path to demo data (default: the as350_demo entry of local_paths).')
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     save_outputs = not args.show
 
@@ -476,8 +486,8 @@ def main():
 
         # Save the gridded hemisphere product when not in interactive show mode
         if save_outputs:
-            os.makedirs(args.outdir, exist_ok=True)
-            out_npz = os.path.join(args.outdir, 'hemisphere_third_octave.npz')
+            os.makedirs(args.output_dir, exist_ok=True)
+            out_npz = os.path.join(args.output_dir, 'hemisphere_third_octave.npz')
             np.savez(
                 out_npz,
                 band_centers_hz=band_centers,
@@ -497,7 +507,7 @@ def main():
             logging.info(f"Saved gridded hemisphere to {out_npz}")
 
             # Export AAM-style netCDF hemisphere using the reference PHI/THETA grids
-            out_nc = os.path.join(args.outdir, 'hemisphere_third_octave_aam.nc')
+            out_nc = os.path.join(args.output_dir, 'hemisphere_third_octave_aam.nc')
             try:
                 # Use reference ART grids when available
                 try:
@@ -534,7 +544,7 @@ def main():
 
                 # Plot the exported hemisphere using the same method as the reference
                 try:
-                    fig_exported = plot_reference_hemisphere(args.outdir, os.path.basename(out_nc), freqs, SPL_range=hemisphere_spl_range)
+                    fig_exported = plot_reference_hemisphere(args.output_dir, os.path.basename(out_nc), freqs, SPL_range=hemisphere_spl_range)
                     figs.append(fig_exported)
                     names.append('exported_hemisphere')
                 except Exception as e:
@@ -543,6 +553,7 @@ def main():
                 # Compare fields/attrs against the reference AAM sphere
                 if os.path.exists(ref_file):
                     compare_aam_netcdf_fields(ref_file, out_nc)
+                    log_level_differences(ref_file, out_nc)
             except Exception as e:
                 logging.warning(f'Could not export AAM netCDF hemisphere: {e}')
 
@@ -550,11 +561,12 @@ def main():
     figs.append(plot_reference_hemisphere(AAM_path, AAM_sphere, freqs, SPL_range=hemisphere_spl_range))
     names.append('reference_hemisphere')
 
+    # Each figure to output_dir/<name>.png (300 dpi); with --show, only shown.
+    for path in save_all_or_show(dict(zip(names, figs)), args.output_dir if save_outputs else None, args.plot,
+                                 dpi=300, bbox_inches='tight'):
+        logging.info(f"Saved {path}")
     if save_outputs:
-        save_figures(figs, args.outdir, names)
-        logging.info(f"Done. Saved {len(figs)} figures to {args.outdir}")
-    else:
-        plt.show()
+        logging.info(f"Done. Saved {len(figs)} figures to {args.output_dir}")
 
 if __name__ == '__main__':
     main()

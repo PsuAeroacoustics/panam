@@ -282,6 +282,134 @@ def test_plate_table_checks_the_bands_of_a_table_held_in_memory(monkeypatch, tmp
     assert len(calls) == 2
 
 
+BANDS = [630.0, 800.0, 1000.0]
+
+
+def test_plate_table_reads_back_from_disk_without_recomputing(monkeypatch, tmp_path):
+    import axisymmetric_bem as ab
+    calls = []
+    monkeypatch.setattr(ab, 'table', _plate_table_stub(2.0, calls))
+    monkeypatch.setattr(na, '_PLATE_TABLES', {})
+    first = na.plate_table('gdbdfl', 1125.0, BANDS, directory=str(tmp_path))
+    files = list(tmp_path.glob('*.npz'))
+    assert len(files) == 1 and not list(tmp_path.glob('*.tmp'))
+    monkeypatch.setattr(na, '_PLATE_TABLES', {})
+    second = na.plate_table('gdbdfl', 1125.0, BANDS, directory=str(tmp_path))
+    assert second is not first and len(calls) == 1
+    for name in ('frequencies', 'elevations', 'azimuths', 'P_d', 'P_r', 'bands'):
+        np.testing.assert_array_equal(second[name], first[name])
+    assert second['ground'] == first['ground'] and second['sub_bands'] == first['sub_bands']
+
+
+@pytest.mark.parametrize('change', ['version', 'option', 'ground', 'sound_speed'])
+def test_plate_table_recomputes_when_its_key_changes(monkeypatch, tmp_path, change):
+    """Each part of the key, changed alone, makes a new table rather than
+    reading the cached one, from memory or from disk."""
+    import axisymmetric_bem as ab
+    calls = []
+    monkeypatch.setattr(ab, 'table', _plate_table_stub(0.0, calls))
+    monkeypatch.setattr(na, '_PLATE_TABLES', {})
+    na.plate_table('gdbdfl', 1125.0, BANDS, directory=str(tmp_path))
+    arguments = dict(directory=str(tmp_path))
+    speed = 1125.0
+    if change == 'version':
+        monkeypatch.setattr(ab, 'PLATE_TABLE_VERSION', ab.PLATE_TABLE_VERSION + 1)
+    elif change == 'option':
+        arguments['gauss'] = 8
+    elif change == 'ground':
+        arguments['ground'] = dict(na.SITE_GROUND, sigma_e=150.0)
+    else:
+        speed = 1150.0
+    na.plate_table('gdbdfl', speed, BANDS, **arguments)
+    assert len(calls) == 2
+    monkeypatch.setattr(na, '_PLATE_TABLES', {})
+    na.plate_table('gdbdfl', speed, BANDS, **arguments)
+    assert len(calls) == 2                      # the new one is on disk too
+    assert len(list(tmp_path.glob('*.npz'))) == 2
+
+
+def test_plate_table_passes_its_options_to_the_bem(monkeypatch, tmp_path):
+    import axisymmetric_bem as ab
+    seen = {}
+
+    def table(bands, sound_speed, **options):
+        seen.update(options)
+        return _plate_table_stub(0.0)(bands, sound_speed, **options)
+    monkeypatch.setattr(ab, 'table', table)
+    monkeypatch.setattr(na, '_PLATE_TABLES', {})
+    na.plate_table('gdbdfl', 1125.0, BANDS, directory=str(tmp_path), segments_per_wavelength=6)
+    assert seen['segments_per_wavelength'] == 6 and seen['mic_height'] == 0.0
+
+
+def test_plate_table_ignores_old_and_mismatched_files(monkeypatch, tmp_path):
+    """A pickle from before the versioned cache is never read, and an .npz
+    whose stored key differs from the one asked for, or that holds a pickled
+    object, is recomputed and replaced."""
+    import pickle
+    import axisymmetric_bem as ab
+    calls = []
+    monkeypatch.setattr(ab, 'table', _plate_table_stub(0.0, calls))
+    monkeypatch.setattr(na, '_PLATE_TABLES', {})
+    # The old cache's name for this table, with a table of the wrong gain in it.
+    stale = _plate_table_stub(40.0)(np.array(BANDS), 1125.0)
+    old = tmp_path / 'h0.00mm_alpha_e0.0_modelvariable_porosity_sigma_e200.0_c1125.84_b3-630-1000.pkl'
+    old.write_bytes(pickle.dumps(stale))
+    table = na.plate_table('gdbdfl', 1125.0, BANDS, directory=str(tmp_path))
+    assert len(calls) == 1 and np.allclose(np.abs(table['P_d']), 1.0)
+    assert old.exists()
+    (path,) = tmp_path.glob('*.npz')
+    # Same file name, another key inside: recomputed.
+    ab.write_table_npz(str(path), stale, key='{"version": 0}')
+    monkeypatch.setattr(na, '_PLATE_TABLES', {})
+    table = na.plate_table('gdbdfl', 1125.0, BANDS, directory=str(tmp_path))
+    assert len(calls) == 2 and np.allclose(np.abs(table['P_d']), 1.0)
+    # A pickled object in the .npz is refused, not loaded.
+    with open(path, 'wb') as handle:
+        np.savez(handle, P_d=np.array([stale], dtype=object))
+    monkeypatch.setattr(na, '_PLATE_TABLES', {})
+    na.plate_table('gdbdfl', 1125.0, BANDS, directory=str(tmp_path))
+    assert len(calls) == 3
+    monkeypatch.setattr(na, '_PLATE_TABLES', {})
+    na.plate_table('gdbdfl', 1125.0, BANDS, directory=str(tmp_path))
+    assert len(calls) == 3                      # and the replacement reads back
+
+
+@pytest.mark.parametrize('damage', ['truncated', 'empty'])
+def test_plate_table_recomputes_a_truncated_or_empty_file(monkeypatch, tmp_path, damage):
+    """A cut-off .npz (BadZipFile) or a 0-byte one (EOFError) at the cache name
+    is listed as unreadable, then recomputed and replaced, not a crash."""
+    import axisymmetric_bem as ab
+    calls = []
+    monkeypatch.setattr(ab, 'table', _plate_table_stub(0.0, calls))
+    monkeypatch.setattr(na, '_PLATE_TABLES', {})
+    na.plate_table('gdbdfl', 1125.0, BANDS, directory=str(tmp_path))
+    (path,) = tmp_path.glob('*.npz')
+    contents = path.read_bytes()
+    path.write_bytes(contents[:len(contents) // 2] if damage == 'truncated' else b'')
+    with pytest.raises(ValueError):
+        ab.read_table_npz(str(path))
+    assert [record['status'] for record in na.plate_table_cache(str(tmp_path))] == ['unreadable']
+    monkeypatch.setattr(na, '_PLATE_TABLES', {})
+    table = na.plate_table('gdbdfl', 1125.0, BANDS, directory=str(tmp_path))
+    assert len(calls) == 2 and np.allclose(np.abs(table['P_d']), 1.0)
+    assert [record['status'] for record in na.plate_table_cache(str(tmp_path))] == ['current']
+
+
+def test_plate_table_cache_lists_and_clears(monkeypatch, tmp_path):
+    import axisymmetric_bem as ab
+    monkeypatch.setattr(ab, 'table', _plate_table_stub(0.0))
+    monkeypatch.setattr(na, '_PLATE_TABLES', {})
+    na.plate_table('gdbdfl', 1125.0, BANDS, directory=str(tmp_path))
+    monkeypatch.setattr(ab, 'PLATE_TABLE_VERSION', ab.PLATE_TABLE_VERSION + 1)
+    na.plate_table('gdbdfl', 1125.0, BANDS, directory=str(tmp_path))
+    (tmp_path / 'old.pkl').write_bytes(b'')
+    (tmp_path / 'notes.txt').write_text('kept')
+    statuses = sorted(record['status'] for record in na.plate_table_cache(str(tmp_path)))
+    assert statuses == ['current', 'old format', 'old version {}'.format(ab.PLATE_TABLE_VERSION - 1)]
+    assert na.clear_plate_table_cache(str(tmp_path)) == 3
+    assert [p.name for p in tmp_path.iterdir()] == ['notes.txt']
+
+
 #: Microphone number -> (instrument type, location in ft).  Mic 4 has no
 #: ambient recording, so the build drops it; the pole microphone is not a
 #: ground board.
@@ -534,6 +662,91 @@ def test_the_cli_help_states_the_point_stride_defaults(capsys):
     assert 'default 10' in help_text and 'default to 1' in help_text
 
 
+
+def test_the_cli_tone_split_writes_part_spheres_that_sum_to_the_total(tmp_path):
+    """--tone-split writes each run's tonal and broadband spheres in directories of their
+    own (a database takes every .nc in a directory), and in energy they sum to the total."""
+    import flight_acoustics as fa
+    _archive(tmp_path)
+    out = tmp_path / 'out'
+    assert na.main(['AS350B3', str(out), '--root', str(tmp_path), '--no-prefetch', '--board-correction', 'flat',
+                    '--tone-split']) == 0
+    spheres = list(out.glob('*.nc'))
+    assert len(spheres) == 1
+    total_path = spheres[0]
+    stem = total_path.stem
+    levels = {}
+    for part, path in (('total', total_path), ('tonal', out / 'tonal' / (stem + '_tonal.nc')),
+                       ('broadband', out / 'broadband' / (stem + '_broadband.nc'))):
+        levels[part] = fa.mask_missing_levels(fa.load_nc_sphere(str(path))[0])
+    energy = {part: 10.0 ** (level / 10.0) for part, level in levels.items()}
+    # Cells clear of the writer's -100 dB floor (minimum_level_db), which clamps each part
+    # alone; levels are stored to single precision
+    clear = levels['total'] > -90.0
+    assert clear.sum() > 1000
+    np.testing.assert_allclose(energy['tonal'][clear] + energy['broadband'][clear], energy['total'][clear],
+                               rtol=1e-5)
+    # Every part carries the build's provenance under its own file name.
+    import json
+    from netCDF4 import Dataset
+    stamps = {}
+    for path in (total_path, out / 'tonal' / (stem + '_tonal.nc'), out / 'broadband' / (stem + '_broadband.nc')):
+        with Dataset(str(path)) as sphere:
+            stamps[path.name] = (sphere.panam_tool, sphere.panam_settings_sha256,
+                                 json.loads(sphere.panam_inputs)['output_path'])
+    assert {tool for tool, _, _ in stamps.values()} == {'noise_abatement_2017.build_sphere'}
+    assert len({sha for _, sha, _ in stamps.values()}) == 1
+    assert all(name == output for name, (_, _, output) in stamps.items())
+
+
+def test_the_cli_node_statistics_adds_variables_and_leaves_the_levels_alone(tmp_path):
+    """--node-statistics writes N_SAMPLES and AMPLITUDE_STD into each sphere, the parts
+    included; without it the spheres carry neither, and the levels are the same either way."""
+    from netCDF4 import Dataset
+    _archive(tmp_path)
+    common = ['AS350B3', '--root', str(tmp_path), '--no-prefetch', '--board-correction', 'flat', '--tone-split']
+    assert na.main([common[0], str(tmp_path / 'plain')] + common[1:]) == 0
+    assert na.main([common[0], str(tmp_path / 'stats')] + common[1:] + ['--node-statistics']) == 0
+    name = next((tmp_path / 'plain').glob('*.nc')).name
+    stem = name[:-3]
+    for relative in (name, 'tonal/{}_tonal.nc'.format(stem), 'broadband/{}_broadband.nc'.format(stem)):
+        with Dataset(str(tmp_path / 'plain' / relative)) as plain, \
+                Dataset(str(tmp_path / 'stats' / relative)) as stats:
+            assert 'N_SAMPLES' not in plain.variables and 'AMPLITUDE_STD' not in plain.variables
+            np.testing.assert_array_equal(plain['AMPLITUDE'][:], stats['AMPLITUDE'][:])
+            n_samples = stats['N_SAMPLES'][:]
+            spread = np.ma.filled(stats['AMPLITUDE_STD'][:], np.nan)
+            assert n_samples.shape == stats['AMPLITUDE'].shape and n_samples.max() > 1
+            assert stats['AMPLITUDE_STD'].unit == 'DECIBEL'
+            assert np.all((spread >= 0.0) | (spread == -999.0))
+            assert np.any(spread > 0.0)
+
+
+def test_node_statistics_left_off_keep_the_default_settings_hash(tmp_path):
+    """node_statistics=False stays out of the hashed settings, so a default build keeps the
+    hash of the same settings before the option existed; turned on, it is recorded."""
+    import json
+    from netCDF4 import Dataset
+    _archive(tmp_path)
+    test = na.NoiseAbatementTest('AS350B3', root=str(tmp_path))
+    plain = na.build_sphere(test, '289108', str(tmp_path / 'plain.nc'), board_correction='flat')
+    stats = na.build_sphere(test, '289108', str(tmp_path / 'stats.nc'), board_correction='flat',
+                            node_statistics=True)
+    with Dataset(plain['output']) as one, Dataset(stats['output']) as two:
+        plain_settings, stats_settings = json.loads(one.panam_settings), json.loads(two.panam_settings)
+    assert 'node_statistics' not in plain_settings
+    assert stats_settings.pop('node_statistics') is True
+    assert stats_settings == plain_settings
+    assert stats['settings_sha256'] != plain['settings_sha256']
+
+
+def test_tone_split_needs_tone_aware(tmp_path):
+    _archive(tmp_path)
+    test = na.NoiseAbatementTest('AS350B3', root=str(tmp_path))
+    with pytest.raises(ValueError, match='tone_split needs tone_aware'):
+        na.build_sphere(test, '289108', str(tmp_path / 'out.nc'), board_correction='flat', tone_split=True)
+
+
 def _reference_index(rows, without_acoustics=()):
     """A NoiseAbatementTest over ``rows`` (run, condition, layout, seconds) with no files behind it."""
     test = object.__new__(na.NoiseAbatementTest)
@@ -583,3 +796,371 @@ def test_ambient_run_does_not_cross_layouts():
 def test_ambient_run_refuses_an_unknown_run():
     with pytest.raises(KeyError):
         _reference_index(AMBIENT_ROWS).ambient_run('999999')
+
+
+def test_the_sphere_build_records_its_settings(tmp_path):
+    """The record, the manifest and the sphere's provenance stamp carry the settings,
+    and the stamp names no directory of this machine."""
+    import csv
+    import hashlib
+    import json
+    from netCDF4 import Dataset
+    _archive(tmp_path)
+    manifest = tmp_path / 'manifest.csv'
+    records, failures = na.build_all('AS350B3', str(tmp_path / 'out'), root=str(tmp_path),
+                                     prefetch=False, manifest_path=str(manifest),
+                                     board_correction='flat', band_snr_gate_db=6.0,
+                                     third_octave_method='filter_bank', point_stride=2)
+    assert failures == []
+    record = records[0]
+    assert (record['band_snr_gate_db'], record['third_octave_method'], record['point_stride']) == \
+        (6.0, 'filter_bank', 2)
+    assert record['max_absorption_correction_db'] == 30.0 and record['tone_aware'] is False
+    with open(manifest, newline='') as handle:
+        row = next(csv.DictReader(handle))
+    assert set(na.RECORDED_SETTINGS) | {'panam_version', 'settings_sha256'} <= set(row)
+    assert (row['band_snr_gate_db'], row['gate_ambient'], row['remove_doppler']) == ('6.0', 'True', 'False')
+    with Dataset(record['output']) as sphere:
+        text = sphere.panam_settings
+        assert sphere.panam_tool == 'noise_abatement_2017.build_sphere'
+        assert sphere.panam_settings_sha256 == row['settings_sha256'] == record['settings_sha256']
+        inputs = sphere.panam_inputs
+    assert hashlib.sha256(text.encode()).hexdigest() == record['settings_sha256']
+    settings = json.loads(text)
+    assert settings['band_snr_gate_db'] == 6.0 and settings['reference_sphere_given'] is False
+    assert not {'test', 'run', 'output_path', 'plate_table_directory'} & set(settings)
+    identity = json.loads(inputs)
+    assert identity['test'] == 'AS350B3' and identity['run'] == '289108'
+    assert identity['output_path'] == os.path.basename(record['output'])
+    assert identity['plate_table_directory'] is None
+    for spelling in (text, inputs):
+        assert str(tmp_path) not in spelling and os.path.realpath(str(tmp_path)) not in spelling
+
+
+def test_spheres_built_with_equal_settings_share_the_settings_hash(tmp_path):
+    """The hash covers the processing settings, not the file's name: two spheres
+    written under different names with the same settings record the same hash."""
+    from netCDF4 import Dataset
+    _archive(tmp_path)
+    test = na.NoiseAbatementTest('AS350B3', root=str(tmp_path))
+    first = na.build_sphere(test, '289108', str(tmp_path / 'a' / 'one.nc'), board_correction='flat')
+    second = na.build_sphere(test, '289108', str(tmp_path / 'b' / 'two.nc'), board_correction='flat')
+    changed = na.build_sphere(test, '289108', str(tmp_path / 'c' / 'one.nc'), board_correction='flat',
+                              band_snr_gate_db=6.0)
+    assert first['settings_sha256'] == second['settings_sha256']
+    assert changed['settings_sha256'] != first['settings_sha256']
+    with Dataset(first['output']) as one, Dataset(second['output']) as two:
+        assert one.panam_settings == two.panam_settings
+        assert one.panam_inputs != two.panam_inputs
+
+
+def _add_copied_run(root, run='289110', number='110'):
+    """Add run ``run`` to the _archive, a copy of run 289108 (track and recordings)."""
+    import shutil
+    base = root / 'AS350B3'
+    with open(base / 'AS350B3FullRefList.csv', 'a') as handle:
+        handle.write('{},L1,A,0,0,100.0,{}\n'.format(run, number))
+    shutil.copy(base / 'AS350B3_AC_Data' / '289108AC.csv', base / 'AS350B3_AC_Data' / (run + 'AC.csv'))
+    acoustic = base / 'AS350B3_Acoustic_Data' / '289'
+    for mic in ARCHIVE_MICS:
+        shutil.copy(acoustic / '289108_{}_pascal.nc'.format(mic), acoustic / '{}_{}_pascal.nc'.format(run, mic))
+
+
+def _manifest_rows(path):
+    import csv
+    with open(path, newline='') as handle:
+        return list(csv.DictReader(handle))
+
+
+def _no_build(*args, **kwargs):
+    raise AssertionError('build_sphere was called')
+
+
+def test_skip_existing_keeps_built_spheres_and_lists_them(monkeypatch, tmp_path):
+    """A second build with skip_existing builds nothing, keeps the files, and still
+    lists every sphere in the manifest, so the database step takes them."""
+    _archive(tmp_path)
+    out = tmp_path / 'out'
+    first, failures = na.build_all('AS350B3', str(out), root=str(tmp_path), prefetch=False,
+                                   board_correction='flat', manifest_path=str(tmp_path / 'first.csv'))
+    assert failures == [] and 'skipped' not in first[0]
+    assert 'skipped' not in _manifest_rows(tmp_path / 'first.csv')[0]
+    written = os.path.getmtime(first[0]['output'])
+    monkeypatch.setattr(na, 'build_sphere', _no_build)
+    manifest = tmp_path / 'manifest.csv'
+    records, failures = na.build_all('AS350B3', str(out), root=str(tmp_path), prefetch=False,
+                                     board_correction='flat', band_snr_gate_db=3.0, skip_existing=True,
+                                     manifest_path=str(manifest))
+    assert failures == [] and [r['run'] for r in records] == ['289108']
+    record = records[0]
+    assert record['skipped'] == 'exists' and record['output'] == first[0]['output']
+    assert record['settings_sha256'] == first[0]['settings_sha256']
+    np.testing.assert_allclose(record['speed_knots'], first[0]['speed_knots'], rtol=1e-6)
+    assert os.path.getmtime(record['output']) == written
+    assert _manifest_rows(manifest)[0]['skipped'] == 'exists'
+    assert na.select_from_manifest(str(manifest)) == [os.path.basename(record['output'])]
+
+
+def test_skip_existing_rebuilds_a_run_missing_one_of_its_outputs(tmp_path):
+    """With tone_split, a run whose part sphere is gone is built again."""
+    _archive(tmp_path)
+    out = tmp_path / 'out'
+    first, _ = na.build_all('AS350B3', str(out), root=str(tmp_path), prefetch=False,
+                            board_correction='flat', tone_aware=True, tone_split=True)
+    os.remove(first[0]['tonal_output'])
+    records, failures = na.build_all('AS350B3', str(out), root=str(tmp_path), prefetch=False,
+                                     board_correction='flat', tone_aware=True, tone_split=True,
+                                     skip_existing=True)
+    assert failures == [] and 'skipped' not in records[0]
+    assert os.path.exists(first[0]['tonal_output'])
+
+
+def test_skip_unchanged_rebuilds_only_on_new_settings_or_inputs(monkeypatch, tmp_path):
+    from netCDF4 import Dataset
+    import provenance
+    _archive(tmp_path)
+    out = tmp_path / 'out'
+    arguments = dict(root=str(tmp_path), prefetch=False, board_correction='flat', point_stride=2)
+    first, _ = na.build_all('AS350B3', str(out), **arguments)
+    test = na.NoiseAbatementTest('AS350B3', root=str(tmp_path))
+    signature = provenance.file_signature(na.run_input_files(test, '289108'))
+    with Dataset(first[0]['output']) as sphere:
+        assert sphere.panam_input_signature == signature == first[0]['input_signature']
+
+    built = []
+    build_sphere = na.build_sphere
+
+    def counting(test, run, *args, **kwargs):
+        built.append(run)
+        return build_sphere(test, run, *args, **kwargs)
+    monkeypatch.setattr(na, 'build_sphere', counting)
+
+    records, _ = na.build_all('AS350B3', str(out), skip_unchanged=True, **arguments)
+    assert built == [] and records[0]['skipped'] == 'unchanged'
+    records, _ = na.build_all('AS350B3', str(out), skip_unchanged=True, **dict(arguments, point_stride=3))
+    assert built == ['289108'] and 'skipped' not in records[0]
+    records, _ = na.build_all('AS350B3', str(out), skip_unchanged=True, **dict(arguments, point_stride=3))
+    assert built == ['289108'] and records[0]['skipped'] == 'unchanged'
+    # A recording replaced since: same name, a new modification time.
+    recording = tmp_path / 'AS350B3' / 'AS350B3_Acoustic_Data' / '289' / '289101_2_pascal.nc'
+    stamp = os.stat(recording)
+    os.utime(recording, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 10 ** 9))
+    records, _ = na.build_all('AS350B3', str(out), skip_unchanged=True, **dict(arguments, point_stride=3))
+    assert built == ['289108', '289108'] and 'skipped' not in records[0]
+
+
+def test_skip_unchanged_with_no_overwrite_skips_a_default_build(monkeypatch, tmp_path):
+    """overwrite changes no level, so a resumed --skip-unchanged --no-overwrite build
+    keeps the sphere a default (overwrite=True) build wrote instead of failing on it."""
+    _archive(tmp_path)
+    out = tmp_path / 'out'
+    arguments = dict(root=str(tmp_path), prefetch=False, board_correction='flat', point_stride=2)
+    first, failures = na.build_all('AS350B3', str(out), **arguments)
+    assert failures == []
+    monkeypatch.setattr(na, 'build_sphere', _no_build)
+    records, failures = na.build_all('AS350B3', str(out), skip_unchanged=True, overwrite=False,
+                                     **arguments)
+    assert failures == [] and [r['skipped'] for r in records] == ['unchanged']
+    assert records[0]['settings_sha256'] == first[0]['settings_sha256']
+
+
+def test_skip_unchanged_rebuilds_a_run_whose_ray_profile_changed(monkeypatch, tmp_path):
+    """The atmospheric profile a ray model reads is one of the run's inputs: an edited
+    profile under the same name rebuilds the run under skip_unchanged."""
+    import refracted_rays
+    _archive(tmp_path)
+    out = tmp_path / 'out'
+    profile = tmp_path / 'profiles' / '289108.csv'
+    profile.parent.mkdir()
+    profile.write_text('height_ft,temperature_K\n0,288\n')
+    model = refracted_rays.straight_ray_model(1116.0)
+    model.description = 'niceops_ray_geometry stratified plate 289108.csv'
+    model.source_files = (str(profile),)
+    arguments = dict(root=str(tmp_path), prefetch=False, board_correction='flat', point_stride=2,
+                     ray_models=lambda run: model)
+    first, failures = na.build_all('AS350B3', str(out), **arguments)
+    assert failures == []
+
+    built = []
+    build_sphere = na.build_sphere
+
+    def counting(test, run, *args, **kwargs):
+        built.append(run)
+        return build_sphere(test, run, *args, **kwargs)
+    monkeypatch.setattr(na, 'build_sphere', counting)
+    records, _ = na.build_all('AS350B3', str(out), skip_unchanged=True, **arguments)
+    assert built == [] and records[0]['skipped'] == 'unchanged'
+    profile.write_text('height_ft,temperature_K\n0,290\n1000,285\n')
+    records, _ = na.build_all('AS350B3', str(out), skip_unchanged=True, **arguments)
+    assert built == ['289108'] and 'skipped' not in records[0]
+
+
+def test_an_external_ray_model_names_its_profile_as_an_input(tmp_path):
+    import refracted_rays
+    profile = tmp_path / '289108.csv'
+    model = refracted_rays.external_ray_model('niceops_ray_geometry', str(profile))
+    assert model.source_files == (str(profile),)
+    _archive(tmp_path)
+    test = na.NoiseAbatementTest('AS350B3', root=str(tmp_path))
+    assert str(profile) in na.run_input_files(test, '289108', ray_model=model)
+    assert str(profile) not in na.run_input_files(test, '289108')
+
+
+def test_a_skipped_run_keeps_the_manifest_row_of_its_build(monkeypatch, tmp_path):
+    """A resumed build lists a skipped run as its original build did: its track flags
+    (so --skip-flagged still leaves a flagged run out), its rays, window and settings,
+    and its float64 speed and flight path angle in the NORAH2 triangulation."""
+    _archive(tmp_path)
+    out, norah2 = tmp_path / 'out', tmp_path / 'norah2'
+    check = na.run_track_check
+
+    def flagging(*args, **kwargs):
+        result = check(*args, **kwargs)
+        result.flags.append('a flag for the test')
+        return result
+    monkeypatch.setattr(na, 'run_track_check', flagging)
+    arguments = dict(root=str(tmp_path), prefetch=False, board_correction='flat', point_stride=2,
+                     runs=['289108'], norah2_directory=str(norah2))
+    first, failures = na.build_all('AS350B3', str(out), manifest_path=str(tmp_path / 'first.csv'),
+                                   **arguments)
+    assert failures == [] and 'a flag for the test' in first[0]['track_flags']
+    assert na.select_from_manifest(str(tmp_path / 'first.csv'), skip_flagged=True) == []
+    monkeypatch.setattr(na, 'build_sphere', _no_build)
+    triangulation = []
+    monkeypatch.setattr(na.fa, 'write_norah2_triangulation',
+                        lambda path, entries: triangulation.append(entries))
+    for option in ('skip_existing', 'skip_unchanged'):
+        manifest = tmp_path / '{}.csv'.format(option)
+        records, failures = na.build_all('AS350B3', str(out), manifest_path=str(manifest),
+                                         **{option: True}, **arguments)
+        assert failures == [] and records[0]['skipped'] in ('exists', 'unchanged')
+        record = dict(records[0])
+        del record['skipped']
+        assert _comparable(record) == _comparable(first[0])
+        assert type(record['window_s']) is tuple
+        assert na.select_from_manifest(str(manifest), skip_flagged=True) == []
+        rows, original = _manifest_rows(manifest)[0], _manifest_rows(tmp_path / 'first.csv')[0]
+        assert {key: rows[key] for key in original} == original
+    # Bypass build_all (three records are needed): the triangulation carries the float64 values.
+    assert triangulation == []
+    record = na._skipped_record(na.NoiseAbatementTest('AS350B3', root=str(tmp_path)), '289108',
+                                first[0]['output'], str(norah2), 'exists')
+    assert record['speed_knots'] == first[0]['speed_knots']
+    assert record['flight_path_angle_deg'] == first[0]['flight_path_angle_deg']
+    assert record['norah2_output'] == first[0]['norah2_output']
+
+
+def test_a_skipped_run_lists_its_own_norah2_file_not_a_stale_one(monkeypatch, tmp_path):
+    """A .hem left by an earlier build at another speed label (it sorts first) is
+    neither listed for a skipped run nor taken as proof that its NORAH2 file exists."""
+    _archive(tmp_path)
+    out, norah2 = tmp_path / 'out', tmp_path / 'norah2'
+    arguments = dict(root=str(tmp_path), prefetch=False, board_correction='flat', point_stride=2,
+                     norah2_directory=str(norah2))
+    first, failures = na.build_all('AS350B3', str(out), **arguments)
+    assert failures == []
+    current = first[0]['norah2_output']
+    stale = norah2 / 'AS350_Approach_1kts_3deg_108.hem'
+    stale.write_text('stale')
+    assert sorted(os.listdir(norah2))[0] == stale.name
+    triangulation = []
+    monkeypatch.setattr(na.fa, 'write_norah2_triangulation',
+                        lambda path, entries: triangulation.append(entries))
+    monkeypatch.setattr(na, 'build_sphere', _no_build)
+    for option in ('skip_existing', 'skip_unchanged'):
+        records, failures = na.build_all('AS350B3', str(out), **{option: True}, **arguments)
+        assert failures == [] and records[0]['norah2_output'] == current
+    # With the run's own .hem gone, the stale one does not count: the run is built again.
+    os.remove(current)
+    monkeypatch.undo()
+    records, failures = na.build_all('AS350B3', str(out), skip_existing=True, **arguments)
+    assert failures == [] and 'skipped' not in records[0]
+    assert os.path.exists(current)
+
+
+def test_a_skipped_sphere_without_a_build_record_counts_as_flagged(tmp_path):
+    """A sphere written before build records were gives no track flags, so the
+    manifest marks them unknown and --skip-flagged leaves the run out."""
+    from netCDF4 import Dataset
+    import provenance
+    _archive(tmp_path)
+    out = tmp_path / 'out'
+    first, _ = na.build_all('AS350B3', str(out), root=str(tmp_path), prefetch=False,
+                            board_correction='flat', point_stride=2)
+    with Dataset(first[0]['output'], 'a') as sphere:
+        sphere.delncattr(provenance.BUILD_RECORD_ATTRIBUTE)
+    manifest = tmp_path / 'manifest.csv'
+    records, _ = na.build_all('AS350B3', str(out), root=str(tmp_path), prefetch=False,
+                              board_correction='flat', point_stride=2, skip_existing=True,
+                              manifest_path=str(manifest))
+    assert records[0]['track_flags'] == na.UNKNOWN_TRACK_FLAGS
+    np.testing.assert_allclose(records[0]['speed_knots'], first[0]['speed_knots'], rtol=1e-6)
+    assert na.select_from_manifest(str(manifest)) == [os.path.basename(first[0]['output'])]
+    assert na.select_from_manifest(str(manifest), skip_flagged=True) == []
+
+
+def _comparable(record):
+    """A build record with its output directories left out, and NaN as text (NaN != NaN)."""
+    def plain(key, value):
+        if key.endswith('output') and value:
+            return os.path.basename(value)
+        return 'nan' if isinstance(value, float) and np.isnan(value) else value
+    return {key: plain(key, value) for key, value in record.items()}
+
+
+def test_parallel_build_matches_the_serial_one(monkeypatch, tmp_path):
+    """jobs=2 gives the records, failures, manifest and spheres of jobs=1, in run
+    order.  The plate tables are computed in this process (here by a stub the
+    workers do not see), so the workers read them from the cache."""
+    import functools
+    import axisymmetric_bem as ab
+    import flight_acoustics as fa
+    _archive(tmp_path)
+    _add_copied_run(tmp_path)
+    # With the real table's signature, so that the cache key is the one the workers compute.
+    monkeypatch.setattr(ab, 'table', functools.wraps(ab.table)(_plate_table_stub(3.0)))
+    results = {}
+    for jobs in (1, 2):
+        monkeypatch.setattr(na, '_PLATE_TABLES', {})
+        out = tmp_path / 'jobs{}'.format(jobs)
+        records, failures = na.build_all('AS350B3', str(out), root=str(tmp_path), prefetch=False,
+                                         runs=['289110', '999999', '289108'], jobs=jobs, point_stride=2,
+                                         plate_table_directory=str(tmp_path / 'tables{}'.format(jobs)),
+                                         manifest_path=str(out / 'manifest.csv'))
+        rows = _manifest_rows(out / 'manifest.csv')
+        levels = [fa.load_nc_sphere(r['output'])[0] for r in records]
+        results[jobs] = ([_comparable(r) for r in records], failures,
+                         [_comparable(row) for row in rows], levels)
+    serial, parallel = results[1], results[2]
+    assert [r['run'] for r in parallel[0]] == ['289110', '289108']
+    assert [f['run'] for f in parallel[1]] == ['999999']
+    assert parallel[0] == serial[0] and parallel[1] == serial[1] and parallel[2] == serial[2]
+    for one, two in zip(serial[3], parallel[3]):
+        np.testing.assert_array_equal(one, two)
+
+
+def test_parallel_build_refuses_what_a_worker_cannot_receive(tmp_path):
+    _archive(tmp_path)
+    with pytest.raises(TypeError, match='ray_models'):
+        na.build_all('AS350B3', str(tmp_path / 'out'), root=str(tmp_path), jobs=2,
+                     ray_models=lambda run: None)
+    with pytest.raises(ValueError, match='jobs'):
+        na.build_all('AS350B3', str(tmp_path / 'out'), root=str(tmp_path), jobs=0)
+
+
+@pytest.mark.parametrize('flags, info, debug', [((), True, False), (('-q',), False, False),
+                                                 (('-v',), True, True)])
+def test_the_cli_log_level_and_log_file(tmp_path, flags, info, debug):
+    import logging
+    _archive(tmp_path)
+    log = tmp_path / 'logs' / 'build.log'
+    root = logging.getLogger()
+    level, handlers = root.level, list(root.handlers)
+    # Run 999999 has no data: its prefetch logs a DEBUG message.
+    assert na.main(['AS350B3', str(tmp_path / 'out'), '--root', str(tmp_path), '--board-correction', 'flat',
+                    '--runs', '289108', '999999', '--log-file', str(log), *flags]) == 0
+    text = log.read_text()
+    assert ('INFO [1/2] 289108 -> ' in text) is info
+    assert ('DEBUG prefetch skipped run 999999' in text) is debug
+    assert 'WARNING [2/2] 999999 failed' in text
+    assert root.level == level and root.handlers == handlers

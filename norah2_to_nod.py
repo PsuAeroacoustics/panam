@@ -14,8 +14,9 @@ import argparse
 import os
 import sys
 
-from panam_acoustics.atmosphere import Atmosphere
+from panam_acoustics.atmosphere import BAND_ABSORPTION_METHODS
 
+import cli
 import flight_acoustics
 
 SPEED_CHOICES = {'ias-to-tas': 'ias_to_tas', 'ground-speed': 'ground_speed'}
@@ -44,12 +45,13 @@ def parse_arguments(argv=None):
                               "the vehicle file's, or 1.225 without one)")
     parser.add_argument('--radius', type=float, default=flight_acoustics.DATABASE_SPHERE_RADIUS_M,
                         help='sphere radius, m (default %(default)g)')
-    parser.add_argument('--build-temperature', type=float, default=293.15,
-                        help='atmosphere of the broadband EAA: temperature, K (default %(default)g)')
-    parser.add_argument('--build-pressure', type=float, default=101.325,
-                        help='... pressure, kPa (default %(default)g)')
-    parser.add_argument('--build-humidity', type=float, default=20.0,
-                        help='... relative humidity, percent (default %(default)g)')
+    cli.add_build_atmosphere_options(parser)
+    parser.add_argument('--absorption-band-method', choices=BAND_ABSORPTION_METHODS,
+                        default='center',
+                        help='how band absorption is formed, in the move from POLDIST to the sphere '
+                             'radius and in the EAA: center (ISO 9613-1 at the band center), '
+                             "arp5534 (SAE ARP 5534, NORAH2's own) or integrated (ISO 9613-1 "
+                             'integrated over the band, flat band levels) (default %(default)s)')
     parser.add_argument('--accept-ground-included', action='store_true',
                         help='convert FREEFIELD = 0 hemispheres (ground reflection included) as '
                              'free field, with a warning, instead of refusing them')
@@ -60,6 +62,16 @@ def parse_arguments(argv=None):
                         help="fill each NOVALUE cell from its nearest filled direction, as NORAH2's "
                              'own predictor does (coverage stays 0); without it NICE-OPS reads them '
                              'as unmeasured')
+    parser.add_argument('--synthesize-hover', action='store_true',
+                        help='add a hover (advance ratio 0, at -12, 0 and +12 deg) averaged fore to '
+                             'aft in energy from the slowest file within 2 deg of level flight, as '
+                             'build_empirical_database makes one (default: off, so NICE-OPS clamps '
+                             'states slower than the slowest file)')
+    parser.add_argument('--scale-tip-speed-by-rmomega', action='store_true',
+                        help="form each file's advance ratio with the tip speed times RmOmega / 100 "
+                             '(RmOmega: rotor speed, percent of nominal; files without one in '
+                             '50-130 %% are refused); C_T stays nominal (default: off, nominal tip '
+                             'speed)')
     parser.add_argument('--no-spectrum', action='store_true',
                         help='write dBA and EAA only, without the band levels')
     parser.add_argument('--overwrite', action='store_true', help='replace an existing output')
@@ -96,16 +108,21 @@ def main(argv=None):
         thrust_air_density=thrust_density,
         tas_air_density=args.tas_density,
         radius_m=args.radius,
-        atmosphere=Atmosphere(temperature=args.build_temperature, pressure=args.build_pressure,
-                              relative_humidity=args.build_humidity),
+        atmosphere=cli.build_atmosphere(args),
         accept_ground_included=args.accept_ground_included,
         mirror_rotor=args.mirror_rotor,
         fill_empty=args.fill_empty,
+        synthesize_hover=args.synthesize_hover,
+        scale_tip_speed_by_rmomega=args.scale_tip_speed_by_rmomega,
         store_spectrum=not args.no_spectrum,
-        overwrite=args.overwrite)
+        overwrite=args.overwrite,
+        absorption_band_method=args.absorption_band_method)
     for condition in conditions:
-        print('{source}: {speed_knots:.2f} kt, {flight_path_angle_deg:+.2f} deg, mu {advance_ratio:.4f}'
-              .format(**condition))
+        label = condition['source']
+        if condition['condition_origin'] == 'synthesized_hover':
+            label = 'hover from ' + label
+        print('{}: {speed_knots:.2f} kt, {flight_path_angle_deg:+.2f} deg, mu {advance_ratio:.4f}'
+              .format(label, **condition))
     print(f'Wrote {len(conditions)} condition(s) to {args.output}')
     return 0
 

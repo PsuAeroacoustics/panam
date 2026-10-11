@@ -17,3 +17,9 @@ norah2 = "/path/to/NORAH2_V2.0.74_public"
 niceops = "/path/to/NICEOPS/build/niceops"
 # NICE-OPS ray-geometry executable. Used by refracted_rays.external_ray_model's tests.
 niceops_ray_geometry = "/path/to/NICEOPS/build/niceops_ray_geometry"
+# The B407 spheres shipped in the 2017 legacy Sphere_Database, whose PHI/THETA/FREQUENCY
+# grids the 2017 release recipe (docs/recipes/release_2017.toml) builds on.
+b407_legacy_spheres = "/path/to/Sphere_Database/Be407"
+# Per-run NICE-OPS atmosphere CSVs (<run>.csv, heights in ft) for the B407 runs, which the
+# 2017 release recipe depropagates along refracted rays.  PANAM does not build them.
+b407_ray_profiles = "/path/to/B407_ray_profiles"

@@ -18,6 +18,7 @@ import pytest
 
 import flight_acoustics as fa
 import sphere_helpers
+import synthetic_flyover
 
 GOLDEN = os.path.join(os.path.dirname(__file__), 'data', 'golden_results.npz')
 REGENERATE = bool(os.environ.get('PANAM_REGENERATE_GOLDEN'))
@@ -26,30 +27,9 @@ REGENERATE = bool(os.environ.get('PANAM_REGENERATE_GOLDEN'))
 def _pass(seed=0):
     """Two tones and broadband noise from a source passing at 150 ft/s, 300 ft up,
     received at three microphones with propagation delay and spreading."""
-    rng = np.random.default_rng(seed)
-    c, speed, height = 1125.0, 150.0, 300.0
     mics = np.array([[0.0, -100.0, 0.0], [0.0, 0.0, 0.0], [0.0, 100.0, 0.0]])
-    fs = 4000.0
-    t = np.arange(0.0, 6.0, 1.0 / fs)
-
-    def position(time):
-        time = np.asarray(time, dtype=float)
-        return np.column_stack([speed * (time - 3.0), np.zeros(time.size), np.full(time.size, height)])
-
-    pressure = []
-    for mic in mics:
-        t_e = t.copy()
-        for _ in range(30):
-            t_e = t - np.linalg.norm(position(t_e) - mic, axis=1) / c
-        r = np.linalg.norm(position(t_e) - mic, axis=1)
-        source = (np.sin(2 * np.pi * 110.0 * t_e) + 0.5 * np.sin(2 * np.pi * 440.0 * t_e)
-                  + 0.2 * rng.standard_normal(t.size))
-        pressure.append(100.0 / r * source + 0.002 * rng.standard_normal(t.size))
-    track_time = np.linspace(0.5, 5.5, 120)
-    ambient = np.array([0.002 * rng.standard_normal(t.size) for _ in mics])
-    return dict(mic_locations=mics, pressure=np.array(pressure), time=t, track_time=track_time,
-                track_position=position(track_time),
-                track_velocity=np.tile([speed, 0.0, 0.0], (track_time.size, 1))), ambient
+    return synthetic_flyover.synthesize_pass(mics, speed=150.0, height=300.0, duration=6.0, sampling_rate=4000.0,
+                                             speed_of_sound=1125.0, seed=seed)
 
 
 def _flat_board(im, bands, offset):

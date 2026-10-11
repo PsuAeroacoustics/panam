@@ -7,30 +7,13 @@ import pytest
 
 from flight_acoustics import depropagate_hemisphere
 import refracted_rays as rr
-from sphere_helpers import executable
+from sphere_helpers import executable, tone_flyover
 
-P_REF = 2.0e-5
 SPEED = 1135.0
 
 
-def _flyover(seed=0):
-    rng = np.random.default_rng(seed)
-    mic_locations = np.array([[0.0, -300.0, 0.0], [0.0, 0.0, 0.0], [0.0, 300.0, 0.0]])
-    nt = 120
-    track_time = np.linspace(0.0, 6.0, nt)
-    track_position = np.column_stack([800.0 * track_time / track_time[-1] - 400.0, np.zeros(nt),
-                                      np.full(nt, 250.0)])
-    track_velocity = np.tile([800.0 / track_time[-1], 0.0, 0.0], (nt, 1))
-    fs = 4000.0
-    t = np.arange(0.0, 7.0, 1.0 / fs)
-    pressure = np.vstack([P_REF * (3.0 * np.sin(2 * np.pi * 250.0 * t) + rng.standard_normal(t.size))
-                          for _ in range(3)])
-    return dict(mic_locations=mic_locations, pressure=pressure, time=t, track_time=track_time,
-                track_position=track_position, track_velocity=track_velocity)
-
-
 def _hemisphere(ray_model=None, **extra):
-    return depropagate_hemisphere(**_flyover(), speed_of_sound=SPEED, length_units='ft', r_ref=100.0,
+    return depropagate_hemisphere(**tone_flyover(), speed_of_sound=SPEED, length_units='ft', r_ref=100.0,
                                   freq_range=(50.0, 1500.0), window_time=0.25, window_overlap=0.5,
                                   point_stride=4, azi_step=20.0, elv_step=10.0, rmax=30.0,
                                   third_octave=True, third_octave_fmin=100.0, return_scattered=True,
@@ -86,6 +69,133 @@ def test_ray_model_shapes_are_checked():
         _hemisphere(wrong)
 
 
+def test_uniform_wind_model_without_wind_is_the_straight_model():
+    flight = tone_flyover()
+    source, mics = flight['track_position'], flight['mic_locations']
+    want = rr.straight_ray_model(SPEED)(source, mics)
+    for wind in ((0.0, 0.0), (0.0, 0.0, 0.0)):
+        got = rr.uniform_wind_ray_model(SPEED, wind)(source, mics)
+        for key, value in want.items():
+            np.testing.assert_array_equal(got[key], value, err_msg=key)
+        assert np.allclose(got['emission_direction'], -want['offset'] / want['spreading_range'][..., None],
+                           rtol=0.0, atol=1e-15)
+        np.testing.assert_array_equal(got['doppler_speed'], SPEED)
+
+
+def test_uniform_wind_model_downwind_upwind_and_crosswind():
+    """A microphone 1000 ft along +x from the source, in a 50 ft/s wind: downwind the sound
+    arrives after L / (c + W), upwind after L / (c - W), across after L / sqrt(c^2 - W^2),
+    leaving upwind of the line by asin(W / c)."""
+    c, w, length = SPEED, 50.0, 1000.0
+    source, mic = np.array([[-length, 0.0, 0.0]]), np.zeros((1, 3))
+    for wind, tau in (((w, 0.0), length / (c + w)), ((-w, 0.0), length / (c - w)),
+                      ((0.0, w), length / np.sqrt(c ** 2 - w ** 2))):
+        got = rr.uniform_wind_ray_model(c, wind)(source, mic)
+        assert got['travel_time'][0, 0] == pytest.approx(tau, rel=1e-14)
+        assert got['spreading_range'][0, 0] == pytest.approx(c * tau, rel=1e-14)
+        assert got['path_length'][0, 0] == pytest.approx(c * tau, rel=1e-14)
+        assert got['depression_deg'][0, 0] == pytest.approx(0.0, abs=1e-12)
+        n = got['emission_direction'][0, 0]
+        assert np.linalg.norm(n) == pytest.approx(1.0, rel=1e-14)
+        assert got['doppler_speed'][0, 0] == pytest.approx(c + n[:2] @ np.asarray(wind), rel=1e-14)
+    assert np.degrees(np.arctan2(n[1], n[0])) == pytest.approx(-np.degrees(np.arcsin(w / c)), rel=1e-12)
+    # Straight down 1000 ft through a horizontal wind: launched upwind of the vertical,
+    # at depression acos(W / c).
+    got = rr.uniform_wind_ray_model(c, (w, 0.0))(np.array([[0.0, 0.0, length]]), mic)
+    assert got['travel_time'][0, 0] == pytest.approx(length / np.sqrt(c ** 2 - w ** 2), rel=1e-14)
+    assert got['depression_deg'][0, 0] == pytest.approx(np.degrees(np.arccos(w / c)), rel=1e-12)
+    assert got['emission_direction'][0, 0, 0] == pytest.approx(-w / c, rel=1e-12)
+    np.testing.assert_allclose(got['offset'][0, 0], -c * got['travel_time'][0, 0] * got['emission_direction'][0, 0],
+                               rtol=1e-14, atol=1e-12)
+
+
+def test_uniform_wind_model_refuses_a_wind_it_cannot_carry():
+    with pytest.raises(ValueError, match='slower than the speed of sound'):
+        rr.uniform_wind_ray_model(SPEED, (SPEED, 0.0))
+    with pytest.raises(ValueError, match='Wx, Wy'):
+        rr.uniform_wind_ray_model(SPEED, (1.0,))
+
+
+@pytest.mark.parametrize('flip', [False, True])
+def test_a_crosswind_turns_the_filing_azimuth(flip):
+    """Each sample's azimuth turns from the straight line's by the horizontal angle from it
+    to the wavefront normal the sound left along; the elevation is the normal's."""
+    wind = (0.0, 60.0, 0.0)
+    model = rr.uniform_wind_ray_model(SPEED, wind)
+    plain = _hemisphere(flip_y_for_geometry=flip)['scattered']
+    rayed = _hemisphere(model, flip_y_for_geometry=flip)['scattered']
+    flight = tone_flyover()
+    tidx = np.arange(0, flight['track_time'].size, 4)
+    rays = model(flight['track_position'][tidx], flight['mic_locations'])
+    toward = flight['mic_locations'][None, :, :] - flight['track_position'][tidx][:, None, :]
+    n = rays['emission_direction']
+    turn = np.degrees(np.arctan2(n[..., 1], n[..., 0]) - np.arctan2(toward[..., 1], toward[..., 0]))
+    turn = turn * (-1.0 if flip else 1.0)
+    assert plain['azi_deg'].size == rayed['azi_deg'].size == turn.size     # mics appended in order
+    got = (rayed['azi_deg'] - plain['azi_deg'] + 180.0) % 360.0 - 180.0
+    want = (turn.T.ravel() + 180.0) % 360.0 - 180.0
+    assert np.abs(want).max() > 3.0
+    np.testing.assert_allclose(got, want, atol=1e-9)
+    np.testing.assert_allclose(rayed['elv_deg'], rays['depression_deg'].T.ravel(), atol=1e-12)
+
+
+@pytest.mark.parametrize('flip, abeam', [(False, 270.0), (True, 90.0)])
+def test_a_tailwind_files_the_abeam_sample_aft(flip, abeam):
+    """Track along +x at 250 ft, mic on +y 300 ft to the side, a 60 ft/s tailwind along +x.
+    At closest approach the wind is perpendicular to r, so tau = |r| / sqrt(c^2 - W^2) and the
+    sound leaves aft of abeam: the normal's horizontal part is (-W, r_y / tau) / c, a turn of
+    atan(W |r| / (r_y sqrt(c^2 - W^2))) toward the tail (asin(W / c) for a mic level with the
+    source). In UMAPR (180 ahead) aft is 0/360, so the filed azimuth moves from 270 toward 360,
+    or from 90 toward 0 with flip_y_for_geometry. The elevation is the normal's depression,
+    asin(h sqrt(c^2 - W^2) / (c |r|))."""
+    c, w, side, height = SPEED, 60.0, 300.0, 250.0
+    flight = tone_flyover()
+    nt = 121                                                    # sample 60 is at x = 0, abeam
+    flight['track_time'] = np.linspace(0.0, 6.0, nt)
+    flight['track_position'] = np.column_stack([800.0 * flight['track_time'] / 6.0 - 400.0,
+                                                np.zeros(nt), np.full(nt, height)])
+    flight['track_velocity'] = np.tile([800.0 / 6.0, 0.0, 0.0], (nt, 1))
+
+    def scattered(model):
+        return depropagate_hemisphere(**flight, speed_of_sound=c, length_units='ft', r_ref=100.0,
+                                      freq_range=(50.0, 1500.0), window_time=0.25, window_overlap=0.5,
+                                      point_stride=4, azi_step=20.0, elv_step=10.0, rmax=30.0,
+                                      return_scattered=True, ray_model=model,
+                                      flip_y_for_geometry=flip)['scattered']
+    plain = scattered(None)
+    rayed = scattered(rr.uniform_wind_ray_model(c, (w, 0.0)))
+    per_mic = len(range(0, nt, 4))
+    assert plain['azi_deg'].size == rayed['azi_deg'].size == 3 * per_mic
+    k = 2 * per_mic + 60 // 4                                   # mic on +y, the abeam sample
+    distance = np.hypot(side, height)
+    turn = np.degrees(np.arctan(w * distance / (side * np.sqrt(c ** 2 - w ** 2))))
+    assert turn == pytest.approx(3.942, abs=1e-3)
+    assert plain['azi_deg'][k] == pytest.approx(abeam, abs=1e-9)
+    toward_tail = 1.0 if abeam == 270.0 else -1.0
+    assert rayed['azi_deg'][k] == pytest.approx(abeam + toward_tail * turn, abs=1e-9)
+    depression = np.degrees(np.arcsin(height * np.sqrt(c ** 2 - w ** 2) / (c * distance)))
+    assert rayed['elv_deg'][k] == pytest.approx(depression, abs=1e-9)
+
+
+def test_air_relative_doppler_is_a_separate_opt_in():
+    calm = rr.uniform_wind_ray_model(SPEED, (0.0, 0.0))
+    windy = rr.uniform_wind_ray_model(SPEED, (100.0, 0.0))
+    with pytest.raises(ValueError, match='remove_doppler'):
+        _hemisphere(windy, air_relative_doppler=True)
+    with pytest.raises(ValueError, match='emission_direction'):
+        _hemisphere(rr.straight_ray_model(SPEED), remove_doppler=True, air_relative_doppler=True)
+    with pytest.raises(ValueError, match='emission_direction'):
+        _hemisphere(remove_doppler=True, air_relative_doppler=True)
+
+    def bands(model, **extra):
+        return _hemisphere(model, remove_doppler=True, **extra)['scattered']['third_octave']['bands_db']
+    # In still air the moving air's factor is the straight line's.
+    np.testing.assert_allclose(bands(calm, air_relative_doppler=True), bands(calm), atol=1e-9)
+    # In a wind it is off by default, and changes the bands when asked for.
+    np.testing.assert_array_equal(bands(windy), bands(windy, air_relative_doppler=False))
+    assert not np.allclose(bands(windy, air_relative_doppler=True), bands(windy), atol=1e-6, equal_nan=True)
+
+
 RAYS = executable('niceops_ray_geometry')
 
 
@@ -94,7 +204,7 @@ def test_external_model_in_uniform_air_is_straight(tmp_path):
     atmosphere = tmp_path / 'uniform.csv'
     atmosphere.write_text('z_ft,T_C,RH\n0,15,50\n')
     model = rr.external_ray_model(RAYS, str(atmosphere))
-    flight = _flyover()
+    flight = tone_flyover()
     source, mics = flight['track_position'][::10], flight['mic_locations']
     got, want = model(source, mics), rr.straight_ray_model(340.294 / 0.3048)(source, mics)
     assert got['valid'].all()
@@ -126,7 +236,7 @@ def test_rim_range_admits_far_samples_only_at_the_rim():
     # A long, high pass: within the 600 ft cap it never files below ~24 deg; with the
     # rim range the shallow directions come in from further out, and nothing steeper
     # changes.
-    flight = _flyover()
+    flight = tone_flyover()
     flight['track_position'] = flight['track_position'] * np.array([3.0, 1.0, 1.0])
     flight['track_velocity'] = flight['track_velocity'] * 3.0
     common = dict(**flight, speed_of_sound=SPEED, length_units='ft', r_ref=100.0, freq_range=(50.0, 1500.0),
@@ -185,7 +295,7 @@ def test_external_model_parses_a_tracer_and_rebuilds_the_geometry(tmp_path, monk
     atmosphere = tmp_path / 'profile.csv'
     atmosphere.write_text('z_ft,T_C,RH\n0,15,50\n')
     monkeypatch.setenv('FAKE_DARK_ID', '4')                      # source 1, mic 1
-    flight = _flyover()
+    flight = tone_flyover()
     source, mics = flight['track_position'][::30], flight['mic_locations']
     model = rr.external_ray_model(str(tracer), str(atmosphere), receiver='point',
                                   receiver_heights=np.array([5.0, 1.0, 0.0]))

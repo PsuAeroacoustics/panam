@@ -157,6 +157,21 @@ $$
    integral, and the tone is added whole to the band containing $f_I + \delta\Delta f$ (divided by
    $D$ when the Doppler shift is removed).
 
+**Tonal and broadband parts** (`decompose_tonal=True`, `tone_split=True`; off by default). The
+two terms of step 4 are kept apart: the tonal part $P_b^\mathrm{t}$ is the sum of the located
+tones filed in band $b$, the broadband part $P_b^\mathrm{bb}$ the banded remainder, and
+$P_b = P_b^\mathrm{t} + P_b^\mathrm{bb}$ in energy (bit for bit where a band holds at most one
+tone per sample, to rounding otherwise). `tone_aware_band_power(..., return_parts=True)` returns
+the pair. `depropagate_hemisphere(decompose_tonal=True)` forms them from the depropagated
+spectrum, marks the same samples missing, and grids each with the total's weights, so the parts
+sum to the total in energy at every node. `noise_abatement_2017.build_sphere(tone_split=True)`
+writes them as spheres of their own. The split is set by the detector, not by the physics:
+`threshold_db` (6 dB) decides what counts as a tone, `lobe` (±2 bins) how close two peaks may sit,
+and `floor_bins` (15) what floor a tone stands on. A tone weaker than the threshold, or a
+harmonic that sweeps several bins within one window (a fast pass overhead), stays broadband; a
+noise peak standing above the threshold is taken for a tone, which puts roughly a quarter of
+white noise's band power in the tonal part.
+
 **Filter bank** (`third_octave_method='filter_bank'`; the default is the FFT). Each band is an
 order-3 Butterworth band-pass between $f_c 2^{\mp1/6}$ about the band's given center (nominal or
 exact), so its edges are not the base-10 edges the FFT path uses
@@ -166,7 +181,8 @@ about 12 times its upper edge. Each band's output is then advanced by the filter
 $f_c$ (about 0.14 s at 20 Hz), so that low-band energy stays at the emission angle it arrived from.
 The squared output is averaged with Hann² weights over the FFT frame length, centered on the FFT
 frames, so it is comparable with a PSD band sum. In this mode the ambient gate, the subtraction and
-the absorption cap act per band, and absorption is taken at the band center.
+the absorption cap act per band, and absorption is taken at the band center unless
+`absorption_band_method` forms it otherwise (§5.4).
 
 The banding the 2017 release used is in [`database_build.md`](database_build.md#the-2017-release-settings).
 
@@ -243,7 +259,12 @@ $[f_l, f_u]$ over $[D f_l, D f_u]$ of the received spectrum (with `tone_aware` a
 are located and filed whole at $f_\mathrm{peak}/D$); a band whose scaled edges leave the analyzed range is missing for that
 sample. Only frequencies are rescaled: no convective amplification factor $D^n$ is applied to the
 levels. A sphere built this way is meant as the source of a synthesized hover (§7.4), not as a
-flight sphere, since NICE-OPS applies no shift.
+flight sphere, since NICE-OPS applies no shift. With a uniform wind $\mathbf{W}$ (§5.3),
+`air_relative_doppler=True` takes the factor in the moving air instead,
+$D = 1/\left(1 - \mathbf{v}\cdot\hat{\mathbf{n}}/(c + \mathbf{W}\cdot\hat{\mathbf{n}})\right)$,
+with $\hat{\mathbf{n}}$ the wavefront normal the sound leaves along: the source's and the
+receiver's velocities relative to the air are $\mathbf{v} - \mathbf{W}$ and $-\mathbf{W}$. It is
+off by default, also under the wind ray model.
 
 ### 3.4 Steady segments
 
@@ -466,6 +487,11 @@ steps, in this order:
    $P \leftarrow P\cdot10^{\alpha(f)(\ell - r_\mathrm{ref})/10}$, with $\alpha$ the ISO 9613-1
    coefficient at the received frequency (§5.4) and $\ell$ the straight distance or the ray's arc
    length. A cap (`max_absorption_correction_db`) discards bins whose correction would exceed it.
+   Filter-bank bands may instead take a band attenuation,
+   $P \leftarrow P\cdot10^{[\delta_B(\ell) - \delta_B(r_\mathrm{ref})]/10}$
+   (`absorption_band_method`, §5.4). With a layered atmosphere (`absorption_profile`, §5.4) the
+   correction is the path's layered attenuation less $\alpha(f)\,r_\mathrm{ref}$ in the uniform
+   `atmosphere`, so the sphere keeps the same convention.
 
 The gate comes first: an ambient-limited bin would otherwise be amplified by both corrections. The
 ambient is a mean because each $P$ is a single frame, whose expectation is the mean; a single
@@ -506,6 +532,36 @@ straight-line answer in the same form. Without a ray model (`ray_model=None`, th
 paths are straight lines. The 2017 release's ray model is in
 [`database_build.md`](database_build.md#the-2017-release-settings).
 
+**Uniform wind** (`refracted_rays.uniform_wind_ray_model`, `build_sphere(ray_model='wind')`).
+In air moving at a uniform $\mathbf{W}$, $\lvert\mathbf{W}\rvert < c$, sound travels straight
+lines at $c$ in the air's frame. A wavefront normal $\hat{\mathbf{n}}$ that reaches the
+microphone at $\mathbf{r} = \mathbf{x}_m - \mathbf{x}_s$ after $\tau$ satisfies
+$\mathbf{r} = (c\hat{\mathbf{n}} + \mathbf{W})\tau$, so
+
+$$
+\lvert\mathbf{r} - \mathbf{W}\tau\rvert = c\tau, \qquad
+\tau = \frac{\lvert\mathbf{r}\rvert / c}{\mu + \sqrt{\mu^2 + 1 - M_W^2}}, \qquad
+\mu = \frac{\mathbf{W}\cdot\mathbf{r}}{\lvert\mathbf{r}\rvert c}, \quad
+M_W = \frac{\lvert\mathbf{W}\rvert}{c},
+$$
+
+the positive root, and $\hat{\mathbf{n}} = (\mathbf{r} - \mathbf{W}\tau)/(c\tau)$. The travel
+time is $\tau$; spreading and absorption are undone over $c\tau$, the wavefront's radius in the
+moving air. This is not the whole field. The convective factor relative to the air,
+$1 - (\mathbf{v} - \mathbf{W})\cdot\hat{\mathbf{n}}/c$, is not applied (§3.3, §11), so it stays in
+the source sphere, which is filed by the direction $\hat{\mathbf{n}}$ relative to the air. Even for a
+source fixed to the ground the full field goes as $1/R_*$ with
+$R_* = c\tau\,(1 + \mathbf{W}\cdot\hat{\mathbf{n}}/c)$: downwind $R_* = \lvert\mathbf{r}\rvert$
+while the model undoes $\lvert\mathbf{r}\rvert/(1 + M_W)$, about 0.4 dB apart at 30 kt. A sample is filed along $\hat{\mathbf{n}}$: its elevation is the normal's depression,
+and its azimuth turns from the straight line's by the horizontal angle from $\mathbf{r}$ to
+$\hat{\mathbf{n}}$ (the model's `emission_direction`). The normal does not turn on the way, so
+the plate sees the same direction. Downwind, $\tau = \lvert\mathbf{r}\rvert/(c + W)$; upwind,
+$\lvert\mathbf{r}\rvert/(c - W)$; across, $\lvert\mathbf{r}\rvert/\sqrt{c^2 - W^2}$, with the
+sound leaving $\arcsin(W/c)$ upwind of the line. With $\mathbf{W} = 0$ it is the straight-line
+model exactly. The 2017 build takes $\mathbf{W}$ as the run's horizontal wind at the aircraft
+(`--winds`), turned into the track frame by the frame bearing, and applies it over the whole path:
+it is not a wind profile, and the wind's shear near the ground is not modeled.
+
 ### 5.4 The atmosphere
 
 **Absorption** is the ISO 9613-1 coefficient [33] (`panam_acoustics.iso_9613_1_1993`). With
@@ -525,9 +581,67 @@ $$
 \alpha = 8.686f^2\left[1.84\times10^{-11}\frac{p_{a0}}{p_a}\left(\frac{T}{T_0}\right)^{1/2} + \left(\frac{T}{T_0}\right)^{-5/2}\left(\frac{0.01275\,e^{-2239.1/T}}{f_{rO} + f^2/f_{rO}} + \frac{0.1068\,e^{-3352.0/T}}{f_{rN} + f^2/f_{rN}}\right)\right]\ \mathrm{dB/m},
 $$
 
-with $h_w$ the molar concentration of water vapor (%). It is evaluated at single frequencies (a
-bin or a band center), with no integration over a band. The speed of sound is
-$c = 343.2\sqrt{T/T_0}$ m/s.
+with $h_w$ the molar concentration of water vapor (%). By default it is evaluated at single
+frequencies (a bin or a band center). The speed of sound is $c = 343.2\sqrt{T/T_0}$ m/s.
+
+**Band absorption** (`panam_acoustics.atmosphere.band_absorption_db`). Over a path $s$ a
+one-third octave band loses $\delta_B$, formed from the pure-tone attenuation
+$\delta_t(f) = \alpha(f)\,s$ by one of three methods (`absorption_band_method`):
+
+- `'center'` (the default everywhere): $\delta_B = \delta_t(f_c)$ at the given band center.
+- `'arp5534'`: SAE ARP 5534 [40], from the pure-tone attenuation at the exact base-10 mid-band
+  frequency $f_m = 10^{i/10}$ (`exact_midband_frequency`) [52, Eqs. 16–17]:
+
+  $$
+  \delta_B = \begin{cases}
+  A\,\delta_t\,[1 + B(C - D\,\delta_t)]^{E}, & \delta_t < 150\ \mathrm{dB},\\
+  F + G\,\delta_t, & \delta_t \ge 150\ \mathrm{dB},
+  \end{cases}
+  $$
+
+  with $A = 0.867942$, $B = 0.111761$, $C = 0.95824$, $D = 0.008191$, $E = 1.6$, $F = 9.2$ and
+  $G = 0.765$ (`arp5534_band_attenuation`). It is a fit to the spectrum-integration method for
+  broadband spectra sloping −5 to +5 dB per band through base-10 order-3 Butterworth filters,
+  normalized to a fixed 3 dB per band, so it takes no spectrum. It extends the ANSI S1.26
+  Annex E approximation past that method's 50 dB limit, and it is reciprocal.
+- `'integrated'`: ISO 9613-1 integrated over the band (the spectrum integration of ISO 9613-1
+  Annex D),
+
+  $$
+  \delta_B = -10\lg\frac{\int W(f)\,10^{-\delta_t(f)/10}\,df}{\int W(f)\,df}, \qquad
+  W(f) = \frac{(f/f_c)^{k-1}}{1 + [Q(f/f_c - f_c/f)]^6}, \qquad Q = \frac{1}{2^{1/6} - 2^{-1/6}},
+  $$
+
+  the order-3 Butterworth response of PANAM's filter bank (§2.2) about the given center and a
+  spectrum whose band levels rise $k$ dB per one-third octave (`spectrum_slope_db`, default 0:
+  flat band levels). It is evaluated by the trapezoidal rule on 241 points uniform in $\lg f$
+  over one octave either side of $f_c$. For flat band levels, widening that range to three octaves
+  changes the result by less than 0.05 dB up to 50 dB of mid-band pure-tone attenuation; past about
+  60 dB the result is set by the filter skirt, and so by that range. With $k = 3$ it agrees with
+  `'arp5534'` within 0.3 dB where the ARP 5534 attenuation is at most 20 dB, and within about
+  3 dB where it is at most 50 dB, depending on the atmosphere (263-303 K, 10-95% RH, exact centers
+  100 Hz to 10 kHz). That difference is between the two methods, not an effect of the
+  integration range.
+
+A depropagated band is corrected by $\delta_B(\ell) - \delta_B(r_\mathrm{ref})$ (§5.1), so the
+sphere keeps the band attenuation over its first $r_\mathrm{ref}$; for `'center'` this is
+$\alpha(f_c)(\ell - r_\mathrm{ref})$, as before.
+
+**Layered atmosphere** (`absorption_profile`, `panam_acoustics.atmosphere.layered_attenuation_db`).
+A profile gives $T$, $H$ and $p_a$ at altitudes $z_j$ (ft, in the frame of the track's $z$).
+$\alpha$ is evaluated at each $z_j$, taken linear in $z$ between them and constant beyond them, and
+integrated along the straight path from the microphone at $z_r$ to the source at $z_s$:
+
+$$
+\delta_t(f) = \frac{\ell}{z_s - z_r}\int_{z_r}^{z_s}\alpha(f, z)\,dz,
+$$
+
+exactly for the piecewise-linear $\alpha$, and $\delta_t = \ell\,\alpha(f, z_r)$ for a level path.
+With a ray model $\ell$ is the arc length, but the altitude mean is still taken along the
+straight line. A band method then forms $\delta_B$ from $\delta_t$ as above. Depropagation
+undoes $\delta_t(\ell)$ and puts back the absorption over $r_\mathrm{ref}$ in the uniform
+`atmosphere`, which the sphere's metadata records. The default (`absorption_profile=None`) is
+the uniform atmosphere.
 
 **The run's atmosphere** is uniform: the mean over the site's ground weather stations of the
 samples nearest the run's start time (`noise_abatement_2017.run_atmosphere`). A run with no usable
@@ -544,6 +658,79 @@ $$
 with $p$ the station pressure and $p_v$ the vapor pressure, both in Pa, $R_d = 287.058$ J/(kg·K),
 $p_\mathrm{sat}$ the ISO 9613-1 saturation pressure, and $z$ the aircraft's mean height above the
 array. The hydrostatic factor multiplies the whole density, vapor term included.
+
+### 5.5 Forward synthesis and held-out microphones
+
+`synthesis.synthesize_band_histories` runs depropagation backward: from a gridded hemisphere it
+predicts the one-third octave band levels a microphone receives. For a reception time $t$ at
+$\mathbf{x}_m$ the emission time solves $t = t_e + \tau$, with
+$\tau = \lvert\mathbf{x}_s(t_e) - \mathbf{x}_m\rvert/c$ by fixed-point iteration
+(`ground_plane.emission_times`, §3.1) or, with a ray model (§5.3), the ray's travel time, the
+straight solution starting the same iteration. The track is interpolated linearly. The hemisphere
+is read at the direction the sound left along: `hemigen`'s azimuth and elevation at $t_e$ (§3.2),
+or the ray's launch depression and, for a uniform wind, the azimuth turned to the wavefront normal,
+exactly as depropagation files a sample. Each band's power is interpolated bilinearly over the
+UMAPR grid in energy, over the measured cells only (`interpolate_hemisphere_power`, the same
+interpolation the sphere writers use, §6.3); a direction weighted less than half by measured cells
+has no data. The band power at the microphone is then
+
+$$
+P_b = S_b(D)\;10^{G_b/10}\left(\frac{r_\mathrm{ref}}{r_s}\right)^2
+10^{-[\delta_b(\ell) - \delta_b(r_\mathrm{ref})]/10},
+$$
+
+the inverse of §5.1 in reverse order: $S_b(D)$ the Doppler band shift, applied only to a hemisphere
+filed at emitted frequencies (`doppler_shift`, the inverse of `remove_doppler`, §3.3); $G_b$ the
+receiver response in dB re free field (the same `receiver_response_db` callable depropagation
+divides out, §4.5), optional; $r_s$ the straight distance or the ray tube's range; and $\delta_b$
+the band's absorption (`apply_absorption`, §5.4) over the straight distance or the arc length $\ell$,
+in the uniform atmosphere or a layered `absorption_profile`, less that over $r_\mathrm{ref}$ in the
+uniform atmosphere, which the hemisphere keeps. A hemisphere whose FFT bins were corrected one by
+one (`third_octave_method='fft'`, §5.1) keeps $\int S(f)\,10^{-\alpha(f) r_\mathrm{ref}/10}\,df$
+in each band, not the band-center loss, so with `absorption_per_bin` both terms are the bins' mean,
+
+$$
+\delta_b(s) = -10\lg\left[\frac{1}{K}\sum_{k=1}^{K} 10^{-\delta(f_k, s)/10}\right],
+$$
+
+over $K = 32$ frequencies spread evenly across $[f_l, f_u)$, as FFT bins are, with $\delta(f, s)$
+the pure-tone attenuation over $s$. This is exact for a spectrum flat within the band. The
+band-center rule would over-attenuate: alpha is convex in frequency, so at 8 kHz over 300 m of
+excess path it loses about 3 dB more than the bins do. The ambient gate has no inverse. A hemisphere filed
+with `flip_y_for_geometry` is read on the same mirrored geometry: the emission time and the ray are
+found on the measured geometry, whose travel times the mirror does not change, and the direction,
+the Doppler factor and the receiver's source offset on the mirrored one, as depropagation files
+them. The flag defaults to the hemisphere's metadata.
+
+The Doppler shift takes each emitted band's power as spread evenly over $[f_l, f_u]$; it arrives
+over $[Df_l, Df_u]$, and received band $k$ collects the overlapping fractions,
+
+$$
+S_k = \sum_b P_b\,\frac{\lvert[Df_{l,b}, Df_{u,b}] \cap [f_{l,k}, f_{u,k}]\rvert}{D\,(f_{u,b} - f_{l,b})},
+$$
+
+which conserves power. A received band partly fed from outside the hemisphere's bands has no data.
+A tone is smeared over its shifted band, so a hemisphere of emitted frequencies with strong tones
+synthesizes their bands only approximately.
+
+`synthesis.leave_mics_out` depropagates with groups of microphones held out in turn (by default
+each one alone), synthesizes each held-out microphone at its spectrogram frame times, and compares
+with its measured bands (`measured_band_histories`). These are formed at received frequencies as
+the depropagation forms its bands: brick-wall sums of the spectrogram, tone-aware sums with
+`tone_aware`, or the filter bank with `third_octave_method='filter_bank'`; each bin or band is gated
+and ambient-subtracted against the same ambient (`ambient_pressure`, `ambient_time_range` or
+`ambient_percentile`). The synthesis takes the depropagation's absorption (by the bins' mean,
+`absorption_per_bin`, after an FFT depropagation), layered profile, Doppler convention and mirror
+flag. Frames the depropagation would
+drop (elevation floor, range limit with the rim range) are left out. The residual is synthesized
+minus measured, in dB, over the frames where both are finite, and is summarized per band and
+overall by its count, mean, median, root mean square, sample standard deviation and 5th and 95th
+percentiles (`residual_statistics`). The held-out microphone's directions are covered only by its
+neighbors' samples, so the residual measures how well the gridding (§6: `rmax`, the adaptive
+kernel, `rim_range`) interpolates between microphones, without building a database. On the
+synthetic pass of `synthetic_flyover` the true directivity reproduces the band histories within
+0.15 dB in energy, a depropagated hemisphere reproduces its own microphones within 0.3 dB, and
+widening `rmax` from 20° to 60° raises the held-out RMS residual.
 
 ## 6. Gridding onto the sphere
 
@@ -625,6 +812,36 @@ For plots, spheres are drawn in the azimuthal equal-area projection centered on 
 $q = 2\sin[(90^\circ - e)/2]$ and $\lambda = 180^\circ - \psi$, a view from above with the nose up
 and starboard to the right.
 
+### 6.4 Node statistics
+
+With `return_statistics=True`, `depropagate_hemisphere` also describes the samples behind every
+node of every gridded field (`sphere_statistics.node_statistics`), with the weights of §6.1 or
+§6.2. A node's samples are those with $w_i > 0$ whose power is not NaN, so the set can differ
+from band to band. Their weights are renormalized over them, as the gridding renormalizes them,
+and the node's value is the energy mean $\bar P = \sum_i w_i P_i / \sum_i w_i$, at level
+$\bar L = 10\lg\bar P$. The statistics are
+
+$$
+n = \#\{i\}, \qquad
+n_\text{eff} = \frac{\left(\sum_i w_i\right)^2}{\sum_i w_i^2}, \qquad
+\sigma_L = \sqrt{\frac{\sum_{i}' w_i\,(L_i - \bar L)^2}{\sum_{i}' w_i}}, \quad L_i = 10\lg P_i,
+$$
+
+and $n_\text{mic}$, the number of distinct microphones among the samples. $n_\text{eff}$ equals
+$n$ for equal weights and approaches 1 when one sample dominates, as a node on top of a sample
+does under the Shepard weight. The primed sums run over the samples with $P_i > 0$: a sample
+measured with no energy has no finite level. Without such samples they are the sums of
+$\bar P$. $\sigma_L$ is the scatter about the level the node reports, $\bar L$, not about the
+mean of the levels, so it is not zero when the levels differ. It is NaN where no sample has
+positive power; $n_\text{eff}$ is 0 where the node has no samples. The statistics describe the
+samples: no confidence interval is derived from them.
+
+A sphere file can carry them (`noise_abatement_2017.build_sphere(node_statistics=True)`, CLI
+`--node-statistics`) as `N_SAMPLES` and `AMPLITUDE_STD`, $n$ and $\sigma_L$ per band
+(`sphere_statistics.node_statistics_variables`). Each ART point takes the statistics of the
+gridded node nearest it in azimuth and in elevation; the levels themselves are interpolated as
+in §6.3.
+
 ## 7. The database
 
 `build_empirical_database` collects a directory of sphere files and its `vehicle.cfg`
@@ -645,6 +862,15 @@ file's nominal values. The run's own thrust coefficient, from its weight and air
 air-referenced advance ratio, when a wind was given, are recorded as metadata but do not label the
 sphere.
 
+NICE-OPS takes one sphere per condition, so `build_empirical_database` refuses two spheres at one
+speed and flight path angle (to 1e-9 kt and deg). With `merge_repeats=True` it energy-averages
+them instead, cell by cell over the runs that cover each cell (§10, repeat-run averaging), into
+one condition at their mean speed before forming dBA and EAA; a cell no run covers becomes no
+energy, as a -999 does in a single sphere. `merge_speed_tolerance` (kt) also merges spheres at one
+flight path angle whose speeds lie within it of the slowest of the group. The merged condition
+carries the runs' mean numeric run metadata, with NaN winds if the runs' wind units or reference
+directions differ.
+
 ### 7.2 Excess atmospheric attenuation
 
 A NICE-OPS broadband run carries the A-weighted level to the ground with one attenuation
@@ -657,7 +883,10 @@ $$
 $$
 
 with $d_E$ the `distance` argument (default 1000 m) and $\alpha$ in the build atmosphere
-(`atmosphere`, default 293.15 K, 101.325 kPa and 20% RH), recorded in the file. NICE-OPS consumes
+(`atmosphere`, default 293.15 K, 101.325 kPa and 20% RH), recorded in the file. With
+`absorption_band_method` other than `'center'`, $\alpha(f_i)\,d_E$ is replaced by the band
+attenuation $\delta_B$ over $d_E$ (§5.4, flat band levels for `'integrated'`); the method is
+recorded only in the provenance settings (`panam_settings`). NICE-OPS consumes
 it as $\mathrm{EAA}\,(r - R_s)/1000$ m, so $d_E$ must stay 1000 m. Where the gate emptied a
 direction, SPLA is $-\infty$ and EAA would be NaN; with `clamp_empty_directions=True` (the default)
 EAA is set to 0 there and dBA stays $-\infty$ (`_finite_sphere_levels`).
@@ -719,8 +948,10 @@ $$
 
 with POLDIST read from each file and $\alpha_\mathrm{file}$ the ISO 9613-1 coefficient at the
 band centers in the file's atmosphere. For $r > \mathrm{POLDIST}$ the same expression adds the
-absorption between the two. **Departure:** NORAH2 itself applies SAE ARP 5534's band correction
-[40], which is not reproduced. The angle conventions agree with NICE-OPS's (`norah2umapr`),
+absorption between the two. NORAH2 itself applies SAE ARP 5534's band correction [40]; with
+`absorption_band_method='arp5534'` (`--absorption-band-method arp5534`) the absorption term
+becomes $\delta_B(\mathrm{POLDIST}) - \delta_B(r)$ (§5.4), and the EAA uses the same method.
+The default, `'center'`, keeps the band-center coefficient. The angle conventions agree with NICE-OPS's (`norah2umapr`),
 so no rotation is needed.
 
 NORAH2's speed field (ACSPEED) is labeled indicated airspeed but used as ground speed, so the
@@ -757,6 +988,21 @@ reasons:
 - Every group carries `DOPPLER_SHIFT_REMOVED = 0`, an inference: NORAH2 describes no step that
   removes the shift. The root carries `azimuth_reference = 'track'`.
 - The upper hemisphere is completed as in §7.5, with coverage 0.
+- `synthesize_hover` (off by default) adds the hover of §7.4, from the slowest converted file
+  within 2° of level flight (the slowest overall, with a warning, if none is), averaged fore
+  and aft from its levels at $r$ (after any fill; coverage before it). It is written at
+  $\mu = 0$ and at −12°, 0° and +12°, with `condition_origin = 'synthesized_hover'`
+  (`_synthesized_hover_sphere`, shared with `build_empirical_database`).
+- `scale_tip_speed_by_rmomega` (off by default) forms each file's advance ratio with the tip
+  speed its rotor ran at, from RmOmega (percent of nominal):
+
+$$
+\mu = \frac{0.514444\,V}{V_\mathrm{tip}\,\mathrm{RmOmega}/100},
+$$
+
+  with $V_\mathrm{tip}$ the nominal tip speed. $C_W$ and the root's tip speed stay nominal,
+  because NICE-OPS forms the trajectory's $C_T$ with its vehicle file's nominal tip speed. A
+  file without RmOmega, or with one outside 50–130%, is refused.
 
 **Export.** Spheres can be written in the AAM netCDF format [11], in the variable order AAM 3.1
 reads by position, and as NORAH2 hemispheres (`write_norah2_hemisphere`). The NORAH2 export
@@ -770,11 +1016,25 @@ L(60\ \mathrm{m}) = L(r_\mathrm{ref}) - 20\lg\frac{60\ \mathrm{m}}{r_\mathrm{ref
 + \alpha_\mathrm{meas}(f)\,r_\mathrm{ref} - \alpha_\mathrm{ICAO}(f_c)\cdot 60\ \mathrm{m},
 $$
 
-with $f$ the hemisphere's own band center and $f_c$ the nominal one. A band the hemisphere lacks,
+with $f$ the hemisphere's own band center and $f_c$ the nominal one. For a sphere depropagated
+with a band method (§5.4, the metadata's `absorption_band_method`), the measured term is that
+method's $\delta_B(r_\mathrm{ref})$ in place of $\alpha_\mathrm{meas}(f)\,r_\mathrm{ref}$. A band the hemisphere lacks,
 a direction it did not cover, and a level below −100 dB at 60 m (`minimum_level_db`) are written
 as −999. This is not the inverse of the import: a sphere exported and imported again comes back
 shifted by $(\alpha_\mathrm{meas} - \alpha_\mathrm{ICAO})\,r_\mathrm{ref}$. A sphere built without
 absorption depropagation is written with spreading only, with a warning.
+
+A sphere file already written is converted the same way (`sphere_to_norah2.py`,
+`sphere_to_norah2`, through `write_norah2_levels`). Sphere files and NORAH2 share the ART angles,
+so the levels are interpolated bilinearly in linear power over (PHI, THETA) straight onto the
+NORAH2 grid (`sphere_levels_on_norah2_grid`); on the build's default grid (PHI every 10°, THETA
+every 5°) every NORAH2 direction is a sphere node and the levels pass through unchanged. The
+sphere's missing levels (−999, NaN) carry no weight, and a direction weighted mostly by them, or
+off the sphere's grid, is written as −999. $r_\mathrm{ref}$ is the sphere's `RADIUS`, and ACSPEED
+and GAMM default to its `SPEED` and `FLIGHT_PATH_ANGLE`. A sphere file does not record its
+measurement atmosphere, so $\alpha_\mathrm{meas}$ has to be given (`--temperature`, `--pressure`,
+`--humidity`). Nor does it record its band method; `--absorption-band-method`
+(`absorption_band_method`, default `'center'`) names the one it was built with.
 
 `write_norah2_triangulation` writes the `.int` file through which NORAH2 interpolates between an
 aircraft's hemispheres: the Delaunay triangulation of the raw (knots, degrees) conditions, and by
@@ -790,10 +1050,46 @@ threshold is never one), $\mathrm{SEL} = 10\lg\left(\sum_k 10^{L_k/10}\Delta t/1
 result is flagged `clipped` when the window touches either end of the record. Unlike NICE-OPS,
 PANAM's samples are already in reception time.
 
-**Maximum levels.** PANAM has no exponentially time-weighted level (no $L_{AF\max}$ or
-$L_{AS\max}$). `level_history` gives levels of consecutive, non-overlapping blocks (`period`,
-default 1 s), each from `overall_SPL`, and `sound_exposure_level`'s `lmax` is the maximum of the
-samples passed in. Neither is directly comparable with NICE-OPS's $L_{AF\max}$.
+**Time-weighted levels** (`panam_acoustics.time_weighting`). A pressure history is weighted in
+frequency, then in time, as IEC 61672-1 [10] defines a sound level meter. The A and C weightings
+are the analog filters of its Annex E, with poles at $f_1 = 20.598997$, $f_2 = 107.65265$,
+$f_3 = 737.86223$ and $f_4 = 12194.217$ Hz:
+
+$$
+H_A(s) = \frac{k_A\, s^4}{(s + 2\pi f_1)^2 (s + 2\pi f_2)(s + 2\pi f_3)(s + 2\pi f_4)^2}, \qquad
+H_C(s) = \frac{k_C\, s^2}{(s + 2\pi f_1)^2 (s + 2\pi f_4)^2},
+$$
+
+and Z is flat. `frequency_weighting_sos` maps the zeros and poles to the $z$ plane by the bilinear
+transform $s = 2f_s(z-1)/(z+1)$ without pre-warping and sets the gain to give exactly 0 dB at
+1 kHz. The response meets the class 1 acceptance limits of Table 3 for nominal frequencies up to
+$f_s/4$, and over the whole table (10 Hz to 20 kHz) for $f_s \ge 44.1$ kHz. Near the Nyquist
+frequency the bilinear response falls below the analog one, where the negative tolerances are
+wide. Pre-warping the $f_4$ poles, or the matched-$z$ transform, reads high there instead, by up
+to 4.5 dB, where the positive tolerances are narrow.
+
+The time weightings F and S are exponential averages of the squared weighted pressure $p_w$,
+
+$$
+\overline{p^2}(t) = \frac{1}{\tau}\int_{-\infty}^{t} p_w^2(\xi)\, e^{-(t-\xi)/\tau}\,d\xi,
+\qquad \tau_F = 0.125\ \mathrm{s},\ \tau_S = 1\ \mathrm{s},
+$$
+
+discretized as $y_n = a y_{n-1} + (1-a) p_{w,n}^2$, $a = e^{-1/(f_s\tau)}$, from $y = 0$ before
+the first sample (`time_weighted_square`). I is the impulse detector of the withdrawn IEC 60651
+[51]: a 35 ms exponential average followed by a peak hold that decays with a 1.5 s time constant.
+`time_weighted_level` returns the level $10\lg(\overline{p^2}/p_\mathrm{ref}^2)$ at every sample,
+its maximum (e.g. $L_{AF\max}$, $L_{AS\max}$) and the time of the maximum. A 4 kHz tone burst of
+duration $T_b$ reads $10\lg(1 - e^{-T_b/\tau})$ below the steady tone's level, the reference
+values of Table 4. `leq` gives
+$L_{\mathrm{eq},T} = 10\lg\left(\frac{1}{T}\sum_n p_{w,n}^2/f_s\ /\ p_\mathrm{ref}^2\right)$
+(e.g. $L_{A\mathrm{eq},T}$), with $T$ the record length or a longer period, outside the record
+counted as silence.
+
+These functions take pressure histories. `level_history` instead gives levels of consecutive,
+non-overlapping blocks (`period`, default 1 s), each from `overall_SPL`, and
+`sound_exposure_level`'s `lmax` is the maximum of the samples passed in; neither is a
+time-weighted level.
 
 **EPNL** (`effective_perceived_noise_level`) follows 14 CFR 36, Appendix A, §A36.4 [41],
 identical to ICAO Annex 16 [42]. Its input is a history of 24 one-third-octave band levels,
@@ -849,6 +1145,79 @@ every column gives 5 m, an upper bound; one over the 6 km column gives 6 km, a l
 wins and flags the result; an NA entry counts as met, so a band over its last listed column is
 bracketed by that column and the next.
 
+**Impulsiveness** (`panam_acoustics.impulsiveness`). Three statistics of a microphone pressure
+history characterize blade-vortex interaction (BVI) noise, each taken over frames of
+`frame_time` seconds (non-overlapping unless `hop_time` is given) after removing each frame's
+mean (`detrend='constant'`, the default) or a fitted line (`'linear'`). The crest factor is
+$\max\lvert p\rvert/p_\mathrm{rms}$, $\sqrt2$ for a sine. The kurtosis is
+$\overline{(p - \bar p)^4}/\left(\overline{(p - \bar p)^2}\right)^2$, Pearson's rather than the
+excess: 1.5 for a sine, 3 for Gaussian noise, about $T$ for one pulse every $T$ samples. The
+pulse peak-to-RMS ratio is $\max\lvert p_B\rvert/p_\mathrm{rms}$, with $p_B$ the history
+band-passed to the pulse band `band_hz` by a zero-phase Butterworth filter and $p_\mathrm{rms}$
+that of the unfiltered frame; for BVI the band is the 6th to 40th blade-passage harmonics,
+$[5.5f_b, 40.5f_b]$. The history may first be de-Dopplerized (`dedopplerize`, §10); a frame
+holding a NaN sample gives NaN. The spectral measure is `bvi_harmonic_ratio`, which takes a
+narrowband PSD, such as the `narrowband` grid of `depropagate_hemisphere`. Harmonic $k$ of the
+blade-passage frequency $f_b$ owns $[(k - \tfrac12)f_b, (k + \tfrac12)f_b)$, so the ratio is
+$10\lg(E_{k_3..k_4}/E_{k_1..k_2})$, $E$ the PSD power times bin width summed over the bins whose
+centers lie in the band, by default harmonics 6–40 over 1–5. A $-\infty$ bin adds no energy and
+a NaN bin makes the ratio NaN. The narrowband grid is in received frequency (`remove_doppler`
+refiles only the third-octave bands, §3.3), so harmonic $k$ arrives at $Dkf_b$ and $f_b$ must be
+the received blade-passage frequency, $D$ times the source's, given per direction as an array.
+With the source value the bands are misplaced by $D$: at 80 kt, $D \approx 1.14$ ahead of the
+aircraft puts the 5th harmonic in the BVI band, and $D \approx 0.88$ behind it puts the 6th in
+the low band. A scalar $f_b$ is valid only where $D \approx 1$, in hover or overhead.
+
+The harmonic ratio is an energy ratio and can be taken from a gridded sphere; the waveform
+statistics are not gridded and have no sphere-file or database field. Depropagation scales
+power and gridding averages power over directions (§5, §6), but a crest factor or kurtosis is
+neither a power nor additive: it depends on the relative phase of the harmonics, which the
+spectra discard; the statistic of a mix of waveforms is not the mean of their statistics; and
+propagation changes it in a way no level correction undoes, since absorption removes the high
+harmonics that make a pulse sharp and ambient noise pulls the kurtosis toward 3 as range grows.
+They describe the microphone record they are computed on.
+
+**Loudness** (`panam_acoustics.psychoacoustics.loudness_zwicker`) follows the stationary method
+of ISO 532-1:2017 (Zwicker) [53] from 28 one-third-octave band levels $L_i$, 25 Hz to 12.5 kHz,
+for a free (frontal) or diffuse field. PANAM's spheres and hemispheres stop at 10 kHz;
+`iso_532_1_levels` takes their 25 Hz to 10 kHz bands and sets 12.5 kHz to no energy, so the
+loudness omits whatever that band holds. The 11 bands up to 250 Hz are first corrected for the
+equal-loudness contours, $L_i + \Delta L_i(L_i)$ with the correction looked up by level range
+(tables RAP, DLL), and summed in energy into the three lowest critical-band levels (25–80 Hz,
+100–160 Hz, 200–250 Hz). Each of the 20 approximated critical bands $k$, with level $L_k$, then has
+the core loudness
+
+$$
+N'_k = 0.0635\cdot10^{0.025L_{\mathrm{TQ},k}}
+\left[\left(0.75 + 0.25\cdot10^{(L_{E,k} - L_{\mathrm{TQ},k})/10}\right)^{1/4} - 1\right],
+\qquad L_{E,k} = L_k - a_{0,k} + \Delta_{\mathrm{DF},k} - \Delta_{\mathrm{CB},k},
+$$
+
+zero when $L_k - a_{0,k} + \Delta_{\mathrm{DF},k} \le L_{\mathrm{TQ},k}$, with $L_\mathrm{TQ}$ the
+threshold in quiet, $a_0$ the outer-ear transmission, $\Delta_\mathrm{DF}$ the diffuse-field
+difference (diffuse field only) and $\Delta_\mathrm{CB}$ the third-octave to critical-band
+adaptation. The lowest band is scaled by $\min(1,\ 0.4 + 0.32\,N_1'^{0.2})$. The specific loudness
+$N'(z)$ is built over the critical-band rate $z$ (0 to 24 Bark) by joining each band's core
+loudness to the next with the upper masking slopes (tables RNS, USL), and the total loudness is
+its integral, $N = \int_0^{24} N'(z)\,dz$ (sone). $N'$ is returned at 0.1 to 24.0 Bark. The loudness
+level is $L_N = 40 + 10\log_2 N$ for $N \ge 1$ sone and $40\,(N + 0.0005)^{0.35}$ below, never
+under 3 phon. The implementation reproduces the program of the standard's Annex A, including its
+single-precision tables and 0.1 Bark steps, and with them the standard's third-octave test case
+(Annex B.2) to its printed precision. A 1 kHz, 40 dB tone is 1.000 sone when its third-octave
+levels include the leakage of the standard's filter bank into the neighboring bands (about 20 dB
+down); the tone's band alone gives 0.93 sone. A band of $-\infty$ has no energy; a spectrum with a
+NaN band gives NaN.
+
+**Sharpness** (`sharpness_din`) follows DIN 45692:2009 [54]:
+
+$$
+S = 0.11\,\frac{\int_0^{24} N'(z)\,g(z)\,z\,dz}{N}\ \mathrm{acum}, \qquad
+g(z) = \begin{cases}1, & z \le 15.8\ \mathrm{Bark}\\ 0.85 + 0.15\,e^{0.42(z - 15.8)}, & z > 15.8\ \mathrm{Bark}\end{cases}
+$$
+
+with the integral a sum over the 0.1 Bark values of $N'$ and $N$ the ISO 532-1 total loudness.
+A 1 kHz critical-band noise (920–1080 Hz) at 60 dB is 1.00 acum. $S$ is NaN where $N = 0$.
+
 ## 10. Auxiliary models
 
 These are in PANAM but not used to build the databases.
@@ -869,6 +1238,31 @@ These are in PANAM but not used to build the databases.
 
   The function returns $y_j = 2a_j$, so $\lvert y_j\rvert$ is the order's amplitude and its
   waveform is $\mathrm{Re}(y_j\Theta_j)$. `use_coupling=False` drops the cross-order terms.
+- **Doppler-predicted order tracks** (`order_tracking.py`). A shaft turning at $f(t)$
+  revolutions per second emits order $k$ at $k f(t_e)$. A fixed microphone at $\mathbf{x}_m$
+  hears it at $t_r = t_e + \lvert\mathbf{x}_m - \mathbf{x}_s(t_e)\rvert/c$, with $t_e(t_r)$ solved
+  by fixed-point iteration (`ground_plane.emission_times`), and at the frequency
+
+  $$
+  f_\mathrm{obs}(t_r) = D\,k\,f(t_e), \qquad D = \frac{dt_e}{dt_r} = \frac{1}{1 - M_r}, \qquad
+  M_r = \frac{\mathbf{v}(t_e)\cdot\mathbf{r}}{\lvert\mathbf{r}\rvert c},
+  $$
+
+  $\mathbf{r} = \mathbf{x}_m - \mathbf{x}_s(t_e)$, as in §3.1 and §3.3 (`doppler_factor`,
+  `observed_order_track`). The track is interpolated linearly, and $\mathbf{v}$ is the central
+  difference of its samples, also interpolated linearly. These tracks are the frequencies the
+  Vold–Kalman filter needs to follow an order as received rather than as emitted.
+  `hexacopter_vkf_example.py` uses them when given a microphone position.
+- **Clock offsets** (`estimate_clock_offset`, `order_track_offset`). Two records $a$ and $b$
+  sampled at $f_s$ are compared at each integer lag $\ell$ by the Pearson correlation
+  $\rho(\ell)$ over the samples they share, NaN samples left out. The lag of the largest $\rho$
+  within $\pm$`max_lag`, among lags whose overlap keeps at least half the shorter record, is refined
+  by a parabola through $\rho(\ell-1)$, $\rho(\ell)$, $\rho(\ell+1)$:
+  $\hat\ell = \ell + \tfrac12(\rho_{-} - \rho_{+})/(\rho_{-} - 2\rho_0 + \rho_{+})$, and the
+  offset is $\hat\ell/f_s$, positive when $b(t) \approx a(t - \hat\ell/f_s)$. A clock offset
+  $\tau$ of the recorder shifts the whole received track, $f_\mathrm{obs}(t + \tau)$, so the
+  offset between a predicted track and a measured one (`ridge_track`: the largest Hann-windowed
+  spectral peak in a band, refined by a parabola through the log power) estimates $\tau$.
 - **Ground-board models** in `ground_plane.py`, from the plate study: Fresnel-zone weighting of a
   finite plate (strip [46] and disc [47]), blended in energy [48] or in dB;
   an impedance-discontinuity model after De Jong and Lam and Monazzam [49, 50]; a thin-disc
@@ -882,12 +1276,42 @@ These are in PANAM but not used to build the databases.
   the path difference $\Delta R = R_2 - R_1$; with the pole height, $\Delta R$ gives the arrival
   elevation or the source height. It checks the flight geometry and the pole height independently
   of any level model (see the ground-plane notes).
+- **Ground impedance inversion** (`fit_ground_impedance`). The variable-porosity parameters
+  (§4.1) are fitted to measured pole levels re free field, $\Delta L_{bj}$ in band $b$ and frame
+  $j$, with the forward model $\Delta L$ of §4.4 (`pole_level`):
+
+  $$
+  \min_{\ln\sigma_e,\ \ln\alpha_e}\ \sum_{b,j} s_f^2\,\rho\!\left(r_{bj}^2/s_f^2\right),
+  \qquad r_{bj} = \sqrt{w_{bj}}\left[\Delta L(f_b; h_{s,j}, d_j, h_r; \sigma_e, \alpha_e) - \Delta L_{bj}\right],
+  \qquad \rho(z) = 2\left(\sqrt{1 + z} - 1\right),
+  $$
+
+  the soft-L1 loss with scale $s_f$ (`f_scale`, default 1 dB) and optional weights $w_{bj}$
+  (default 1). Bands and frames with no finite measurement are left out. The search is in the
+  logarithms of the parameters, within $1 \le \sigma_e \le 10^5$ kPa·s/m² and
+  $10^{-2} \le \alpha_e \le 10^3$ m⁻¹, from the best of a coarse grid in $\sigma_e$; $\alpha_e$
+  can instead be held, at 0 for the site ground (§4.6). The covariance is $s^2(J^\mathsf{T}J)^{-1}$
+  of the log parameters, the robust Gauss-Newton approximation: $J$ is the Jacobian of $r$ scaled
+  by the loss, $J_{bj} = \sqrt{\rho'(z) + 2z\rho''(z)}\,\partial r_{bj}/\partial(\ln\sigma_e, \ln\alpha_e)$
+  with $z = r_{bj}^2/s_f^2$, which is $(1 + z)^{-3/4}\,\partial r_{bj}/\partial(\ldots)$ for soft-L1,
+  and $s^2 = \sum s_f^2\,\rho(r_{bj}^2/s_f^2)/(N - p)$, so a gross outlier raises $s^2$ in proportion to $|r_{bj}|$, not $r_{bj}^2$.
+  Both reduce to the ordinary least-squares forms for residuals well below $s_f$. The covariance
+  is carried to $\sigma_e$ and $\alpha_e$ by the delta method. It ignores any correlation
+  between bands and frames. The target is the pole level re free field because that is what
+  `pole_level` returns. Forming $\Delta L_{bj}$ from measurements, for example from a co-located
+  plate microphone and its modeled transfer function, is left to the caller.
 - **Array planning** (`linear_array_plan`, `array_planner.py`): microphones along a line,
   $y_i = (h/\sin e_t)\tan\theta_i$, with $\theta_i$ equally spaced in
   $[-(90^\circ - e_\min),\ 90^\circ - e_\min]$ (defaults $e_\min = 10^\circ$, $e_t = 90^\circ$),
   so that the outermost microphone is seen from overhead at $\arctan(\sin e_t\tan e_\min)$ below
   the horizon. `array_coverage`, `hover_array_coverage` and `takeoff_array_coverage` give the
-  sphere directions a planned level pass, hover or takeoff covers (§3.1–3.2).
+  sphere directions a planned level pass, hover or takeoff covers (§3.1–3.2). The hover and
+  takeoff microphones sit on rings, at radius $R$ and azimuth $\alpha$ (counterclockwise from
+  $+x$) about the origin. A hover at height $h$ above them is seen at elevation $\arctan(h/R)$;
+  a takeoff from height $h_0$ climbing at $\gamma$ is at $h_0 + d\tan\gamma$ after ground distance
+  $d$, so a microphone at the liftoff point sees it at $\gamma$ behind the vehicle when $h_0 = 0$.
+  The `array_planner.py` subcommands `hover` and `takeoff` plot these directions and write the
+  microphones to KMZ.
 - **Footprint preview** (`project_sphere`, `plot_projection`): each direction at least $e_c$ below
   the horizon (`elv_cutoff`, no default; `project_directory` and `plot_projection` use 30°)
   follows a straight slant ray from the sphere radius $r_\mathrm{ref}$ to flat ground $h_a$ below
@@ -906,6 +1330,25 @@ These are in PANAM but not used to build the databases.
   from `vehicle.cfg`; with an `[Option]` section, $\bar f$ is its `fbar` and $\mu$ and $C_W$ come from
   its reference list. This angle is a plot coordinate only;
   the spheres themselves are not tilted (§11).
+- **Repeat-run averaging** (`sphere_statistics.average_spheres`). Spheres of repeat runs on one
+  grid are averaged cell by cell in energy over the $N$ runs that cover the cell,
+  $L = 10\lg\left(\tfrac1N\sum_i 10^{L_i/10}\right)$, a run with no energy there counting as
+  $P_i = 0$. A cell is $-\infty$ only if every covering run is, and NaN where no run (or fewer than
+  `min_runs`) covers it. From sphere files, -999 is read as no data by default, so $P_i = 0$
+  applies only to an in-memory $-\infty$ or with `missing='no_energy'`. The spread is the sample
+  standard deviation of the finite $L_i$, in dB. Files whose grid, bands, radius, azimuth
+  reference or Doppler flag differ are refused, as are files whose speeds (or, on request,
+  flight path angles) spread by more than a tolerance. This average is the one model of this
+  section that can enter a database build: `build_empirical_database` uses it to merge repeat
+  runs when `merge_repeats=True` (§7.1).
+- **Sphere comparison** (`sphere_statistics.compare_spheres`). Per band, the difference
+  $\Delta L = L_B - L_A$ over the cells finite in both spheres gives the mean, root mean square,
+  5th and 95th percentiles and an area-weighted mean,
+  $\sum_c \Omega_c\Delta L_c / \sum_c \Omega_c$, with
+  $\Omega_c = (\cos\theta_{c,-} - \cos\theta_{c,+})\,\Delta\phi_c$ the solid angle of the ART
+  cell between the midpoints to its neighbors (`cell_solid_angles`). Cells finite in only one
+  sphere are counted, not differenced. The overall difference sums, in energy, the bands finite in
+  both spheres.
 - **Time-domain de-Dopplerization** (`dedopplerize`): each microphone's pressure is resampled at
   $t_e + r(t_e)/c$ on an emission-time grid, and, with a virtual observer radius $R_v$, scaled by
   $r(t_e)/R_v$ and labeled with time $t_e + R_v/c$; samples received outside the record are NaN.
@@ -915,10 +1358,14 @@ These are in PANAM but not used to build the databases.
 - **Tip-path-plane orientation.** Spheres are filed in a level frame (§3.2).
 - **Convective amplification.** Doppler removal rescales frequency only (§3.3).
 - **Wind on straight rays.** Depropagation along straight lines ignores wind; only a ray model
-  (§5.3) sees it. A wind given to `build_sphere` is recorded as metadata only.
-- **A stratified atmosphere without rays.** Absorption and timing use one uniform atmosphere; only
-  the optional ray model sees the profile (§5.3).
-- **Band-integrated absorption.** ISO 9613-1 is evaluated at single frequencies.
+  (§5.3) sees it. A wind given to `build_sphere` is recorded as metadata only, unless
+  `ray_model='wind'` carries the rays with it, uniform over the path (§5.3). Its shear near the
+  ground is not modeled.
+- **A stratified atmosphere without rays.** Timing and spreading use one uniform atmosphere; only
+  the optional ray model sees the profile (§5.3). Absorption sees a layered profile when
+  `absorption_profile` is given (§5.4), along straight paths.
+- **Band absorption on FFT bands.** The FFT path corrects each bin at its own frequency;
+  `absorption_band_method` applies to filter-bank bands, the EAA and the NORAH2 import (§5.4).
 - **Ground roughness in the sphere build.** Only `pole_level` has a roughness term; the plate BEM
   has none (§4.6).
 
@@ -929,10 +1376,10 @@ Functions are in `flight_acoustics.py` unless another module is named. Tests are
 | Section | Functions | Tests |
 | --- | --- | --- |
 | §2.1 Short-time spectra | `spectrogram`, `frame_length`, `psd`, `psd_welch`, `overall_SPL`, `level_history` | `test_acoustics.py`, `test_generate_hemisphere.py` |
-| §2.2 Bands | `third_octave_band_edges`, `third_octave_band_levels`, `tone_aware_band_power`, `hann_power`, `panam_acoustics.filters.third_octave_filter_bank` | `test_third_octave_band_edges.py`, `test_third_octave_band_levels.py`, `test_band_selection.py`, `test_tone_aware_band_power.py`, `test_third_octave_filter_bank.py` |
+| §2.2 Bands | `third_octave_band_edges`, `third_octave_band_levels`, `tone_aware_band_power` (`return_parts`), `hann_power`, `depropagate_hemisphere` (`decompose_tonal`), `noise_abatement_2017.build_sphere` (`tone_split`), `panam_acoustics.filters.third_octave_filter_bank` | `test_third_octave_band_edges.py`, `test_third_octave_band_levels.py`, `test_band_selection.py`, `test_tone_aware_band_power.py`, `test_generate_hemisphere.py`, `test_noise_abatement_2017.py`, `test_third_octave_filter_bank.py` |
 | §2.3 A-weighting | `dBAw` | `test_acoustics.py` |
 | §3.1–3.2 Geometry | `hemigen`, `art2umapr`; `noise_abatement_2017.local_east_north_ft`, `east_north_to_frame`, `frame_bearing_deg` | `test_lambert_geometry.py`, `test_hemisphere_geometry_accuracy.py`, `test_azimuth_reference.py`, `test_track_check.py` |
-| §3.3 Doppler | `depropagate_hemisphere` (`remove_doppler`) | `test_generate_hemisphere.py`, `test_tone_aware_band_power.py` |
+| §3.3 Doppler | `depropagate_hemisphere` (`remove_doppler`, `air_relative_doppler`) | `test_generate_hemisphere.py`, `test_tone_aware_band_power.py`, `test_refracted_rays.py` |
 | §3.4 Steady segments | `noise_abatement_2017.steady_window`, `flight_condition` | `test_noise_abatement_2017.py` |
 | §4.1 Impedance | `ground_plane.surface_admittance` | `test_ground_validation.py` |
 | §4.2 Reflection coefficient | `spherical_reflection_coefficient` | `test_reflection_coefficient.py` |
@@ -940,23 +1387,33 @@ Functions are in `flight_acoustics.py` unless another module is named. Tests are
 | §4.4 Pole microphones | `ground_plane.pole_level`, `turbulence_coherence`, `free_field_microphone_response`, `pole_incidence`, `certification_axis` | `test_ground_plane.py`, `test_ground_validation.py` |
 | §4.5 Plate BEM | `axisymmetric_bem.scattering`, `table`, `board_level`, `write_netcdf`; `ground_plane.exact_half_space_green`, `image_integrals`, `ImageIntegralTable`, `sub_band_factors`, `table_frames`; `noise_abatement_2017.plate_table`, `plate_response` | `test_axisymmetric_bem.py`, `test_ground_validation.py` |
 | §4.6 Site ground | `noise_abatement_2017.SITE_GROUND` | (none) |
-| §5.1–5.2 Depropagation | `depropagate_hemisphere`; `noise_abatement_2017.build_sphere` | `test_ambient_gating.py`, `test_generate_hemisphere.py`, `test_golden_results.py` |
-| §5.3 Rays | `refracted_rays.external_ray_model`, `straight_ray_model` | `test_refracted_rays.py` |
+| §5.1–5.2 Depropagation | `depropagate_hemisphere`; `noise_abatement_2017.build_sphere` | `test_ambient_gating.py`, `test_generate_hemisphere.py`, `test_golden_results.py`, `test_synthetic_flyover.py` |
+| §5.3 Rays | `refracted_rays.external_ray_model`, `straight_ray_model`, `uniform_wind_ray_model`; `noise_abatement_2017.wind_in_frame_ft_s` (`build_sphere(ray_model='wind')`) | `test_refracted_rays.py`, `test_run_metadata.py` |
 | §5.4 Atmosphere | `panam_acoustics.iso_9613_1_1993`, `panam_acoustics.atmosphere.Atmosphere`, `atmosorb`; `noise_abatement_2017.run_atmosphere`, `air_density_kg_m3` | `test_acoustics.py`, `test_python_acoustics_equivalence.py`, `test_run_metadata.py`, `test_noise_abatement_2017.py` |
+| §5.4 Band and layered absorption | `panam_acoustics.atmosphere.band_absorption_db`, `arp5534_band_attenuation`, `exact_midband_frequency`, `layered_attenuation_db`, `check_absorption_profile`; `depropagate_hemisphere` (`absorption_band_method`, `absorption_profile`), `noise_abatement_2017.build_sphere`, `spla_and_eaa_from_spectrum`, `norah2_levels_at_radius` | `test_band_absorption.py`, `test_spla_and_eaa.py`, `test_norah2_import.py` |
+| §5.5 Forward synthesis | `synthesis.synthesize_band_histories`, `_bin_band_absorption_db`, `doppler_shift_band_power`, `measured_band_histories`, `leave_mics_out`, `residual_statistics`; `interpolate_hemisphere_power` | `test_synthesis.py` |
 | §6.1 Fixed radius | `shepIDW`, `shepIDW_weights`, `shepIDW_apply`, `geodist` | `test_shep_idw.py`, `test_no_data.py`, `test_hemisphere_geometry_accuracy.py` |
 | §6.2 Adaptive radius | `adaptive_idw_weights`, `ADAPTIVE_INTERPOLATION` | `test_adaptive_interpolation.py`, `test_hemisphere_geometry_accuracy.py` |
-| §6.3 Output grids | `write_aam_hemisphere_netcdf`, `_sample_hemisphere_levels`, `mask_missing_levels`, `lambert_ea`, `lambert_lon` | `test_write_aam_hemisphere_netcdf.py`, `test_hemisphere_sampling.py`, `test_no_data.py`, `test_lambert_geometry.py` |
-| §7.1–7.2 Condition, EAA | `build_empirical_database`, `read_vehicle_data`, `add_sphere_group`, `extract_SPL`, `spla_and_eaa_from_spectrum`, `_finite_sphere_levels`, `_measured_bins` | `test_spla_and_eaa.py`, `test_database_provenance.py`, `test_vehicle_data.py` |
+| §6.3 Output grids | `write_aam_hemisphere_netcdf`, `_sample_hemisphere_levels`, `interpolate_hemisphere_power`, `mask_missing_levels`, `lambert_ea`, `lambert_lon` | `test_write_aam_hemisphere_netcdf.py`, `test_hemisphere_sampling.py`, `test_no_data.py`, `test_lambert_geometry.py` |
+| §6.4 Node statistics | `sphere_statistics.node_statistics`, `idw_weight_matrix`, `node_statistics_variables`; `depropagate_hemisphere` (`return_statistics`), `noise_abatement_2017.build_sphere` (`node_statistics`) | `test_node_statistics.py`, `test_noise_abatement_2017.py` |
+| §7.1–7.2 Condition, EAA | `build_empirical_database`, `read_vehicle_data`, `add_sphere_group`, `extract_SPL`, `spla_and_eaa_from_spectrum`, `_finite_sphere_levels`, `_measured_bins`; repeat runs: `_group_repeat_conditions`, `_extract_condition_SPL`, `_merged_run_metadata` | `test_spla_and_eaa.py`, `test_database_provenance.py`, `test_vehicle_data.py`, `test_merge_repeats.py` |
 | §7.3 Load factor | `add_sphere_group` | `test_load_factor_scaling.py`, `test_write_aam_hemisphere_netcdf.py` |
-| §7.4 Hover | `average_fore_and_aft`, `_fore_aft_measured` | `test_hover_averaging.py`, `test_sphere_completion_integration.py`, `test_empirical_database_hover_selection.py`, `test_database_provenance.py` |
+| §7.4 Hover | `average_fore_and_aft`, `_fore_aft_measured`, `_synthesized_hover_sphere`, `_hover_source_index`, `_hover_flight_path_angles` | `test_hover_averaging.py`, `test_sphere_completion_integration.py`, `test_empirical_database_hover_selection.py`, `test_database_provenance.py`, `test_norah2_import.py` |
 | §7.5 Completion | `mirror_phi_to_upper_surface`, `_complete_sphere_with_coverage` | `test_mirror_phi.py`, `test_sphere_completion_integration.py` |
-| §8 NORAH2 | `build_database_from_norah2`, `norah2_levels_at_radius`, `norah2_speed_knots`, `humid_air_density`, `fill_norah2_empty_cells`, `write_norah2_hemisphere`, `write_norah2_triangulation`, `norah2umapr` | `test_norah2_import.py`, `test_write_norah2_hemisphere.py` |
+| §8 NORAH2 | `build_database_from_norah2`, `norah2_levels_at_radius`, `norah2_speed_knots`, `humid_air_density`, `fill_norah2_empty_cells`, `_norah2_rotor_speed_fraction`, `write_norah2_hemisphere`, `write_norah2_levels`, `write_norah2_triangulation`, `norah2umapr` | `test_norah2_import.py`, `test_write_norah2_hemisphere.py` |
+| §8 Sphere to NORAH2 | `sphere_to_norah2.sphere_to_norah2`, `sphere_levels_on_norah2_grid` (through the `sphere_to_norah2.py` CLI) | `test_sphere_to_norah2.py`, `test_cli_scripts.py` (smoke) |
 | §9 Metrics | `sound_exposure_level`, `ten_db_down_interval`, `noys`, `perceived_noise_level`, `tone_correction`, `effective_perceived_noise_level`, `mil_std_1474e_nondetectability_distance` | `test_sound_exposure_level.py`, `test_pnl_epnl.py`, `test_mil_std_nondetectability.py` |
+| §9 Time-weighted levels | `panam_acoustics.time_weighting.frequency_weighting_sos`, `apply_frequency_weighting`, `time_weighted_square`, `time_weighted_level`, `leq` | `test_time_weighting.py` |
+| §9 Impulsiveness | `panam_acoustics.impulsiveness.crest_factor`, `kurtosis`, `pulse_peak_to_rms`, `bvi_harmonic_ratio`, `frame_signal` | `test_impulsiveness.py` |
+| §9 Loudness, sharpness | `panam_acoustics.psychoacoustics.loudness_zwicker`, `loudness_level`, `sharpness_din`, `iso_532_1_levels` | `test_psychoacoustics.py` |
 | §10 VKF | `vold_kalman_filter.vold_kalman_filter` | `test_vold_kalman_filter.py` |
+| §10 Order tracks, clock offsets | `order_tracking.doppler_factor`, `observed_order_track`, `ridge_track`, `estimate_clock_offset`, `order_track_offset`; `hexacopter_vkf_example.heard_rotor_speed` | `test_order_tracking.py`, `test_hexacopter_vkf_example.py` |
 | §10 Ground-board models, two-path fit | `ground_plane.board_*`, `disc_bem_scattered`, `raised_plate_scattering`, `fit_two_path`, `height_from_path_difference` | `test_ground_plane.py`, `test_ground_validation.py`, `test_axisymmetric_bem.py` |
-| §10 Array planning | `linear_array_plan` (through the `array_planner.py design` CLI); `array_coverage`, `hover_array_coverage`, `takeoff_array_coverage` | `test_array_planner.py` (the CLI's spacing and options); the coverage functions: none |
+| §10 Ground impedance inversion | `ground_plane.fit_ground_impedance` | `test_ground_impedance_fit.py` |
+| §10 Array planning | `linear_array_plan` (through the `array_planner.py design` CLI); `array_coverage`, `hover_array_coverage`, `takeoff_array_coverage` (through `array_planner.py coverage`, `hover` and `takeoff`) | `test_array_coverage.py` (the coverage functions on known geometry), `test_array_planner.py` (the CLI's spacing, options and case files), `test_cli_scripts.py` (smoke) |
 | §10 Footprint, fried egg | `project_sphere`, `project_directory`, `fried_egg_plot`, `is_noisy` | `test_projection.py`, `test_no_data.py`, `test_cli_scripts.py` (smoke) |
 | §10 De-Dopplerization | `dedopplerize` | `test_acoustics.py` |
+| §10 Repeat-run averaging, comparison | `sphere_statistics.average_spheres`, `write_averaged_sphere`, `compare_spheres`, `cell_solid_angles`, `plot_sphere_difference`; in a database build, `build_empirical_database(merge_repeats=True)` (`_group_repeat_conditions`, `_extract_condition_SPL`) | `test_sphere_statistics.py`, `test_merge_repeats.py`, `test_cli_scripts.py` (smoke) |
 
 ## References
 
@@ -1010,3 +1467,7 @@ Functions are in `flight_acoustics.py` unless another module is named. Tests are
 48. Boulanger, P., Waters-Fuller, T., Attenborough, K., and Li, K. M., "Models and Measurements of Sound Propagation from a Point Source over Mixed Impedance Ground," *Journal of the Acoustical Society of America*, Vol. 102, No. 3, 1997, pp. 1432–1442. https://doi.org/10.1121/1.420101
 49. de Jong, B. A., Moerkerken, A., and van der Toorn, J. D., "Propagation of Sound over Grassland and over an Earth Barrier," *Journal of Sound and Vibration*, Vol. 86, No. 1, 1983, pp. 23–46. https://doi.org/10.1016/0022-460X(83)90941-0
 50. Lam, Y. W., and Monazzam, M. R., "On the Modeling of Sound Propagation over Multi-Impedance Discontinuities Using a Semiempirical Diffraction Formulation," *Journal of the Acoustical Society of America*, Vol. 120, No. 2, 2006, pp. 686–698. https://doi.org/10.1121/1.2216905
+51. "Sound Level Meters," IEC 60651:1979, International Electrotechnical Commission, Geneva, 1979 (withdrawn; replaced by IEC 61672-1).
+52. Rickley, E. J., Rosenbaum, J. E., Fleming, G. G., Roof, C. J., and Boeker, E. R., "Development of Simplified Procedure for Computing the Absorption of Sound by the Atmosphere and Applicability to Aircraft Noise Certification: Proposed SAE Method," DOT-VNTSC-FAA-12-14, U.S. Department of Transportation, Volpe National Transportation Systems Center, Cambridge, MA, November 2012.
+53. "Acoustics — Methods for Calculating Loudness — Part 1: Zwicker Method," ISO 532-1:2017, International Organization for Standardization, Geneva, 2017.
+54. "Measurement Technique for the Simulation of the Auditory Sensation of Sharpness," DIN 45692:2009-08, Deutsches Institut für Normung, Berlin, 2009.

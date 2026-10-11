@@ -21,11 +21,9 @@ def executable(name):
     return (local_paths.data_path(name, required=False) or os.environ.get(name.upper())
             or shutil.which(name))
 
-#: A vehicle.cfg for directories of spheres (AS350-like rotors).
-VEHICLE_CFG = ('[Main Rotor]\nradius = 5.334\ntip speed = 230.7\nblades = 4\n'
-               '[Tail Rotor]\nradius = 0.8255\ntip speed = 216.1\nblades = 2\n'
-               '[Atmosphere]\ndensity = 1.070\ntemperature = 280.37\n'
-               '[Vehicle]\nweight = 2250\ndrag = 0.8175\n')
+#: A vehicle.cfg for directories of spheres (AS350-like rotors): example_data/vehicle.cfg.
+with open(os.path.join(os.path.dirname(__file__), os.pardir, 'example_data', 'vehicle.cfg')) as _cfg:
+    VEHICLE_CFG = _cfg.read()
 
 
 def minimal_hemisphere():
@@ -49,6 +47,39 @@ def write_sphere_directory(directory, hemispheres, **grid):
                                        mode='third_octave', radius_ft=100.0, speed_knots=float(speed),
                                        flight_path_angle_deg=float(angle), title='t', **grid)
     return directory
+
+
+def stepped_sphere_directory(directory, conditions, step_db=3.0):
+    """:func:`write_sphere_directory` of :func:`minimal_hemisphere` at each
+    ``(speed_knots, flight_path_angle_deg)`` condition, the i-th raised by
+    ``i * step_db`` dB so that the spheres can be told apart."""
+    hemispheres = []
+    for i, (speed, angle) in enumerate(conditions):
+        hemisphere = minimal_hemisphere()
+        hemisphere['third_octave']['bands_db'] += step_db * i
+        hemispheres.append((hemisphere, speed, angle))
+    return write_sphere_directory(directory, hemispheres)
+
+
+def tone_flyover(mic_y=(-300.0, 0.0, 300.0), seed=0):
+    """A level pass for depropagation tests: ``depropagate_hemisphere``'s first
+    arguments, ft and s.  The source crosses x = -400 to 400 ft at 250 ft over
+    6 s (120 track samples); microphones on the ground at x = 0 and ``mic_y``
+    (ft) record 7 s at 4 kHz of 2e-5 (3 sin(2 pi 250 t) + white noise) Pa,
+    drawn from ``numpy.random.default_rng(seed)``."""
+    rng = np.random.default_rng(seed)
+    mic_locations = np.array([[0.0, float(y), 0.0] for y in mic_y])
+    nt = 120
+    track_time = np.linspace(0.0, 6.0, nt)
+    track_position = np.column_stack([800.0 * track_time / track_time[-1] - 400.0, np.zeros(nt),
+                                      np.full(nt, 250.0)])
+    track_velocity = np.tile([800.0 / track_time[-1], 0.0, 0.0], (nt, 1))
+    fs = 4000.0
+    t = np.arange(0.0, 7.0, 1.0 / fs)
+    pressure = np.vstack([2.0e-5 * (3.0 * np.sin(2 * np.pi * 250.0 * t) + rng.standard_normal(t.size))
+                          for _ in mic_y])
+    return dict(mic_locations=mic_locations, pressure=pressure, time=t, track_time=track_time,
+                track_position=track_position, track_velocity=track_velocity)
 
 
 def write_raw_sphere(path, phi=None, theta=None, frequency=None, amplitude=None, fill_value=None,

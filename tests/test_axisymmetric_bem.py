@@ -239,3 +239,25 @@ def test_bessel_orders_match_scipy():
     assert np.all(np.isfinite(ours))
     np.testing.assert_allclose(ours, exact, rtol=0.0, atol=5e-15)
     assert ours[2, 2] == pytest.approx(1e-31 ** 2 / 8.0, rel=1e-12)   # the series branch: J_2 = x^2/8
+
+
+def test_table_settings_hold_the_defaults_and_the_options():
+    settings = ab.table_settings()
+    for name in ('segments_per_wavelength', 'max_segment', 'extra_modes', 'gauss', 'n_phi_uniform',
+                 'edge_grading', 'sub_bands', 'elevations', 'azimuths', 'radius', 'mic_height'):
+        assert name in settings
+    assert 'segment' not in settings and 'ground' not in settings
+    assert settings['elevations'] == gp.BEM_ELEVATIONS.tolist()
+    assert ab.table_settings(gauss=8)['gauss'] == 8 != settings['gauss']
+
+
+def test_table_npz_round_trip(tmp_path):
+    p = np.array([[[1 + 2j]]])
+    table = dict(P_d=p, P_r=-p, bands=np.array([1000.0]), sub_bands=5, ground=dict(model='x', sigma=200.0),
+                 flow_resistance=None, mic=(0.0, 0.1), sound_speed=np.float64(1125.0))
+    ab.write_table_npz(str(tmp_path / 't.npz'), table, key='k')
+    back, key = ab.read_table_npz(str(tmp_path / 't.npz'))
+    assert key == 'k'
+    np.testing.assert_array_equal(back['P_r'], -p)
+    assert back['ground'] == table['ground'] and back['flow_resistance'] is None
+    assert back['mic'] == [0.0, 0.1] and back['sub_bands'] == 5 and back['sound_speed'] == 1125.0

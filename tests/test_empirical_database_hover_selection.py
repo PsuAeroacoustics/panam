@@ -13,7 +13,7 @@ import warnings
 
 import pytest
 
-from flight_acoustics import build_empirical_database
+import flight_acoustics as fa
 
 
 SPHERE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -48,7 +48,7 @@ def _source_directory(tmp_path, spheres):
 def test_empty_source_directory_names_the_problem(tmp_path):
     directory = _source_directory(tmp_path, spheres=0)
     with pytest.raises(ValueError, match='No sphere files found'):
-        build_empirical_database(str(directory), str(tmp_path / 'database.nc'))
+        fa.build_empirical_database(str(directory), str(tmp_path / 'database.nc'))
 
 
 def test_falls_back_to_the_slowest_sphere_when_none_is_level(tmp_path):
@@ -56,7 +56,7 @@ def test_falls_back_to_the_slowest_sphere_when_none_is_level(tmp_path):
     database = tmp_path / 'database.nc'
     # A zero tolerance admits nothing, which is the condition being guarded.
     with pytest.warns(UserWarning, match='level flight'):
-        build_empirical_database(str(directory), str(database),
+        fa.build_empirical_database(str(directory), str(database),
                                  load_factors=[1.0], level_flight_tolerance=0.0)
     assert database.exists()
 
@@ -66,7 +66,7 @@ def test_no_warning_when_a_level_sphere_exists(tmp_path):
     database = tmp_path / 'database.nc'
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
-        build_empirical_database(str(directory), str(database),
+        fa.build_empirical_database(str(directory), str(database),
                                  load_factors=[1.0], level_flight_tolerance=90.0)
     assert not [w for w in caught if 'level flight' in str(w.message)]
     assert database.exists()

@@ -6,7 +6,12 @@ This page describes the files PANAM writes and reads at its boundaries:
   reads;
 - the NICE-OPS database (`.nod`), which `build_empirical_database` and
   `build_database_from_norah2` write;
-- `vehicle.cfg`, which the user writes.
+- `vehicle.cfg`, which the user writes (`example_data/vehicle.cfg` is an example).
+
+PANAM writes each sphere and database to a temporary file beside the output, named
+`.<name>.<pid>.tmp`, and moves it into place only when it is complete. A failed or interrupted
+write leaves neither a partial file nor a damaged earlier one, and a `*.nc` or `*.nod` glob
+never matches the temporary file.
 
 How the files are made is in [`database_build.md`](database_build.md) and
 [`norah2_import.md`](norah2_import.md). The equations behind the values are in
@@ -41,7 +46,8 @@ from 10 Hz to 10 kHz. When it is given a `reference_sphere`, it uses the legacy 
 grid and bands instead. `AMPLITUDE` carries no `_FillValue`.
 
 Attributes: `title`, and when known `azimuth_reference` (`track` or `heading`; a reader takes
-a sphere without it as `track`).
+a sphere without it as `track`). Every sphere also carries the
+[provenance stamp](#provenance-stamp).
 
 **Per-run metadata.** When `build_sphere` passes `run_metadata`, the file also carries
 these f8 scalar variables after `AMPLITUDE`. A variable is left out when its value is
@@ -63,6 +69,37 @@ The file also carries these text attributes, each '' when unknown:
 | `wind_units` | `kt`, `m/s`, `ft/s` or `mph`, as the caller declared |
 | `wind_reference_direction` | `ground track` (flights) or `heading` (hovers, whose ground track is drift) |
 | `air_density_source` | `ground stations`, `caller` (an `atmosphere` passed in), or `none` |
+
+**Averaged spheres.** `sphere_statistics.write_averaged_sphere` (`sphere_diff.py average`)
+writes an energy average of repeat runs in the same layout, with the runs' mean `SPEED`,
+`FLIGHT_PATH_ANGLE` and weight (as `EMPTY_WEIGHT`). It adds two optional variables after
+everything else. AAM and NICE-OPS do not read them, and a reader may ignore them.
+
+| variable | type, dimensions | `unit` | content |
+| --- | --- | --- | --- |
+| `N_RUNS` | i4 (`PHI`, `THETA`, `FREQUENCY`) | | the runs covering the cell (below) |
+| `AMPLITUDE_SD_DB` | f4 (`PHI`, `THETA`, `FREQUENCY`) | DECIBEL | sample standard deviation of the runs' finite levels; -999 where fewer than two are finite |
+
+A run covers a cell when its level there is not NaN. A -999 in a source run is read as no
+data by default (`missing='no_data'`), or as zero power (`missing='no_energy'`), since the
+file does not say which it is. The provenance stamp hashes the averaging settings (`min_runs`,
+`missing` and the speed and flight path angle tolerances) and names the averaged runs in
+`panam_inputs`. `write_aam_hemisphere_netcdf` writes such variables through
+its `extra_variables` argument and levels already on the ART grid through `art_levels`.
+
+**Node statistics.** `noise_abatement_2017.build_sphere(node_statistics=True)` (CLI
+`--node-statistics`; default off) adds two optional variables after everything else, in the
+total sphere and in each tonal and broadband part sphere. AAM and NICE-OPS do not read them,
+and a reader may ignore them.
+
+| variable | type, dimensions | `unit` | content |
+| --- | --- | --- | --- |
+| `N_SAMPLES` | i4 (`PHI`, `THETA`, `FREQUENCY`) | | depropagated samples behind the gridded node: positive interpolation weight, not missing |
+| `AMPLITUDE_STD` | f4 (`PHI`, `THETA`, `FREQUENCY`) | DECIBEL | weighted standard deviation of those samples' levels about the node's energy-mean level; -999 where no sample has positive power |
+
+Each ART point takes the values of the gridded node nearest it in azimuth and in elevation, so
+they describe the neighborhood its `AMPLITUDE` was interpolated from, not that value exactly.
+The definitions are in [THEORY §6.4](THEORY.md#64-node-statistics).
 
 **Missing values.** A missing band is stored as -999 (`AAM_MISSING_LEVEL`); see
 [how a bin's state travels](#how-a-bins-state-travels).
@@ -98,10 +135,19 @@ Attributes:
 | `build_temperature_K`, `build_pressure_kPa`, `build_relative_humidity_percent` | the atmosphere the EAA was computed in (default 293.15 K, 101.325 kPa, 20%) |
 | `hover_correction` | when one was applied: its `description`, or `applied` |
 | `hover_source` | when given: the hover source sphere's file name |
+| `source_spheres` | the file names of the spheres used, one per line, sorted (no directory); always written by `build_empirical_database` |
+| `excluded_spheres` | when `exclude` was given: the file names it left out, one per line |
+
+`build_empirical_database` also records `load_factors` (f8 array; left out with
+`load_factors=None`, which `fixed_load_factor` records) and `extended_flight_path_angles_deg`
+(f8 array, degrees; left out when not given). Both builders write the
+[provenance stamp](#provenance-stamp).
 
 A NORAH2 import adds the attributes `source_format`, `norah2_speed_mapping`,
-`norah2_mirror_rotor`, `norah2_ground_included_accepted`, `norah2_fill_empty` and
-`norah2_thrust_air_density_kg_m3`.
+`norah2_mirror_rotor`, `norah2_ground_included_accepted`, `norah2_fill_empty`,
+`norah2_thrust_air_density_kg_m3`, `norah2_hover_source` (the file a synthesized hover was
+made from, or `none`) and `norah2_scale_tip_speed_by_rmomega` (1 when each advance ratio
+was formed with the file's RmOmega).
 
 ### Condition groups
 
@@ -151,7 +197,11 @@ and each has its units in a text attribute `<name>_units`:
 | `thrust_coefficient_run` | 1 | `gross_weight` / (`air_density` π R² V_tip²): the run's own C_T, not scaled by the group's load factor |
 
 The text attributes are `wind_source`, `wind_units`, `wind_reference_direction`,
-`air_density_source`, `source_sphere` (the sphere file's name) and `condition_origin`.
+`air_density_source`, `source_sphere` (the sphere file's name; for a condition that
+`merge_repeats` averaged from repeat runs, every run's file name, one per line, with the runs'
+mean numeric values (NaN winds if their wind units or reference directions differ), every
+source any run named in `wind_source`, and the first run's other text values) and
+`condition_origin`.
 `condition_origin` takes one of three values:
 
 - `measured`: one of the sphere's own conditions, at any load factor;
@@ -164,7 +214,9 @@ The text attributes are `wind_source`, `wind_units`, `wind_reference_direction`,
 
 R and V_tip come from `vehicle.cfg`. A NORAH2 import writes none of these attributes.
 Instead, each of its groups carries `norah2_source` and the file's constants as
-`norah2_<NAME>`.
+`norah2_<NAME>`. Its synthesized hover groups (`synthesize_hover`) also carry
+`condition_origin = 'synthesized_hover'`, with the source file's `norah2_source` and
+constants.
 
 ### DATABASE_FORMAT_VERSION
 
@@ -177,6 +229,117 @@ Instead, each of its groups carries `norah2_source` and the file's constants as
 
 Adding names leaves the version at 1. Bump it when the on-disk meaning of existing data
 changes, together with a matching change in NICE-OPS.
+
+### Checking a database
+
+`nod_database.validate_nod(path)` returns one violation per broken rule, with the group it
+is in. The R rules are what NICE-OPS requires. The C rules are the rest of this contract,
+which the writers keep; a reader may rely on them.
+
+1. **R1.** The root has `same_grid`, and it is true.
+2. **R2.** There is at least one group, and every group has `radius`, `rotor_scale`,
+   `advance_ratio`, `flight_path_angle` and `thrust_coefficient`, each one finite value.
+3. **R3.** Every group has `dBA` and `EAA` over its `channels` dimension.
+4. **R4.** Every group's channels have directions: `phi` and `theta`, one value per channel,
+   in the group or, when `shared_grid_and_frequency` is true, at the root.
+5. **R5.** `radius` × `rotor_scale` is the same in every group.
+6. **R6.** `EAA` is finite. `dBA` is finite or -inf, never NaN or +inf.
+7. **C1.** `database_version`, when present, is an integer from 0 to
+   `DATABASE_FORMAT_VERSION`.
+8. **C2.** `speed_reference` and `azimuth_reference`, when present, take the values listed
+   above.
+9. **C3.** A group with `amplitude` has its band centers, in the group or shared at the
+   root. A group's own `phi`, `theta` or `frequency` equals the shared one at the root.
+10. **C4.** `amplitude` is over (`PHI`, `THETA`, `frequency`), with PHI × THETA = channels and
+    one band center per band, and the channels are its row-major flatten, rows sorted by
+    `phi` (channel order, above).
+11. **C5.** `amplitude` is finite or -inf, never NaN or +inf.
+12. **C6.** `coverage` is 0 or 1, over the dimensions given above, and is 1 only where the
+    level it marks (the band, or `dBA` without spectra) is finite.
+13. **C7.** A direction with no finite band has `dBA` = -inf and `EAA` = 0.
+14. **C8.** With `fixed_load_factor` set, `thrust_coefficient` is the same in every group.
+15. **C9.** `DOPPLER_SHIFT_REMOVED`, when present, is 0 or 1 and the same in every group.
+16. **C10.** Every `rotor_scale` equals `main_rotor_radius_meters`, when present.
+17. **C11.** The groups are named `sphere0` to `sphere<N-1>`.
+18. **C12.** `condition_origin`, when present, is one of the three values above.
+19. **C13.** `phi` is in [-180, 180) deg and `theta` is in [0, 180] deg (ART angles, above).
+
+### Reading a database
+
+`nod_database.load_nod(path)` returns the conditions in group order, each with its speed in
+knots (from `advance_ratio` and `main_rotor_tip_speed_meters_per_sec`), flight path angle,
+thrust coefficient, sphere radius, channel directions, `dBA`, `EAA`, band centers,
+`amplitude` and `coverage`, whichever layout the file uses. The load factor is 1 in a
+`fixed_load_factor` database. Otherwise it is C_T / C_W, and the caller passes C_W, since
+the file stores no density to form it. Levels are returned as stored, -inf where missing.
+`measured_amplitude` sets every coverage-0 cell to NaN. The file stores a gated cell and an
+unmeasured one alike ([how a bin's state travels](#how-a-bins-state-travels)), so a reader
+cannot restore the gated cell's -inf.
+
+`nod_database.compare_databases(a, b)` matches conditions by advance ratio, flight path
+angle and thrust coefficient. It reports the root variables and attributes that differ (not
+`panam_created_utc` and `panam_inputs`, which name the build rather than its content), the
+conditions in only one file, and for each matched condition the group scalars that differ
+(`radius_m`, `rotor_scale_m`, `doppler_shift_removed`, `condition_origin`), the per-band
+difference of the energy summed over the cells finite in both, the largest level differences, and the
+coverage gained and lost. `compare_databases.py` prints the same report.
+
+`nod_tool.py` inspects one database: `list` prints a row per condition (its coverage
+fraction is of the lower hemisphere, `|phi| <= 90`, the part a measurement can cover),
+`plot` maps the lower hemisphere of a condition's `dBA`, `EAA`, one band of `amplitude`
+or `coverage` on a Lambert projection,
+`envelope` plots the conditions in speed and flight path angle by `condition_origin`, and
+`check` prints the `validate_nod` violations and exits with status 1 when there is one.
+
+## Provenance stamp
+
+The AAM sphere and the database root carry these optional text attributes, written by
+`provenance.build_provenance` and `provenance.write_provenance`. No reader requires them, and
+adding them left `DATABASE_FORMAT_VERSION` at 1. A file written before them has none.
+
+| attribute | content |
+| --- | --- |
+| `panam_tool` | the writer: `noise_abatement_2017.build_sphere`, `sphere_statistics.write_averaged_sphere`, `flight_acoustics.write_aam_hemisphere_netcdf` (called directly), `flight_acoustics.build_empirical_database` or `flight_acoustics.build_database_from_norah2` |
+| `panam_version` | `git describe --always --dirty` of the PANAM source directory; `unknown` without git |
+| `panam_created_utc` | when the file was written, UTC, ISO 8601 to the second, e.g. `2026-10-11T14:03:22Z` |
+| `panam_python`, `panam_numpy`, `panam_scipy`, `panam_netcdf4`, `panam_numba` | library versions; `not installed` when absent |
+| `panam_settings` | the writer's processing arguments as canonical JSON: keys sorted, no whitespace, ASCII |
+| `panam_settings_sha256` | SHA-256 (hex) of `panam_settings` |
+| `panam_inputs` | what identifies the file, as canonical JSON, not hashed: its own name and its inputs by file name (see below) |
+| `panam_input_signature` | spheres from `build_sphere` only: SHA-256 (hex) of the name, size and modification time of each input file (`provenance.file_signature` of `noise_abatement_2017.run_input_files`); `build_all(skip_unchanged=True)` compares it |
+| `panam_build_record` | spheres from `build_sphere` only: the record `build_sphere` returned (the manifest columns) without its paths and stamp columns, as JSON with keys sorted and tuples, dicts and non-finite floats tagged (`{"tuple": [...]}`, `{"dict": {...}}`, `{"float": "nan"}`; `provenance.read_record_json` reads it); `build_all` rebuilds a skipped run's manifest row from it |
+
+The settings are reduced to plain JSON before they are written: numpy arrays and scalars to
+lists and numbers, a non-finite number to the text `nan`, `inf` or `-inf` (the JSON is
+strict, with no `NaN` or `Infinity`), a callable to its qualified name (with its
+`description`, if it has one), an object such as an `Atmosphere` to its public attributes
+and type name. A path is reduced to its file name: the builders' path arguments always, and
+any other string that is an absolute path or starts with `~`. No stamp names a directory of
+the machine that wrote it.
+
+The file's identity is kept out of the hashed settings and written to `panam_inputs`
+instead:
+
+| writer | `panam_inputs` |
+| --- | --- |
+| `build_sphere` | `test` (the aircraft), `run`, `output_path`, `reference_sphere`, `norah2_directory`, `plate_table_directory`, `samples_path` |
+| `write_averaged_sphere` | `filename`, `sources` (the averaged runs) |
+| `write_aam_hemisphere_netcdf` (called directly) | `filename` |
+| `build_empirical_database` | `directory_name`, `database_filename`, `hover_source`, `spheres` and `exclude` when given, and `merged_spheres` (a list of file-name lists, one per condition `merge_repeats` averaged) when any were merged |
+| `build_database_from_norah2` | `hem_files`, `database_filename` |
+
+Where an identity changes the processing, the settings record that much: `build_sphere`
+records `reference_sphere_given` (a reference sphere sets the grid and bands) and
+`build_empirical_database` records `hover_source_given`. Equal processing settings give
+equal text and an equal hash, so `panam_settings_sha256` alone says whether two spheres, or
+two databases, were built with the same settings, whatever their names or runs.
+`build_sphere` records `node_statistics` only when it is true: the node statistics add
+variables and change no level, so a default build keeps the hash it had before the option.
+`overwrite` is a file-handling choice, not a processing setting: `build_sphere` and
+`build_database_from_norah2` leave it out of the settings.
+
+`build_sphere`'s record, and the `--manifest` CSV, also carry the settings in
+`noise_abatement_2017.RECORDED_SETTINGS` as given, `panam_version` and `settings_sha256`.
 
 ## How a bin's state travels
 
@@ -199,6 +362,12 @@ only up to the gridded hemisphere.
 **Reading.** `mask_missing_levels` treats three conventions as missing and turns each into
 -inf (no energy): NaN, which the shipped 2017 spheres use; any value at or below -998; and
 any value above 1e34, which older PANAM output used.
+
+**Averaging spheres.** `sphere_statistics.read_sphere` (used by `average_spheres`,
+`compare_spheres` and `sphere_diff.py`) reads the same three conventions differently: by
+default (`missing='no_data'`) a -999 or >1e34 cell is NaN, no data, so the run is left out of
+that cell's average; with `missing='no_energy'` it is -inf, a run with zero power, as
+`mask_missing_levels` reads it. NaN on disk is always no data.
 
 **Database.** A `coverage` cell is 1 only where its band level and its direction's EAA were
 finite in the source sphere. It is 0 for cells that were gated, masked or below the -100 dB
@@ -280,7 +449,16 @@ row, then one row per run:
   checks that a default build differs from the older format only by the added items.
 - `tests/test_run_metadata.py` pins the per-run metadata in the sphere and the database, and
   that the database's metadata are attributes, not variables.
+- `tests/test_sphere_statistics.py` pins the averaged sphere's `N_RUNS` and
+  `AMPLITUDE_SD_DB`, and that they follow the AAM variables.
+- `tests/test_node_statistics.py` and `tests/test_noise_abatement_2017.py` pin `N_SAMPLES` and
+  `AMPLITUDE_STD`, and that a sphere built without them is unchanged.
 - `tests/test_write_aam_hemisphere_netcdf.py` pins the AAM variable order, the -999
   sentinel, the masking conventions read back, and the root vehicle fields.
+- `tests/test_provenance.py` pins the provenance stamp: a stable hash for equal settings,
+  the reduction of paths, and that no written attribute names a directory of the machine.
 - `tests/test_golden_results.py` pins depropagated levels and the database built from them
   to 1e-6 dB.
+- `tests/conftest.py` runs `validate_nod` on every database the tests build, and
+  `tests/test_nod_database.py` corrupts a database one way at a time and checks that
+  exactly the matching rules break.

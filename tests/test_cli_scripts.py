@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from sphere_helpers import minimal_hemisphere, write_sphere_directory
 
 REPO = Path(__file__).resolve().parents[1]
@@ -84,12 +86,22 @@ def test_spectrogram_frequency_option_sets_display_range(tmp_path):
 
 def test_vold_kalman_filter_demo_runs(tmp_path):
     """The demo's crossing chirp fell to negative frequency over its 5 s record."""
+    from unittest.mock import patch
     result = run_here('vold_kalman_filter.py', cwd=tmp_path)
     assert result.returncode == 0, result.stderr
     assert 'Spectrogram generation skipped' not in result.stdout
     plots = tmp_path / 'demo_plots'
     assert (plots / 'vkf_example.png').stat().st_size > 0
     assert len(list(plots.glob('vkf_spectrogram_*.png'))) == 10
+    result = run_here('vold_kalman_filter.py', '-o', 'elsewhere', cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert len(list((tmp_path / 'elsewhere').glob('vkf_*.png'))) == 11
+    # -p/--plot also opens the figures (a no-op under Agg) and still writes all 11.
+    with patch('matplotlib.pyplot.show') as show:
+        result = run_here('vold_kalman_filter.py', '-p', '-o', 'shown', cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert len(list((tmp_path / 'shown').glob('vkf_*.png'))) == 11
+    show.assert_called_once()
 
 
 def _spectrogram_call(path, *options):
@@ -185,6 +197,68 @@ def test_build_empirical_database_runs(tmp_path):
     assert result.returncode == 0, result.stderr
     with Dataset(str(tmp_path / 'database.nod')) as ds:
         assert len(ds.groups) >= 2
+    # The output exists now: it is replaced only with --overwrite.
+    result = run_here('build_empirical_database.py', 'spheres', 'database.nod', '--fixed-load-factor',
+                      '--exclude', 'X102.nc', cwd=tmp_path)
+    assert result.returncode == 2 and '--overwrite' in result.stderr
+    result = run_here('build_empirical_database.py', 'spheres', 'database.nod', '--fixed-load-factor',
+                      '--exclude', 'X102.nc', '--extended-fpa=-24:35', '--overwrite', cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    with Dataset(str(tmp_path / 'database.nod')) as ds:
+        assert ds.source_spheres == 'X101.nc' and ds.excluded_spheres == 'X102.nc'
+    # A recipe's settings, and a refused key's message.
+    (tmp_path / 'recipe.toml').write_text('[database]\nfixed_load_factor = true\nexclude = ["X102.nc"]\n')
+    result = run_here('build_empirical_database.py', 'spheres', 'recipe.nod', '--recipe', 'recipe.toml',
+                      cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    with Dataset(str(tmp_path / 'recipe.nod')) as ds:
+        assert ds.source_spheres == 'X101.nc' and int(ds['fixed_load_factor'][...]) == 1
+    (tmp_path / 'bad.toml').write_text('[database]\nload_factor = [1.0]\n')
+    result = run_here('build_empirical_database.py', 'spheres', 'bad.nod', '--recipe', 'bad.toml', cwd=tmp_path)
+    assert result.returncode == 1 and 'did you mean load_factors' in result.stderr
+
+
+def test_noise_abatement_2017_recipe_help(tmp_path):
+    result = run_here('noise_abatement_2017.py', '--help', cwd=tmp_path)
+    assert result.returncode == 0 and '--recipe' in result.stdout and '--hover-source' in result.stdout
+
+
+def test_compare_databases_runs(tmp_path):
+    import flight_acoustics as fa
+    for name, offset in (('a', 0.0), ('b', 1.0)):
+        hemisphere = minimal_hemisphere()
+        hemisphere['third_octave']['bands_db'] += offset
+        write_sphere_directory(tmp_path / name, [(hemisphere, 60, -3), (hemisphere, 80, 0)])
+        fa.build_empirical_database(str(tmp_path / name), str(tmp_path / f'{name}.nod'), load_factors=None)
+    same = run_here('compare_databases.py', 'a.nod', 'a.nod', '--validate', cwd=tmp_path)
+    assert same.returncode == 0, same.stderr
+    assert 'no differences' in same.stdout
+    different = run_here('compare_databases.py', 'a.nod', 'b.nod', cwd=tmp_path)
+    assert different.returncode == 1, different.stderr
+    assert 'band energy +1 dB' in different.stdout
+    tolerated = run_here('compare_databases.py', 'a.nod', 'b.nod', '--tolerance', '1.5', cwd=tmp_path)
+    assert tolerated.returncode == 0, tolerated.stdout
+
+
+@pytest.mark.parametrize('tolerance', ['-1', 'nan', 'inf'])
+def test_compare_databases_refuses_a_tolerance_that_is_not_finite_and_non_negative(tmp_path, tolerance):
+    result = run_here('compare_databases.py', 'a.nod', 'a.nod', '--tolerance', tolerance, cwd=tmp_path)
+    assert result.returncode == 2
+    assert '--tolerance must be a finite number of dB, at least 0' in result.stderr
+
+
+def test_noise_abatement_plate_cache_lists_and_clears(tmp_path):
+    (tmp_path / 'tables').mkdir()
+    (tmp_path / 'tables' / 'old.pkl').write_bytes(b'')
+    result = run_here('noise_abatement_2017.py', '--plate-cache', 'list', '--plate-table-directory', 'tables',
+                      cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert 'old format' in result.stdout and '1 plate tables' in result.stdout
+    result = run_here('noise_abatement_2017.py', '--plate-cache', 'clear', '--plate-table-directory', 'tables',
+                      cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert not list((tmp_path / 'tables').iterdir())
+    assert run_here('noise_abatement_2017.py', cwd=tmp_path).returncode != 0     # aircraft still required
 
 
 def test_array_planner_subcommands_run(tmp_path):
@@ -200,3 +274,140 @@ def test_array_planner_subcommands_run(tmp_path):
                   '--kmz', 'array.kmz', cwd=tmp_path)
     assert result.returncode == 0, result.stderr
     assert (tmp_path / 'array.kmz').stat().st_size > 0
+
+
+def test_nod_tool_subcommands_run(tmp_path):
+    import flight_acoustics as fa
+    from netCDF4 import Dataset
+    write_sphere_directory(tmp_path / 'spheres', [(minimal_hemisphere(), 60, -3), (minimal_hemisphere(), 80, 0)])
+    with pytest.warns(UserWarning):
+        fa.build_empirical_database(str(tmp_path / 'spheres'), str(tmp_path / 'db.nod'), load_factors=None)
+    result = run_here('nod_tool.py', 'list', 'db.nod', cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    rows = [line.split() for line in result.stdout.splitlines()]
+    assert rows[0][0] == 'group' and len(rows) == 6
+    assert rows[1][:5] == ['sphere0', '60.0', '-3.00', '1', 'measured']
+    for args, image in ((['-g', 'sphere1'], 'dba.png'), (['-c=80:0', '-q', 'band', '-b', '125'], 'band.png'),
+                        (['-g', 'sphere0', '-q', 'coverage'], 'coverage.png')):
+        result = run_here('nod_tool.py', 'plot', 'db.nod', *args, '-o', image, cwd=tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert (tmp_path / image).stat().st_size > 0
+    assert run_here('nod_tool.py', 'plot', 'db.nod', '-c=70:0', '-o', 'x.png', cwd=tmp_path).returncode != 0
+    result = run_here('nod_tool.py', 'plot', 'db.nod', '-g', 'sphere0', '-n', '1.5', '-o', 'x.png', cwd=tmp_path)
+    assert result.returncode != 0
+    result = run_here('nod_tool.py', 'envelope', 'db.nod', '-o', 'envelope.png', cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / 'envelope.png').stat().st_size > 0
+    result = run_here('nod_tool.py', 'check', 'db.nod', cwd=tmp_path)
+    assert result.returncode == 0 and 'no violations' in result.stdout
+    with Dataset(str(tmp_path / 'db.nod'), 'a') as ds:
+        ds.groups['sphere1'].setncattr('condition_origin', 'guessed')
+    result = run_here('nod_tool.py', 'check', 'db.nod', cwd=tmp_path)
+    assert result.returncode == 1
+    assert result.stdout.startswith('C12 [sphere1]')
+
+
+def test_sphere_diff_averages_and_compares(tmp_path):
+    import numpy as np
+    louder = minimal_hemisphere()
+    louder['third_octave']['bands_db'] += 6.0
+    write_sphere_directory(tmp_path / 'spheres', [(minimal_hemisphere(), 60, -6), (louder, 60, -6)])
+    result = run_here('sphere_diff.py', 'average', 'mean.nc', 'spheres/X101.nc', 'spheres/X102.nc',
+                      cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    expected = 10.0 * np.log10((10 ** 8.0 + 10 ** 8.6) / 2.0)
+    result = run_here('sphere_diff.py', 'compare', 'spheres/X101.nc', 'mean.nc', '-f', '100:125',
+                      '-o', 'diff.png', cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    rows = [line.split() for line in result.stdout.splitlines()]
+    assert [row[0] for row in rows[2:]] == ['100', '125', 'overall']
+    assert float(rows[2][2]) == pytest.approx(expected - 80.0, abs=0.01)
+    assert (tmp_path / 'diff.png').stat().st_size > 0
+
+
+def test_depropagation_tutorial_runs(tmp_path):
+    """By default it writes only into demo_plots/ in the current directory."""
+    from netCDF4 import Dataset
+    result = run_here('depropagation_tutorial.py', '--mics', '5', '--duration', '8', cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert 'Recovered minus true' in result.stdout
+    assert [path.name for path in tmp_path.iterdir()] == ['demo_plots']
+    plots = tmp_path / 'demo_plots'
+    assert (plots / 'tutorial_difference.png').stat().st_size > 0
+    assert sorted(path.name for path in (plots / 'tutorial_spheres').iterdir()) == ['X101.nc', 'vehicle.cfg']
+    with Dataset(str(plots / 'tutorial.nod')) as ds:
+        assert len(ds.groups) >= 1
+    result = run_here('depropagation_tutorial.py', '--mics', '3', '--duration', '6', '-o', 'elsewhere',
+                      cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / 'elsewhere' / 'tutorial.nod').is_file()
+
+
+def test_array_planner_hover_and_takeoff_run(tmp_path):
+    result = run_here('array_planner.py', 'hover', '--radii', '50,100', '--nmics', '8', '--altitudes', '30,60',
+                      '--vehicle-headings', '0,90', '-o', 'hover.png', cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / 'hover.png').stat().st_size > 0
+    (tmp_path / 'takeoff.toml').write_text(
+        'radii = [150]\nnmics = 12\norigin = [-100, 0]\nflight_path_angle = 8\n'
+        'ref_lat = 40.8\nref_lon = -77.9\nheading = 90\nkmz = "takeoff.kmz"\n')
+    result = run_here('array_planner.py', 'takeoff', '--case', 'takeoff.toml', '-o', 'takeoff.png', cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / 'takeoff.png').stat().st_size > 0
+    assert (tmp_path / 'takeoff.kmz').stat().st_size > 0
+
+
+def test_sphere_to_norah2_runs(tmp_path):
+    import flight_acoustics as fa
+    atmosphere = ['--temperature', '288.15', '--pressure', '101.325', '--humidity', '70']
+    result = run_here('sphere_to_norah2.py', str(EXAMPLE_SPHERE), '-o', 'sphere.hem', *atmosphere,
+                      cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    hem = fa.load_norah2_hemisphere(str(tmp_path / 'sphere.hem'))
+    assert hem['levels_db'].shape == (19, 19, 31)
+    assert hem['constants']['Tm'] == 15.0
+    result = run_here('sphere_to_norah2.py', str(EXAMPLE_SPHERE), '-o', 'sphere.hem', *atmosphere,
+                      cwd=tmp_path)
+    assert result.returncode == 1 and 'exists' in result.stderr
+    result = run_here('sphere_to_norah2.py', str(EXAMPLE_SPHERE), '-o', 'other.hem', cwd=tmp_path)
+    assert result.returncode == 2 and '--temperature' in result.stderr
+    result = run_here('sphere_to_norah2.py', str(EXAMPLE_SPHERE), '-o', 'pa.hem', '--temperature', '288.15',
+                      '--pressure', '101325', '--humidity', '70', cwd=tmp_path)
+    assert result.returncode == 1 and 'kPa' in result.stderr and not (tmp_path / 'pa.hem').exists()
+
+
+def test_always_writing_plot_scripts_take_plot(tmp_path):
+    """atmomap.py, ega_plot.py and board_field_plot.py had no option to open a
+    window; -p stays --pressure and --plot-type in the first two."""
+    result = run_here('atmomap.py', '-p', '1:2', '-o', 'out/atm.png', '--plot', cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / 'out' / 'atm.png').stat().st_size > 0
+    result = run_here('ega_plot.py', '-p', 'frequency', '-d', '100', '-o', 'ega.png', '--plot', cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / 'ega.png').stat().st_size > 0
+    result = run_here('board_field_plot.py', '--frequency', '1000', '--grid', '21x9', '-o', 'board.png', '-p',
+                      cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / 'board.png').stat().st_size > 0
+
+
+def test_example_scripts_take_help_without_running(tmp_path):
+    """hexacopter_vkf_example.py, vold_kalman_filter.py and as350_flip_check.py
+    had no options and ran as soon as they started, -h included."""
+    expected = {'hexacopter_vkf_example.py': ['--mat-file', '--output-dir', '--plot'],
+                'vold_kalman_filter.py': ['--output-dir', '--plot'],
+                'as350_flip_check.py': ['--basepath'],
+                'AS350_289108_demo.py': ['--output-dir', '--outdir', '--plot', '--show', '--basepath']}
+    for script, options in expected.items():
+        result = run_here(script, '--help', cwd=tmp_path)
+        assert result.returncode == 0, (script, result.stderr)
+        assert all(option in result.stdout for option in options), (script, result.stdout)
+    assert not list(tmp_path.iterdir())
+
+
+def test_as350_flip_check_finds_the_demo_data(monkeypatch, tmp_path):
+    """The path was resolved on import, which raised without the data configured."""
+    import as350_flip_check as check
+    monkeypatch.setenv('AS350_DEMO_PATH', str(tmp_path / 'env'))
+    assert check.demo_data_path() == str(tmp_path / 'env')
+    assert check.demo_data_path(str(tmp_path / 'cli')) == str(tmp_path / 'cli')

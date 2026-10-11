@@ -48,20 +48,27 @@ variables.
 """
 
 import contextlib
+import functools
 import os
 import csv
 import glob
+import inspect
 import logging
+import multiprocessing
+import pickle
 import re
 import warnings
 from collections import defaultdict
 
 import numpy as np
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from netCDF4 import Dataset
 
 import flight_acoustics as fa
 import local_paths
+import provenance
+import refracted_rays
+import sphere_statistics
 
 #: Name under which :mod:`local_paths` finds the dataset root.
 DATA_ROOT_NAME = 'noise_abatement_2017'
@@ -119,6 +126,13 @@ DEFAULT_RIM_ELEVATION_DEG = 14.0
 
 #: Threads used to warm the cloud-storage cache ahead of each run.
 PREFETCH_WORKERS = 24
+
+#: The atmosphere a run without usable ground weather is depropagated in:
+#: 20 C, 101.325 kPa, 20 % relative humidity (fa.Atmosphere arguments).
+STANDARD_DAY = dict(temperature=293.15, pressure=101.325, relative_humidity=20.0)
+
+#: The command line's log format.
+LOG_FORMAT = '%(asctime)s %(levelname)s %(message)s'
 
 #: Third-octave band centers carried by the legacy spheres.
 LEGACY_BAND_CENTERS_HZ = np.array([
@@ -974,6 +988,15 @@ def wind_components(wind, reference_east_north, ground_velocity_east_north_ft_s)
     return along, cross, airspeed_knots
 
 
+def wind_in_frame_ft_s(wind, bearing_deg):
+    """A :func:`normalize_wind` wind as (Wx, Wy, 0) in ft/s in the track frame of
+    :func:`east_north_to_frame` (+x along compass ``bearing_deg``, deg): the air's horizontal
+    velocity, for :func:`refracted_rays.uniform_wind_ray_model`."""
+    scale = fa.WIND_SPEED_UNITS[wind['units']] / 0.3048
+    x, y = east_north_to_frame(bearing_deg, wind['east'] * scale, wind['north'] * scale)
+    return np.array([float(x), float(y), 0.0])
+
+
 # --------------------------------------------------------------------------
 # Acoustic loading
 # --------------------------------------------------------------------------
@@ -1093,48 +1116,111 @@ def default_plate_table_directory():
     return os.path.join(os.path.expanduser('~'), '.cache', 'panam', 'plate_tables')
 
 
-def plate_table(instrument, sound_speed_ft_s, bands, ground=None, directory=None):
+def _plate_table_directory(directory=None):
+    """``directory`` as an absolute path, '~' expanded; None gives
+    :func:`default_plate_table_directory`."""
+    return os.path.abspath(os.path.expanduser(directory or default_plate_table_directory()))
+
+
+def _plate_table_speed(sound_speed_ft_s):
+    """The sound speed (ft/s) a plate table is computed at: ``sound_speed_ft_s``
+    rounded to a step of :data:`PLATE_TABLE_SOUND_SPEED_STEP`."""
+    step = np.log1p(PLATE_TABLE_SOUND_SPEED_STEP)
+    return float(np.exp(np.round(np.log(sound_speed_ft_s) / step) * step))
+
+
+def plate_table(instrument, sound_speed_ft_s, bands, ground=None, directory=None, **options):
     """The axisymmetric BEM table (:func:`axisymmetric_bem.table`) for one board type.
 
-    Computed at ``sound_speed_ft_s`` rounded to :data:`PLATE_TABLE_SOUND_SPEED_STEP`
+    ``sound_speed_ft_s`` in ft/s, ``bands`` the band center frequencies in Hz.
+    Computed at the sound speed rounded to :data:`PLATE_TABLE_SOUND_SPEED_STEP`
     and cached in memory and in ``directory`` (default
     :func:`default_plate_table_directory`); a table takes 15-45 s.
+    ``options`` (mesh, quadrature, directions; see
+    :func:`axisymmetric_bem.table_settings`) go to :func:`axisymmetric_bem.table`.
+
+    The cache key holds :data:`axisymmetric_bem.PLATE_TABLE_VERSION`, the
+    microphone height, the ground, the rounded sound speed, every band and
+    every setting of :func:`axisymmetric_bem.table_settings`.  Each table is an
+    .npz file (no pickle) that stores its key; one whose key differs, or that
+    cannot be read, is recomputed and replaced.  Files from before the version
+    (.pkl) are ignored.
     """
-    import pickle
     import axisymmetric_bem as ab
+    import hashlib
+    import json
     ground = dict(SITE_GROUND if ground is None else ground)
-    step = np.log1p(PLATE_TABLE_SOUND_SPEED_STEP)
-    speed = float(np.exp(np.round(np.log(sound_speed_ft_s) / step) * step))
+    speed = _plate_table_speed(sound_speed_ft_s)
     bands = np.asarray(bands, dtype=float)
-    ground_key = '_'.join('{}{}'.format(k, ground[k]) for k in sorted(ground))
+    mic_height = BOARD_MIC_HEIGHT_FT[instrument]
     # Keyed on what the table depends on, not the instrument's name.
-    key = 'h{:.2f}mm_{}_c{:.2f}_b{}-{:g}-{:g}'.format(BOARD_MIC_HEIGHT_FT[instrument] * 304.8, ground_key,
-                                                      speed, bands.size, bands[0], bands[-1])
-    # The key holds only the ends of the band set, so check the bands, as for
-    # a table read from disk.
+    key = json.dumps(dict(version=ab.PLATE_TABLE_VERSION, ground=ground, sound_speed_ft_s=speed,
+                          bands=bands.tolist(), settings=ab.table_settings(**options, mic_height=mic_height)),
+                     sort_keys=True, default=lambda value: value.tolist())     # numpy values
     table = _PLATE_TABLES.get(key)
-    if table is not None and np.array_equal(table.get('bands'), bands):
+    if table is not None:
         return table
-    directory = os.path.abspath(os.path.expanduser(directory or default_plate_table_directory()))
-    path = os.path.join(directory, key + '.pkl')
+    # The name is for people; the hash makes it unique and the stored key decides.
+    ground_name = '_'.join('{}{}'.format(k, ground[k]) for k in sorted(ground))
+    name = 'h{:.2f}mm_{}_c{:.2f}_b{}-{:g}-{:g}_v{}_{}.npz'.format(
+        mic_height * 304.8, ground_name, speed, bands.size, bands[0], bands[-1], ab.PLATE_TABLE_VERSION,
+        hashlib.sha256(key.encode()).hexdigest()[:12])
+    directory = _plate_table_directory(directory)
+    path = os.path.join(directory, name)
     table = None
     if os.path.exists(path):
-        with open(path, 'rb') as handle:
-            table = pickle.load(handle)
-        if not np.array_equal(table.get('bands'), bands):
+        try:
+            table, stored_key = ab.read_table_npz(path)
+        except (OSError, ValueError) as error:
+            logging.warning('Ignoring the unreadable plate table %s: %s', path, error)
+            stored_key = None
+        if stored_key != key:
             table = None
     if table is None:
-        logging.info('Computing the plate table %s', key)
+        logging.info('Computing the plate table %s', name)
         flow = ground.get('sigma', ground.get('sigma_e'))
-        table = ab.table(bands, speed, flow_resistance=flow, ground=ground,
-                         mic_height=BOARD_MIC_HEIGHT_FT[instrument])
+        table = ab.table(bands, speed, flow_resistance=flow, ground=ground, mic_height=mic_height, **options)
         os.makedirs(directory, exist_ok=True)
-        temporary = path + '.{}.tmp'.format(os.getpid())
-        with open(temporary, 'wb') as handle:
-            pickle.dump(table, handle)
-        os.replace(temporary, path)             # parallel builds may race; either copy is right
+        # Parallel builds may race; either copy is right.
+        with fa._atomic_output(path) as temporary, open(temporary, 'wb') as handle:
+            ab.write_table_npz(handle, table, key)
     _PLATE_TABLES[key] = table
     return table
+
+
+def plate_table_cache(directory=None):
+    """The files in the plate-table cache ``directory`` (default
+    :func:`default_plate_table_directory`): one dict per file, sorted by name,
+    with ``path``, ``size`` (bytes) and ``status``: 'current' (an .npz of
+    this :data:`axisymmetric_bem.PLATE_TABLE_VERSION`), 'old version N',
+    'old format' (a .pkl from before versioning) or 'unreadable'."""
+    import axisymmetric_bem as ab
+    import json
+    directory = _plate_table_directory(directory)
+    records = []
+    for path in sorted(glob.glob(os.path.join(directory, '*.npz')) + glob.glob(os.path.join(directory, '*.pkl'))):
+        if path.endswith('.pkl'):
+            status = 'old format'
+        else:
+            try:
+                version = json.loads(ab.read_table_key(path))['version']
+                status = 'current' if version == ab.PLATE_TABLE_VERSION else 'old version {}'.format(version)
+            except (OSError, ValueError, KeyError, TypeError):
+                status = 'unreadable'
+        records.append(dict(path=path, size=os.path.getsize(path), status=status))
+    return records
+
+
+def clear_plate_table_cache(directory=None):
+    """Delete the plate tables (.npz, old .pkl and leftover .tmp files) in
+    ``directory`` (default :func:`default_plate_table_directory`), but not the
+    directory or any other file.  Returns the number of files deleted."""
+    directory = _plate_table_directory(directory)
+    paths = [path for pattern in ('*.npz', '*.pkl', '.*.npz.*.tmp', '*.npz.*.tmp', '*.pkl.*.tmp')
+             for path in glob.glob(os.path.join(directory, pattern))]
+    for path in paths:
+        os.remove(path)
+    return len(paths)
 
 
 def plate_response(tables, mirror, sound_speed_ft_s):
@@ -1162,6 +1248,13 @@ def sound_speed_ft_s(atmosphere):
     return float(fa.unit_conversion.len_conv(atmosphere.soundspeed, from_units='m', to_units='ft'))
 
 
+def _weather_station_files(test, run):
+    """The ground weather station files of ``run``'s day, sorted (see :func:`run_atmosphere`)."""
+    return sorted(glob.glob(os.path.join(test.base, test.aircraft + '_Weather',
+                                         test.aircraft + '_Ground[_ ]Stations',
+                                         '{}_{}_*.csv'.format(test.aircraft, run[:3]))))
+
+
 def run_atmosphere(test, run, fallback=None):
     """Atmosphere measured by the ground weather stations at the time of ``run``.
 
@@ -1187,12 +1280,8 @@ def run_atmosphere(test, run, fallback=None):
     except (TypeError, ValueError, AttributeError):
         run_seconds = None
 
-    day = run[:3]
     samples = []
-    pattern = os.path.join(test.base, test.aircraft + '_Weather',
-                           test.aircraft + '_Ground[_ ]Stations',
-                           '{}_{}_*.csv'.format(test.aircraft, day))
-    for path in sorted(glob.glob(pattern)):
+    for path in _weather_station_files(test, run):
         try:
             data = np.genfromtxt(path, delimiter=',', names=True)
         except Exception:                               # noqa: BLE001
@@ -1254,6 +1343,38 @@ def legacy_sphere_grid(path):
                     radius_ft=float(np.ravel(handle['RADIUS'][:])[0]))
 
 
+def _sphere_grid(reference):
+    """(band centers Hz, PHI deg, THETA deg) of a build: a :func:`legacy_sphere_grid`
+    ``reference``'s, or :data:`LEGACY_BAND_CENTERS_HZ` and None, None (the writer's
+    default grid) without one."""
+    if reference is None:
+        return LEGACY_BAND_CENTERS_HZ, None, None
+    return reference['band_centers_hz'], reference['phi_deg'], reference['theta_deg']
+
+
+def _run_atmosphere_or_standard_day(test, run):
+    """(atmosphere, error): :func:`run_atmosphere` and None, or, without usable
+    ground weather, :data:`STANDARD_DAY` and the ValueError that said so."""
+    try:
+        return run_atmosphere(test, run), None
+    except ValueError as error:
+        return fa.Atmosphere(**STANDARD_DAY), error
+
+
+def _mics_with_ambient(test, mics, ambient_run):
+    """The microphones of ``mics`` that have a recording in ``ambient_run``."""
+    return [m for m in mics if m in test.acoustic_files.get(ambient_run, {})]
+
+
+def tone_split_paths(output_path):
+    """Where ``build_sphere(tone_split=True)`` writes the parts of the sphere at ``output_path``:
+    ``{'tonal': <dir>/tonal/<stem>_tonal.nc, 'broadband': <dir>/broadband/<stem>_broadband.nc}``."""
+    directory, name = os.path.split(os.path.abspath(output_path))
+    stem, extension = os.path.splitext(name)
+    return {part: os.path.join(directory, part, '{}_{}{}'.format(stem, part, extension))
+            for part in ('tonal', 'broadband')}
+
+
 def norah2_file_name(sphere_prefix, speed_knots, fpa_deg, run_number):
     """``[type]_[procedure]_[IAS]kts_[gamma]deg_[run].hem``, as NORAH2 names its files.
 
@@ -1270,6 +1391,47 @@ def norah2_file_name(sphere_prefix, speed_knots, fpa_deg, run_number):
         sphere_prefix, procedure, speed_knots, round(abs(fpa_deg), 1), run_number)
 
 
+#: build_sphere settings copied, as given, into its record and the manifest; the
+#: rest are summarized there already (interpolation, rim_range, board_correction,
+#: min_elevation_deg, max_array_range_ft, azimuth_reference) or are in the sphere's
+#: provenance stamp only.
+RECORDED_SETTINGS = (
+    'band_snr_gate_db', 'gate_ambient', 'ambient_fallback_percentile',
+    'max_absorption_correction_db', 'max_response_correction_db', 'third_octave_method',
+    'tone_aware', 'remove_doppler', 'point_stride', 'r_ref_ft', 'window_time', 'window_overlap',
+    'azi_step', 'elv_step', 'rmax', 'apply_absorption_deprop', 'max_propagation_range_ft',
+    'min_steady_duration_s', 'nose_from_heading', 'flip_y_for_geometry', 'track_check',
+)
+
+
+def _sphere_settings(arguments):
+    """The provenance settings and inputs of a :func:`build_sphere` call.
+
+    ``arguments`` maps every parameter of :func:`build_sphere` to its value,
+    defaults included (its ``locals()`` on entry, or a bound signature).
+    Returns ``(settings, inputs)`` for :func:`provenance.build_provenance`:
+    the processing arguments, and what identifies the sphere, with paths
+    reduced to file names.
+    """
+    settings = dict(arguments)
+    test, run = settings.pop('test'), settings.pop('run')
+    # The node statistics add diagnostic variables and change no level: left off, they stay
+    # out of the settings so that a default build keeps the hash it had before the option.
+    if not settings.get('node_statistics', False):
+        settings.pop('node_statistics', None)
+    # Whether an existing file may be replaced changes no level: a resumed build with
+    # overwrite=False must still match the sphere a default build wrote.
+    settings.pop('overwrite', None)
+    inputs = dict(test=test.aircraft, run=str(run))
+    for name in ('output_path', 'reference_sphere', 'norah2_directory', 'plate_table_directory',
+                 'samples_path'):
+        value = settings.pop(name)
+        inputs[name] = None if value is None else provenance.path_name(value)
+    # A reference sphere sets the grid and bands, so whether one was given is a setting.
+    settings['reference_sphere_given'] = arguments['reference_sphere'] is not None
+    return settings, inputs
+
+
 def build_sphere(test, run, output_path, *, reference_sphere=None,
                  band_snr_gate_db=10.0, gate_ambient=True,
                  max_absorption_correction_db=30.0, max_response_correction_db=None,
@@ -1284,9 +1446,10 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
                  third_octave_method='fft', board_correction='plate_bem', ground=None,
                  plate_table_directory=None, ray_model=None, interpolation=None,
                  rim_elevation_deg=None, max_rim_range_ft=None, remove_doppler=False,
-                 nose_from_heading=False, samples_path=None, tone_aware=False,
+                 nose_from_heading=False, samples_path=None, tone_aware=False, tone_split=False,
                  azimuth_reference=None, wind=None, track_check=True,
-                 min_height_above_array_ft=MIN_HEIGHT_ABOVE_ARRAY_FT):
+                 min_height_above_array_ft=MIN_HEIGHT_ABOVE_ARRAY_FT, air_relative_doppler=False,
+                 absorption_profile=None, absorption_band_method='center', node_statistics=False):
     """Depropagate one run into an AAM-style source sphere.
 
     ``track_check`` (default True) refuses, with :class:`TrackRefused` and the reason, a run
@@ -1333,6 +1496,15 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     ``tone_aware`` files each tone whole in the band of its own frequency
     (:func:`flight_acoustics.tone_aware_band_power`) instead of summing whole FFT bins.
 
+    ``tone_split`` (needs ``tone_aware``) also writes the run's tonal and broadband parts
+    (:func:`flight_acoustics.depropagate_hemisphere`'s ``decompose_tonal``) as spheres of their
+    own, ``<name>_tonal.nc`` in a ``tonal`` directory and ``<name>_broadband.nc`` in a
+    ``broadband`` directory beside ``output_path``.  They sum to the total sphere in energy.  They
+    go in directories of their own because a database is built from every ``.nc`` in a
+    directory, and the parts beside the total would count the run three times.  The returned
+    dict names them under ``tonal_output`` and ``broadband_output``; ``samples_path`` then also
+    holds ``tonal_db`` and ``broadband_db``.
+
     ``samples_path``, if given, also saves the scattered samples (before gridding) to that
     .npz: azimuth and elevation (deg, panam's convention: 180 ahead, elevation positive
     below the horizon), band centers, band levels (dB at ``r_ref_ft``, bands x samples),
@@ -1343,7 +1515,12 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     samples are filed at the rays' launch angles, spreading is undone over the
     ray tubes and absorption over the arcs, and the plate correction is taken at
     the rays' arrival angles.  ``min_elevation_deg`` then bounds the launch
-    angle.  Default None: straight lines, as before.
+    angle.  Default None: straight lines, as before.  ``ray_model='wind'`` depropagates
+    along straight rays carried by the run's ``wind`` (required), uniform over the whole
+    path, in the run's uniform atmosphere (:func:`refracted_rays.uniform_wind_ray_model`):
+    a downwind sample travels faster and spreads over a shorter range, and a crosswind
+    turns the direction it is filed at.  ``air_relative_doppler`` (with ``remove_doppler``
+    and ``ray_model='wind'``) also takes the Doppler factor in the moving air; default False.
 
     ``max_rim_range_ft`` with ``rim_elevation_deg`` lets samples filed shallower than
     that come from as far as that range instead of ``max_propagation_range_ft``
@@ -1370,17 +1547,47 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     ground speed the AAM sphere is labeled with; the tracking data carries no
     airspeed.
 
+    ``absorption_profile`` undoes each path's absorption through a layered atmosphere instead
+    of the uniform ``atmosphere``: a mapping of ``altitude_ft`` (ft, in the track frame's z,
+    the same datum as the track and microphone heights), ``temperature_k`` (K),
+    ``relative_humidity`` (percent) and ``pressure_kpa`` (kPa), integrated along each straight
+    path (:func:`panam_acoustics.atmosphere.layered_attenuation_db`).  The sphere still keeps
+    the absorption over ``r_ref_ft`` in ``atmosphere``.  Default None: the uniform atmosphere.
+
+    ``absorption_band_method`` (``'center'``, the default, ``'arp5534'`` or ``'integrated'``)
+    forms the filter-bank bands' absorption (``third_octave_method='filter_bank'`` only; see
+    :func:`flight_acoustics.depropagate_hemisphere`).
+
+    ``node_statistics`` (default False) also writes, per ART point and band, the samples
+    behind the gridded node nearest it (:func:`sphere_statistics.node_statistics_variables`):
+    ``N_SAMPLES`` and ``AMPLITUDE_STD`` (dB, the weighted standard deviation of the sample
+    levels about the node's energy mean), into every sphere this call writes, the tonal and
+    broadband parts each with their own.  AAM and NICE-OPS do not read them.
+
     ``atmosphere``, if not given, is the ground stations' at the time of the run
     (:func:`run_atmosphere`).  A run whose day has no usable station record (AS350B3 day 292,
     R66 day 231) is depropagated in a 20 C, 20 % RH, 101.325 kPa standard day with a logged
     warning, and its sphere records the air density as NaN with source ``'none'``.
 
+    The sphere carries the provenance stamp of :mod:`provenance`: the processing
+    arguments of this call as canonical JSON, and what identifies the sphere (the
+    aircraft, the run, and the output, reference, NORAH2, plate-table and samples
+    paths by file name) in ``panam_inputs``.  Equal processing settings give an
+    equal ``settings_sha256`` across runs.
+
     Returns a dict describing what was processed, so a batch caller can log and
-    audit it without re-opening the output.
+    audit it without re-opening the output.  It includes the settings of
+    :data:`RECORDED_SETTINGS` as given, the code version (``panam_version``) and the
+    stamp's ``settings_sha256``.
     """
+    settings, inputs = _sphere_settings(locals())
     if rim_elevation_deg is None:
         rim_elevation_deg = DEFAULT_RIM_ELEVATION_DEG
+    if tone_split and not tone_aware:
+        raise ValueError('tone_split needs tone_aware=True')
     row = test.by_run[run]
+    input_signature = provenance.file_signature(run_input_files(test, run, gate_ambient, reference_sphere,
+                                                                 ray_model))
     track = load_track(test.track_path(run))
     if nose_from_heading:
         # A hover's flight path angle is the direction of its drift, erratic at a few tenths
@@ -1435,13 +1642,11 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
 
     density_source = 'caller'
     if atmosphere is None:
-        try:
-            atmosphere = run_atmosphere(test, run)
-            density_source = 'ground stations'
-        except ValueError as error:
+        atmosphere, error = _run_atmosphere_or_standard_day(test, run)
+        density_source = 'ground stations'
+        if error is not None:
             logging.warning('Run %s: %s; depropagating in a 20 C, 20 %% RH, 101.325 kPa standard day',
                             run, error)
-            atmosphere = fa.Atmosphere(temperature=293.15, pressure=101.325, relative_humidity=20.0)
             density_source = 'none'
     if check is not None:
         mean_height_ft = check.metrics['mean_height_above_array_ft']
@@ -1478,6 +1683,13 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
 
     if speed_of_sound_ft_s is None:
         speed_of_sound_ft_s = sound_speed_ft_s(atmosphere)
+    if isinstance(ray_model, str):
+        if ray_model != 'wind':
+            raise ValueError("ray_model must be a ray model, None or 'wind', not {!r}".format(ray_model))
+        if wind is None:
+            raise ValueError("Run {}: ray_model='wind' needs the run's wind".format(run))
+        ray_model = refracted_rays.uniform_wind_ray_model(speed_of_sound_ft_s,
+                                                          wind_in_frame_ft_s(normalized, bearing))
 
     mics = test.ground_board_mics(run)
     if not mics:
@@ -1500,7 +1712,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     elif not gate_ambient:
         ambient_source = 'none'
     if ambient_run is not None:
-        mics = [m for m in mics if m in test.acoustic_files.get(ambient_run, {})]
+        mics = _mics_with_ambient(test, mics, ambient_run)
         if not mics:
             raise ValueError('Run {}: no microphone has both run and ambient data'.format(run))
 
@@ -1531,13 +1743,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     elif ambient_source.startswith('percentile'):
         ambient_percentile = float(ambient_fallback_percentile)
 
-    reference = legacy_sphere_grid(reference_sphere)
-    if reference is not None:
-        band_centers = reference['band_centers_hz']
-        phi_deg, theta_deg = reference['phi_deg'], reference['theta_deg']
-    else:
-        band_centers = LEGACY_BAND_CENTERS_HZ
-        phi_deg = theta_deg = None
+    band_centers, phi_deg, theta_deg = _sphere_grid(legacy_sphere_grid(reference_sphere))
 
     receiver_response = None
     if board_correction == 'plate_bem':
@@ -1588,34 +1794,94 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
                    (rim_elevation_deg, max_rim_range_ft)),
         remove_doppler=remove_doppler,
         tone_aware=tone_aware,
+        decompose_tonal=tone_split,
         return_scattered=samples_path is not None,
         track_nose=nose,
+        air_relative_doppler=air_relative_doppler,
+        absorption_profile=absorption_profile,
+        absorption_band_method=absorption_band_method,
+        return_statistics=node_statistics,
     )
     if samples_path is not None:
         scattered = hemisphere['scattered']
         os.makedirs(os.path.dirname(os.path.abspath(samples_path)) or '.', exist_ok=True)
+        parts = {key: scattered['third_octave'][key] for key in ('tonal_db', 'broadband_db') if tone_split}
         np.savez(samples_path, azimuth_deg=scattered['azi_deg'], elevation_deg=scattered['elv_deg'],
                  band_centers_hz=scattered['third_octave']['band_centers_hz'],
                  bands_db=scattered['third_octave']['bands_db'], mic=scattered['mic'],
-                 range_ft=scattered['range'], source_height_ft=scattered['source_height'], run=str(run))
+                 range_ft=scattered['range'], source_height_ft=scattered['source_height'], run=str(run),
+                 **parts)
+
+    # The record, without its paths and stamp: written into each sphere as its build
+    # record, so that build_all can list a run it skips as this build listed it.
+    details = dict(condition=row.get('test_cond'),
+                   layout=row.get('layout'), ambient_run=ambient_run,
+                   ambient_source=ambient_source,
+                   mics=len(mics), speed_knots=speed_knots, flight_path_angle_deg=fpa_deg,
+                   window_s=(float(segment['time'][0] - track['time'][0]),
+                             float(segment['time'][-1] - track['time'][0])),
+                   window_points=int(index_stop - index_start),
+                   min_elevation_deg=min_elevation_deg,
+                   max_array_range_ft=max_array_range_ft,
+                   temperature_k=atmosphere.temperature,
+                   relative_humidity=atmosphere.relative_humidity,
+                   pressure_kpa=atmosphere.pressure,
+                   speed_of_sound_ft_s=speed_of_sound_ft_s,
+                   azimuth_reference=azimuth_reference,
+                   track_flags='; '.join(check.flags) if check is not None else 'not checked',
+                   min_height_above_array_ft=(check.metrics['min_height_above_array_ft']
+                                              if check is not None else float('nan')),
+                   gross_weight_lb=run_metadata['gross_weight_lb'],
+                   air_density_kg_m3=air_density, air_density_source=density_source,
+                   wind_source=wind_source, wind_units=wind_units, wind_along_track=wind_along,
+                   wind_cross_track=wind_cross, airspeed_knots=airspeed_knots,
+                   rays='straight' if ray_model is None else getattr(ray_model, 'description', 'custom'),
+                   interpolation=('fixed rmax {:g}'.format(rmax) if interpolation is None else
+                                  'adaptive ' + ' '.join('{}={}'.format(k, v) for k, v in sorted(
+                                      dict(fa.ADAPTIVE_INTERPOLATION, **interpolation).items()))),
+                   gaps=(hemisphere.get('interpolation', {}).get('gaps', 0)),
+                   rim_range='' if max_rim_range_ft is None else '{:g} ft below {:g} deg'.format(
+                       max_rim_range_ft, rim_elevation_deg),
+                   board_correction=board_correction if board_correction == 'flat' else
+                   'plate_bem ' + ' '.join('{}={}'.format(k, v) for k, v in
+                                            sorted((ground or SITE_GROUND).items())),
+                   **{name: settings[name] for name in RECORDED_SETTINGS})
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)) or '.', exist_ok=True)
-    fa.write_aam_hemisphere_netcdf(
-        output_path,
-        hemisphere,
-        mode='third_octave',
-        phi_deg=phi_deg,
-        theta_deg=theta_deg,
-        radius_ft=r_ref_ft,
-        speed_knots=speed_knots,
-        flight_path_angle_deg=fpa_deg,
-        title=sphere_title(AIRCRAFT_SPHERE_PREFIX.get(test.aircraft, test.aircraft),
-                           row.get('run_num', run), run[:3]),
-        overwrite=overwrite,
-        doppler_shift_removed=1.0 if remove_doppler else 0.0,
-        azimuth_reference=azimuth_reference,
-        run_metadata=run_metadata,
-    )
+    title = sphere_title(AIRCRAFT_SPHERE_PREFIX.get(test.aircraft, test.aircraft), row.get('run_num', run), run[:3])
+    spheres = [(output_path, hemisphere, title, 'bands_db')]
+    part_paths = {}
+    if tone_split:
+        part_paths = tone_split_paths(output_path)
+        for part in ('tonal', 'broadband'):
+            os.makedirs(os.path.dirname(part_paths[part]), exist_ok=True)
+            bands = dict(hemisphere['third_octave'], bands_db=hemisphere['third_octave'][part + '_db'])
+            spheres.append((part_paths[part], dict(hemisphere, third_octave=bands), '{} {}'.format(title, part),
+                            part + '_db'))
+    for path, sphere, sphere_name, field in spheres:
+        # Each file is stamped with its own name; the settings, and their hash, are shared.
+        stamp = provenance.build_provenance(
+            'noise_abatement_2017.build_sphere', settings,
+            inputs=dict(inputs, output_path=os.path.basename(path)), input_signature=input_signature,
+            build_record=details)
+        fa.write_aam_hemisphere_netcdf(
+            path,
+            sphere,
+            mode='third_octave',
+            phi_deg=phi_deg,
+            theta_deg=theta_deg,
+            radius_ft=r_ref_ft,
+            speed_knots=speed_knots,
+            flight_path_angle_deg=fpa_deg,
+            title=sphere_name,
+            overwrite=overwrite,
+            doppler_shift_removed=1.0 if remove_doppler else 0.0,
+            azimuth_reference=azimuth_reference,
+            run_metadata=run_metadata,
+            provenance=stamp,
+            extra_variables=(sphere_statistics.node_statistics_variables(hemisphere, phi_deg, theta_deg, field)
+                             if node_statistics else None),
+        )
     norah2_output_path = None
     if norah2_directory is not None:
         norah2_directory = os.path.abspath(os.path.expanduser(norah2_directory))
@@ -1633,37 +1899,14 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
             overwrite=overwrite,
         )
 
-    return dict(run=run, output=output_path, norah2_output=norah2_output_path, condition=row.get('test_cond'),
-                layout=row.get('layout'), ambient_run=ambient_run,
-                ambient_source=ambient_source,
-                mics=len(mics), speed_knots=speed_knots, flight_path_angle_deg=fpa_deg,
-                window_s=(float(segment['time'][0] - track['time'][0]),
-                          float(segment['time'][-1] - track['time'][0])),
-                window_points=int(index_stop - index_start),
-                min_elevation_deg=min_elevation_deg,
-                max_array_range_ft=max_array_range_ft,
-                temperature_k=atmosphere.temperature,
-                relative_humidity=atmosphere.relative_humidity,
-                pressure_kpa=atmosphere.pressure,
-                speed_of_sound_ft_s=speed_of_sound_ft_s,
-                azimuth_reference=azimuth_reference,
-                track_flags='; '.join(check.flags) if check is not None else 'not checked',
-                min_height_above_array_ft=(check.metrics['min_height_above_array_ft']
-                                           if check is not None else float('nan')),
-                gross_weight_lb=run_metadata['gross_weight_lb'],
-                air_density_kg_m3=air_density, air_density_source=density_source,
-                wind_source=wind_source, wind_units=wind_units, wind_along_track=wind_along,
-                wind_cross_track=wind_cross, airspeed_knots=airspeed_knots,
-                rays='straight' if ray_model is None else getattr(ray_model, 'description', 'custom'),
-                interpolation=('fixed rmax {:g}'.format(rmax) if interpolation is None else
-                               'adaptive ' + ' '.join('{}={}'.format(k, v) for k, v in sorted(
-                                   dict(fa.ADAPTIVE_INTERPOLATION, **interpolation).items()))),
-                gaps=(hemisphere.get('interpolation', {}).get('gaps', 0)),
-                rim_range='' if max_rim_range_ft is None else '{:g} ft below {:g} deg'.format(
-                    max_rim_range_ft, rim_elevation_deg),
-                board_correction=board_correction if board_correction == 'flat' else
-                'plate_bem ' + ' '.join('{}={}'.format(k, v) for k, v in
-                                         sorted((ground or SITE_GROUND).items())))
+    return dict(run=run, output=output_path, norah2_output=norah2_output_path,
+                tonal_output=part_paths.get('tonal'), broadband_output=part_paths.get('broadband'),
+                **details, panam_version=stamp['panam_version'],
+                settings_sha256=stamp['panam_settings_sha256'], input_signature=input_signature)
+
+
+#: build_sphere's parameters, for working out the settings of a call without making it.
+_BUILD_SPHERE_SIGNATURE = inspect.signature(build_sphere)
 
 
 # --------------------------------------------------------------------------
@@ -1723,10 +1966,245 @@ def _prefetch_run(test, run, gate_ambient=True, done=None):
     _prefetch(paths)
 
 
+def run_input_files(test, run, gate_ambient=True, reference_sphere=None, ray_model=None):
+    """Every file :func:`build_sphere` reads for ``run``, sorted: the track, the
+    run's and its ambient run's recordings (:func:`_run_file_paths`), the reference
+    and microphone lists, the day's weather station files, ``reference_sphere`` and
+    the files ``ray_model`` names in its ``source_files`` (the atmospheric profile of
+    :func:`refracted_rays.external_ray_model`).
+    :func:`provenance.file_signature` of them is the sphere's input signature."""
+    paths = [test.track_path(run)] + _run_file_paths(test, run, gate_ambient)
+    for pattern in ('*FullRefList.csv', '*MicFullList.csv', '*StaticList.csv'):
+        paths += glob.glob(os.path.join(test.base, pattern))
+    paths += _weather_station_files(test, run)
+    if reference_sphere is not None:
+        paths.append(os.fspath(reference_sphere))
+    paths += [os.fspath(path) for path in getattr(ray_model, 'source_files', ())]
+    return sorted(set(paths))
+
+
+def _per_run(source, run):
+    """``source(run)`` for a callable, ``source.get(run)`` for a mapping, None for None."""
+    if source is None:
+        return None
+    return source(run) if callable(source) else source.get(run)
+
+
+def _build_run(test, run, output_path, reference, norah2_directory, ray_models, winds, kwargs):
+    """:func:`build_sphere` for one run of :func:`build_all`: ``(record, None)``,
+    or ``(None, error text)`` if it fails."""
+    try:
+        record = build_sphere(test, run, output_path, reference_sphere=reference,
+                              norah2_directory=norah2_directory, ray_model=_per_run(ray_models, run),
+                              wind=_per_run(winds, run), **kwargs)
+    except Exception as error:                          # noqa: BLE001
+        return None, str(error)
+    return record, None
+
+
+def _norah2_output(test, run, norah2_directory, details):
+    """The NORAH2 .hem file the build that wrote ``details`` (its record: speed and
+    flight path angle) wrote for ``run`` in ``norah2_directory``, or None if it is not there.
+
+    The name is worked out with :func:`norah2_file_name`, not searched for: a run
+    rebuilt at another speed label leaves its older .hem beside the new one.
+    """
+    prefix = AIRCRAFT_SPHERE_PREFIX.get(test.aircraft, test.aircraft)
+    number = test.by_run.get(run, {}).get('run_num', run)
+    path = os.path.join(os.path.abspath(os.path.expanduser(norah2_directory)), norah2_file_name(
+        prefix, details['speed_knots'], details['flight_path_angle_deg'], number))
+    return path if os.path.exists(path) else None
+
+
+def _sphere_record(test, run, output_path):
+    """``(stamp, details)`` of the sphere at ``output_path``: its global attributes, and
+    the record its build wrote (``panam_build_record``).
+
+    A sphere without a build record gives only the run's identity, its speed and
+    flight path angle from the sphere's float32 ``SPEED`` and ``FLIGHT_PATH_ANGLE``,
+    and ``track_flags`` :data:`UNKNOWN_TRACK_FLAGS`, so that a run whose flags are
+    not known is never taken as unflagged.
+    """
+    row = test.by_run.get(run, {})
+    with Dataset(output_path) as sphere:
+        stamp = {name: sphere.getncattr(name) for name in sphere.ncattrs()}
+        if provenance.BUILD_RECORD_ATTRIBUTE in stamp:
+            details = provenance.read_record_json(stamp[provenance.BUILD_RECORD_ATTRIBUTE])
+        else:
+            details = dict(condition=row.get('test_cond'), layout=row.get('layout'),
+                           speed_knots=fa._read_scalar(sphere, 'SPEED'),
+                           flight_path_angle_deg=fa._read_scalar(sphere, 'FLIGHT_PATH_ANGLE'),
+                           track_flags=UNKNOWN_TRACK_FLAGS)
+    return stamp, details
+
+
+def _skip_reason(test, run, output_path, call, skip_existing, skip_unchanged, ray_models):
+    """Why :func:`build_all` need not build ``run`` ('exists', 'unchanged' or None),
+    and the sphere's :func:`_sphere_record` (None when it was not read).
+
+    A run counts as built only when every file its build writes exists: the
+    sphere, its NORAH2 file when ``call`` has a ``norah2_directory`` and its
+    parts when it asks for ``tone_split``.  'unchanged' also needs the sphere's
+    ``panam_settings_sha256`` to equal this call's and its
+    ``panam_input_signature`` to equal :func:`run_input_files`' signature now.
+    """
+    if not (skip_existing or skip_unchanged):
+        return None, None
+    outputs = [output_path]
+    if call.get('tone_split'):
+        outputs += list(tone_split_paths(output_path).values())
+    if not all(os.path.exists(path) for path in outputs):
+        return None, None
+    try:
+        stamp, details = _sphere_record(test, run, output_path)
+    except (OSError, KeyError, IndexError, ValueError):
+        return None, None
+    if call.get('norah2_directory') is not None and _norah2_output(
+            test, run, call['norah2_directory'], details) is None:
+        return None, (stamp, details)
+    if skip_existing:
+        return 'exists', (stamp, details)
+    arguments = dict(call, ray_model=_per_run(ray_models, run))
+    bound = _BUILD_SPHERE_SIGNATURE.bind(test, run, output_path, **arguments)
+    bound.apply_defaults()
+    settings, _ = _sphere_settings(bound.arguments)
+    signature = provenance.file_signature(run_input_files(
+        test, run, arguments.get('gate_ambient', True), arguments.get('reference_sphere'),
+        arguments['ray_model']))
+    if (stamp.get('panam_settings_sha256') == provenance.settings_sha256(settings)
+            and stamp.get(provenance.INPUT_SIGNATURE_ATTRIBUTE) == signature):
+        return 'unchanged', (stamp, details)
+    return None, (stamp, details)
+
+
+#: track_flags of a skipped run whose sphere has no build record (written before
+#: build records were): not blank, so select_from_manifest(skip_flagged=True) leaves it out.
+UNKNOWN_TRACK_FLAGS = 'unknown: the sphere has no build record'
+
+
+def _skipped_record(test, run, output_path, norah2_directory, reason, sphere_record=None):
+    """The record of a run :func:`build_all` skipped, read from its existing sphere.
+
+    The sphere's build record (``panam_build_record``, the record
+    :func:`build_sphere` returned, without its paths and stamp) gives every
+    manifest column as the original build wrote it, the float64 speed and flight
+    path angle among them, so the manifest row and the NORAH2 triangulation are
+    those of a full build.  The paths are this build's, the stamp columns come
+    from the sphere's provenance attributes, and ``skipped`` is ``reason``.
+
+    A sphere without a build record gives only the run's identity, its speed and
+    flight path angle from the sphere's float32 ``SPEED`` and ``FLIGHT_PATH_ANGLE``,
+    and ``track_flags`` :data:`UNKNOWN_TRACK_FLAGS`, so that a run whose flags are
+    not known is never taken as unflagged.  ``sphere_record``, the sphere's
+    :func:`_sphere_record` when already read, saves reading it again.
+    """
+    stamp, details = sphere_record or _sphere_record(test, run, output_path)
+    if provenance.BUILD_RECORD_ATTRIBUTE not in stamp:
+        logging.warning('run %s: %s has no build record; its manifest row has no track flags',
+                        run, os.path.basename(output_path))
+    parts = tone_split_paths(output_path)
+    return dict(run=run, output=output_path,
+                norah2_output=None if norah2_directory is None else _norah2_output(test, run, norah2_directory,
+                                                                                    details),
+                tonal_output=parts['tonal'] if os.path.exists(parts['tonal']) else None,
+                broadband_output=parts['broadband'] if os.path.exists(parts['broadband']) else None,
+                **details,
+                panam_version=stamp.get('panam_version', ''),
+                settings_sha256=stamp.get('panam_settings_sha256', ''),
+                input_signature=stamp.get(provenance.INPUT_SIGNATURE_ATTRIBUTE, ''),
+                skipped=reason)
+
+
+def _plate_table_jobs(test, plans, kwargs):
+    """The distinct :func:`plate_table` arguments the runs of ``plans`` need.
+
+    Picks the sound speed, the bands and the microphones as :func:`build_sphere`
+    does.  A run whose tables cannot be worked out here is left out: its build
+    meets the same problem and reports it.  Returns a list of
+    ``(instrument, sound_speed_ft_s, bands, ground, directory)``.
+    """
+    if kwargs.get('board_correction', 'plate_bem') != 'plate_bem':
+        return []
+    bands_of = {}
+    jobs = {}
+    for plan in plans:
+        run = plan['run']
+        try:
+            speed = kwargs.get('speed_of_sound_ft_s')
+            if speed is None:
+                atmosphere = kwargs.get('atmosphere')
+                if atmosphere is None:
+                    atmosphere, _ = _run_atmosphere_or_standard_day(test, run)
+                speed = sound_speed_ft_s(atmosphere)
+            if plan['reference'] not in bands_of:
+                bands_of[plan['reference']] = _sphere_grid(legacy_sphere_grid(plan['reference']))[0]
+            bands = bands_of[plan['reference']]
+            mics = test.ground_board_mics(run)
+            ambient = test.ambient_run(run) if kwargs.get('gate_ambient', True) else None
+            if ambient is not None:
+                mics = _mics_with_ambient(test, mics, ambient)
+            for instrument in sorted({test.instrument_types[m] for m in mics}):
+                key = (instrument, _plate_table_speed(speed), tuple(np.asarray(bands, dtype=float)))
+                jobs.setdefault(key, (instrument, speed, bands, kwargs.get('ground'),
+                                      kwargs.get('plate_table_directory')))
+        except Exception as error:                      # noqa: BLE001
+            logging.debug('no plate tables warmed for run %s (%s)', run, error)
+    return list(jobs.values())
+
+
+def _warm_plate_tables(test, plans, kwargs):
+    """Compute, in this process, the plate tables the runs of ``plans`` need
+    (:func:`_plate_table_jobs`), so that parallel workers read them from the cache
+    rather than each computing them.  A table that fails here is left to its builds."""
+    for instrument, speed, bands, ground, directory in _plate_table_jobs(test, plans, kwargs):
+        try:
+            plate_table(instrument, speed, bands, ground=ground, directory=directory)
+        except Exception as error:                      # noqa: BLE001
+            logging.debug('plate table for %s not warmed (%s)', instrument, error)
+
+
+#: State of a build_all worker process, set once by _start_worker.
+_WORKER = {}
+
+
+@functools.lru_cache(maxsize=None)
+def _open_test(aircraft, root):
+    """The :class:`NoiseAbatementTest` of ``aircraft`` at ``root``, opened once per
+    process: a :func:`build_all` worker and the ray models it unpickles share it."""
+    return NoiseAbatementTest(aircraft, root=root)
+
+
+def _start_worker(aircraft, root, norah2_directory, ray_models, winds, kwargs, log_level, log_files):
+    """Initialize a :func:`build_all` worker process: its logging and its own
+    :class:`NoiseAbatementTest`."""
+    configure_logging(log_level=log_level)
+    for path in log_files:
+        _add_log_file(path)
+    _WORKER.update(test=_open_test(aircraft, root), norah2_directory=norah2_directory,
+                   ray_models=ray_models, winds=winds, kwargs=kwargs)
+
+
+def _worker_build(run, output_path, reference):
+    """:func:`_build_run` in a worker process."""
+    return _build_run(_WORKER['test'], run, output_path, reference, _WORKER['norah2_directory'],
+                      _WORKER['ray_models'], _WORKER['winds'], _WORKER['kwargs'])
+
+
+def _check_picklable(jobs, **values):
+    """Refuse, before anything is built, a value a worker process cannot receive."""
+    for name, value in values.items():
+        try:
+            pickle.dumps(value)
+        except Exception as error:                      # noqa: BLE001
+            raise TypeError('build_all(jobs={}) sends {} to worker processes, so it must be None, a dict '
+                            'or a module-level function, and every build_sphere argument must be '
+                            'picklable: {}'.format(jobs, name, error)) from None
+
+
 def build_all(aircraft, output_directory, *, root=None, runs=None,
               steady_only=True, reference_directory=None, sphere_prefix=None,
               manifest_path=None, prefetch=True, norah2_directory=None, ray_models=None, winds=None,
-              **kwargs):
+              ray_profiles=None, skip_existing=False, skip_unchanged=False, jobs=1, **kwargs):
     """Rebuild every usable run for one aircraft.
 
     ``winds``, if given, is called with each run id and returns that run's ``wind`` for
@@ -1738,9 +2216,15 @@ def build_all(aircraft, output_directory, *, root=None, runs=None,
     in its failure record; pass ``track_check=False`` to build it anyway.
 
     ``ray_models``, if given, is called with each run id and returns that run's
-    ``ray_model`` for :func:`build_sphere` (its own atmosphere), or None to
-    build that run along straight lines; the manifest's ``rays`` column says
-    which.
+    ``ray_model`` for :func:`build_sphere` (its own atmosphere, or ``'wind'`` for its
+    wind from ``winds``), or None to build that run along straight lines; a mapping
+    of run id to ray model works too.  The manifest's ``rays`` column says which.
+
+    ``ray_profiles``, if given, is a directory of per-run NICE-OPS ``--atmosphere`` CSV
+    files (heights in ft) named by run id, ``<run>.csv``: :func:`profile_ray_models` turns
+    it into ``ray_models``.  A run with a profile is depropagated along refracted rays
+    through it, and a run without one along straight lines.  Give ``ray_models`` or
+    ``ray_profiles``, not both.
 
     ``norah2_directory``, if given, also receives each sphere as a NORAH2
     ``.hem`` file and, once the batch is done, the ``[prefix]_Triangulation.int``
@@ -1758,61 +2242,137 @@ def build_all(aircraft, output_directory, *, root=None, runs=None,
     legacy Be407 database restricts to as well, though nothing there enforced
     it explicitly.
 
-    Returns ``(records, failures)``.
+    ``skip_existing`` (default False) does not rebuild a run whose outputs all
+    exist: its sphere, and its NORAH2 file and tonal and broadband parts when
+    asked for.  ``skip_unchanged`` (default False) does not rebuild one whose
+    outputs exist and whose sphere's ``panam_settings_sha256`` and
+    ``panam_input_signature`` (:func:`run_input_files`) match this build's; the
+    code version is not compared, so rebuild without it after updating PANAM.  A
+    skipped run keeps its files; its record, rebuilt from the sphere's build
+    record (:func:`_skipped_record`), is the one its original build returned
+    (track flags, rays, window and settings included) plus ``skipped`` ('exists'
+    or 'unchanged'), and goes into the manifest and the NORAH2 triangulation like
+    a built one.
+
+    ``jobs`` (default 1) builds that many runs at once, in worker processes
+    started with the spawn method.  Each worker opens the dataset itself.  The
+    plate tables are computed first, in this process, so the workers read them
+    from the cache.  ``ray_models``, ``winds`` and every :func:`build_sphere`
+    argument go to the workers, so they must be picklable: None, a dict or a
+    module-level function, not a lambda or a nested function (TypeError
+    otherwise).  The records come back in run order, so the manifest and the
+    triangulation are the same as with ``jobs=1``.  This process prefetches each
+    run before it hands it to a worker.
+
+    Returns ``(records, failures)``, each in run order.
     """
+    jobs = int(jobs)
+    if jobs < 1:
+        raise ValueError('jobs must be at least 1, not {}'.format(jobs))
+    if jobs > 1:
+        _check_picklable(jobs, ray_models=ray_models, winds=winds, kwargs=kwargs)
     test = NoiseAbatementTest(aircraft, root=root)
+    if ray_profiles is not None:
+        if ray_models is not None:
+            raise ValueError('give ray_models or ray_profiles, not both')
+        ray_models = profile_ray_models(test, ray_profiles)
     if runs is None:
         runs = test.runs(steady_only=steady_only)
     prefix = sphere_prefix or AIRCRAFT_SPHERE_PREFIX.get(aircraft, aircraft)
     output_directory = os.path.abspath(os.path.expanduser(output_directory))
     os.makedirs(output_directory, exist_ok=True)
 
-    records, failures = [], []
-    pool = ThreadPoolExecutor(max_workers=1) if prefetch and runs else None
+    # Each run: (record, None) once built or skipped, (None, error) once failed.
+    outcomes = {}
+    plans = []
+    for number, run in enumerate(runs, start=1):
+        row = test.by_run.get(run, {})
+        name = '{}{}.nc'.format(prefix, row.get('run_num', run))
+        reference = None
+        if reference_directory:
+            candidate = os.path.join(os.path.expanduser(reference_directory), name)
+            reference = candidate if os.path.exists(candidate) else None
+        plan = dict(number=number, run=run, name=name, output=os.path.join(output_directory, name),
+                    reference=reference)
+        if skip_existing or skip_unchanged:
+            try:
+                call = dict(kwargs, reference_sphere=reference, norah2_directory=norah2_directory,
+                            wind=_per_run(winds, run))
+                reason, sphere_record = _skip_reason(test, run, plan['output'], call, skip_existing,
+                                                     skip_unchanged, ray_models)
+                if reason is not None:
+                    outcomes[number] = (_skipped_record(test, run, plan['output'], norah2_directory,
+                                                        reason, sphere_record), None)
+                    logging.info('[%d/%d] %s skipped: %s %s', number, len(runs), run, name, reason)
+                    continue
+            except Exception as error:                  # noqa: BLE001
+                logging.debug('run %s: not skipped (%s)', run, error)
+        plans.append(plan)
+
+    def report(plan, outcome):
+        outcomes[plan['number']] = outcome
+        record, error = outcome
+        if record is None:
+            logging.warning('[%d/%d] %s failed: %s', plan['number'], len(runs), plan['run'], error)
+        else:
+            logging.info('[%d/%d] %s -> %s  %.1f kt  %+.1f deg  %d mics  ambient %s',
+                         plan['number'], len(runs), plan['run'], plan['name'], record['speed_knots'],
+                         record['flight_path_angle_deg'], record['mics'], record['ambient_run'])
+
     gate_ambient = kwargs.get('gate_ambient', True)
     prefetched = set()
+    if jobs == 1:
+        pool = ThreadPoolExecutor(max_workers=1) if prefetch and plans else None
 
-    def prefetch_next(index):
-        return (pool.submit(_prefetch_run, test, runs[index], gate_ambient, prefetched)
-                if index < len(runs) else None)
+        def prefetch_next(index):
+            return (pool.submit(_prefetch_run, test, plans[index]['run'], gate_ambient, prefetched)
+                    if index < len(plans) else None)
 
-    try:
-        pending = prefetch_next(0) if pool else None
-        for number, run in enumerate(runs, start=1):
-            if pending is not None:
-                pending.result()
-                pending = prefetch_next(number)
+        try:
+            pending = prefetch_next(0) if pool else None
+            for index, plan in enumerate(plans, start=1):
+                if pending is not None:
+                    pending.result()
+                    pending = prefetch_next(index)
+                report(plan, _build_run(test, plan['run'], plan['output'], plan['reference'],
+                                        norah2_directory, ray_models, winds, kwargs))
+        finally:
+            if pool is not None:
+                pool.shutdown(cancel_futures=True)
+    elif plans:
+        _warm_plate_tables(test, plans, kwargs)
+        log_files = [handler.baseFilename for handler in logging.getLogger().handlers
+                     if isinstance(handler, logging.FileHandler)]
+        # test.root, resolved, so that a worker and the ray models it unpickles share
+        # one NoiseAbatementTest (_open_test).
+        executor = ProcessPoolExecutor(
+            max_workers=min(jobs, len(plans)), mp_context=multiprocessing.get_context('spawn'),
+            initializer=_start_worker,
+            initargs=(aircraft, test.root, norah2_directory, ray_models, winds, kwargs,
+                      logging.getLogger().getEffectiveLevel(), log_files))
+        pool = ThreadPoolExecutor(max_workers=1) if prefetch else None
+        try:
+            futures = {executor.submit(_worker_build, plan['run'], plan['output'], plan['reference']): plan
+                       for plan in plans}
+            # Pulled in plan order, ahead of the workers, without holding them back.
+            if pool is not None:
+                for plan in plans:
+                    pool.submit(_prefetch_run, test, plan['run'], gate_ambient, prefetched)
+            for future in as_completed(futures):
+                report(futures[future], future.result())
+        finally:
+            if pool is not None:
+                pool.shutdown(cancel_futures=True)
+            executor.shutdown(cancel_futures=True)
+
+    records = [outcomes[n][0] for n in sorted(outcomes) if outcomes[n][0] is not None]
+    failures = []
+    for number in sorted(outcomes):
+        if outcomes[number][0] is None:
+            run = runs[number - 1]
             row = test.by_run.get(run, {})
-            name = '{}{}.nc'.format(prefix, row.get('run_num', run))
-            reference = None
-            if reference_directory:
-                candidate = os.path.join(os.path.expanduser(reference_directory), name)
-                reference = candidate if os.path.exists(candidate) else None
-            try:
-                if winds is None:
-                    wind = None
-                elif callable(winds):
-                    wind = winds(run)
-                else:
-                    wind = winds.get(run)
-                record = build_sphere(test, run, os.path.join(output_directory, name),
-                                      reference_sphere=reference, norah2_directory=norah2_directory,
-                                      ray_model=ray_models(run) if ray_models is not None else None,
-                                      wind=wind, **kwargs)
-            except Exception as error:                  # noqa: BLE001
-                logging.warning('[%d/%d] %s failed: %s', number, len(runs), run, error)
-                failures.append(dict(run=run, error=str(error),
-                                     condition=row.get('test_cond'),
-                                     layout=row.get('layout')))
-                continue
-            records.append(record)
-            logging.info('[%d/%d] %s -> %s  %.1f kt  %+.1f deg  %d mics  ambient %s',
-                         number, len(runs), run, name, record['speed_knots'],
-                         record['flight_path_angle_deg'], record['mics'],
-                         record['ambient_run'])
-    finally:
-        if pool is not None:
-            pool.shutdown(cancel_futures=True)
+            failures.append(dict(run=run, error=outcomes[number][1], condition=row.get('test_cond'),
+                                 layout=row.get('layout')))
     if norah2_directory is not None and len(records) >= 3:
         triangulation = os.path.join(os.path.abspath(os.path.expanduser(norah2_directory)),
                                      '{}_Triangulation.int'.format(prefix))
@@ -1829,8 +2389,66 @@ def build_all(aircraft, output_directory, *, root=None, runs=None,
     return records, failures
 
 
+def profile_ray_models(test, directory, executable=None):
+    """``build_all``'s ``ray_models`` from a directory of per-run atmospheric profiles.
+
+    ``directory`` holds NICE-OPS ``--atmosphere`` CSV files (heights in ft, above the
+    ground boards) named by run id, ``<run>.csv``.  The returned callable gives, for a
+    run with a profile, :func:`refracted_rays.external_ray_model` through it: stratified
+    refraction, flush plate receivers, and the run's own :func:`frame_bearing_deg` to place
+    the profile's winds.  For a run without one it gives None, straight lines.
+    ``executable`` is NICE-OPS's ``niceops_ray_geometry`` (default: the
+    ``niceops_ray_geometry`` entry of :mod:`local_paths`), looked up only when a run has a
+    profile.  The callable pickles, so that ``build_all(jobs=N)`` can send it to its
+    worker processes: it carries the dataset's aircraft and root, and a worker opens
+    the dataset again (or uses its own) on its first call.
+    """
+    directory = os.path.abspath(os.path.expanduser(directory))
+    if not os.path.isdir(directory):
+        raise FileNotFoundError('ray profile directory {} does not exist'.format(directory))
+    return _ProfileRayModels(test, directory, executable)
+
+
+class _ProfileRayModels:
+    """The callable :func:`profile_ray_models` returns; module-level, so it pickles."""
+
+    def __init__(self, test, directory, executable):
+        self.test = test
+        self.directory = directory
+        self.executable = executable
+
+    def __getstate__(self):
+        state = dict(self.__dict__)
+        test = state.pop('test')
+        state['dataset'] = (test.aircraft, test.root)
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self.test = None
+
+    def _dataset(self):
+        if self.test is None:
+            self.test = _open_test(*self.dataset)
+        return self.test
+
+    def __call__(self, run):
+        path = os.path.join(self.directory, '{}.csv'.format(run))
+        if not os.path.isfile(path):
+            return None
+        tracer = local_paths.data_path('niceops_ray_geometry', self.executable)
+        test = self._dataset()
+        bearing = frame_bearing_deg(test.by_run[run], load_track(test.track_path(run)))
+        return refracted_rays.external_ray_model(tracer, path, frame_bearing_deg=bearing,
+                                                 refraction='stratified', receiver='plate',
+                                                 length_units='ft')
+
+
 def write_manifest(path, records, failures):
-    """Record what went into the spheres, so a database can be audited later."""
+    """Record what went into the spheres, so a database can be audited later.
+
+    A ``skipped`` column, added when a record has one (``build_all(skip_existing=True)``
+    or ``skip_unchanged=True``), says which spheres were kept from an earlier build."""
     path = os.path.abspath(os.path.expanduser(path))
     os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
     fields = ['run', 'output', 'norah2_output', 'condition', 'layout', 'ambient_run',
@@ -1840,7 +2458,10 @@ def write_manifest(path, records, failures):
               'relative_humidity', 'pressure_kpa', 'speed_of_sound_ft_s', 'board_correction',
               'rays', 'interpolation', 'gaps', 'rim_range', 'azimuth_reference', 'track_flags',
               'min_height_above_array_ft', 'gross_weight_lb', 'air_density_kg_m3', 'air_density_source',
-              'wind_source', 'wind_units', 'wind_along_track', 'wind_cross_track', 'airspeed_knots', 'error']
+              'wind_source', 'wind_units', 'wind_along_track', 'wind_cross_track', 'airspeed_knots',
+              *RECORDED_SETTINGS, 'panam_version', 'settings_sha256', 'error']
+    if any(record.get('skipped') for record in records):
+        fields.insert(fields.index('error'), 'skipped')
     with open(path, 'w', encoding='utf-8', newline='') as handle:
         writer = csv.DictWriter(handle, fieldnames=fields, extrasaction='ignore')
         writer.writeheader()
@@ -1848,6 +2469,42 @@ def write_manifest(path, records, failures):
             writer.writerow(record)
         for failure in failures:
             writer.writerow(failure)
+
+
+def select_from_manifest(manifest_path, *, skip_flagged=False, conditions=None):
+    """The sphere file names a build manifest (:func:`write_manifest`) lists as built.
+
+    Returns the file names (no directory), in manifest order, of every run that
+    produced a sphere; failed runs are left out.  The result is meant for
+    ``flight_acoustics.build_empirical_database(spheres=)``, which takes each
+    name relative to the sphere directory, so the database is built from what
+    this build wrote and from nothing else left in the directory.
+
+    skip_flagged leaves out runs whose track check raised a flag (a non-empty
+    ``track_flags`` other than ``not checked``).  conditions, when given, keeps
+    only runs whose ``condition`` (the test card) is in it.  By default every
+    built sphere is returned.
+    """
+    path = os.path.abspath(os.path.expanduser(manifest_path))
+    names = []
+    with open(path, encoding='utf-8-sig', newline='') as handle:
+        reader = csv.DictReader(handle)
+        if 'output' not in (reader.fieldnames or []):
+            raise ValueError('{}: a build manifest needs an output column'.format(manifest_path))
+        wanted = None if conditions is None else {str(c) for c in conditions}
+        for entry in reader:
+            entry = {k: (v or '').strip() for k, v in entry.items() if k is not None}
+            if not entry['output'] or entry.get('error'):
+                continue
+            if skip_flagged and entry.get('track_flags', '') not in ('', 'not checked'):
+                continue
+            if wanted is not None and entry.get('condition', '') not in wanted:
+                continue
+            # Basename on either separator: the manifest may come from another machine.
+            name = entry['output'].replace('\\', '/').rsplit('/', 1)[-1]
+            if name not in names:
+                names.append(name)
+    return names
 
 
 def read_winds(path):
@@ -1948,15 +2605,101 @@ def write_track_checks(path, records):
             writer.writerow(record)
 
 
-def main(argv=None):
+def configure_logging(verbosity=0, log_file=None, log_level=None):
+    """Set up logging for the command line and return the file handler it adds, or None.
+
+    The level is INFO, one step quieter per unit of negative ``verbosity``
+    (WARNING, ERROR, CRITICAL) and DEBUG for a positive one; ``log_level``, if
+    given, sets it instead.  Messages go to stderr (unless the root logger
+    already has a handler) and, with ``log_file``, are appended to that file too.
+    """
+    if log_level is None:
+        log_level = min(max(logging.INFO - 10 * int(verbosity), logging.DEBUG), logging.CRITICAL)
+    logging.basicConfig(format=LOG_FORMAT)
+    root = logging.getLogger()
+    root.setLevel(log_level)
+    if not log_file:
+        return None
+    path = os.path.abspath(os.path.expanduser(log_file))
+    os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+    return _add_log_file(path)
+
+
+def _add_log_file(path):
+    """Append the root logger's messages to the file ``path`` in :data:`LOG_FORMAT`;
+    returns the handler."""
+    handler = logging.FileHandler(path, encoding='utf-8')
+    handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    logging.getLogger().addHandler(handler)
+    return handler
+
+
+def _wind_rays(run):
+    """``ray_models`` for ``--ray-model wind``: every run along its wind's rays.
+    Module-level, so that ``--jobs`` can send it to worker processes."""
+    return 'wind'
+
+
+def _interpolation_setting(value):
+    """argparse type for one adaptive gridding setting, KEY=VALUE (see fa.ADAPTIVE_INTERPOLATION)."""
+    import argparse
+    key, separator, text = value.partition('=')
+    key = key.strip()
+    if not separator or key not in fa.ADAPTIVE_INTERPOLATION:
+        raise argparse.ArgumentTypeError('expected KEY=VALUE with KEY one of {}, got {!r}'.format(
+            ', '.join(sorted(fa.ADAPTIVE_INTERPOLATION)), value))
+    default = fa.ADAPTIVE_INTERPOLATION[key]
+    text = text.strip()
+    if isinstance(default, bool):
+        if text.lower() not in ('true', 'false'):
+            raise argparse.ArgumentTypeError('{} takes true or false, not {!r}'.format(key, text))
+        return key, text.lower() == 'true'
+    try:
+        return key, type(default)(text)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError('{}: {}'.format(key, error))
+
+
+#: Command-line destinations whose build_all/build_sphere keyword has another name, or that
+#: set more than one keyword.  Every other destination is its keyword.  A recipe value of
+#: one of these keywords gives way when the destination is given on the command line.
+CLI_KEYWORDS = dict(
+    include_maneuvers=('steady_only',), manifest=('manifest_path',), no_prefetch=('prefetch',),
+    no_ambient_gate=('gate_ambient',), no_track_check=('track_check',),
+    ray_model=('ray_models', 'ray_profiles'), ray_profiles=('ray_profiles', 'ray_models'),
+    tone_split=('tone_split', 'tone_aware'), adaptive_interpolation=('interpolation',),
+    interpolation=('interpolation',), no_absorption_deprop=('apply_absorption_deprop',),
+    no_overwrite=('overwrite',))
+
+
+def make_parser():
+    """The command line's parser: every build_all and build_sphere option it exposes."""
     import argparse
 
     parser = argparse.ArgumentParser(
-        description='Rebuild 2017 Noise Abatement source spheres with ambient gating.')
-    parser.add_argument('aircraft', help='dataset directory name under --root: AS350B3, B206L3, B407, '
-                                         'EC130B4, R44 or R66')
+        description='Rebuild 2017 Noise Abatement source spheres with ambient gating.',
+        epilog='Python-only build_sphere keywords (atmosphere, ground, absorption_profile, '
+               'samples_path, a ray model other than the profiles or the wind) have no option. '
+               '--recipe reads settings from a TOML recipe (see build_recipe.py); an option given '
+               'on the command line overrides the recipe.')
+    parser.add_argument('aircraft', nargs='?', default=None,
+                        help='dataset directory name under --root: AS350B3, B206L3, B407, '
+                             'EC130B4, R44 or R66 (not needed with --plate-cache)')
     parser.add_argument('output_directory', nargs='?', default=None,
-                        help='where the spheres go (not needed with --check-tracks)')
+                        help='where the spheres go (not needed with --check-tracks or --plate-cache)')
+    parser.add_argument('--recipe', default=None, metavar='FILE.toml',
+                        help="build with the [spheres] settings of this recipe; options given here "
+                             'override it (default: none)')
+    parser.add_argument('--hover-source', action='store_true',
+                        help="with --recipe: build with the recipe's [hover_source] settings over its "
+                             '[spheres] ones, the rebuild the database synthesizes its hover from; '
+                             'needs --runs (default off)')
+    parser.add_argument('--plate-table-directory', default=None,
+                        help='where computed ground-plate tables are cached (default: '
+                             '~/.cache/panam/plate_tables)')
+    parser.add_argument('--plate-cache', choices=('list', 'clear'), default=None,
+                        help='do not build: list the cached plate tables (size in MB and whether '
+                             'each is current), or delete them; default: neither')
     parser.add_argument('--check-tracks', action='store_true',
                         help='do not build: check every steady run\'s track as the build would '
                              '(heights above the ground boards, altitude consistency, decelerations, '
@@ -1968,10 +2711,25 @@ def main(argv=None):
                         help="'track' (the default for flight) measures each sphere's azimuth from the ground track; "
                              "'heading' from the tracked INS heading, with Doppler and depropagation "
                              'still on the ground velocity.  Written to every sphere and so to the database')
+    parser.add_argument('--nose-from-heading', action='store_true',
+                        help='orient each sphere by the tracked heading, for hovers: no Doppler or '
+                             'convective term, and the whole record instead of a steady window '
+                             '(default off)')
     parser.add_argument('--winds', default=None,
                         help='CSV of the wind at the aircraft per run (run, units, source, and east/north '
                              'or speed/direction_from_deg; see read_winds), recorded in each sphere; '
                              'nothing is assumed about its units')
+    parser.add_argument('--ray-model', choices=('straight', 'wind'), default='straight',
+                        help="'straight' (default): straight lines in still air; 'wind': straight rays "
+                             "carried by each run's wind from --winds (required), uniform over the path; "
+                             'a run with no wind there fails')
+    parser.add_argument('--ray-profiles', default=None, metavar='DIRECTORY',
+                        help="refracted rays through each run's NICE-OPS atmosphere CSV, <run>.csv in "
+                             'this directory (heights in ft), traced by niceops_ray_geometry from '
+                             'local_paths; straight lines for a run without one (default: none)')
+    parser.add_argument('--air-relative-doppler', action='store_true',
+                        help='with --remove-doppler and --ray-model wind, take the Doppler factor in '
+                             'the moving air (default off)')
     parser.add_argument('--no-track-check', action='store_true',
                         help='build runs whose track fails the sanity check (below or within '
                              '--min-height-above-array-ft of the ground boards, z not following altitude)')
@@ -1988,12 +2746,16 @@ def main(argv=None):
                              'way depropagation does not correct for')
     parser.add_argument('--reference-directory', default=None,
                         help='legacy spheres, used only for their PHI/THETA/FREQUENCY grids')
+    parser.add_argument('--sphere-prefix', default=None,
+                        help="sphere file name prefix (default: the aircraft's legacy prefix, e.g. Be407)")
     parser.add_argument('--manifest', default=None,
                         help="CSV recording each run's inputs and outcome (with --check-tracks: "
                              'the track-check table); default: not written')
     parser.add_argument('--norah2-directory', default=None,
                         help='also write each sphere as a NORAH2 .hem file here, with the '
                              'triangulation file NORAH2 needs to interpolate between them')
+    parser.add_argument('--no-overwrite', action='store_true',
+                        help='fail on a run whose sphere exists instead of replacing it (default: replace)')
     parser.add_argument('--board-correction', choices=('plate_bem', 'flat'), default='plate_bem',
                         help="'plate_bem' (default) divides out the ground plate's modeled "
                              "response per band and frame; 'flat' is the old constant -6 dB")
@@ -2008,10 +2770,28 @@ def main(argv=None):
                         help='discard bins needing more absorption correction than this, dB; '
                              '30 dB is what keeps source spectra rolling off physically '
                              '(default %(default)g)')
+    parser.add_argument('--max-response-correction-db', type=float, default=None,
+                        help='discard bins whose receiver (ground-plate) correction exceeds this, dB '
+                             '(default: no cap)')
+    parser.add_argument('--no-absorption-deprop', action='store_true',
+                        help='do not undo atmospheric absorption (default: undo it)')
+    parser.add_argument('--absorption-band-method', choices=fa.BAND_ABSORPTION_METHODS,
+                        default='center',
+                        help="band absorption for --third-octave-method filter_bank: 'center' (ISO "
+                             "9613-1 at the band center), 'arp5534' or 'integrated' (default %(default)s)")
+    parser.add_argument('--speed-of-sound-ft-s', type=float, default=None,
+                        help="speed of sound, ft/s (default: from the run's atmosphere)")
+    parser.add_argument('--r-ref-ft', type=float, default=DEFAULT_R_REF_FT,
+                        help='radius the sphere is referred to, ft (default %(default)g)')
+    parser.add_argument('--window-time', type=float, default=0.5,
+                        help='analysis window length, s (default %(default)g)')
+    parser.add_argument('--window-overlap', type=float, default=0.5,
+                        help='fraction of a window the next one overlaps (default %(default)g)')
     parser.add_argument('--point-stride', type=int, default=10,
                         help='depropagate every Nth sample of the steady track (default %(default)s, '
                              "the 2017 release's setting; build_sphere and build_all default to 1, "
-                             'every sample, which is about N times slower and does not reproduce it)')
+                             'every sample, which is about N times slower and does not reproduce it; '
+                             'with --recipe, a recipe without point_stride takes 1)')
     parser.add_argument('--min-elevation-deg', type=float, default=10.0,
                         help='drop emission points below this elevation, where ground '
                              'impedance dominates (default 10)')
@@ -2024,6 +2804,12 @@ def main(argv=None):
                         help='drop emission-point/microphone pairs farther apart than '
                              'this, beyond which a straight ray through a homogeneous '
                              'atmosphere is a poor model (default 2000)')
+    parser.add_argument('--rim-elevation-deg', type=float, default=None,
+                        help='with --max-rim-range-ft: samples filed shallower than this, deg below the '
+                             'horizon, may come from that range (default {:g})'.format(DEFAULT_RIM_ELEVATION_DEG))
+    parser.add_argument('--max-rim-range-ft', type=float, default=None,
+                        help='propagation range allowed for samples filed at the rim, ft '
+                             '(default: --max-propagation-range-ft everywhere)')
     parser.add_argument('--min-steady-duration-s', type=float, default=8.0,
                         help='shortest steady segment worth building a sphere from, s; '
                              'the binding constraint on how many runs survive the gates '
@@ -2032,55 +2818,187 @@ def main(argv=None):
                         help="percentile of the run's own spectrogram to use as ambient (e.g. 5) "
                              'where the array layout has no ambient run; less reliable than a '
                              'measured one')
+    parser.add_argument('--azi-step', type=float, default=10.0,
+                        help='azimuth step of the gridding, deg (default %(default)g)')
+    parser.add_argument('--elv-step', type=float, default=10.0,
+                        help='elevation step of the gridding, deg (default %(default)g)')
+    parser.add_argument('--rmax', type=float, default=25.0,
+                        help='fixed gridding radius, deg (default %(default)g; unused with adaptive gridding)')
+    parser.add_argument('--adaptive-interpolation', action='store_true',
+                        help='grid with a radius chosen per node (flight_acoustics.adaptive_idw_weights) '
+                             'instead of the fixed --rmax (default off)')
+    parser.add_argument('--interpolation', dest='interpolation', action='append', default=None,
+                        type=_interpolation_setting, metavar='KEY=VALUE',
+                        help='an adaptive gridding setting (implies --adaptive-interpolation), e.g. '
+                             'kernel=shepard, aspect=5 or shepard_floor=1; repeat for each one; keys: '
+                             + ', '.join(sorted(fa.ADAPTIVE_INTERPOLATION)) + ' (default: their defaults)')
+    parser.add_argument('--flip-y-for-geometry', action='store_true',
+                        help='mirror the track and microphones across y = 0 (a diagnostic; default off)')
     parser.add_argument('--no-prefetch', action='store_true',
                         help='do not warm the cloud-storage cache ahead of each run')
+    parser.add_argument('--skip-existing', action='store_true',
+                        help='do not rebuild a run whose sphere (and NORAH2 file and tonal and broadband '
+                             'parts, when asked for) already exists in output_directory; default: rebuild')
+    parser.add_argument('--skip-unchanged', action='store_true',
+                        help='do not rebuild a run whose existing sphere was built with the same settings '
+                             '(panam_settings_sha256) from the same input files (panam_input_signature: '
+                             'names, sizes and modification times); default: rebuild.  A change to '
+                             'the PANAM code does not count: rebuild without it after updating PANAM')
+    parser.add_argument('--jobs', type=int, default=1,
+                        help='build this many runs at once in worker processes (default %(default)s); '
+                             'the output is the same as with 1')
+    parser.add_argument('-v', '--verbose', action='count', default=0,
+                        help='log more: DEBUG messages too (default: INFO and above)')
+    parser.add_argument('-q', '--quiet', action='count', default=0,
+                        help='log less: -q WARNING and above, -qq ERROR and above (default: INFO and above)')
+    parser.add_argument('--log-file', default=None,
+                        help='also append the log to this file (default: stderr only)')
     parser.add_argument('--no-ambient-gate', action='store_true',
                         help='reproduce the uncorrected legacy behavior')
-    args = parser.parse_args(argv)
+    parser.add_argument('--remove-doppler', action='store_true',
+                        help='file band power at the emitted frequency, for a hover source sphere; '
+                             'never for spheres NICE-OPS reads as flight (default off)')
+    parser.add_argument('--tone-aware', action='store_true',
+                        help='file each tone whole in the band of its own frequency instead of summing '
+                             'whole FFT bins (FFT method only; default off)')
+    parser.add_argument('--tone-split', action='store_true',
+                        help='also write tonal and broadband part spheres, <name>_tonal.nc and '
+                             '<name>_broadband.nc, in tonal/ and broadband/ under output_directory; '
+                             'implies --tone-aware (default off)')
+    parser.add_argument('--node-statistics', action='store_true',
+                        help='also write N_SAMPLES and AMPLITUDE_STD (dB), the samples behind each '
+                             'gridded node and their weighted level spread, to every sphere (default off)')
+    return parser
 
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+
+def build_options(args):
+    """The keyword arguments of :func:`build_all` (and so :func:`build_sphere`) that ``args`` give.
+
+    ``aircraft`` is included; ``output_directory`` is not.
+    """
+    interpolation = None
+    if args.adaptive_interpolation or args.interpolation:
+        interpolation = dict(args.interpolation or ())
+    return dict(
+        aircraft=args.aircraft, root=args.root, runs=args.runs,
+        steady_only=not args.include_maneuvers, sphere_prefix=args.sphere_prefix,
+        reference_directory=args.reference_directory, manifest_path=args.manifest,
+        norah2_directory=args.norah2_directory, prefetch=not args.no_prefetch,
+        winds=read_winds(args.winds) if args.winds else None,
+        ray_models=_wind_rays if args.ray_model == 'wind' else None,
+        ray_profiles=args.ray_profiles,
+        third_octave_method=args.third_octave_method,
+        board_correction=args.board_correction,
+        plate_table_directory=args.plate_table_directory,
+        band_snr_gate_db=args.band_snr_gate_db,
+        max_absorption_correction_db=args.max_absorption_correction_db,
+        max_response_correction_db=args.max_response_correction_db,
+        apply_absorption_deprop=not args.no_absorption_deprop,
+        absorption_band_method=args.absorption_band_method,
+        speed_of_sound_ft_s=args.speed_of_sound_ft_s,
+        r_ref_ft=args.r_ref_ft, window_time=args.window_time, window_overlap=args.window_overlap,
+        point_stride=args.point_stride, gate_ambient=not args.no_ambient_gate,
+        min_elevation_deg=args.min_elevation_deg,
+        max_array_range_ft=args.max_array_range_ft,
+        max_propagation_range_ft=args.max_propagation_range_ft,
+        rim_elevation_deg=args.rim_elevation_deg, max_rim_range_ft=args.max_rim_range_ft,
+        min_steady_duration_s=args.min_steady_duration_s,
+        ambient_fallback_percentile=args.ambient_fallback_percentile,
+        azi_step=args.azi_step, elv_step=args.elv_step, rmax=args.rmax, interpolation=interpolation,
+        flip_y_for_geometry=args.flip_y_for_geometry, overwrite=not args.no_overwrite,
+        azimuth_reference=args.azimuth_reference, nose_from_heading=args.nose_from_heading,
+        remove_doppler=args.remove_doppler, air_relative_doppler=args.air_relative_doppler,
+        track_check=not args.no_track_check,
+        min_height_above_array_ft=args.min_height_above_array_ft,
+        tone_aware=args.tone_aware or args.tone_split,
+        tone_split=args.tone_split,
+        node_statistics=args.node_statistics,
+        skip_existing=args.skip_existing, skip_unchanged=args.skip_unchanged, jobs=args.jobs)
+
+
+def main(argv=None):
+    parser = make_parser()
+    # Intermixed, so that the optional positionals may follow options on Python 3.11 too.
+    args = parser.parse_intermixed_args(argv)
+    options = build_options(args)
+    if args.hover_source and not args.recipe:
+        parser.error('--hover-source applies to --recipe only')
+    if args.recipe:
+        import build_recipe          # here: build_recipe imports this module
+        try:
+            recipe = build_recipe.load_recipe(args.recipe)
+            recipe_options = recipe.sphere_options(hover_source=args.hover_source)
+        except (ValueError, LookupError, OSError) as error:
+            parser.error(str(error))
+        options, explicit = build_recipe.apply(parser, argv, recipe_options, options, CLI_KEYWORDS)
+        # A keyword neither in the recipe nor on the command line takes the function's
+        # default, so that a recipe builds the same spheres here as from Python.  Only
+        # point_stride has a command-line default (10) other than the function's (1).
+        for key, value in build_recipe.function_defaults('spheres').items():
+            if key in options and key not in explicit and key not in recipe_options:
+                options[key] = value
+        if args.hover_source and not options['runs']:
+            parser.error('--hover-source needs --runs: the hover source run (a sphere built with '
+                         'remove_doppler must not be read as flight)')
+    if options['jobs'] < 1:
+        parser.error('--jobs must be at least 1')
+
+    root = logging.getLogger()
+    previous_level = root.level
+    handler = configure_logging(args.verbose - args.quiet, args.log_file)
+    try:
+        return _run_command(parser, args, options)
+    finally:
+        root.setLevel(previous_level)
+        if handler is not None:
+            root.removeHandler(handler)
+            handler.close()
+
+
+def _run_command(parser, args, options):
+    """Everything :func:`main` does once its arguments are parsed and logging is set up."""
+    if args.plate_cache:
+        directory = _plate_table_directory(options['plate_table_directory'])
+        if args.plate_cache == 'clear':
+            print('Deleted {} plate tables from {}'.format(clear_plate_table_cache(directory), directory))
+            return 0
+        records = plate_table_cache(directory)
+        for record in records:
+            print('{:8.1f} MB  {:<14s} {}'.format(record['size'] / 1e6, record['status'],
+                                                   os.path.basename(record['path'])))
+        print('{} plate tables in {}'.format(len(records), directory))
+        return 0
+    aircraft = options.pop('aircraft')
+    if aircraft is None:
+        parser.error('aircraft is required unless --plate-cache is given')
     if args.check_tracks:
-        checks = check_tracks(args.aircraft, root=args.root, runs=args.runs,
-                              steady_only=not args.include_maneuvers, hovers=args.hovers,
-                              max_array_range_ft=args.max_array_range_ft,
-                              min_steady_duration_s=args.min_steady_duration_s,
-                              min_height_ft=args.min_height_above_array_ft)
+        checks = check_tracks(aircraft, root=options['root'], runs=options['runs'],
+                              steady_only=options['steady_only'], hovers=args.hovers,
+                              max_array_range_ft=options['max_array_range_ft'],
+                              min_steady_duration_s=options['min_steady_duration_s'],
+                              min_height_ft=options['min_height_above_array_ft'])
         for record in checks:
-            record['aircraft'] = args.aircraft
+            record['aircraft'] = aircraft
             if record['status'] != 'ok':
                 print('{} {} {}: {}'.format(record['run'], record['condition'], record['status'],
                                             '; '.join(r for r in (record['reasons'], record['flags']) if r)))
         counts = defaultdict(int)
         for record in checks:
             counts[record['status']] += 1
-        print('{}: {} runs checked, {}'.format(args.aircraft, len(checks), ', '.join(
+        print('{}: {} runs checked, {}'.format(aircraft, len(checks), ', '.join(
             '{} {}'.format(n, status) for status, n in sorted(counts.items()))))
-        if args.manifest:
-            write_track_checks(args.manifest, checks)
+        if options['manifest_path']:
+            write_track_checks(options['manifest_path'], checks)
         return 0
     if args.output_directory is None:
         parser.error('output_directory is required unless --check-tracks is given')
-    records, failures = build_all(
-        args.aircraft, args.output_directory, root=args.root, runs=args.runs,
-        steady_only=not args.include_maneuvers,
-        reference_directory=args.reference_directory, manifest_path=args.manifest,
-        norah2_directory=args.norah2_directory,
-        third_octave_method=args.third_octave_method,
-        board_correction=args.board_correction,
-        band_snr_gate_db=args.band_snr_gate_db,
-        max_absorption_correction_db=args.max_absorption_correction_db,
-        point_stride=args.point_stride, gate_ambient=not args.no_ambient_gate,
-        min_elevation_deg=args.min_elevation_deg,
-        max_array_range_ft=args.max_array_range_ft,
-        max_propagation_range_ft=args.max_propagation_range_ft,
-        min_steady_duration_s=args.min_steady_duration_s,
-        ambient_fallback_percentile=args.ambient_fallback_percentile,
-        prefetch=not args.no_prefetch,
-        azimuth_reference=args.azimuth_reference,
-        winds=read_winds(args.winds) if args.winds else None,
-        track_check=not args.no_track_check,
-        min_height_above_array_ft=args.min_height_above_array_ft)
-    logging.info('Built %d spheres, %d failures', len(records), len(failures))
+    if args.ray_model == 'wind' and not options['winds']:
+        parser.error('--ray-model wind needs --winds')
+    if options['ray_models'] is not None and options['ray_profiles'] is not None:
+        parser.error('give --ray-model wind or --ray-profiles, not both')
+    records, failures = build_all(aircraft, args.output_directory, **options)
+    skipped = sum(1 for record in records if record.get('skipped'))
+    logging.info('Built %d spheres, skipped %d, %d failures', len(records) - skipped, skipped, len(failures))
     return 0 if records else 1
 
 

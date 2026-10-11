@@ -13,8 +13,11 @@ The derived files are:
   python-acoustics output they are tested against.
 
 The rest of this package is PANAM's own code under the repository's MIT
-license: `signal_io.py`, `plotting.py`, `__init__.py` and
-`filters.third_octave_filter_bank`.
+license: `signal_io.py`, `plotting.py`, `__init__.py`,
+`filters.third_octave_filter_bank` and `psychoacoustics.py`. `psychoacoustics.py`
+is a Python implementation of the methods of ISO 532-1:2017 (Annex A) and DIN
+45692:2009, with the numerical tables those standards specify. It was checked
+against the program published with ISO 532-1, which PANAM does not distribute.
 
 Outside this directory, `unit_conversion.py` and `default_units.py` at the
 repository root are Kevin Horton's (2008, BSD-style license) and carry that

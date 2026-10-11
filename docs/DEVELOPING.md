@@ -9,7 +9,12 @@ contracts are in [file_formats.md](file_formats.md). AI coding tools read
 
 PANAM is a set of modules at the repository root, not an installed package.
 Scripts and tests import them by name (`import flight_acoustics as fa`), so
-everything runs from the repository root.
+everything runs from the repository root. `pyproject.toml` records the
+project's metadata, `requires-python` and its dependencies, which mirror
+`requirements.txt` (`tests/test_project_metadata.py` checks that the two
+lists agree). It has no `[build-system]` table, no entry points and builds
+nothing; `pip install .` is not supported. Its only tool setting is the
+coverage report's `omit`; pytest reads `pytest.ini`.
 
 ### Data flow
 
@@ -52,20 +57,28 @@ read the sphere files back.
 | `noise_abatement_2017.py` | The 2017 Noise Abatement build: dataset layout, tracks and the track check, steady windows, atmosphere per run, plate tables, `build_sphere`, `build_all`, and its CLI |
 | `ground_plane.py` | Ground impedance models, pole microphones, co-located pole and board pairs, ground-plate models, the exact half-space Green's function, the two-path fit, `emission_times`. Numba-compiled |
 | `axisymmetric_bem.py` | The axisymmetric BEM of the plate on the ground (`scattering`, `table`, `board_level`, `field`, `write_netcdf` for NICE-OPS). Numba-compiled |
-| `refracted_rays.py` | The ray-model interface for depropagation: `straight_ray_model`, and `external_ray_model`, which runs NICE-OPS's `niceops_ray_geometry` |
+| `refracted_rays.py` | The ray-model interface for depropagation: `straight_ray_model`, `uniform_wind_ray_model`, and `external_ray_model`, which runs NICE-OPS's `niceops_ray_geometry` |
 | `vold_kalman_filter.py` | The multi-shaft Vold-Kalman order-tracking filter |
-| `panam_acoustics/` | `signal_io` (recording loaders), `filters` (Butterworth helpers, the one-third-octave filter bank), `atmosphere` and `iso_9613_1_1993` (ISO 9613-1 absorption), `plotting` (`acoustic_plot_style`). See its `THIRD_PARTY_NOTICES.md` for the parts derived from python-acoustics |
-| `cli.py` | Argument types and figure output shared by the scripts: `colon_pair`, `colon_pair_or_single`, `save_or_show` |
+| `sphere_statistics.py` | Energy averaging of repeat-run spheres (`average_spheres`, `write_averaged_sphere`) and band-by-band sphere comparison (`compare_spheres`, `plot_sphere_difference`), and the per-node sample statistics of a depropagated sphere (`node_statistics`, `node_statistics_variables`) |
+| `nod_database.py` | Reading NICE-OPS databases: `load_nod`, `validate_nod` (the rules of [file_formats.md](file_formats.md#checking-a-database)), `compare_databases`, `to_frame` (needs pandas), and the inspection behind `nod_tool.py`: `summarize_condition`, `select_condition`, `plot_condition` (Lambert map of dBA, EAA, a band or coverage), `plot_envelope` |
+| `synthetic_flyover.py` | Synthetic recordings of a straight, level pass of a source of known directivity (`synthesize_pass`), its true level at the reference radius (`source_level_db`), and the recovered-minus-true Lambert map (`plot_level_difference`). The golden results and the depropagation tutorial use it |
+| `synthesis.py` | Forward synthesis of microphone band-level histories from a hemisphere (`synthesize_band_histories`, the inverse of `depropagate_hemisphere`), the Doppler band shift (`doppler_shift_band_power`), measured band histories (`measured_band_histories`), and the leave-microphones-out check of the gridding settings (`leave_mics_out`, `residual_statistics`) |
+| `order_tracking.py` | Order tracks as a fixed microphone hears them (propagation delay and Doppler shift along a track), ridge tracking, and clock offsets by cross-correlation |
+| `panam_acoustics/` | `signal_io` (recording loaders), `filters` (Butterworth helpers, the one-third-octave filter bank), `atmosphere` and `iso_9613_1_1993` (ISO 9613-1 absorption), `time_weighting` (IEC 61672-1 A/C/Z and F/S/I weighting, Lmax, Leq), `plotting` (`acoustic_plot_style`), `impulsiveness` (BVI crest factor, kurtosis, pulse peak-to-RMS and harmonic ratio), `psychoacoustics` (ISO 532-1 stationary loudness, DIN 45692 sharpness). See its `THIRD_PARTY_NOTICES.md` for the parts derived from python-acoustics |
+| `cli.py` | Argument types and figure output shared by the scripts: `colon_pair`, `colon_pair_or_single`, `add_output_options`, `save_or_show`, `save_all_or_show` |
 | `local_paths.py` | `data_path(name)`: where this machine keeps external data and the NICE-OPS executables |
+| `build_recipe.py` | `load_recipe(path)`: a TOML build recipe of `[spheres]`, `[hover_source]` and `[database]` settings, checked against the build functions' signatures, for `--recipe` and Python |
+| `provenance.py` | `build_provenance(tool, settings)`: the code version, library versions and settings stamped on written spheres and databases |
 | `unit_conversion.py`, `default_units.py` | Aerospace unit conversions (third-party, BSD-style license in the file headers) |
 
 Scripts with a command line: `noise_abatement_2017.py` (the main pipeline),
-`build_empirical_database.py`, `norah2_to_nod.py`, `array_planner.py`, and the
+`build_empirical_database.py`, `norah2_to_nod.py`, `sphere_to_norah2.py`, `compare_databases.py`, `nod_tool.py`, `array_planner.py`,
+`sphere_diff.py`, and the
 plotting scripts `nc_lambert_ea.py`, `plot_projection.py`, `fried_egg_plot.py`,
 `spectrogram_plot.py`, `atmomap.py`, `ega_plot.py` and `board_field_plot.py`.
-`AS350_289108_demo.py`, `hexacopter_vkf_example.py`, `as350_flip_check.py` and
-the `__main__` block of `vold_kalman_filter.py` are examples and diagnostics,
-not tools.
+`depropagation_tutorial.py`, `AS350_289108_demo.py`, `hexacopter_vkf_example.py`,
+`as350_flip_check.py` and the `__main__` block of `vold_kalman_filter.py` are examples and diagnostics,
+not tools. Every script takes `-h`.
 
 ### Where new code goes
 
@@ -163,11 +176,27 @@ of the selected interval. `-inf` means zero energy.
 
 - Use `argparse` with a `description=`, and give every option a help string
   that states its units and default.
-- Use `cli.colon_pair` (or `colon_pair_or_single`) for `low:high` ranges and
-  `cli.save_or_show(fig, args.output, args.plot)` for figure output, so the
-  script writes a file with `-o` and opens a window otherwise. `atmomap.py`,
-  `ega_plot.py` and `board_field_plot.py` predate this and always write a
-  default file.
+- Use `cli.colon_pair` (or `colon_pair_or_single`) for `low:high` ranges.
+- Figure output has one convention. A script that draws one figure takes
+  `-o/--output FILE` and `-p/--plot`: add them with
+  `cli.add_output_options(parser)` and finish with
+  `cli.save_or_show(fig, args.output, args.plot)`, so the script writes a
+  file with `-o`, opens a window otherwise, and does both with `-o` and `-p`.
+  A script that writes several files takes `-o/--output-dir DIR` and
+  `-p/--plot` (`add_output_options(parser, 'demo_plots', directory=True)`)
+  and `cli.save_all_or_show(figures, args.output_dir, args.plot)`. Both
+  helpers create the output directory. Where `-p` already means something
+  else (`atmomap.py --pressure`, `ega_plot.py --plot-type`), pass
+  `plot_flags=('--plot',)`; keep an older spelling working with `aliases=`
+  (`AS350_289108_demo.py --outdir`). `atmomap.py`, `ega_plot.py` and
+  `board_field_plot.py` predate the convention and always write a default
+  file; `--plot` also opens it.
+- Find files that ship with PANAM (`example_data/`) relative to the script,
+  `os.path.join(os.path.dirname(os.path.abspath(__file__)), ...)`, so the
+  script runs from any directory. Outputs default to `demo_plots/` in the
+  current directory, which the smoke tests rely on.
+- Give the script a `main(argv=None)` so a test can call it with arguments,
+  and keep `-h` from running anything.
 - Find external data with `local_paths.data_path(name, args.something)`, so
   that a command-line path overrides `PANAM_<NAME>` and `local_paths.toml`.
 - Add a smoke test to `tests/test_cli_scripts.py`. `run_here` runs the script
@@ -180,8 +209,8 @@ of the selected interval. `-inf` means zero energy.
 `build_empirical_database` needs a `vehicle.cfg` in the sphere directory: rotor
 blades, radii and tip speeds, the atmosphere, weight and drag, in SI units. Its
 format, including the optional `[Option]` section, is in
-[file_formats.md](file_formats.md). `tests/sphere_helpers.VEHICLE_CFG` is a
-minimal example.
+[file_formats.md](file_formats.md). `example_data/vehicle.cfg` is a
+minimal example (AS350-like rotors); `tests/sphere_helpers.VEHICLE_CFG` reads it.
 
 For another aircraft of the 2017 test, the dataset directory name is the
 `noise_abatement_2017.py` argument. Add it to `AIRCRAFT_SPHERE_PREFIX` only
@@ -247,10 +276,19 @@ stop with a `LookupError` that says how to configure the path.
 Shared fixtures (a minimal hemisphere, a sphere directory with its
 `vehicle.cfg`, raw sphere files) are in `tests/sphere_helpers.py`.
 
+`tests/conftest.py` runs `nod_database.validate_nod` on every database that
+`fa.build_empirical_database` or `fa.build_database_from_norah2` writes during the
+tests, including scripts run in-process with `run_here`, and fails the test on a
+violation. Call the builders through the module (`fa.build_...`), not a name
+imported before the session starts. A database written in a subprocess is
+validated by the test itself.
+
 ### Golden results
 
 `tests/data/golden_results.npz` pins depropagation and a database built from
-it, over the main options, to 1e-6 dB. A refactor must leave them unchanged.
+it, over the main options, to 1e-6 dB. Their input is the seeded pass from
+`synthetic_flyover.synthesize_pass`, so a change to its defaults or to the
+order it draws random numbers in changes them. A refactor must leave them unchanged.
 A commit that changes results on purpose regenerates them and says so:
 
 ```bash
@@ -263,11 +301,33 @@ it from PANAM.
 
 ### Continuous integration
 
-`.github/workflows/tests.yml` runs `python -m pytest -q` on Ubuntu with
-Python 3.11 and 3.14, on every push and pull request to `master`. CI has no
-external data and no NICE-OPS executables, so the data and NICE-OPS tests
-skip there; run them locally before merging a change that touches the build,
-the database writers or the NORAH2 import.
+`.github/workflows/tests.yml` runs on every push and pull request to
+`master`: on Ubuntu with Python 3.11 and 3.14, and on macOS with Python 3.14.
+Each job runs
+
+```bash
+python -m pytest -q --durations=20 --cov=. --cov-report=term-missing:skip-covered
+```
+
+and adds a coverage table to the job's summary page. Coverage is reported,
+not enforced: no threshold fails the job. `--durations=20` lists the slowest
+tests, which is where to look when CI slows down. The workflow sets
+`NUMBA_CACHE_DIR` to `.numba_cache/` (ignored by version control) and keeps it
+between runs with `actions/cache`, keyed on the OS, the Python version and the
+contents of `ground_plane.py`, `axisymmetric_bem.py` and `requirements.txt`.
+Numba treats a cached function as stale when its source file's modification
+time or size changes, and a fresh checkout always changes the time, so the
+workflow first sets both files to a fixed time. The cache is restored only on
+an exact match of that key, so it is reused only when `ground_plane.py` and
+`axisymmetric_bem.py` are byte-identical to the run that saved it; any edit
+to either file compiles from scratch. (Numba's own per-function key hashes
+only the bytecode, not its constants, module globals or the jitted functions
+it calls, so a stale cache could survive an edit of the same size.) To run the same command locally, install
+`pytest-cov` (`pip install pytest-cov`); it is not in `requirements.txt`.
+
+CI has no external data and no NICE-OPS executables, so the data and NICE-OPS
+tests skip there; run them locally before merging a change that touches the
+build, the database writers or the NORAH2 import.
 
 ## Environment and caches
 
@@ -279,12 +339,21 @@ the database writers or the NORAH2 import.
   file entry, and a command-line argument overrides both.
 - `ground_plane.py` and `axisymmetric_bem.py` are compiled with Numba
   (`cache=True`). The first call after a change compiles, and the compiled
-  code is cached in `__pycache__`.
+  code is cached in `__pycache__`, or in `NUMBA_CACHE_DIR` when that is set
+  (as CI does).
 - `noise_abatement_2017.plate_table` caches plate tables in memory and in
-  `~/.cache/panam/plate_tables`, one pickle per microphone height, ground,
-  sound speed (rounded to 0.5% steps) and band set. A table takes 15-45 s to
-  compute. Delete the directory after changing the plate model; the cache key
-  does not include the code version.
+  `~/.cache/panam/plate_tables` (`--plate-table-directory` on the command
+  line, `plate_table_directory` in `build_sphere`). A table takes 15-45 s to
+  compute. Each table is an `.npz` file, without pickle, that stores its key:
+  `axisymmetric_bem.PLATE_TABLE_VERSION`, the microphone height, the ground,
+  the sound speed (rounded to 0.5% steps), every band, and the mesh,
+  quadrature, direction and plate settings of
+  `axisymmetric_bem.table_settings`. A file whose stored key differs is
+  recomputed and replaced; `.pkl` files from the older cache are ignored.
+  Bump `PLATE_TABLE_VERSION` in any commit that changes the numbers
+  `axisymmetric_bem.table` returns for the same arguments (the comment above
+  it lists what counts). `noise_abatement_2017.py --plate-cache list` lists the
+  cached tables and whether each is current; `--plate-cache clear` deletes them.
 - A 2017 build reads the archive from wherever `local_paths` points; on a
   cloud drive, `build_all` prefetches each run's files in threads.
 
@@ -303,7 +372,8 @@ The code contract:
   gate and before spreading. `noise_abatement_2017.plate_response` builds the
   callable from the plate tables, and the pressures then go in unscaled.
 - **The cache.** `plate_table` caches tables in `~/.cache/panam/plate_tables`
-  (see above). Delete it after changing the plate model.
+  (see above). Bump `axisymmetric_bem.PLATE_TABLE_VERSION` after changing the
+  plate model, and the cached tables are recomputed.
 - **NICE-OPS.** `axisymmetric_bem.write_netcdf` exports a plate table for
   NICE-OPS's `--plate_table` option: band x sub-frequency x elevation x
   azimuth, metric, with the ground it was computed on, which NICE-OPS checks
