@@ -849,6 +849,33 @@ every column gives 5 m, an upper bound; one over the 6 km column gives 6 km, a l
 wins and flags the result; an NA entry counts as met, so a band over its last listed column is
 bracketed by that column and the next.
 
+**Impulsiveness** (`panam_acoustics.impulsiveness`). Three statistics of a microphone pressure
+history characterize blade-vortex interaction (BVI) noise, each taken over frames of
+`frame_time` seconds (non-overlapping unless `hop_time` is given) after removing each frame's
+mean (`detrend='constant'`, the default) or a fitted line (`'linear'`). The crest factor is
+$\max\lvert p\rvert/p_\mathrm{rms}$, $\sqrt2$ for a sine. The kurtosis is
+$\overline{(p - \bar p)^4}/\left(\overline{(p - \bar p)^2}\right)^2$, Pearson's rather than the
+excess: 1.5 for a sine, 3 for Gaussian noise, about $T$ for one pulse every $T$ samples. The
+pulse peak-to-RMS ratio is $\max\lvert p_B\rvert/p_\mathrm{rms}$, with $p_B$ the history
+band-passed to the pulse band `band_hz` by a zero-phase Butterworth filter and $p_\mathrm{rms}$
+that of the unfiltered frame; for BVI the band is the 6th to 40th blade-passage harmonics,
+$[5.5f_b, 40.5f_b]$. The history may first be de-Dopplerized (`dedopplerize`, §10); a frame
+holding a NaN sample gives NaN. The spectral measure is `bvi_harmonic_ratio`, which takes a
+narrowband PSD, such as the `narrowband` grid of `depropagate_hemisphere`. Harmonic $k$ of the
+blade-passage frequency $f_b$ owns $[(k - \tfrac12)f_b, (k + \tfrac12)f_b)$, so the ratio is
+$10\lg(E_{k_3..k_4}/E_{k_1..k_2})$, $E$ the PSD power times bin width summed over the bins whose
+centers lie in the band, by default harmonics 6–40 over 1–5. A $-\infty$ bin adds no energy and
+a NaN bin makes the ratio NaN.
+
+The harmonic ratio is an energy ratio and can be taken from a gridded sphere; the waveform
+statistics are not gridded and have no sphere-file or database field. Depropagation scales
+power and gridding averages power over directions (§5, §6), but a crest factor or kurtosis is
+neither a power nor additive: it depends on the relative phase of the harmonics, which the
+spectra discard; the statistic of a mix of waveforms is not the mean of their statistics; and
+propagation changes it in a way no level correction undoes, since absorption removes the high
+harmonics that make a pulse sharp and ambient noise pulls the kurtosis toward 3 as range grows.
+They describe the microphone record they are computed on.
+
 ## 10. Auxiliary models
 
 These are in PANAM but not used to build the databases.
@@ -952,6 +979,7 @@ Functions are in `flight_acoustics.py` unless another module is named. Tests are
 | §7.5 Completion | `mirror_phi_to_upper_surface`, `_complete_sphere_with_coverage` | `test_mirror_phi.py`, `test_sphere_completion_integration.py` |
 | §8 NORAH2 | `build_database_from_norah2`, `norah2_levels_at_radius`, `norah2_speed_knots`, `humid_air_density`, `fill_norah2_empty_cells`, `write_norah2_hemisphere`, `write_norah2_triangulation`, `norah2umapr` | `test_norah2_import.py`, `test_write_norah2_hemisphere.py` |
 | §9 Metrics | `sound_exposure_level`, `ten_db_down_interval`, `noys`, `perceived_noise_level`, `tone_correction`, `effective_perceived_noise_level`, `mil_std_1474e_nondetectability_distance` | `test_sound_exposure_level.py`, `test_pnl_epnl.py`, `test_mil_std_nondetectability.py` |
+| §9 Impulsiveness | `panam_acoustics.impulsiveness.crest_factor`, `kurtosis`, `pulse_peak_to_rms`, `bvi_harmonic_ratio`, `frame_signal` | `test_impulsiveness.py` |
 | §10 VKF | `vold_kalman_filter.vold_kalman_filter` | `test_vold_kalman_filter.py` |
 | §10 Ground-board models, two-path fit | `ground_plane.board_*`, `disc_bem_scattered`, `raised_plate_scattering`, `fit_two_path`, `height_from_path_difference` | `test_ground_plane.py`, `test_ground_validation.py`, `test_axisymmetric_bem.py` |
 | §10 Array planning | `linear_array_plan` (through the `array_planner.py design` CLI); `array_coverage`, `hover_array_coverage`, `takeoff_array_coverage` | `test_array_planner.py` (the CLI's spacing and options); the coverage functions: none |
