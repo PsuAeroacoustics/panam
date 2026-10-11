@@ -33,13 +33,15 @@ Instructions for AI coding tools working on PANAM. Human developers: see
 - `refracted_rays.py`: ray models for depropagation; wraps NICE-OPS's
   `niceops_ray_geometry`.
 - `vold_kalman_filter.py`: Vold-Kalman order tracking.
+- `sphere_statistics.py`: energy averaging of repeat-run spheres and
+  band-by-band sphere comparison (CLI `sphere_diff.py`).
 - `panam_acoustics/`: `signal_io` (loaders), `filters`, `atmosphere` and
   `iso_9613_1_1993` (ISO 9613-1), `plotting` (`acoustic_plot_style`).
 - `cli.py`: `colon_pair`, `colon_pair_or_single`, `save_or_show`.
 - `local_paths.py`: data lookup. `unit_conversion.py`, `default_units.py`:
   third-party unit conversions.
 - Tools: `noise_abatement_2017.py`, `build_empirical_database.py`,
-  `norah2_to_nod.py`, `array_planner.py`, plotting scripts. Examples and
+  `norah2_to_nod.py`, `array_planner.py`, `sphere_diff.py`, plotting scripts. Examples and
   diagnostics: `AS350_289108_demo.py`, `hexacopter_vkf_example.py`,
   `as350_flip_check.py`.
 

@@ -57,3 +57,26 @@ def test_the_saved_band_limits_match_the_bands_summed():
     a_weights = fa.dBAw(centers[:4])[:, None, None]
     np.testing.assert_allclose(levels['spla_db'], 10.0 * np.log10((10.0 ** ((bands_db[:4] + a_weights) / 10.0)).sum(axis=0)),
                                rtol=1e-12)
+
+
+def test_the_demo_logs_level_differences_from_the_reference(tmp_path, caplog):
+    import logging
+    from sphere_helpers import minimal_hemisphere, write_sphere_directory
+    louder = minimal_hemisphere()
+    louder['third_octave']['bands_db'] += 1.5
+    write_sphere_directory(tmp_path, [(minimal_hemisphere(), 60, 0), (louder, 60, 0)])
+    with caplog.at_level(logging.INFO):
+        result = demo.log_level_differences(str(tmp_path / 'X101.nc'), str(tmp_path / 'X102.nc'))
+    np.testing.assert_allclose(result['mean_db'], 1.5, atol=1e-4)
+    assert 'Level differences' in caplog.text and 'overall' in caplog.text
+
+
+def test_the_demo_skips_level_differences_on_different_bands(tmp_path, caplog):
+    import logging
+    from sphere_helpers import minimal_hemisphere, write_sphere_directory
+    other = minimal_hemisphere()
+    other['third_octave']['band_centers_hz'] = other['third_octave']['band_centers_hz'] * 2.0
+    write_sphere_directory(tmp_path, [(minimal_hemisphere(), 60, 0), (other, 60, 0)])
+    with caplog.at_level(logging.INFO):
+        assert demo.log_level_differences(str(tmp_path / 'X101.nc'), str(tmp_path / 'X102.nc')) is None
+    assert 'not compared' in caplog.text

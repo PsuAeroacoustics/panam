@@ -64,6 +64,21 @@ The file also carries these text attributes, each '' when unknown:
 | `wind_reference_direction` | `ground track` (flights) or `heading` (hovers, whose ground track is drift) |
 | `air_density_source` | `ground stations`, `caller` (an `atmosphere` passed in), or `none` |
 
+**Averaged spheres.** `sphere_statistics.write_averaged_sphere` (`sphere_diff.py average`)
+writes an energy average of repeat runs in the same layout, with the runs' mean `SPEED`,
+`FLIGHT_PATH_ANGLE` and weight (as `EMPTY_WEIGHT`). It adds two optional variables after
+everything else. AAM and NICE-OPS do not read them, and a reader may ignore them.
+
+| variable | type, dimensions | `unit` | content |
+| --- | --- | --- | --- |
+| `N_RUNS` | i4 (`PHI`, `THETA`, `FREQUENCY`) | | the runs covering the cell (below) |
+| `AMPLITUDE_SD_DB` | f4 (`PHI`, `THETA`, `FREQUENCY`) | DECIBEL | sample standard deviation of the runs' finite levels; -999 where fewer than two are finite |
+
+A run covers a cell when its level there is not NaN. A -999 in a source run is read as no
+data by default (`missing='no_data'`), or as zero power (`missing='no_energy'`), since the
+file does not say which it is. `write_aam_hemisphere_netcdf` writes such variables through
+its `extra_variables` argument and levels already on the ART grid through `art_levels`.
+
 **Missing values.** A missing band is stored as -999 (`AAM_MISSING_LEVEL`); see
 [how a bin's state travels](#how-a-bins-state-travels).
 
@@ -280,6 +295,8 @@ row, then one row per run:
   checks that a default build differs from the older format only by the added items.
 - `tests/test_run_metadata.py` pins the per-run metadata in the sphere and the database, and
   that the database's metadata are attributes, not variables.
+- `tests/test_sphere_statistics.py` pins the averaged sphere's `N_RUNS` and
+  `AMPLITUDE_SD_DB`, and that they follow the AAM variables.
 - `tests/test_write_aam_hemisphere_netcdf.py` pins the AAM variable order, the -999
   sentinel, the masking conventions read back, and the root vehicle fields.
 - `tests/test_golden_results.py` pins depropagated levels and the database built from them

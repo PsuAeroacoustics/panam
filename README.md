@@ -65,6 +65,7 @@ scripts take no options and run as soon as they start, `-h` included:
 | `build_empirical_database.py` | Build a NICE-OPS database from a directory of spheres and its `vehicle.cfg` | Your spheres |
 | `norah2_to_nod.py` | Build a NICE-OPS database from NORAH2 `.hem` hemispheres | `.hem` files |
 | `nc_lambert_ea.py` | Plot a sphere's levels on a Lambert equal-area projection | No (bundled sphere) |
+| `sphere_diff.py` | Energy-average repeat-run spheres (`average`), or print and map the band-by-band level difference of two spheres (`compare`) | Your spheres |
 | `plot_projection.py` | Project a sphere onto flat ground and contour the footprint | No (bundled sphere) |
 | `fried_egg_plot.py` | Contour ground levels of a directory of spheres over flight condition | Your spheres and `vehicle.cfg` |
 | `spectrogram_plot.py` | Spectrogram of one HDF5 or netCDF recording | Your recording |

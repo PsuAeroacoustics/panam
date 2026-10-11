@@ -14,6 +14,7 @@ import argparse
 import flight_acoustics as fa
 import local_paths
 import noise_abatement_2017 as na
+import sphere_statistics
 import matplotlib.pyplot as plt
 import numpy as np
 import logging
@@ -62,6 +63,21 @@ def compare_aam_netcdf_fields(reference_nc, candidate_nc):
             logging.info("Unit attribute differences ('unit') for common variables:")
             for name, ru, cu in unit_mismatch:
                 logging.info(f'  {name}: ref unit={ru!r} vs cand unit={cu!r}')
+
+def log_level_differences(reference_nc, candidate_nc):
+    """Log the band-by-band level difference candidate - reference (dB).
+
+    Returns the :func:`sphere_statistics.compare_spheres` result, or None (logged)
+    when the two spheres are not on the same grid and bands.
+    """
+    try:
+        result = sphere_statistics.compare_spheres(reference_nc, candidate_nc)
+    except ValueError as error:
+        logging.info(f'Level differences not compared: {error}')
+        return None
+    logging.info('Level differences, candidate - reference:\n' + sphere_statistics.format_comparison(result))
+    return result
+
 
 def plot_ambient_spectra(ambient_path):
     nc_files = []
@@ -543,6 +559,7 @@ def main():
                 # Compare fields/attrs against the reference AAM sphere
                 if os.path.exists(ref_file):
                     compare_aam_netcdf_fields(ref_file, out_nc)
+                    log_level_differences(ref_file, out_nc)
             except Exception as e:
                 logging.warning(f'Could not export AAM netCDF hemisphere: {e}')
 

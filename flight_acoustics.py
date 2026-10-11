@@ -2669,6 +2669,8 @@ def write_aam_hemisphere_netcdf(
         overwrite: bool = True,
         azimuth_reference: Optional[str] = None,
         run_metadata: Optional[dict] = None,
+        art_levels=None,
+        extra_variables: Optional[dict] = None,
 ):
     """Write a depropagated acoustic hemisphere to an AAM/RNM-style netCDF sphere.
 
@@ -2727,6 +2729,16 @@ def write_aam_hemisphere_netcdf(
             :data:`WIND_SPEED_UNITS` when a wind component is finite, and is
             written as the WIND_* variables' unit; ``wind_source`` is checked
             against :data:`WIND_SOURCES`.  :func:`read_run_metadata` reads it back.
+        art_levels: optional ``(frequency_hz, levels_db)``: band levels (dB) already on
+            the ART grid, shaped (len(phi_deg), len(theta_deg), len(frequency_hz)), with
+            -inf or NaN where missing.  They are written as they are, without
+            resampling (``minimum_level_db`` still applies); ``hemisphere`` must then be
+            None and ``phi_deg``, ``theta_deg`` and ``radius_ft`` must be given.
+            :func:`sphere_statistics.write_averaged_sphere` uses it.
+        extra_variables: optional dict ``{name: (values, unit)}`` of further
+            (PHI, THETA, FREQUENCY) variables, written after everything else, which
+            AAM does not read.  Integer arrays are written as i4; anything else as f4,
+            with non-finite values as -999.
 
     Returns:
         None
@@ -2769,10 +2781,16 @@ def write_aam_hemisphere_netcdf(
     if not overwrite and os.path.exists(filename):
         raise FileExistsError(f'Output file already exists: {filename}')
 
-    if not isinstance(hemisphere, dict):
+    if art_levels is not None:
+        if hemisphere is not None:
+            raise ValueError('pass hemisphere or art_levels, not both')
+        if phi_deg is None or theta_deg is None or radius_ft is None:
+            raise ValueError('art_levels needs phi_deg, theta_deg and radius_ft')
+        meta = {}
+    elif not isinstance(hemisphere, dict):
         raise TypeError('hemisphere must be a dict returned by depropagate_hemisphere')
-
-    meta = hemisphere.get('metadata', {}) if isinstance(hemisphere.get('metadata', {}), dict) else {}
+    else:
+        meta = hemisphere.get('metadata', {}) if isinstance(hemisphere.get('metadata', {}), dict) else {}
 
     # Default ART grids.
     # A common AAM/RNM convention (and the included example sphere) uses:
@@ -2797,12 +2815,21 @@ def write_aam_hemisphere_netcdf(
         length_units = str(meta['length_units'])
         radius_ft = float(unit_conversion.len_conv(r_ref, from_units=length_units, to_units='ft'))
 
-    # ART grid points -> UMAPR for interpolation
-    TH, PH = np.meshgrid(theta_deg, phi_deg)
-    azi_rad, elv_rad = art2umapr(np.deg2rad(PH), np.deg2rad(TH))
-    # Output amplitude array: (phi, theta, freq)
-    frequency_hz, amplitude_db = _sample_hemisphere_levels(
-        hemisphere, mode, np.degrees(azi_rad), np.degrees(elv_rad), minimum_level_db)
+    if art_levels is not None:
+        frequency_hz = np.asarray(art_levels[0], dtype=float).ravel()
+        amplitude_db = np.array(art_levels[1], dtype=float)
+        if amplitude_db.shape != (phi_deg.size, theta_deg.size, frequency_hz.size):
+            raise ValueError('art_levels levels must be shaped (phi, theta, frequency) = {}, not {}'
+                             .format((phi_deg.size, theta_deg.size, frequency_hz.size), amplitude_db.shape))
+        with np.errstate(invalid='ignore'):
+            amplitude_db[amplitude_db < float(minimum_level_db)] = -np.inf
+    else:
+        # ART grid points -> UMAPR for interpolation
+        TH, PH = np.meshgrid(theta_deg, phi_deg)
+        azi_rad, elv_rad = art2umapr(np.deg2rad(PH), np.deg2rad(TH))
+        # Output amplitude array: (phi, theta, freq)
+        frequency_hz, amplitude_db = _sample_hemisphere_levels(
+            hemisphere, mode, np.degrees(azi_rad), np.degrees(elv_rad), minimum_level_db)
     nphi = phi_deg.size
     nth = theta_deg.size
     nfreq = int(np.asarray(frequency_hz).size)
@@ -2811,6 +2838,17 @@ def write_aam_hemisphere_netcdf(
     missing_sentinel = np.float32(AAM_MISSING_LEVEL)
     amplitude_to_write = amplitude_db.astype(np.float32)
     amplitude_to_write[~np.isfinite(amplitude_to_write)] = missing_sentinel
+
+    extra = {}
+    reserved = set(AAM_VARIABLE_ORDER) | {'MASTTILT'} | {name for name, _, _ in RUN_METADATA_VARIABLES}
+    for name, (values, unit) in (extra_variables or {}).items():
+        if name in reserved:
+            raise ValueError('extra variable {!r} would replace a sphere variable'.format(name))
+        values = np.asarray(values)
+        if values.shape != (nphi, nth, nfreq):
+            raise ValueError('extra variable {!r} must be shaped {}, not {}'.format(
+                name, (nphi, nth, nfreq), values.shape))
+        extra[name] = (values, unit)
 
     # Write netCDF (match AAM naming conventions).
     # Use NETCDF3_CLASSIC for broad interoperability with legacy AAM/RNM tooling
@@ -2912,6 +2950,16 @@ def write_aam_hemisphere_netcdf(
                 variable.unit = _scalar_unit(metadata['wind_units'] if unit is None else unit)
             for name in RUN_METADATA_ATTRIBUTES:
                 ds.setncattr(name, metadata[name])
+        for name, (values, unit) in extra.items():
+            if np.issubdtype(values.dtype, np.integer):
+                variable = ds.createVariable(name, 'i4', ('PHI', 'THETA', 'FREQUENCY'))
+                variable[:, :, :] = values.astype(np.int32)
+            else:
+                variable = ds.createVariable(name, 'f4', ('PHI', 'THETA', 'FREQUENCY'))
+                values = values.astype(np.float32)
+                values[~np.isfinite(values)] = missing_sentinel
+                variable[:, :, :] = values
+            variable.unit = str(unit)
     finally:
         ds.close()
 
@@ -5522,7 +5570,7 @@ def colorbar_ticks(levels, max_ticks=11):
 
 @acoustic_plot_style
 def plot_lambert_ea(azi,elv,SPL,SPL_range=None,weight=None,grid_convention='umapr',
-                    levels=None,level_step=None):
+                    levels=None,level_step=None,cmap=None,colorbar_label=None):
     """
     Generate a Lambert equal-area azimuthal projection contour plot of sound pressure levels.
 
@@ -5546,6 +5594,11 @@ def plot_lambert_ea(azi,elv,SPL,SPL_range=None,weight=None,grid_convention='umap
     grid_convention : str, optional
         Grid overlay convention. Use 'umapr' for the existing azimuth/elevation grid or
         'art'/'aam'/'rnm' for RNM/AAM phi-theta grid lines. Default is 'umapr'.
+    cmap : str or matplotlib.colors.Colormap, optional
+        Colormap, e.g. a diverging one for a level difference. Default None, the
+        yellow-orange-red map sized to the levels.
+    colorbar_label : str, optional
+        Colorbar label. Default None, a sound pressure level label set by `weight`.
 
     Returns
     -------
@@ -5574,7 +5627,7 @@ def plot_lambert_ea(azi,elv,SPL,SPL_range=None,weight=None,grid_convention='umap
     if levels is None:
         levels = nice_levels(minSPL, maxSPL, step=level_step)
     levels = np.asarray(levels, dtype=float)
-    color_map = get_ylorrd_cmap(max(len(levels), 2))
+    color_map = get_ylorrd_cmap(max(len(levels), 2)) if cmap is None else cmap
     # Project to Cartesian
     lat = elv
     lon = lambert_lon(azi)
@@ -5585,7 +5638,9 @@ def plot_lambert_ea(azi,elv,SPL,SPL_range=None,weight=None,grid_convention='umap
     _configure_lambert_axes(ax)
     _draw_lambert_grid(ax, grid_convention=grid_convention)
     cb = colorbar(cs, pad=0.1, ticks=colorbar_ticks(levels))
-    if weight == 'A':
+    if colorbar_label is not None:
+        cb.set_label(colorbar_label)
+    elif weight == 'A':
         cb.set_label('Sound Pressure Level, dBA')
     else:
         cb.set_label('Sound Pressure Level, dB')
