@@ -172,7 +172,7 @@ def ridge_track(x, fs, band, window=1.0, hop=0.1):
         den = lo - 2.0 * mid + hi
         shift = np.where(np.isfinite(den) & (den < 0), 0.5 * (lo - hi) / den, 0.0)
     refined[interior] += shift * (frequency[1] - frequency[0])
-    return (starts + n / 2.0) / fs, refined
+    return (starts + (n - 1) / 2.0) / fs, refined
 
 
 def estimate_clock_offset(signal_a, signal_b, fs, max_lag, min_overlap=0.5):

@@ -78,3 +78,13 @@ def test_a_receiver_filters_at_the_doppler_shifted_speeds(monkeypatch):
     np.testing.assert_allclose(result['rpm'], rpm[:len(result['rpm'])] / (1 + 20.0 / 343.0), rtol=1e-9)
     default = _separate([2], n_jobs=1)
     np.testing.assert_allclose(default['rpm'], rpm[:len(default['rpm'])], rtol=1e-9)
+
+
+def test_a_one_dimensional_rpm_record_is_one_rotor():
+    from scipy.interpolate import interp1d
+    aircraft_time = np.linspace(0.0, 2.0, 21)
+    rpm = 200.0 + 10.0 * np.sin(2 * np.pi * 0.7 * aircraft_time)
+    acoustics_T = np.linspace(0.05, 1.95, 97)
+    out = hexa.interpolate_rpm_to_acoustic_time(aircraft_time, rpm, acoustics_T)
+    assert out.shape == (len(acoustics_T), 1)
+    np.testing.assert_allclose(out[:, 0], interp1d(aircraft_time, rpm, kind='cubic')(acoustics_T))

@@ -99,6 +99,17 @@ def test_ridge_of_a_flyover_tone_follows_the_predicted_track():
     assert np.max(np.abs(peak - F0)) > 10.0                # the shift is not small
 
 
+def test_ridge_frame_times_are_the_window_centers():
+    """A linear chirp's ridge sits at the frequency of each Hann window's center sample."""
+    fs, f0, rate = 32.0, 4.0, 2.0                  # Hz, Hz, Hz/s: 1/16 Hz per sample
+    t = np.arange(int(4 * fs)) / fs
+    x = np.cos(2 * np.pi * (f0 * t + rate * t ** 2 / 2))
+    times, peak = ot.ridge_track(x, fs, (1.0, 15.0), window=1.0, hop=1.0 / fs)
+    np.testing.assert_allclose(times[:2], [15.5 / fs, 16.5 / fs])
+    lag_samples = (peak - (f0 + rate * times)) / rate * fs
+    assert np.max(np.abs(lag_samples)) < 0.25
+
+
 def test_vkf_on_the_predicted_track_recovers_the_received_tone():
     t_r = np.arange(int(6 * FS)) / FS + 7.0        # through the overhead pass
     x = _flyover(t_r)
