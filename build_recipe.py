@@ -27,8 +27,10 @@ objects or None:
 - ray models come only from a directory of per-run atmospheric profiles,
   ``ray_profiles`` (:func:`noise_abatement_2017.profile_ray_models`);
 - ``fixed_load_factor = true`` in ``[database]`` is ``load_factors=None``;
-- ``tone_split = true`` sets ``tone_aware = true`` too, as ``--tone-split`` does; a
-  recipe that gives ``tone_split = true`` with ``tone_aware = false`` is refused.
+- ``tone_split = true`` sets ``tone_aware = true`` too, as ``--tone-split`` does, in its
+  own section, so ``[hover_source] tone_split = false`` keeps the tone-aware banding
+  ``[spheres] tone_split = true`` set; a recipe that gives ``tone_split = true`` with
+  ``tone_aware = false`` is refused.
 
 The dataset (``aircraft``), outputs (``output_directory``, ``manifest_path``,
 ``norah2_directory``, ``samples_path``, the database file), per-run arguments and
@@ -195,6 +197,17 @@ def resolve_callable(text, directory=None):
     return value
 
 
+def _tone_split_implies_tone_aware(section):
+    """A copy of one recipe section with ``tone_aware = true`` added where its
+    ``tone_split = true`` implies it, as ``--tone-split`` does.  Applied to each
+    section on its own, so that ``[hover_source] tone_split = false`` turns off the
+    part spheres only, not the tone-aware banding ``[spheres] tone_split`` set."""
+    values = dict(section)
+    if values.get('tone_split') and 'tone_aware' not in values:
+        values['tone_aware'] = True
+    return values
+
+
 @dataclass
 class Recipe:
     """A loaded, checked recipe: its sections as read (paths unresolved)."""
@@ -227,11 +240,9 @@ class Recipe:
     def sphere_options(self, hover_source=False):
         """Keywords of :func:`noise_abatement_2017.build_all`: ``[spheres]``, with
         ``[hover_source]`` over it when ``hover_source``."""
-        values = dict(self.spheres)
+        values = _tone_split_implies_tone_aware(self.spheres)
         if hover_source:
-            values.update(self.hover_source)
-        if values.get('tone_split') and 'tone_aware' not in values:
-            values['tone_aware'] = True          # as --tone-split does
+            values.update(_tone_split_implies_tone_aware(self.hover_source))
         return self._convert(values)
 
     def database_options(self):

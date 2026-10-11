@@ -487,7 +487,9 @@ objects or None:
 - ray models: only `ray_profiles`, a directory of per-run atmosphere CSVs
   (`profile_ray_models`; stratified refraction, plate receivers, each run's frame bearing);
 - `fixed_load_factor = true` in `[database]`: `load_factors=None`;
-- `tone_split = true` also sets `tone_aware = true`, as `--tone-split` does; a recipe with
+- `tone_split = true` also sets `tone_aware = true`, as `--tone-split` does, in its own
+  section: `[hover_source] tone_split = false` turns off the part spheres of the hover
+  source and keeps the tone-aware banding `[spheres] tone_split = true` set; a recipe with
   `tone_split = true` and `tone_aware = false` is refused.
 
 A recipe refuses the dataset (`aircraft`), the outputs (output directory, `manifest_path`,

@@ -228,6 +228,11 @@ def test_tone_split_in_a_recipe_sets_tone_aware_as_the_flag_does(tmp_path, monke
     recipe = _write(tmp_path / 'h.toml', '[hover_source]\ntone_split = true\n')
     assert build_recipe.load_recipe(recipe).sphere_options(hover_source=True)['tone_aware'] is True
     assert build_recipe.load_recipe(recipe).sphere_options() == {}
+    # [hover_source] tone_split = false turns off the part spheres, not the banding.
+    recipe = _write(tmp_path / 'o.toml', '[spheres]\ntone_split = true\n'
+                                         '[hover_source]\nremove_doppler = true\ntone_split = false\n')
+    assert build_recipe.load_recipe(recipe).sphere_options(hover_source=True) == dict(
+        tone_split=False, tone_aware=True, remove_doppler=True)
     for text, section in (('[spheres]\ntone_split = true\ntone_aware = false\n', 'spheres'),
                           ('[spheres]\ntone_aware = false\n[hover_source]\ntone_split = true\n',
                            'hover_source')):
