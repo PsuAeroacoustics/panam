@@ -1226,7 +1226,12 @@ These are in PANAM but not used to build the databases.
   applies only to an in-memory $-\infty$ or with `missing='no_energy'`. The spread is the sample
   standard deviation of the finite $L_i$, in dB. Files whose grid, bands, radius, azimuth
   reference or Doppler flag differ are refused, as are files whose speeds (or, on request,
-  flight path angles) spread by more than a tolerance.
+  flight path angles) spread by more than a tolerance. `build_empirical_database` refuses two
+  spheres at one speed and flight path angle (to 1e-9 kt and deg), as NICE-OPS does; with
+  `merge_repeats=True` it averages them this way into one condition at their mean speed before
+  forming dBA and EAA, a cell no run covers becoming no energy as a -999 does in a single
+  sphere. `merge_speed_tolerance` (kt) also merges spheres at one flight path angle whose speeds
+  lie within it of the slowest of the group.
 - **Sphere comparison** (`sphere_statistics.compare_spheres`). Per band, the difference
   $\Delta L = L_B - L_A$ over the cells finite in both spheres gives the mean, root mean square,
   5th and 95th percentiles and an area-weighted mean,
@@ -1297,7 +1302,7 @@ Functions are in `flight_acoustics.py` unless another module is named. Tests are
 | §10 Array planning | `linear_array_plan` (through the `array_planner.py design` CLI); `array_coverage`, `hover_array_coverage`, `takeoff_array_coverage` (through `array_planner.py coverage`, `hover` and `takeoff`) | `test_array_coverage.py` (the coverage functions on known geometry), `test_array_planner.py` (the CLI's spacing, options and case files), `test_cli_scripts.py` (smoke) |
 | §10 Footprint, fried egg | `project_sphere`, `project_directory`, `fried_egg_plot`, `is_noisy` | `test_projection.py`, `test_no_data.py`, `test_cli_scripts.py` (smoke) |
 | §10 De-Dopplerization | `dedopplerize` | `test_acoustics.py` |
-| §10 Repeat-run averaging, comparison | `sphere_statistics.average_spheres`, `write_averaged_sphere`, `compare_spheres`, `cell_solid_angles`, `plot_sphere_difference` | `test_sphere_statistics.py`, `test_cli_scripts.py` (smoke) |
+| §10 Repeat-run averaging, comparison | `sphere_statistics.average_spheres`, `write_averaged_sphere`, `compare_spheres`, `cell_solid_angles`, `plot_sphere_difference`; in a database build, `build_empirical_database(merge_repeats=True)` (`_group_repeat_conditions`, `_extract_condition_SPL`) | `test_sphere_statistics.py`, `test_merge_repeats.py`, `test_cli_scripts.py` (smoke) |
 
 ## References
 

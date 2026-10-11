@@ -121,6 +121,13 @@ leaves out runs whose track check raised a flag. `--sphere FILE` names spheres o
 instead, and `--exclude` takes shell patterns as well as names. The database's root attribute
 `source_spheres` lists the file names used, and `excluded_spheres` those `--exclude` left out.
 
+NICE-OPS takes one sphere per flight condition, so two spheres with the same speed and flight
+path angle are refused. `--merge-repeats` energy-averages such repeat runs into one condition
+instead (`sphere_statistics.average_spheres`), and `--merge-speed-tolerance KT` also merges
+spheres at one flight path angle whose speeds lie within KT of the slowest. The merged
+condition's `source_sphere` names every run, and `panam_inputs` lists each merged set as
+`merged_spheres`.
+
 Every other option of `build_empirical_database` that takes a plain value has a flag, and
 each flag defaults to the function's default (`python build_empirical_database.py -h` lists
 them with their units):
