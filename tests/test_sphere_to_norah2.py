@@ -109,6 +109,25 @@ def test_measurement_atmosphere_is_required(tmp_path):
                          measurement_atmosphere=None)
 
 
+@pytest.mark.parametrize('temperature, pressure, humidity, unit', [
+    (15.0, 101.325, 70.0, 'K'),          # deg C given for K
+    (288.15, 101325.0, 70.0, 'kPa'),     # Pa given for kPa
+    (288.15, 101.325, 0.7, None),        # a fraction is in range: accepted
+    (288.15, 101.325, 120.0, 'percent'),
+])
+def test_measurement_atmosphere_out_of_bounds(tmp_path, temperature, pressure, humidity, unit):
+    write_sphere(tmp_path / 'X101.nc')
+    atmosphere = Atmosphere(temperature=temperature, pressure=pressure, relative_humidity=humidity)
+    hem = tmp_path / 'X101.hem'
+    if unit is None:
+        sphere_to_norah2(str(tmp_path / 'X101.nc'), str(hem), measurement_atmosphere=atmosphere)
+        assert hem.exists()
+        return
+    with pytest.raises(ValueError, match=f'give it in {unit}'):
+        sphere_to_norah2(str(tmp_path / 'X101.nc'), str(hem), measurement_atmosphere=atmosphere)
+    assert not hem.exists()
+
+
 def test_condition_overrides_and_spreading_only(tmp_path):
     write_sphere(tmp_path / 'X101.nc')
     with pytest.warns(UserWarning, match='spreading only'):

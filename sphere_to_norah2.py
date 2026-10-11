@@ -70,6 +70,28 @@ def sphere_levels_on_norah2_grid(amplitude_db, phi_deg, theta_deg):
     return out.reshape(PH.shape + (nfreq,))
 
 
+def check_measurement_atmosphere(temperature_k, pressure_kpa, humidity_percent):
+    """Reject a measurement atmosphere outside physical bounds, most likely a unit slip.
+
+    Args:
+        temperature_k: temperature (K), 200 to 350.
+        pressure_kpa: static pressure (kPa), 30 to 120.
+        humidity_percent: relative humidity (percent), 0 to 100.
+
+    Raises:
+        ValueError: naming the expected unit, e.g. for a pressure in Pa or a
+            temperature in deg C.
+    """
+    checks = (('temperature', temperature_k, 200.0, 350.0, 'K'),
+              ('pressure', pressure_kpa, 30.0, 120.0, 'kPa'),
+              ('relative humidity', humidity_percent, 0.0, 100.0, 'percent'))
+    for name, value, low, high, unit in checks:
+        value = float(value)
+        if not low <= value <= high:
+            raise ValueError(f'measurement {name} {value:g} is outside {low:g} to {high:g} {unit}: '
+                             f'give it in {unit}')
+
+
 def sphere_to_norah2(sphere_filename, hem_filename, *, measurement_atmosphere,
                      speed_knots=None, flight_path_angle_deg=None, apply_absorption_deprop=True,
                      **norah2_options):
@@ -96,6 +118,9 @@ def sphere_to_norah2(sphere_filename, hem_filename, *, measurement_atmosphere,
     if not isinstance(measurement_atmosphere, Atmosphere):
         raise TypeError('measurement_atmosphere must be an Atmosphere: the sphere file does not '
                         'record the atmosphere of its measurement')
+    check_measurement_atmosphere(measurement_atmosphere.temperature,
+                                 measurement_atmosphere.pressure,
+                                 measurement_atmosphere.relative_humidity)
     amplitude, phi, theta, frequency, radius, speed, angle = fa.load_nc_sphere(sphere_filename)
     with np.errstate(divide='ignore', invalid='ignore'):
         octaves = np.abs(np.log2(frequency[:, None] / fa.NORAH2_BAND_CENTERS_HZ))
@@ -122,9 +147,9 @@ def parse_arguments(argv=None):
     parser.add_argument('-o', '--output', required=True, help='output NORAH2 hemisphere (.hem)')
     atmosphere = parser.add_argument_group('measurement atmosphere (required: the sphere file '
                                            'does not record it)')
-    atmosphere.add_argument('--temperature', type=float, required=True, help='temperature, K')
-    atmosphere.add_argument('--pressure', type=float, required=True, help='pressure, kPa')
-    atmosphere.add_argument('--humidity', type=float, required=True, help='relative humidity, percent')
+    atmosphere.add_argument('--temperature', type=float, required=True, help='temperature, K (200 to 350)')
+    atmosphere.add_argument('--pressure', type=float, required=True, help='pressure, kPa, not Pa (30 to 120)')
+    atmosphere.add_argument('--humidity', type=float, required=True, help='relative humidity, percent (0 to 100)')
     parser.add_argument('--speed', type=float, default=None,
                         help="ACSPEED, kt (default: the sphere's SPEED, the ground speed for the "
                              '2017 build, which is what NORAH2 looks hemispheres up by)')
