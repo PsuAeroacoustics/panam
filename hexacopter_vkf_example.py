@@ -13,6 +13,7 @@ Translated from a MATLAB script developed by Joel Sundar Rachaprolu at Penn Stat
 University. 
 """
 
+import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.io import loadmat
@@ -24,13 +25,16 @@ import concurrent.futures as cf
 from vold_kalman_filter import vold_kalman_filter
 from flight_acoustics import highpass
 from order_tracking import observed_order_track
+from cli import add_output_options, save_all_or_show
 
 
 # ----------------------------
 # Analysis flags (edit here)
 # ----------------------------
 # Data
-MAT_FILE = 'example_data/F100_20_P#1[FA1FZC-3.h5].mat'
+HERE = os.path.dirname(os.path.abspath(__file__))
+# The bundled record, found beside this script whatever the current directory.
+MAT_FILE = os.path.join(HERE, 'example_data', 'F100_20_P#1[FA1FZC-3.h5].mat')
 DOWNSAMPLE_FACTOR = 8
 HIGHPASS_CUTOFF_HZ = 100
 
@@ -554,6 +558,20 @@ def plot_results(
         Dictionary from separate_hexacopter_acoustics()
     mic_plot : int, optional
         Microphone index to plot (1-based), default 1
+    save_dir : str or None, optional
+        Directory for the four PNG files (300 dpi), created if needed;
+        None writes nothing.  Default ``demo_plots``.
+    filename_prefix : str, optional
+        File name prefix, default ``hexa``.
+    show_plots : bool, optional
+        Also open the figures in windows.
+    zoom_time_window : (float, float) or None, optional
+        Time range of the zoomed figure, s.
+
+    Returns
+    -------
+    list of str
+        The paths written.
     """
     
     # Convert to 0-based index
@@ -623,36 +641,52 @@ def plot_results(
     plt.title('Rotor RPM Time History')
     plt.tight_layout()
 
-    if save_dir:
-        os.makedirs(save_dir, exist_ok=True)
-        fig1.savefig(os.path.join(save_dir, f"{filename_prefix}_original_separated.png"), dpi=300)
-        fig1_zoom.savefig(os.path.join(save_dir, f"{filename_prefix}_original_separated_zoom.png"), dpi=300)
-        fig2.savefig(os.path.join(save_dir, f"{filename_prefix}_rotor_components.png"), dpi=300)
-        fig3.savefig(os.path.join(save_dir, f"{filename_prefix}_rpm_time_history.png"), dpi=300)
-    
-    if show_plots:
-        plt.show()
+    figures = {f"{filename_prefix}_original_separated": fig1,
+               f"{filename_prefix}_original_separated_zoom": fig1_zoom,
+               f"{filename_prefix}_rotor_components": fig2,
+               f"{filename_prefix}_rpm_time_history": fig3}
+    if save_dir or show_plots:
+        return save_all_or_show(figures, save_dir, show_plots, dpi=300)
+    return []
 
 
-if __name__ == "__main__":
-    # Path to the data file
-    mat_file = MAT_FILE
-    
-    # Check if file exists
-    if not os.path.exists(mat_file):
-        print(f"Error: Data file not found: {mat_file}")
+def main(argv=None):
+    """Run the separation with the settings at the top of this file, or the
+    command line's, and plot one microphone's results."""
+    parser = argparse.ArgumentParser(
+        description='Separate the rotor harmonics of the bundled hexacopter record with the '
+                    'Vold-Kalman filter and plot one microphone\'s original, separated and '
+                    'residual signals and the rotor speeds.')
+    parser.add_argument('--mat-file', default=MAT_FILE,
+                        help='MATLAB record (.mat) with acoustics and aircraft structs (default: the '
+                             'bundled example_data/F100_20_P#1[FA1FZC-3.h5].mat beside this script)')
+    parser.add_argument('--mic-range', type=int, default=MIC_RANGE,
+                        help=f'number of microphones to separate, the first N (default {MIC_RANGE})')
+    parser.add_argument('--mic', type=int, default=PLOT_MIC,
+                        help=f'microphone to plot, 1-based (default {PLOT_MIC})')
+    parser.add_argument('--jobs', type=int, default=VKF_N_JOBS,
+                        help='worker processes for the segments (default: the CPU count)')
+    parser.add_argument('--receiver', type=float, nargs=3, default=VKF_DOPPLER_RECEIVER,
+                        metavar=('X', 'Y', 'Z'),
+                        help='microphone position, m, in the aircraft position\'s frame: filter at '
+                             'the Doppler-shifted speeds it hears (default: none, the rotors\' own speeds)')
+    # Figures go to demo_plots/ in the current directory, as hexa_*.png.
+    add_output_options(parser, 'demo_plots', directory=True)
+    args = parser.parse_args(argv)
+
+    if not os.path.exists(args.mat_file):
+        print(f"Error: Data file not found: {args.mat_file}")
         print("Please ensure the hexacopter data file is in the correct location.")
-        exit(1)
-    
+        return 1
+
     print("="*70)
     print("Hexacopter Acoustic Signal Separation")
     print("Using Vold-Kalman Filter")
     print("="*70)
-    
-    # Perform separation with the settings at the top of this file
+
     separated = separate_hexacopter_acoustics(
-        mat_file,
-        mic_range=MIC_RANGE,
+        args.mat_file,
+        mic_range=args.mic_range,
         orders=VKF_ORDERS,
         p=VKF_P,
         min_bw=VKF_MIN_BW,
@@ -660,21 +694,26 @@ if __name__ == "__main__":
         bw_percent=VKF_BW_PERCENT,
         solver=VKF_SOLVER,
         use_coupling=VKF_USE_COUPLING,
-        n_jobs=VKF_N_JOBS,
+        n_jobs=args.jobs,
         downsample_factor=DOWNSAMPLE_FACTOR,
         highpass_cutoff=HIGHPASS_CUTOFF_HZ,
-        receiver=VKF_DOPPLER_RECEIVER,
+        receiver=None if args.receiver is None else tuple(args.receiver),
         sound_speed=SOUND_SPEED_M_S,
     )
-    
+
     print("\n" + "="*70)
     print("Processing complete!")
     print("="*70)
-    
-    # Plot results
+
     plot_results(
         separated,
-        mic_plot=PLOT_MIC,
-        show_plots=PLOT_INTERACTIVE,
+        mic_plot=args.mic,
+        save_dir=args.output_dir,
+        show_plots=args.plot or PLOT_INTERACTIVE,
         zoom_time_window=ZOOM_TIME_WINDOW,
     )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

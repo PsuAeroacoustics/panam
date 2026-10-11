@@ -88,3 +88,20 @@ def test_a_one_dimensional_rpm_record_is_one_rotor():
     out = hexa.interpolate_rpm_to_acoustic_time(aircraft_time, rpm, acoustics_T)
     assert out.shape == (len(acoustics_T), 1)
     np.testing.assert_allclose(out[:, 0], interp1d(aircraft_time, rpm, kind='cubic')(acoustics_T))
+
+
+def test_the_bundled_record_is_found_beside_the_script():
+    """MAT_FILE was relative to the current directory: the script ran only from the repository root."""
+    import os
+    assert os.path.isabs(hexa.MAT_FILE) and os.path.isfile(hexa.MAT_FILE)
+
+
+def test_main_writes_the_figures_to_demo_plots_by_default(synthetic, tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    assert hexa.main(['--mic-range', '2', '--jobs', '1']) == 0
+    names = sorted(path.name for path in (tmp_path / 'demo_plots').iterdir())
+    assert names == ['hexa_original_separated.png', 'hexa_original_separated_zoom.png',
+                     'hexa_rotor_components.png', 'hexa_rpm_time_history.png']
+    assert hexa.main(['--mic-range', '2', '--jobs', '1', '-o', 'elsewhere']) == 0
+    assert len(list((tmp_path / 'elsewhere').glob('hexa_*.png'))) == 4
+    assert hexa.main(['--mat-file', 'missing.mat']) == 1

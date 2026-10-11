@@ -6,11 +6,10 @@ Visualizes how sound attenuation varies with frequency, propagation distance,
 source/receiver height, and ground characteristics.
 """
 import argparse
-import os
 import numpy as np
 import matplotlib.pyplot as plt
 
-from cli import colon_pair, colon_pair_or_single
+from cli import add_output_options, colon_pair, colon_pair_or_single, save_or_show
 from flight_acoustics import ega, nice_levels
 
 
@@ -39,7 +38,8 @@ def get_ground_resistance(ground_type):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Generate excess ground attenuation (EGA) contour plots',
+        description='Generate excess ground attenuation (EGA) contour plots. Always writes a file '
+                    '(default demo_plots/ega_plot.pdf in the current directory).',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -95,8 +95,8 @@ Examples:
                         help='Colorbar range as "min:max" in dB (default: automatic)')
     
     # Output
-    parser.add_argument('-o', '--output', type=str, default='demo_plots/ega_plot.pdf',
-                        help='Output filename (default: demo_plots/ega_plot.pdf)')
+    # -p is --plot-type here, so the window option is --plot alone.
+    add_output_options(parser, 'demo_plots/ega_plot.pdf', plot_flags=('--plot',))
     
     args = parser.parse_args()
     
@@ -179,8 +179,7 @@ Examples:
     ax.set_title(f'Excess Ground Attenuation\n{mode_str} - {title_extra}')
     
     fig.tight_layout()
-    os.makedirs(os.path.dirname(args.output) or '.', exist_ok=True)
-    fig.savefig(args.output, dpi=150, bbox_inches='tight')
+    save_or_show(fig, args.output, args.plot, dpi=150, bbox_inches='tight')
     print(f'Plot saved to {args.output}')
 
 

@@ -1,5 +1,14 @@
-"""Argument types and figure output shared by the command-line scripts."""
+"""Argument types and figure output shared by the command-line scripts.
+
+Figure output follows one convention.  A script that draws one figure takes
+``-o/--output FILE`` and ``-p/--plot``: it writes FILE when given, opens a
+window when not, and does both with ``-o`` and ``-p``.  A script that writes
+several files takes ``-o/--output-dir DIR`` instead, and ``-p/--plot`` to also
+open the figures.  :func:`add_output_options` adds these options and
+:func:`save_or_show` and :func:`save_all_or_show` act on them.
+"""
 import argparse
+import os
 
 import matplotlib.pyplot as plt
 
@@ -26,9 +35,67 @@ def colon_pair_or_single(value):
     return single, single
 
 
+def add_output_options(parser, default=None, *, directory=False, aliases=(), plot_flags=('-p', '--plot')):
+    """Add the figure output options to ``parser``.
+
+    Args:
+        parser: The ``argparse.ArgumentParser`` (or argument group).
+        default: Default output file (or directory); None opens a window
+            instead of writing a file.
+        directory: If True, add ``-o/--output-dir`` (``args.output_dir``), the
+            directory that receives several files; if False (default), add
+            ``-o/--output`` (``args.output``), one file.
+        aliases: Older spellings of the output option, kept working.
+        plot_flags: Flags of the "also open a window" option
+            (``args.plot``); ``('--plot',)`` where ``-p`` means something else.
+    """
+    if directory:
+        parser.add_argument('-o', '--output-dir', *aliases, dest='output_dir', default=default,
+                            help=f'Directory to write the figures and files to, created if needed '
+                                 f'(default {default})')
+        parser.add_argument(*plot_flags, dest='plot', action='store_true',
+                            help='Also open the figures in windows (default: only write them)')
+    else:
+        where = default if default else 'none: open the figure in a window'
+        parser.add_argument('-o', '--output', *aliases, dest='output', default=default,
+                            help=f'Image file to write; the format follows the extension (default {where})')
+        parser.add_argument(*plot_flags, dest='plot', action='store_true',
+                            help='With -o, also open the figure in a window')
+
+
 def save_or_show(fig, output=None, plot=False, **savefig_kwargs):
-    """Save ``fig`` to ``output`` when given, and show it when not (or when ``plot``)."""
+    """Save ``fig`` to ``output`` when given, and show it when not (or when ``plot``).
+
+    The directory of ``output`` is created if needed.
+    """
     if output:
+        os.makedirs(os.path.dirname(output) or '.', exist_ok=True)
         fig.savefig(output, **savefig_kwargs)
     if not output or plot:
         plt.show(block=True)
+
+
+def save_all_or_show(figures, output_dir=None, plot=False, extension='png', **savefig_kwargs):
+    """Save each figure as ``output_dir/<name>.<extension>`` when ``output_dir`` is
+    given, and show them all at once when not (or when ``plot``).
+
+    Args:
+        figures: Mapping of file name (without extension) to figure.
+        output_dir: Directory to write to, created if needed; None writes nothing.
+        plot: With ``output_dir``, also show the figures.
+        extension: File extension, which sets the format (default ``'png'``).
+        **savefig_kwargs: Passed to ``Figure.savefig`` (e.g. ``dpi``).
+
+    Returns:
+        The list of paths written, in the order of ``figures``.
+    """
+    paths = []
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+        for name, fig in figures.items():
+            path = os.path.join(output_dir, f'{name}.{extension}')
+            fig.savefig(path, **savefig_kwargs)
+            paths.append(path)
+    if not output_dir or plot:
+        plt.show(block=True)
+    return paths

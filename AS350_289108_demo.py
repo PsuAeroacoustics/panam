@@ -6,13 +6,14 @@ Needs the AS350 demo data (the ``as350_demo`` entry of local_paths, or --basepat
 the directory holding ``Acoustic/``, ``Ambient/``, ``AAM/`` and ``Tracking/``), which is not
 distributed with PANAM.  Writes its figures, the gridded hemisphere
 (``hemisphere_third_octave.npz``, which ``array_planner.py overlay`` reads) and an
-AAM-style sphere to --outdir.
+AAM-style sphere to --output-dir (default demo_plots in the current directory).
 """
 
 import os
 import argparse
 import flight_acoustics as fa
 import local_paths
+from cli import add_output_options, save_all_or_show
 import noise_abatement_2017 as na
 import sphere_statistics
 import matplotlib.pyplot as plt
@@ -233,14 +234,12 @@ def oaspl_grids(band_centers, bands_db, freq_range):
     )
 
 
-def save_figures(figs, outdir, names):
-    os.makedirs(outdir, exist_ok=True)
-    for fig, name in zip(figs, names):
-        path = os.path.join(outdir, f"{name}.png")
-        fig.savefig(path, dpi=300, bbox_inches='tight')
+def save_figures(figs, outdir, names, plot=False):
+    """Write each figure to ``outdir/<name>.png`` (300 dpi); with ``plot``, also show them."""
+    for path in save_all_or_show(dict(zip(names, figs)), outdir, plot, dpi=300, bbox_inches='tight'):
         logging.info(f"Saved {path}")
 
-def main():
+def main(argv=None):
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
@@ -250,12 +249,12 @@ def main():
                     'and compare it with the reference AAM sphere for the same run.')
     parser.add_argument('--show', action='store_true',
                         help='Open the plots in windows instead of saving them; nothing is written.')
-    parser.add_argument('--outdir', default='demo_plots',
-                        help='Directory for the figures, hemisphere_third_octave.npz and the AAM-style '
-                             'sphere (default demo_plots).')
+    # -o/--output-dir (old spelling --outdir): the figures, hemisphere_third_octave.npz
+    # and the AAM-style sphere; -p/--plot also opens the figures.
+    add_output_options(parser, 'demo_plots', directory=True, aliases=('--outdir',))
     parser.add_argument('--basepath', default=None,
                         help='Base path to demo data (default: the as350_demo entry of local_paths).')
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     save_outputs = not args.show
 
@@ -492,8 +491,8 @@ def main():
 
         # Save the gridded hemisphere product when not in interactive show mode
         if save_outputs:
-            os.makedirs(args.outdir, exist_ok=True)
-            out_npz = os.path.join(args.outdir, 'hemisphere_third_octave.npz')
+            os.makedirs(args.output_dir, exist_ok=True)
+            out_npz = os.path.join(args.output_dir, 'hemisphere_third_octave.npz')
             np.savez(
                 out_npz,
                 band_centers_hz=band_centers,
@@ -513,7 +512,7 @@ def main():
             logging.info(f"Saved gridded hemisphere to {out_npz}")
 
             # Export AAM-style netCDF hemisphere using the reference PHI/THETA grids
-            out_nc = os.path.join(args.outdir, 'hemisphere_third_octave_aam.nc')
+            out_nc = os.path.join(args.output_dir, 'hemisphere_third_octave_aam.nc')
             try:
                 # Use reference ART grids when available
                 try:
@@ -550,7 +549,7 @@ def main():
 
                 # Plot the exported hemisphere using the same method as the reference
                 try:
-                    fig_exported = plot_reference_hemisphere(args.outdir, os.path.basename(out_nc), freqs, SPL_range=hemisphere_spl_range)
+                    fig_exported = plot_reference_hemisphere(args.output_dir, os.path.basename(out_nc), freqs, SPL_range=hemisphere_spl_range)
                     figs.append(fig_exported)
                     names.append('exported_hemisphere')
                 except Exception as e:
@@ -568,10 +567,10 @@ def main():
     names.append('reference_hemisphere')
 
     if save_outputs:
-        save_figures(figs, args.outdir, names)
-        logging.info(f"Done. Saved {len(figs)} figures to {args.outdir}")
+        save_figures(figs, args.output_dir, names, args.plot)
+        logging.info(f"Done. Saved {len(figs)} figures to {args.output_dir}")
     else:
-        plt.show()
+        save_all_or_show(dict(zip(names, figs)))
 
 if __name__ == '__main__':
     main()
