@@ -24,7 +24,8 @@ import numpy as np
 
 import flight_acoustics as fa
 import ground_plane as gp
-from panam_acoustics.atmosphere import Atmosphere, band_absorption_db
+from panam_acoustics import filters as pa_filters
+from panam_acoustics.atmosphere import Atmosphere, band_absorption_db, check_absorption_profile, layered_attenuation_db
 from unit_conversion import len_conv
 
 __all__ = ['synthesize_band_histories', 'doppler_shift_band_power', 'measured_band_histories',
@@ -116,8 +117,8 @@ def doppler_shift_band_power(power, band_centers_hz, doppler):
 
 def synthesize_band_histories(sphere, track, mics, *, times=None, speed_of_sound=1135.0, r_ref=None,
                               length_units=None, ray_model=None, apply_absorption=False, atmosphere=None,
-                              absorption_band_method='center', receiver_response_db=None, doppler_shift=False,
-                              air_relative_doppler=False):
+                              absorption_band_method='center', absorption_profile=None, receiver_response_db=None,
+                              doppler_shift=False, air_relative_doppler=False, flip_y_for_geometry=None):
     """Predict one-third octave band-level time histories at microphones from a source hemisphere.
 
     For each microphone and reception time t the emission time t_e solves
@@ -158,6 +159,12 @@ def synthesize_band_histories(sphere, track, mics, *, times=None, speed_of_sound
             Default the sphere's metadata atmosphere, else 293.15 K, 101.325 kPa, 20% RH.
         absorption_band_method: band absorption method
             (:func:`panam_acoustics.atmosphere.band_absorption_db`), default 'center'.
+        absorption_profile: None (default) for the uniform ``atmosphere``, or a
+            layered profile (:func:`panam_acoustics.atmosphere.check_absorption_profile`)
+            as ``depropagate_hemisphere`` takes it: delta_b(l) is then the layered
+            attenuation (:func:`panam_acoustics.atmosphere.layered_attenuation_db`)
+            between the source and microphone heights, and delta_b(r_ref) stays
+            the uniform ``atmosphere``'s.  Needs ``apply_absorption``.
         receiver_response_db: None, or ``f(im, band_centers_hz, source_offset)``
             returning the band response re free field, dB, (Nb, N), as
             ``depropagate_hemisphere`` takes it; ``source_offset`` (N, 3) is the
@@ -169,6 +176,12 @@ def synthesize_band_histories(sphere, track, mics, *, times=None, speed_of_sound
         air_relative_doppler: with ``doppler_shift`` and a ray model returning
             ``emission_direction`` and ``doppler_speed``, take D = 1 / (1 - v.n /
             (c + W.n)) instead of the straight line's 1 / (1 - v.u / c).
+        flip_y_for_geometry: the hemisphere was filed with
+            ``depropagate_hemisphere(flip_y_for_geometry=True)``, which mirrors Y
+            on the microphones, track, nose and ray offsets before filing: read it
+            on the same mirrored geometry (``mics`` and ``track`` stay as
+            measured).  Default None: the sphere's
+            ``metadata['flip_y_for_geometry']``, else False.
 
     Returns:
         dict of ``time`` (N,) s, ``band_centers_hz`` (Nb,) Hz, ``bands_db``
@@ -196,6 +209,13 @@ def synthesize_band_histories(sphere, track, mics, *, times=None, speed_of_sound
                                       relative_humidity=weather['relative_humidity']))
     if air_relative_doppler and not (doppler_shift and ray_model is not None):
         raise ValueError('air_relative_doppler needs doppler_shift=True and a ray model')
+    if flip_y_for_geometry is None:
+        flip_y_for_geometry = bool(metadata.get('flip_y_for_geometry', False))
+    mirror = np.array([1.0, -1.0, 1.0]) if flip_y_for_geometry else np.ones(3)
+    if absorption_profile is not None:
+        if not apply_absorption:
+            raise ValueError('absorption_profile needs apply_absorption=True')
+        check_absorption_profile(absorption_profile)
 
     mics = np.asarray(mics, dtype=float)
     if mics.ndim != 2 or mics.shape[1] != 3:
@@ -214,29 +234,34 @@ def synthesize_band_histories(sphere, track, mics, *, times=None, speed_of_sound
     out = {key: np.full((mics.shape[0], times.size), np.nan) for key in fields}
     out['bands_db'] = np.full((mics.shape[0], centers.size, times.size), np.nan)
     for im, mic in enumerate(mics):
+        # Travel times, and so emission times, are the same on the mirrored
+        # geometry; the ray model, like depropagation's, sees the measured one.
         t_e, x = _emission_times(position, times, mic, c, ray_model)
         v = velocity(t_e)
-        az, el, r, _, _ = fa.hemigen(t_e, x, v, mic[None, :], c, nose=None if nose is None else nose(t_e))
+        x_g, v_g, mic_g = x * mirror, v * mirror, mic * mirror
+        az, el, r, _, _ = fa.hemigen(t_e, x_g, v_g, mic_g[None, :], c,
+                                     nose=None if nose is None else nose(t_e) * mirror)
         az, el, r = az[:, 0], el[:, 0], r[:, 0]
-        toward = (mic[None, :] - x) / r[:, None]
-        doppler = 1.0 / (1.0 - np.sum(v * toward, axis=1) / c)
-        spread, path, offset = r, r, x - mic[None, :]
+        toward = (mic_g[None, :] - x_g) / r[:, None]
+        doppler = 1.0 / (1.0 - np.sum(v_g * toward, axis=1) / c)
+        spread, path, offset = r, r, x_g - mic_g[None, :]
         valid = (t_e >= track_time[0]) & (t_e <= track_time[-1])
         if ray_model is not None:
             rays = ray_model(x, mic[None, :])
             el = np.asarray(rays['depression_deg'], dtype=float)[:, 0]
             spread = np.asarray(rays['spreading_range'], dtype=float)[:, 0]
             path = np.asarray(rays['path_length'], dtype=float)[:, 0]
-            offset = np.asarray(rays['offset'], dtype=float)[:, 0, :]
+            offset = np.asarray(rays['offset'], dtype=float)[:, 0, :] * mirror
             valid &= np.asarray(rays['valid'], dtype=bool)[:, 0] & np.all(np.isfinite(offset), axis=1)
             if 'emission_direction' in rays:
-                emitted = np.asarray(rays['emission_direction'], dtype=float)[:, 0, :]
+                emitted = np.asarray(rays['emission_direction'], dtype=float)[:, 0, :] * mirror
+                valid &= np.all(np.isfinite(emitted), axis=1)
                 turn = np.degrees(np.arctan2(emitted[:, 1], emitted[:, 0]) - np.arctan2(toward[:, 1], toward[:, 0]))
                 az = np.remainder(az + turn, 360.0)
                 if air_relative_doppler:
                     if 'doppler_speed' not in rays:
                         raise ValueError('air_relative_doppler needs a ray model that returns doppler_speed')
-                    speed_along = np.sum(v * emitted, axis=1)
+                    speed_along = np.sum(v_g * emitted, axis=1)
                     doppler = 1.0 / (1.0 - speed_along / np.asarray(rays['doppler_speed'], dtype=float)[:, 0])
             elif air_relative_doppler:
                 raise ValueError('air_relative_doppler needs a ray model that returns emission_direction')
@@ -253,8 +278,16 @@ def synthesize_band_histories(sphere, track, mics, *, times=None, speed_of_sound
             power = power * 10.0 ** (gain / 10.0)
         power = power * (r_ref / spread)[None, :] ** 2
         if apply_absorption:
-            path_m = np.asarray(len_conv(path, from_units=length_units, to_units='m'), dtype=float)
-            delta = band_absorption_db(path_m, centers, *weather, method=absorption_band_method)
+            if absorption_profile is None:
+                path_m = np.asarray(len_conv(path, from_units=length_units, to_units='m'), dtype=float)
+                delta = band_absorption_db(path_m, centers, *weather, method=absorption_band_method)
+            else:
+                def to_ft(value):
+                    return np.asarray(len_conv(np.asarray(value, dtype=float), from_units=length_units,
+                                               to_units='ft'), dtype=float)
+                ray = dict(source_altitude_ft=to_ft(x[:, 2]), receiver_altitude_ft=to_ft(mic[2]),
+                           path_length_ft=to_ft(path))
+                delta = layered_attenuation_db(absorption_profile, ray, centers, method=absorption_band_method)
             power = power * 10.0 ** (-(delta - absorption_reference[:, None]) / 10.0)
         power = np.where(valid[None, :], power, np.nan)
         out['bands_db'][im] = fa.power_to_db(power)
@@ -266,14 +299,22 @@ def synthesize_band_histories(sphere, track, mics, *, times=None, speed_of_sound
 
 
 def measured_band_histories(pressure, time, band_centers_hz, *, window_time=0.5, window_overlap=0.5,
-                            ambient_pressure=None, band_snr_gate_db=3.0):
+                            ambient_pressure=None, ambient_time_range=None, ambient_percentile=None,
+                            band_snr_gate_db=3.0, third_octave_method='fft', tone_aware=False):
     """One microphone's one-third octave band levels per spectrogram frame.
 
-    The bands are formed as ``depropagate_hemisphere``'s FFT path forms them
-    without Doppler removal: the spectrogram (:func:`flight_acoustics.spectrogram`,
-    Hann window) summed over the bins in [f_l, f_u), each bin first gated and
-    ambient-subtracted against the mean ambient spectrum when
-    ``ambient_pressure`` is given.
+    The bands are formed as ``depropagate_hemisphere`` forms them without
+    Doppler removal.  With the FFT (default), the spectrogram
+    (:func:`flight_acoustics.spectrogram`, Hann window) is summed over the bins
+    in [f_l, f_u), or with ``tone_aware`` filed by
+    :func:`flight_acoustics.tone_aware_band_power`; each bin is first gated
+    and ambient-subtracted.  With ``third_octave_method='filter_bank'`` the
+    bands are :func:`panam_acoustics.filters.third_octave_filter_bank` on the
+    spectrogram's frames, gated and ambient-subtracted band by band.  The
+    ambient is one of, in this order of precedence as in depropagation: the
+    mean spectrum of ``ambient_pressure``, the mean over the frames in
+    ``ambient_time_range``, or the ``ambient_percentile`` of the record's own
+    frames; none gives no gating.
 
     Args:
         pressure: (Nsamples,) pressure, Pa.
@@ -283,26 +324,71 @@ def measured_band_histories(pressure, time, band_centers_hz, *, window_time=0.5,
         window_overlap: window overlap fraction.
         ambient_pressure: optional (Nsamples_a,) signal-free recording, Pa, at
             the same sample rate.
-        band_snr_gate_db: bins less than this far above the ambient are zeroed, dB.
+        ambient_time_range: optional (t0, t1) signal-free window of this
+            record, s, in the time base of ``time``.
+        ambient_percentile: optional percentile (0-100, exclusive) of the
+            record's own frames taken as the ambient, per bin or band.
+        band_snr_gate_db: bins (or bands) less than this far above the ambient are zeroed, dB.
+        third_octave_method: 'fft' (default) or 'filter_bank'.
+        tone_aware: with 'fft', file tones whole (default False).
 
     Returns:
         (frame_times, bands_db): (Nframes,) frame centers, s, and (Nb, Nframes)
         band levels, dB re 20 uPa (-inf where gating left no energy).
     """
+    if third_octave_method not in ('fft', 'filter_bank'):
+        raise ValueError("third_octave_method must be 'fft' or 'filter_bank'")
+    if tone_aware and third_octave_method != 'fft':
+        raise ValueError("tone_aware needs third_octave_method='fft'")
+    if ambient_percentile is not None and not 0.0 < float(ambient_percentile) < 100.0:
+        raise ValueError('ambient_percentile must lie strictly between 0 and 100')
     time = np.asarray(time, dtype=float)
+    pressure = np.asarray(pressure, dtype=float)
     fs = float(np.round(1.0 / (time[1] - time[0])))
-    f, t_rel, psd_db = fa.spectrogram(np.asarray(pressure, dtype=float), fs, window_time=window_time,
-                                      window_overlap=window_overlap)
-    psd = 10.0 ** (psd_db / 10.0)
+    f, t_rel, psd_db = fa.spectrogram(pressure, fs, window_time=window_time, window_overlap=window_overlap)
+    frames = t_rel + time[0]
+    centers = np.asarray(band_centers_hz, dtype=float)
+    lower, upper = fa.third_octave_band_edges(centers)
+    use_filter_bank = third_octave_method == 'filter_bank'
+    frame_samples = fa.frame_length(window_time, fs)
+
+    def filter_bank(signal, frame_times):
+        return pa_filters.third_octave_filter_bank(signal, fs, centers, frame_times, frame_samples) / fa.P_REF ** 2
+
+    # Power per bin (pref^2/Hz) or per band (pref^2), and the matching ambient.
+    if use_filter_bank:
+        power, power_db = filter_bank(pressure, t_rel), None
+    else:
+        power, power_db = 10.0 ** (psd_db / 10.0), psd_db
+    ambient = None
     if ambient_pressure is not None:
-        _, _, ambient_db = fa.spectrogram(np.asarray(ambient_pressure, dtype=float), fs, window_time=window_time,
-                                          window_overlap=window_overlap)
-        ambient = np.nanmean(10.0 ** (ambient_db / 10.0), axis=1)[:, None]
-        psd = np.where(psd >= ambient * 10.0 ** (band_snr_gate_db / 10.0), np.maximum(psd - ambient, 0.0), 0.0)
-    df = f[1] - f[0]
-    lower, upper = fa.third_octave_band_edges(band_centers_hz)
-    bands = np.array([np.sum(psd[(f >= lo) & (f < hi)], axis=0) * df for lo, hi in zip(lower, upper)])
-    return t_rel + time[0], fa.power_to_db(bands.reshape(len(lower), t_rel.size))
+        if use_filter_bank:
+            _, t_amb, _ = fa.spectrogram(np.asarray(ambient_pressure, dtype=float), fs, window_time=window_time,
+                                         window_overlap=window_overlap)
+            ambient = np.nanmean(filter_bank(np.asarray(ambient_pressure, dtype=float), t_amb), axis=1)
+        else:
+            _, _, ambient_db = fa.spectrogram(np.asarray(ambient_pressure, dtype=float), fs,
+                                              window_time=window_time, window_overlap=window_overlap)
+            ambient = np.nanmean(10.0 ** (ambient_db / 10.0), axis=1)
+    elif ambient_time_range is not None:
+        quiet = (frames >= float(ambient_time_range[0])) & (frames <= float(ambient_time_range[1]))
+        if not np.any(quiet):
+            raise ValueError('ambient_time_range contains no spectrogram frames')
+        ambient = np.nanmean(power[:, quiet], axis=1)
+    elif ambient_percentile is not None:
+        ambient = (np.nanpercentile(power, float(ambient_percentile), axis=1) if use_filter_bank
+                   else 10.0 ** (np.nanpercentile(power_db, float(ambient_percentile), axis=1) / 10.0))
+    if ambient is not None:
+        ambient = ambient[:, None]
+        power = np.where(power >= ambient * 10.0 ** (band_snr_gate_db / 10.0), np.maximum(power - ambient, 0.0), 0.0)
+    if use_filter_bank:
+        bands = power
+    elif tone_aware:
+        bands = fa.tone_aware_band_power(power, f, lower, upper)
+    else:
+        df = f[1] - f[0]
+        bands = np.array([np.sum(power[(f >= lo) & (f < hi)], axis=0) * df for lo, hi in zip(lower, upper)])
+    return frames, fa.power_to_db(np.reshape(bands, (len(lower), t_rel.size)))
 
 
 def residual_statistics(residual_db):
@@ -364,16 +450,17 @@ def leave_mics_out(mic_locations, pressure, time, track_time, track_position, tr
     compared with its measured bands (:func:`measured_band_histories`).  The
     synthesis takes the depropagation's speed of sound, ray model, receiver
     response, absorption (``apply_absorption_deprop``, ``atmosphere``,
-    ``absorption_band_method``), Doppler convention (``remove_doppler``,
-    ``air_relative_doppler``) and ``track_nose``; frames the depropagation
-    would have dropped (``min_elevation_deg``, ``max_range`` with
-    ``rim_range``) are left out of the comparison.  Residuals are synthesized
-    minus measured, dB, over the frames where both are finite: a band gated
-    to no energy, or a direction the hemisphere does not cover, is not counted.
-
-    The measured bands are brick-wall sums of the spectrogram at received
-    frequencies, so compare against a hemisphere built with the FFT bands;
-    ``tone_aware`` and the filter bank form bands differently.
+    ``absorption_band_method``, ``absorption_profile``), Doppler convention
+    (``remove_doppler``, ``air_relative_doppler``), ``flip_y_for_geometry``
+    and ``track_nose``; frames the depropagation would have dropped
+    (``min_elevation_deg``, ``max_range`` with ``rim_range``) are left out of
+    the comparison.  The held-out microphones' bands are measured as the
+    depropagation forms them (``third_octave_method``, ``tone_aware``) and
+    gated against the same ambient (``ambient_pressure``,
+    ``ambient_time_range`` or ``ambient_percentile``), at received
+    frequencies.  Residuals are synthesized minus measured, dB, over the
+    frames where both are finite: a band gated to no energy, or a direction
+    the hemisphere does not cover, is not counted.
 
     Args:
         mic_locations, pressure, time, track_time, track_position, track_velocity:
@@ -408,10 +495,17 @@ def leave_mics_out(mic_locations, pressure, time, track_time, track_position, tr
         apply_absorption=depropagation.get('apply_absorption_deprop', False),
         atmosphere=depropagation.get('atmosphere'),
         absorption_band_method=depropagation.get('absorption_band_method', 'center'),
+        absorption_profile=depropagation.get('absorption_profile'),
         doppler_shift=depropagation.get('remove_doppler', False),
-        air_relative_doppler=depropagation.get('air_relative_doppler', False))
-    window = dict(window_time=depropagation.get('window_time', 0.5),
-                  window_overlap=depropagation.get('window_overlap', 0.5))
+        air_relative_doppler=depropagation.get('air_relative_doppler', False),
+        flip_y_for_geometry=bool(depropagation.get('flip_y_for_geometry', False)))
+    measurement = dict(window_time=depropagation.get('window_time', 0.5),
+                       window_overlap=depropagation.get('window_overlap', 0.5),
+                       ambient_time_range=depropagation.get('ambient_time_range'),
+                       ambient_percentile=depropagation.get('ambient_percentile'),
+                       band_snr_gate_db=depropagation.get('band_snr_gate_db', 3.0),
+                       third_octave_method=depropagation.get('third_octave_method', 'fft'),
+                       tone_aware=bool(depropagation.get('tone_aware', False)))
     min_elevation = float(depropagation.get('min_elevation_deg', 0.0))
     max_range = depropagation.get('max_range')
     rim_range = depropagation.get('rim_range')
@@ -430,7 +524,8 @@ def leave_mics_out(mic_locations, pressure, time, track_time, track_position, tr
             mic_locations[kept], _pick(pressure, kept, nmics, 'pressure'), _pick(time, kept, nmics, 'time'),
             track_time, track_position, track_velocity,
             **dict(depropagation, receiver_response_db=kept_response,
-                   ambient_pressure=_pick(ambient_pressure, kept, nmics, 'ambient_pressure')))
+                   ambient_pressure=_pick(ambient_pressure, kept, nmics, 'ambient_pressure'),
+                   ambient_time=_pick(depropagation.get('ambient_time'), kept, nmics, 'ambient_time')))
         band_centers = hemisphere['third_octave']['band_centers_hz']
         fold = dict(held_out=group, kept=kept, hemisphere=hemisphere, time=[], measured_db=[],
                     synthesized_db=[], residual_db=[])
@@ -440,8 +535,7 @@ def leave_mics_out(mic_locations, pressure, time, track_time, track_position, tr
         for k, im in enumerate(group):
             frames, measured = measured_band_histories(
                 _per_mic(group_pressure, k), _per_mic(group_time, k), band_centers,
-                ambient_pressure=None if group_ambient is None else _per_mic(group_ambient, k),
-                band_snr_gate_db=depropagation.get('band_snr_gate_db', 3.0), **window)
+                ambient_pressure=None if group_ambient is None else _per_mic(group_ambient, k), **measurement)
             mic_response = None if response is None else (lambda _, bands, offset, im=im: response(im, bands, offset))
             synthesized = synthesize_band_histories(hemisphere, track, mic_locations[im][None, :], times=frames,
                                                     receiver_response_db=mic_response, **synthesis)

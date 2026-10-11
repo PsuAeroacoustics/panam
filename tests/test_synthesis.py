@@ -7,7 +7,8 @@ import flight_acoustics as fa
 import refracted_rays as rr
 import synthesis as sy
 import synthetic_flyover as sf
-from panam_acoustics.atmosphere import Atmosphere
+from panam_acoustics import filters as pa_filters
+from panam_acoustics.atmosphere import Atmosphere, band_absorption_db
 
 C = 1125.0                      # ft/s
 FS = 4000.0                     # Hz
@@ -247,3 +248,140 @@ def test_residual_statistics():
     assert stats['rms_db'][0] == pytest.approx(np.sqrt(11.0 / 3.0))
     assert stats['std_db'][0] == pytest.approx(2.0)
     assert np.isnan(stats['mean_db'][1]) and np.isnan(stats['std_db'][1])
+
+
+# --- matching the depropagation's options ---------------------------------------------------------------------
+
+def _mirrored(scenario):
+    """The scenario with Y -> -Y on the microphones and the track."""
+    out = dict(scenario)
+    for key in ('mic_locations', 'track_position', 'track_velocity'):
+        out[key] = np.asarray(scenario[key], dtype=float) * [1.0, -1.0, 1.0]
+    return out
+
+
+def test_leave_mics_out_honors_flip_y_for_geometry():
+    """Mirrored inputs depropagated with flip_y_for_geometry give the original hemisphere,
+    so the held-out residuals must match the unflipped run's."""
+    scenario, ambient = sf.synthesize_pass(LINE, duration=12.0, directivity_db=sf.example_directivity_db, seed=1)
+    plain = sy.leave_mics_out(**scenario, ambient_pressure=ambient, held_out=[[1], [5]], **DEPROPAGATION)
+    flipped = sy.leave_mics_out(**_mirrored(scenario), ambient_pressure=ambient, held_out=[[1], [5]],
+                                **DEPROPAGATION, flip_y_for_geometry=True)
+    for a, b in zip(plain['folds'], flipped['folds']):
+        np.testing.assert_allclose(b['residual_db'][0], a['residual_db'][0], atol=1e-6, equal_nan=True)
+
+
+def test_synthesis_reads_flip_y_from_the_sphere_metadata():
+    def starboard(a, e):
+        return 80.0 + 10.0 * (np.sin(np.radians(a)) > 0.5)
+    sphere = _sphere(starboard)
+    mic = np.array([[0.0, -400.0, 0.0]])                    # starboard of a source flying along +x
+    unflipped = sy.synthesize_band_histories(sphere, _hover(height=50.0), mic, times=[3.0], speed_of_sound=C)
+    sphere['metadata']['flip_y_for_geometry'] = True
+    flipped = sy.synthesize_band_histories(sphere, _hover(height=50.0), mic, times=[3.0], speed_of_sound=C)
+    assert unflipped['azimuth_deg'][0, 0] == pytest.approx(90.0)
+    assert flipped['azimuth_deg'][0, 0] == pytest.approx(270.0)
+    np.testing.assert_allclose(unflipped['bands_db'] - flipped['bands_db'], 10.0, atol=1e-9)
+
+
+def test_measured_bands_take_the_depropagation_ambient_sources():
+    scenario = sf.synthesize_pass(LINE[:1], duration=8.0, seed=3)[0]
+    pressure, time = scenario['pressure'][0], scenario['time']
+    frames, raw = sy.measured_band_histories(pressure, time, CENTERS, window_time=WINDOW)
+    _, gated = sy.measured_band_histories(pressure, time, CENTERS, window_time=WINDOW, ambient_percentile=10.0)
+    _, quiet = sy.measured_band_histories(pressure, time, CENTERS, window_time=WINDOW,
+                                          ambient_time_range=(frames[0], frames[3]))
+    for levels in (gated, quiet):
+        assert np.all(levels <= raw + 1e-9)
+        assert np.any(levels < raw - 0.5)
+    with pytest.raises(ValueError):
+        sy.measured_band_histories(pressure, time, CENTERS, window_time=WINDOW, ambient_time_range=(-9.0, -8.0))
+
+
+def test_leave_mics_out_gates_the_held_out_bands_like_the_depropagation():
+    scenario = sf.synthesize_pass(LINE, duration=12.0, directivity_db=sf.example_directivity_db, seed=1)[0]
+    out = sy.leave_mics_out(**scenario, held_out=[[2]], ambient_percentile=10.0, **DEPROPAGATION)
+    centers = out['band_centers_hz']
+    _, expected = sy.measured_band_histories(scenario['pressure'][2], scenario['time'], centers,
+                                             window_time=WINDOW, ambient_percentile=10.0)
+    np.testing.assert_array_equal(out['folds'][0]['measured_db'][0], expected)
+
+
+def test_measured_bands_by_filter_bank_and_tone_aware():
+    scenario = sf.synthesize_pass(LINE[:1], duration=6.0, seed=4, sampling_rate=FS)[0]
+    pressure, time = scenario['pressure'][0], scenario['time']
+    frames, fb = sy.measured_band_histories(pressure, time, CENTERS, window_time=WINDOW,
+                                            third_octave_method='filter_bank')
+    direct = pa_filters.third_octave_filter_bank(pressure, FS, CENTERS, frames - time[0],
+                                                 fa.frame_length(WINDOW, FS)) / fa.P_REF ** 2
+    np.testing.assert_allclose(fb, fa.power_to_db(direct), atol=1e-9)
+    f, _, psd_db = fa.spectrogram(pressure, FS, window_time=WINDOW, window_overlap=0.5)
+    lower, upper = fa.third_octave_band_edges(CENTERS)
+    _, tones = sy.measured_band_histories(pressure, time, CENTERS, window_time=WINDOW, tone_aware=True)
+    np.testing.assert_allclose(tones, fa.power_to_db(fa.tone_aware_band_power(10.0 ** (psd_db / 10.0), f,
+                                                                               lower, upper)), atol=1e-9)
+    with pytest.raises(ValueError):
+        sy.measured_band_histories(pressure, time, CENTERS, third_octave_method='filter_bank', tone_aware=True)
+
+
+def test_leave_mics_out_measures_with_the_depropagation_band_method():
+    scenario, ambient = sf.synthesize_pass(LINE, duration=12.0, directivity_db=sf.example_directivity_db, seed=1,
+                                           sampling_rate=FS)
+    out = sy.leave_mics_out(**scenario, ambient_pressure=ambient, held_out=[[3]], third_octave_method='filter_bank',
+                            **DEPROPAGATION)
+    _, expected = sy.measured_band_histories(scenario['pressure'][3], scenario['time'], out['band_centers_hz'],
+                                             window_time=WINDOW, ambient_pressure=ambient[3],
+                                             third_octave_method='filter_bank')
+    np.testing.assert_array_equal(out['folds'][0]['measured_db'][0], expected)
+    assert abs(out['overall']['median_db']) < 1.0
+
+
+def test_layered_absorption_profile():
+    weather = Atmosphere(temperature=288.15, pressure=101.325, relative_humidity=70.0)
+    mic = np.array([[0.0, 0.0, -700.0]])
+    common = dict(times=[3.0], speed_of_sound=C, apply_absorption=True, atmosphere=weather)
+    uniform = sy.synthesize_band_histories(_uniform(), _hover(), mic, **common)
+    same = dict(altitude_ft=[0.0], temperature_k=[288.15], relative_humidity=[70.0], pressure_kpa=[101.325])
+    one_level = sy.synthesize_band_histories(_uniform(), _hover(), mic, absorption_profile=same, **common)
+    np.testing.assert_allclose(one_level['bands_db'], uniform['bands_db'], atol=1e-9)
+    # Dry air below the source absorbs more at these bands than 70% RH does.
+    dry = dict(altitude_ft=[-700.0, 300.0], temperature_k=[288.15, 288.15], relative_humidity=[10.0, 10.0],
+               pressure_kpa=[101.325, 101.325])
+    layered = sy.synthesize_band_histories(_uniform(), _hover(), mic, absorption_profile=dry, **common)
+    expected = (uniform['bands_db'] + band_absorption_db(1000.0 * 0.3048, CENTERS, 288.15, 101.325, 70.0)[None, :, None]
+                - band_absorption_db(1000.0 * 0.3048, CENTERS, 288.15, 101.325, 10.0)[None, :, None])
+    np.testing.assert_allclose(layered['bands_db'], expected, atol=1e-9)
+    with pytest.raises(ValueError):
+        sy.synthesize_band_histories(_uniform(), _hover(), mic, times=[3.0], absorption_profile=same)
+
+
+def test_leave_mics_out_forwards_the_absorption_profile(monkeypatch):
+    scenario, ambient = sf.synthesize_pass(LINE[:3], duration=8.0, directivity_db=sf.example_directivity_db, seed=2)
+    profile = dict(altitude_ft=[0.0, 1000.0], temperature_k=[288.15, 283.15], relative_humidity=[60.0, 40.0],
+                   pressure_kpa=[101.325, 97.7])
+    seen = []
+    original = sy.synthesize_band_histories
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs.get('absorption_profile'))
+        return original(*args, **kwargs)
+    monkeypatch.setattr(sy, 'synthesize_band_histories', spy)
+    sy.leave_mics_out(**scenario, ambient_pressure=ambient, held_out=[[1]], apply_absorption_deprop=True,
+                      absorption_profile=profile, **DEPROPAGATION)
+    assert seen and all(p is profile for p in seen)
+
+
+def test_rays_without_a_finite_emission_direction_are_missing():
+    wind = rr.uniform_wind_ray_model(C, (30.0, 0.0))
+
+    def broken(source, receiver):
+        rays = dict(wind(source, receiver))
+        rays['emission_direction'] = np.array(rays['emission_direction'], dtype=float)
+        rays['emission_direction'][::2] = np.nan
+        return rays
+    times = np.linspace(2.0, 3.0, 4)
+    out = sy.synthesize_band_histories(_uniform(), _hover(), np.array([[400.0, 0.0, 0.0]]), times=times,
+                                       speed_of_sound=C, ray_model=broken)
+    assert np.all(np.isnan(out['bands_db'][0][:, ::2]))
+    assert np.all(np.isnan(out['emission_time'][0, ::2])) and np.all(np.isnan(out['doppler'][0, ::2]))
+    assert np.all(np.isfinite(out['bands_db'][0][:, 1::2]))

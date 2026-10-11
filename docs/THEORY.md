@@ -684,7 +684,12 @@ filed at emitted frequencies (`doppler_shift`, the inverse of `remove_doppler`, 
 receiver response in dB re free field (the same `receiver_response_db` callable depropagation
 divides out, §4.5), optional; $r_s$ the straight distance or the ray tube's range; and $\delta_b$
 the band's absorption (`apply_absorption`, §5.4) over the straight distance or the arc length $\ell$,
-less that over $r_\mathrm{ref}$, which the hemisphere keeps. The ambient gate has no inverse.
+in the uniform atmosphere or a layered `absorption_profile`, less that over $r_\mathrm{ref}$ in the
+uniform atmosphere, which the hemisphere keeps. The ambient gate has no inverse. A hemisphere filed
+with `flip_y_for_geometry` is read on the same mirrored geometry: the emission time and the ray are
+found on the measured geometry, whose travel times the mirror does not change, and the direction,
+the Doppler factor and the receiver's source offset on the mirrored one, as depropagation files
+them. The flag defaults to the hemisphere's metadata.
 
 The Doppler shift takes each emitted band's power as spread evenly over $[f_l, f_u]$; it arrives
 over $[Df_l, Df_u]$, and received band $k$ collects the overlapping fractions,
@@ -699,8 +704,12 @@ synthesizes their bands only approximately.
 
 `synthesis.leave_mics_out` depropagates with groups of microphones held out in turn (by default
 each one alone), synthesizes each held-out microphone at its spectrogram frame times, and compares
-with its measured bands (`measured_band_histories`: brick-wall sums of the gated, ambient-subtracted
-spectrogram, as depropagation's FFT bands without Doppler removal). Frames the depropagation would
+with its measured bands (`measured_band_histories`). These are formed at received frequencies as
+the depropagation forms its bands: brick-wall sums of the spectrogram, tone-aware sums with
+`tone_aware`, or the filter bank with `third_octave_method='filter_bank'`; each bin or band is gated
+and ambient-subtracted against the same ambient (`ambient_pressure`, `ambient_time_range` or
+`ambient_percentile`). The synthesis takes the depropagation's absorption, layered profile,
+Doppler convention and mirror flag. Frames the depropagation would
 drop (elevation floor, range limit with the rim range) are left out. The residual is synthesized
 minus measured, in dB, over the frames where both are finite, and is summarized per band and
 overall by its count, mean, median, root mean square, sample standard deviation and 5th and 95th
