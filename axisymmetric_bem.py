@@ -13,6 +13,9 @@ numerics are compiled with Numba and run in parallel.
 
 Units follow ground_plane: lengths in feet, speeds in ft/s.
 """
+import inspect
+import json
+import zipfile
 from types import SimpleNamespace
 
 import numpy as np
@@ -20,6 +23,16 @@ from numba import njit, prange
 from scipy.special import j0, j1
 
 import ground_plane as gp
+
+#: Version of the numbers :func:`table` returns.  Cached plate tables
+#: (``noise_abatement_2017.plate_table``) carry it in their key, and a table
+#: with another version is recomputed.  Bump it in any commit that changes a
+#: table for the same arguments: this module's numerics, or the parts of
+#: ground_plane it uses (impedance models, the half-space Green's function and
+#: its table, sub-band factors, the plate's default dimensions).  An added
+#: argument whose default keeps the old numbers needs no bump: it enters the
+#: key through :func:`table_settings`.
+PLATE_TABLE_VERSION = 1
 
 
 # --------------------------------------------------------------------------
@@ -486,6 +499,70 @@ def table(bands, sound_speed, flow_resistance=gp.FLOW_RESISTANCE, ground=None, s
                 taper_length=options.get('taper_length', gp.PLATE_TAPER_LENGTH_FT),
                 mic=options.get('mic', (0.0, gp.PLATE_MIC_OFFSET_FT)),
                 mic_height=options.get('mic_height', 0.0))
+
+
+def _keyword_defaults(function):
+    return {name: parameter.default for name, parameter in inspect.signature(function).parameters.items()
+            if parameter.default is not inspect.Parameter.empty}
+
+
+def _plain(value):
+    """``value`` with arrays and tuples as lists and numpy scalars as Python ones, for JSON."""
+    if isinstance(value, dict):
+        return {str(k): _plain(v) for k, v in value.items()}
+    if isinstance(value, np.ndarray):
+        value = value.tolist()
+    if isinstance(value, (list, tuple)):
+        return [_plain(v) for v in value]
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+def table_settings(**options):
+    """Every setting :func:`table` uses besides the bands, sound speed and ground,
+    as plain JSON values: ``options`` (as for :func:`table`) over the defaults of
+    :func:`table`, :func:`scattering` and :func:`plate_generator`.
+
+    Mesh and quadrature (``segments_per_wavelength``, ``max_segment`` in ft,
+    ``extra_modes``, ``gauss``, ``n_phi_uniform``, ``edge_grading``), the
+    tabulated directions (``elevations``, ``azimuths``, deg), ``sub_bands``,
+    the plate (``radius``, ``thickness``, ``edge_thickness``, ``taper_length``,
+    ft) and the microphone (``mic``, ``mic_rz``, ``mic_height``, ft).  Arrays
+    become lists.  A cache key built from this changes whenever any of them do.
+    """
+    settings = {**_keyword_defaults(plate_generator), **_keyword_defaults(scattering),
+                **_keyword_defaults(table)}
+    for name in ('segment', 'flow_resistance', 'ground'):     # set per frequency, or keyed apart
+        settings.pop(name, None)
+    settings.update(options)
+    return _plain(settings)
+
+
+def write_table_npz(file, table, key=''):
+    """Write a :func:`table` to ``file`` (a name or an open binary file) as .npz, without pickle.
+
+    Arrays are stored as they are; the other entries (scalars, tuples, the
+    ground dict, None) as one JSON string, so tuples read back as lists.
+    ``key`` (a string) is stored with it for :func:`read_table_npz` to return.
+    """
+    arrays = {name: value for name, value in table.items() if isinstance(value, np.ndarray)}
+    other = {name: _plain(value) for name, value in table.items() if name not in arrays}
+    np.savez(file, _other=np.array(json.dumps(other)), _key=np.array(str(key)), **arrays)
+
+
+def read_table_npz(path):
+    """(table, key) written by :func:`write_table_npz`.  Raises ValueError for a
+    file that is not one (an entry missing, a pickled object in it, or a
+    truncated, empty or otherwise corrupt archive)."""
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            table = {name: data[name] for name in data.files if name not in ('_other', '_key')}
+            table.update(json.loads(str(data['_other'])))
+            key = str(data['_key'])
+    except (KeyError, EOFError, zipfile.BadZipFile) as error:
+        raise ValueError('{} is not a plate table: {!r}'.format(path, error)) from None
+    return table, key
 
 
 def board_level(bands, source_height, ground_distance, sound_speed, table, sub_bands=None,

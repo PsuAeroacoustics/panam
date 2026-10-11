@@ -141,7 +141,9 @@ NICE-OPS as in `vehicle.cfg`.
 ### Time and disk
 
 The first build at a new sound speed computes the ground-plate tables, which take 15-45 s
-each. They are cached under `~/.cache/panam/plate_tables`. The command line's default,
+each. They are cached under `~/.cache/panam/plate_tables`, or `--plate-table-directory`;
+`--plate-cache list` lists the cached tables and `--plate-cache clear` deletes them. The
+command line's default,
 `--point-stride 10`, depropagates every tenth track sample. `build_sphere` and `build_all`
 default to 1, which is about ten times slower. `build_all` warms a cloud-synced archive's
 cache ahead of each run, and `--no-prefetch` turns that off. Database size depends on the

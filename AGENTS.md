@@ -93,7 +93,10 @@ Instructions for AI coding tools working on PANAM. Human developers: see
   3.11 and 3.14) has no data, so those skip there: run them locally when you
   touch the build, the database writers or the NORAH2 import.
 - Numba compiles on first call and caches in `__pycache__`. Plate tables are
-  cached in `~/.cache/panam/plate_tables` (15-45 s each to compute).
+  cached as `.npz` in `~/.cache/panam/plate_tables` (15-45 s each to
+  compute), keyed on `axisymmetric_bem.PLATE_TABLE_VERSION` and every
+  setting. Bump the version in a commit that changes plate-table numbers.
+  `noise_abatement_2017.py --plate-cache list|clear` inspects or empties it.
 - The 2017 archive and the AS350 demo data are not distributed with PANAM.
   Do not invent a download location.
 - Running an example or a build writes files that `.gitignore` does not cover

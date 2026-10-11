@@ -282,6 +282,134 @@ def test_plate_table_checks_the_bands_of_a_table_held_in_memory(monkeypatch, tmp
     assert len(calls) == 2
 
 
+BANDS = [630.0, 800.0, 1000.0]
+
+
+def test_plate_table_reads_back_from_disk_without_recomputing(monkeypatch, tmp_path):
+    import axisymmetric_bem as ab
+    calls = []
+    monkeypatch.setattr(ab, 'table', _plate_table_stub(2.0, calls))
+    monkeypatch.setattr(na, '_PLATE_TABLES', {})
+    first = na.plate_table('gdbdfl', 1125.0, BANDS, directory=str(tmp_path))
+    files = list(tmp_path.glob('*.npz'))
+    assert len(files) == 1 and not list(tmp_path.glob('*.tmp'))
+    monkeypatch.setattr(na, '_PLATE_TABLES', {})
+    second = na.plate_table('gdbdfl', 1125.0, BANDS, directory=str(tmp_path))
+    assert second is not first and len(calls) == 1
+    for name in ('frequencies', 'elevations', 'azimuths', 'P_d', 'P_r', 'bands'):
+        np.testing.assert_array_equal(second[name], first[name])
+    assert second['ground'] == first['ground'] and second['sub_bands'] == first['sub_bands']
+
+
+@pytest.mark.parametrize('change', ['version', 'option', 'ground', 'sound_speed'])
+def test_plate_table_recomputes_when_its_key_changes(monkeypatch, tmp_path, change):
+    """Each part of the key, changed alone, makes a new table rather than
+    reading the cached one, from memory or from disk."""
+    import axisymmetric_bem as ab
+    calls = []
+    monkeypatch.setattr(ab, 'table', _plate_table_stub(0.0, calls))
+    monkeypatch.setattr(na, '_PLATE_TABLES', {})
+    na.plate_table('gdbdfl', 1125.0, BANDS, directory=str(tmp_path))
+    arguments = dict(directory=str(tmp_path))
+    speed = 1125.0
+    if change == 'version':
+        monkeypatch.setattr(ab, 'PLATE_TABLE_VERSION', ab.PLATE_TABLE_VERSION + 1)
+    elif change == 'option':
+        arguments['gauss'] = 8
+    elif change == 'ground':
+        arguments['ground'] = dict(na.SITE_GROUND, sigma_e=150.0)
+    else:
+        speed = 1150.0
+    na.plate_table('gdbdfl', speed, BANDS, **arguments)
+    assert len(calls) == 2
+    monkeypatch.setattr(na, '_PLATE_TABLES', {})
+    na.plate_table('gdbdfl', speed, BANDS, **arguments)
+    assert len(calls) == 2                      # the new one is on disk too
+    assert len(list(tmp_path.glob('*.npz'))) == 2
+
+
+def test_plate_table_passes_its_options_to_the_bem(monkeypatch, tmp_path):
+    import axisymmetric_bem as ab
+    seen = {}
+
+    def table(bands, sound_speed, **options):
+        seen.update(options)
+        return _plate_table_stub(0.0)(bands, sound_speed, **options)
+    monkeypatch.setattr(ab, 'table', table)
+    monkeypatch.setattr(na, '_PLATE_TABLES', {})
+    na.plate_table('gdbdfl', 1125.0, BANDS, directory=str(tmp_path), segments_per_wavelength=6)
+    assert seen['segments_per_wavelength'] == 6 and seen['mic_height'] == 0.0
+
+
+def test_plate_table_ignores_old_and_mismatched_files(monkeypatch, tmp_path):
+    """A pickle from before the versioned cache is never read, and an .npz
+    whose stored key differs from the one asked for, or that holds a pickled
+    object, is recomputed and replaced."""
+    import pickle
+    import axisymmetric_bem as ab
+    calls = []
+    monkeypatch.setattr(ab, 'table', _plate_table_stub(0.0, calls))
+    monkeypatch.setattr(na, '_PLATE_TABLES', {})
+    # The old cache's name for this table, with a table of the wrong gain in it.
+    stale = _plate_table_stub(40.0)(np.array(BANDS), 1125.0)
+    old = tmp_path / 'h0.00mm_alpha_e0.0_modelvariable_porosity_sigma_e200.0_c1125.84_b3-630-1000.pkl'
+    old.write_bytes(pickle.dumps(stale))
+    table = na.plate_table('gdbdfl', 1125.0, BANDS, directory=str(tmp_path))
+    assert len(calls) == 1 and np.allclose(np.abs(table['P_d']), 1.0)
+    assert old.exists()
+    (path,) = tmp_path.glob('*.npz')
+    # Same file name, another key inside: recomputed.
+    ab.write_table_npz(str(path), stale, key='{"version": 0}')
+    monkeypatch.setattr(na, '_PLATE_TABLES', {})
+    table = na.plate_table('gdbdfl', 1125.0, BANDS, directory=str(tmp_path))
+    assert len(calls) == 2 and np.allclose(np.abs(table['P_d']), 1.0)
+    # A pickled object in the .npz is refused, not loaded.
+    with open(path, 'wb') as handle:
+        np.savez(handle, P_d=np.array([stale], dtype=object))
+    monkeypatch.setattr(na, '_PLATE_TABLES', {})
+    na.plate_table('gdbdfl', 1125.0, BANDS, directory=str(tmp_path))
+    assert len(calls) == 3
+    monkeypatch.setattr(na, '_PLATE_TABLES', {})
+    na.plate_table('gdbdfl', 1125.0, BANDS, directory=str(tmp_path))
+    assert len(calls) == 3                      # and the replacement reads back
+
+
+@pytest.mark.parametrize('damage', ['truncated', 'empty'])
+def test_plate_table_recomputes_a_truncated_or_empty_file(monkeypatch, tmp_path, damage):
+    """A cut-off .npz (BadZipFile) or a 0-byte one (EOFError) at the cache name
+    is listed as unreadable, then recomputed and replaced, not a crash."""
+    import axisymmetric_bem as ab
+    calls = []
+    monkeypatch.setattr(ab, 'table', _plate_table_stub(0.0, calls))
+    monkeypatch.setattr(na, '_PLATE_TABLES', {})
+    na.plate_table('gdbdfl', 1125.0, BANDS, directory=str(tmp_path))
+    (path,) = tmp_path.glob('*.npz')
+    contents = path.read_bytes()
+    path.write_bytes(contents[:len(contents) // 2] if damage == 'truncated' else b'')
+    with pytest.raises(ValueError):
+        ab.read_table_npz(str(path))
+    assert [record['status'] for record in na.plate_table_cache(str(tmp_path))] == ['unreadable']
+    monkeypatch.setattr(na, '_PLATE_TABLES', {})
+    table = na.plate_table('gdbdfl', 1125.0, BANDS, directory=str(tmp_path))
+    assert len(calls) == 2 and np.allclose(np.abs(table['P_d']), 1.0)
+    assert [record['status'] for record in na.plate_table_cache(str(tmp_path))] == ['current']
+
+
+def test_plate_table_cache_lists_and_clears(monkeypatch, tmp_path):
+    import axisymmetric_bem as ab
+    monkeypatch.setattr(ab, 'table', _plate_table_stub(0.0))
+    monkeypatch.setattr(na, '_PLATE_TABLES', {})
+    na.plate_table('gdbdfl', 1125.0, BANDS, directory=str(tmp_path))
+    monkeypatch.setattr(ab, 'PLATE_TABLE_VERSION', ab.PLATE_TABLE_VERSION + 1)
+    na.plate_table('gdbdfl', 1125.0, BANDS, directory=str(tmp_path))
+    (tmp_path / 'old.pkl').write_bytes(b'')
+    (tmp_path / 'notes.txt').write_text('kept')
+    statuses = sorted(record['status'] for record in na.plate_table_cache(str(tmp_path)))
+    assert statuses == ['current', 'old format', 'old version {}'.format(ab.PLATE_TABLE_VERSION - 1)]
+    assert na.clear_plate_table_cache(str(tmp_path)) == 3
+    assert [p.name for p in tmp_path.iterdir()] == ['notes.txt']
+
+
 #: Microphone number -> (instrument type, location in ft).  Mic 4 has no
 #: ambient recording, so the build drops it; the pole microphone is not a
 #: ground board.
