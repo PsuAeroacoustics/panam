@@ -55,7 +55,7 @@ read the sphere files back.
 | `refracted_rays.py` | The ray-model interface for depropagation: `straight_ray_model`, `uniform_wind_ray_model`, and `external_ray_model`, which runs NICE-OPS's `niceops_ray_geometry` |
 | `vold_kalman_filter.py` | The multi-shaft Vold-Kalman order-tracking filter |
 | `sphere_statistics.py` | Energy averaging of repeat-run spheres (`average_spheres`, `write_averaged_sphere`) and band-by-band sphere comparison (`compare_spheres`, `plot_sphere_difference`) |
-| `nod_database.py` | Reading NICE-OPS databases: `load_nod`, `validate_nod` (the rules of [file_formats.md](file_formats.md#checking-a-database)), `compare_databases`, `to_frame` (needs pandas) |
+| `nod_database.py` | Reading NICE-OPS databases: `load_nod`, `validate_nod` (the rules of [file_formats.md](file_formats.md#checking-a-database)), `compare_databases`, `to_frame` (needs pandas), and the inspection behind `nod_tool.py`: `summarize_condition`, `select_condition`, `plot_condition` (Lambert map of dBA, EAA, a band or coverage), `plot_envelope` |
 | `synthetic_flyover.py` | Synthetic recordings of a straight, level pass of a source of known directivity (`synthesize_pass`), its true level at the reference radius (`source_level_db`), and the recovered-minus-true Lambert map (`plot_level_difference`). The golden results and the depropagation tutorial use it |
 | `order_tracking.py` | Order tracks as a fixed microphone hears them (propagation delay and Doppler shift along a track), ridge tracking, and clock offsets by cross-correlation |
 | `panam_acoustics/` | `signal_io` (recording loaders), `filters` (Butterworth helpers, the one-third-octave filter bank), `atmosphere` and `iso_9613_1_1993` (ISO 9613-1 absorption), `time_weighting` (IEC 61672-1 A/C/Z and F/S/I weighting, Lmax, Leq), `plotting` (`acoustic_plot_style`), `impulsiveness` (BVI crest factor, kurtosis, pulse peak-to-RMS and harmonic ratio), `psychoacoustics` (ISO 532-1 stationary loudness, DIN 45692 sharpness). See its `THIRD_PARTY_NOTICES.md` for the parts derived from python-acoustics |
@@ -66,7 +66,7 @@ read the sphere files back.
 | `unit_conversion.py`, `default_units.py` | Aerospace unit conversions (third-party, BSD-style license in the file headers) |
 
 Scripts with a command line: `noise_abatement_2017.py` (the main pipeline),
-`build_empirical_database.py`, `norah2_to_nod.py`, `sphere_to_norah2.py`, `compare_databases.py`, `array_planner.py`,
+`build_empirical_database.py`, `norah2_to_nod.py`, `sphere_to_norah2.py`, `compare_databases.py`, `nod_tool.py`, `array_planner.py`,
 `sphere_diff.py`, and the
 plotting scripts `nc_lambert_ea.py`, `plot_projection.py`, `fried_egg_plot.py`,
 `spectrogram_plot.py`, `atmomap.py`, `ega_plot.py` and `board_field_plot.py`.

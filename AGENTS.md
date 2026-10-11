@@ -38,7 +38,8 @@ Instructions for AI coding tools working on PANAM. Human developers: see
 - `sphere_statistics.py`: energy averaging of repeat-run spheres and
   band-by-band sphere comparison (CLI `sphere_diff.py`).
 - `nod_database.py`: reads `.nod` databases: `load_nod`, `validate_nod`,
-  `compare_databases`, `to_frame`.
+  `compare_databases`, `to_frame`, and the maps and summaries of
+  `nod_tool.py` (`plot_condition`, `plot_envelope`).
 - `synthetic_flyover.py`: synthetic straight-line passes of a source of known
   directivity (`synthesize_pass`, `source_level_db`); the golden results' input.
 - `panam_acoustics/`: `signal_io` (loaders), `filters`, `atmosphere` and
