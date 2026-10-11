@@ -1,4 +1,5 @@
 # coding=UTF-8
+import fnmatch
 import os
 import re
 import warnings
@@ -4382,8 +4383,23 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                              store_spectrum=True, clamp_empty_directions=True,
                              hover_correction=None, hover_source=None,
                              speed_reference='ground', doppler_shift_removed=None,
-                             azimuth_reference=None):
+                             azimuth_reference=None, spheres=None, exclude=None):
     """Build a NICE-OPS sphere database from a directory of sphere files.
+
+    directory_name holds vehicle.cfg and, unless ``spheres`` says otherwise,
+    the sphere files: every ``*.nc`` in it.  database_filename is the output,
+    replaced if it exists.  distance is the propagation distance of the
+    broadband EAA, m; infreqs, when given, is the (low, high) band range kept,
+    Hz; level_flight_tolerance is in degrees of flight path angle.
+
+    spheres, when given, is the explicit list of sphere files to use in place
+    of the directory's ``*.nc``; a relative path is taken relative to
+    directory_name, so the names :func:`noise_abatement_2017.select_from_manifest`
+    returns can be passed as they are.  exclude, when given, is a list of file
+    names or shell-style patterns (``fnmatch``, matched against the file name)
+    whose spheres are left out.  The root text attribute source_spheres always
+    records the file names used, one per line, sorted; with exclude,
+    excluded_spheres records those left out.  Neither holds a directory.
 
     load_factors scales thrust: each source condition is written once per load
     factor, with the sphere level offset by 20*log10(load_factor) and the
@@ -4512,12 +4528,11 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     def run_metadata(filename, origin='measured'):
         return group_run_metadata(filename, main_rotor_area, main_rotor_tip_speed, origin)
 
-    # Get list of full paths to netCDF files in directory
-    local_glob = os.path.expanduser(directory_name) + '/*.nc'
-    absolute_glob = os.path.abspath(local_glob)
     # Sorted, so group numbering and hover-sphere ties do not depend on the
     # order the filesystem happens to list the directory in.
-    file_list = sorted(glob(absolute_glob))
+    file_list, excluded = _select_sphere_files(directory_name, spheres, exclude)
+    if not file_list:
+        raise ValueError('No sphere files found in ' + str(directory_name))
     # Settled before the output exists, so a refused mix of sources leaves no
     # half-written database behind.
     doppler = _resolve_doppler_shift_removed(file_list, doppler_shift_removed)
@@ -4535,6 +4550,9 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
         ncdatabase.hover_correction = str(getattr(hover_correction, 'description', 'applied'))
     if hover_source is not None:
         ncdatabase.hover_source = os.path.basename(str(hover_source))
+    ncdatabase.source_spheres = '\n'.join(os.path.basename(f) for f in file_list)
+    if exclude is not None:
+        ncdatabase.excluded_spheres = '\n'.join(os.path.basename(f) for f in excluded)
 
     min_speed = np.inf
     min_speed_file = None
@@ -4685,6 +4703,42 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     # Close explicitly: left to the garbage collector, a failed flush on close
     # is swallowed and the file can stay open (locked) while a traceback lives.
     ncdatabase.close()
+
+
+def _select_sphere_files(directory_name, spheres=None, exclude=None):
+    """The sphere files :func:`build_empirical_database` uses, and those ``exclude`` drops.
+
+    Returns ``(used, excluded)``, two sorted lists of absolute paths.  Without
+    ``spheres``, the candidates are every ``*.nc`` in directory_name; with it,
+    the files it names, a relative path taken relative to directory_name.  A
+    named file that does not exist raises FileNotFoundError.  ``exclude`` holds
+    file names or ``fnmatch`` patterns matched against each file name; one that
+    matches no candidate is warned about, since it is most likely a typo.
+    """
+    directory = os.path.abspath(os.path.expanduser(directory_name))
+    if spheres is None:
+        candidates = glob(os.path.join(directory, '*.nc'))
+    else:
+        if isinstance(spheres, (str, os.PathLike)):
+            raise TypeError('spheres must be a list of files, not one file')
+        candidates = []
+        for sphere in spheres:
+            path = os.path.join(directory, os.path.expanduser(os.fspath(sphere)))
+            if not os.path.isfile(path):
+                raise FileNotFoundError('sphere file not found: {}'.format(path))
+            candidates.append(os.path.abspath(path))
+    candidates = sorted(set(candidates))
+    if exclude is None:
+        return candidates, []
+    if isinstance(exclude, (str, os.PathLike)):
+        exclude = [exclude]
+    patterns = [os.path.basename(os.fspath(pattern)) for pattern in exclude]
+    for pattern in patterns:
+        if not any(fnmatch.fnmatchcase(os.path.basename(f), pattern) for f in candidates):
+            warnings.warn('exclude pattern {!r} matches no sphere file'.format(pattern))
+    excluded = [f for f in candidates
+                if any(fnmatch.fnmatchcase(os.path.basename(f), p) for p in patterns)]
+    return [f for f in candidates if f not in excluded], excluded
 
 
 def _write_database_root(ncdatabase, *, fixed_load_factor, speed_reference, atmosphere,

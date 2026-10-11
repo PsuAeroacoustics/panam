@@ -1,17 +1,151 @@
 """Build a NICE-OPS sphere database from a directory of AAM sphere files.
 
-Usage:  python build_empirical_database.py SPHERE_DIRECTORY DATABASE_FILE
+Usage:  python build_empirical_database.py SPHERE_DIRECTORY DATABASE_FILE [options]
 
 SPHERE_DIRECTORY holds the .nc spheres and a vehicle.cfg (rotors,
-atmosphere, weight and drag; see docs/file_formats.md).
+atmosphere, weight and drag; see docs/file_formats.md).  Every option maps to
+a keyword of flight_acoustics.build_empirical_database and defaults to that
+function's default.
 """
 import argparse
+import os
+import sys
 
+from panam_acoustics.atmosphere import Atmosphere
+
+import cli
 import flight_acoustics
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument('sphere_directory', help='directory of .nc spheres (and vehicle.cfg)')
+EPILOG = """\
+hover_correction, a callable that adds dB to the synthesized hover per direction
+and band, has no command-line form: call flight_acoustics.build_empirical_database
+from Python to use it (see docs/database_build.md, "The 2017 release settings").
+"""
+
+
+def _float_list(value):
+    """argparse type for a comma-separated list of floats."""
+    try:
+        return [float(item) for item in value.split(',') if item.strip()]
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error))
+
+
+def parse_arguments(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0], epilog=EPILOG,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('sphere_directory', help='directory of .nc spheres and vehicle.cfg')
     parser.add_argument('database_file', help='output NICE-OPS database (.nc/.nod)')
-    args = parser.parse_args()
-    flight_acoustics.build_empirical_database(args.sphere_directory, args.database_file)
+
+    selection = parser.add_argument_group('sphere selection (default: every .nc in SPHERE_DIRECTORY)')
+    selection.add_argument('--sphere', dest='spheres', action='append', default=None, metavar='FILE',
+                           help='use this sphere file (relative to SPHERE_DIRECTORY unless absolute); '
+                                'repeat for each one')
+    selection.add_argument('--manifest', default=None,
+                           help="use the spheres a noise_abatement_2017.py build manifest lists as built "
+                                '(their file names, taken in SPHERE_DIRECTORY)')
+    selection.add_argument('--skip-flagged', action='store_true',
+                           help='with --manifest: leave out runs whose track check raised a flag')
+    selection.add_argument('--exclude', action='append', default=None, metavar='PATTERN',
+                           help='leave out spheres whose file name matches this name or shell pattern '
+                                '(e.g. "Be407285236.nc" or "*_hover*.nc"); repeat for each one')
+
+    load = parser.add_mutually_exclusive_group()
+    load.add_argument('--load-factors', type=_float_list, default=None, metavar='N1,N2,...',
+                      help='load factors to write each condition at, g, comma-separated '
+                           '(default 0.7,1.1,1.5,1.9,2.3)')
+    load.add_argument('--fixed-load-factor', action='store_true',
+                      help='write each condition once, at 1 g, and let NICE-OPS scale it '
+                           '(load_factors=None)')
+
+    parser.add_argument('--extended-fpa', type=cli.colon_pair, default=None, metavar='LO:HI',
+                        help='re-emit every near-level condition at these two flight path angles, deg '
+                             '(e.g. -24:35; default none: the hover is written at -12, 0 and +12)')
+    parser.add_argument('--level-flight-tolerance', type=float,
+                        default=flight_acoustics.LEVEL_FLIGHT_TOLERANCE,
+                        help='flight path angle within which a sphere counts as level flight, deg '
+                             '(default %(default)g)')
+    parser.add_argument('--hover-source', default=None,
+                        help='sphere file the hover is synthesized from (default: the slowest sphere '
+                             'within the level-flight tolerance)')
+    parser.add_argument('--speed-reference', choices=flight_acoustics.SPEED_REFERENCES, default='ground',
+                        help='what the advance ratio and flight path angle are taken against '
+                             '(default %(default)s)')
+    parser.add_argument('--azimuth-reference', choices=flight_acoustics.AZIMUTH_REFERENCES, default=None,
+                        help="what the spheres' azimuth is measured from, for spheres that carry no "
+                             "azimuth_reference (default: the spheres' own, else track)")
+    parser.add_argument('--doppler-removed', type=int, choices=(0, 1), default=None,
+                        help='DOPPLER_SHIFT_REMOVED for spheres that carry no flag: 0 received '
+                             "frequencies, 1 emitted (default: the spheres' own, else 0 with a warning)")
+    parser.add_argument('--distance', type=float, default=1000.0,
+                        help='propagation distance of the broadband EAA, m (default %(default)g)')
+    parser.add_argument('--frequency-range', type=cli.colon_pair, default=None, metavar='LO:HI',
+                        help='keep only bands from LO to HI, Hz (default: every band)')
+    parser.add_argument('--build-temperature', type=float, default=293.15,
+                        help='atmosphere of the broadband EAA: temperature, K (default %(default)g)')
+    parser.add_argument('--build-pressure', type=float, default=101.325,
+                        help='... pressure, kPa (default %(default)g)')
+    parser.add_argument('--build-humidity', type=float, default=20.0,
+                        help='... relative humidity, percent (default %(default)g)')
+    parser.add_argument('--no-spectrum', action='store_true',
+                        help='write dBA and EAA only, without the band levels')
+    parser.add_argument('--no-clamp-empty', action='store_true',
+                        help='leave EAA NaN where ambient gating emptied a direction, instead of 0')
+    parser.add_argument('--overwrite', action='store_true', help='replace an existing output')
+    args = parser.parse_args(argv)
+
+    if args.skip_flagged and args.manifest is None:
+        parser.error('--skip-flagged applies to --manifest only')
+    if args.manifest is not None and args.spheres is not None:
+        parser.error('give --manifest or --sphere, not both')
+    if os.path.exists(args.database_file) and not args.overwrite:
+        parser.error(f'{args.database_file} exists; pass --overwrite to replace it')
+    return args
+
+
+def build_options(args):
+    """The keyword arguments of flight_acoustics.build_empirical_database that ``args`` give.
+
+    load_factors is left out unless --load-factors or --fixed-load-factor is given, so
+    that the function's own default array is used unchanged.
+    """
+    options = dict(
+        distance=args.distance,
+        infreqs=args.frequency_range,
+        atmosphere=Atmosphere(temperature=args.build_temperature, pressure=args.build_pressure,
+                              relative_humidity=args.build_humidity),
+        extended_flight_path_angles=args.extended_fpa,
+        level_flight_tolerance=args.level_flight_tolerance,
+        store_spectrum=not args.no_spectrum,
+        clamp_empty_directions=not args.no_clamp_empty,
+        hover_source=args.hover_source,
+        speed_reference=args.speed_reference,
+        doppler_shift_removed=args.doppler_removed,
+        azimuth_reference=args.azimuth_reference,
+        spheres=args.spheres,
+        exclude=args.exclude,
+    )
+    if args.fixed_load_factor:
+        options['load_factors'] = None
+    elif args.load_factors is not None:
+        options['load_factors'] = args.load_factors
+    if args.manifest is not None:
+        import noise_abatement_2017      # only here: it is the 2017 build's module
+        options['spheres'] = noise_abatement_2017.select_from_manifest(
+            args.manifest, skip_flagged=args.skip_flagged)
+    return options
+
+
+def main(argv=None):
+    args = parse_arguments(argv)
+    flight_acoustics.build_empirical_database(args.sphere_directory, args.database_file,
+                                              **build_options(args))
+    return 0
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main())
+    except (ValueError, FileNotFoundError) as error:
+        print(f'build_empirical_database.py: error: {error}', file=sys.stderr)
+        sys.exit(1)
