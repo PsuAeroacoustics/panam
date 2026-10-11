@@ -38,12 +38,34 @@ def test_directivity_is_taken_at_umapr_angles():
     np.testing.assert_allclose(ratio[receding], 1.0, rtol=1e-9)
 
 
+def test_directivity_azimuth_90_is_starboard():
+    """Azimuth 90 is starboard, -y for a source flying along +x with z up."""
+    def starboard_db(azimuth, elevation):
+        return np.where(np.sin(np.radians(azimuth)) > 0.0, 6.0, 0.0)
+    mics = np.array([[0.0, -400.0, 0.0], [0.0, 400.0, 0.0]])
+    def run(directivity_db):
+        return sf.synthesize_pass(mics, broadband=0.0, noise=0.0, directivity_db=directivity_db)[0]['pressure']
+    with np.errstate(invalid='ignore', divide='ignore'):
+        ratio = run(starboard_db) / run(None)
+    starboard, port = ratio[0][np.isfinite(ratio[0])], ratio[1][np.isfinite(ratio[1])]
+    np.testing.assert_allclose(starboard, 10.0 ** 0.3, rtol=1e-9)
+    np.testing.assert_allclose(port, 1.0, rtol=1e-9)
+
+
 def test_source_level_closed_form():
     # (100 Pa ft / 100 ft)^2 (1/2 + 0.5^2/2 + 0.2^2) = 0.665 Pa^2
     expected = 10.0 * np.log10(0.665 / fa.P_REF ** 2)
     assert sf.source_level_db(180.0, 45.0, 100.0) == pytest.approx(expected, abs=1e-12)
-    level = sf.source_level_db([180.0, 0.0], 0.0, 100.0, directivity_db=sf.example_directivity_db)
-    np.testing.assert_allclose(level, expected + np.array([4.0, -4.0]), atol=1e-12)
+    level = sf.source_level_db([180.0, 0.0, 90.0, 270.0, 0.0], [0.0, 0.0, 0.0, 0.0, 90.0], 100.0,
+                               directivity_db=sf.example_directivity_db)
+    np.testing.assert_allclose(level, expected + np.array([4.0, -4.0, 1.5, -1.5, -3.0]), atol=1e-12)
+
+
+def test_example_directivity_range():
+    azimuth, elevation = np.meshgrid(np.linspace(0.0, 360.0, 3601), np.linspace(0.0, 90.0, 901))
+    level = sf.example_directivity_db(azimuth, elevation)
+    assert level.max() == pytest.approx(np.sqrt(18.25), abs=1e-4)
+    assert level.min() == pytest.approx(-3.0 - 18.25 / 12.0, abs=1e-4)
 
 
 def _recovered_minus(truth_directivity):
@@ -65,6 +87,10 @@ def test_depropagation_recovers_the_known_directivity():
     assert abs(np.median(difference[interior])) < 0.2
     # The check can fail: against an omnidirectional truth the same hemisphere is off by up to 4 dB.
     assert np.nanmax(np.abs(_recovered_minus(None))) > 3.0
+    # It sees a lateral sign error: against the port-starboard mirror image it is off by about 3 dB.
+    mirrored = _recovered_minus(lambda azimuth, elevation: sf.example_directivity_db(360.0 - np.asarray(azimuth),
+                                                                                     elevation))
+    assert np.abs(mirrored[interior]).max() > 2.5
 
 
 def test_example_vehicle_cfg_reads():

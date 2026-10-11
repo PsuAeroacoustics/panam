@@ -27,7 +27,10 @@ DEFAULT_TONES = ((110.0, 1.0), (440.0, 0.5))
 
 
 def example_directivity_db(azimuth_deg, elevation_deg):
-    """A smooth directivity for examples: louder ahead near the horizon, quieter overhead.
+    """A smooth directivity for examples: louder ahead and to starboard near the horizon, quieter overhead.
+
+    The lateral term makes port and starboard differ, so a lateral sign error
+    in the angles shows up in a depropagated hemisphere.
 
     Args:
         azimuth_deg: UMAPR azimuth, deg (180 ahead).
@@ -35,11 +38,15 @@ def example_directivity_db(azimuth_deg, elevation_deg):
 
     Returns:
         Level re the omnidirectional source, dB, broadcast to the inputs' shape.
-        It spans -3 to +4 dB: 4 cos(azimuth - 180) cos(elevation) - 3 sin^2(elevation).
+        It is 4 cos(azimuth - 180) cos(elevation) + 1.5 sin(azimuth) cos(elevation)
+        - 3 sin^2(elevation): +4 dB ahead and +1.5 dB to starboard (azimuth 90) on
+        the horizon, -3 dB overhead.  It spans -3 - 18.25/12 = -4.52 dB to
+        sqrt(18.25) = +4.27 dB.
     """
     azimuth = np.radians(np.asarray(azimuth_deg, dtype=float))
     elevation = np.radians(np.asarray(elevation_deg, dtype=float))
-    return 4.0 * np.cos(azimuth - np.pi) * np.cos(elevation) - 3.0 * np.sin(elevation) ** 2
+    return ((4.0 * np.cos(azimuth - np.pi) + 1.5 * np.sin(azimuth)) * np.cos(elevation)
+            - 3.0 * np.sin(elevation) ** 2)
 
 
 def synthesize_pass(mic_locations, *, speed=150.0, height=300.0, duration=6.0, sampling_rate=4000.0,
