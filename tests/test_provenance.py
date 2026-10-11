@@ -172,9 +172,16 @@ def test_an_averaged_sphere_keeps_its_levels_out_of_the_settings(tmp_path):
     files = sorted(str(f) for f in spheres.glob('*.nc'))
     out = tmp_path / 'average.nc'
     ss.write_averaged_sphere(str(out), ss.average_spheres(files))
-    settings, inputs = _assert_stamp(out, 'flight_acoustics.write_aam_hemisphere_netcdf')
-    assert inputs == dict(filename='average.nc')
+    settings, inputs = _assert_stamp(out, 'sphere_statistics.write_averaged_sphere')
+    assert inputs == dict(filename='average.nc', sources=[os.path.basename(f) for f in files])
     assert not {'art_levels', 'extra_variables', 'hemisphere'} & set(settings)
+    assert settings['min_runs'] == 1 and settings['missing'] == 'no_data'
+    _assert_no_machine_path(out, tmp_path)
+    # Other averaging settings over the same runs: another settings hash.
+    other = tmp_path / 'other.nc'
+    ss.write_averaged_sphere(str(other), ss.average_spheres(files, min_runs=2, missing='no_energy'))
+    with Dataset(str(out)) as one, Dataset(str(other)) as two:
+        assert one.panam_settings_sha256 != two.panam_settings_sha256
 
 
 def test_the_sphere_selection_is_an_input_not_a_setting(tmp_path):

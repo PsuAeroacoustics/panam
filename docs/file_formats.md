@@ -82,7 +82,9 @@ everything else. AAM and NICE-OPS do not read them, and a reader may ignore them
 
 A run covers a cell when its level there is not NaN. A -999 in a source run is read as no
 data by default (`missing='no_data'`), or as zero power (`missing='no_energy'`), since the
-file does not say which it is. `write_aam_hemisphere_netcdf` writes such variables through
+file does not say which it is. The provenance stamp hashes the averaging settings (`min_runs`,
+`missing` and the speed and flight path angle tolerances) and names the averaged runs in
+`panam_inputs`. `write_aam_hemisphere_netcdf` writes such variables through
 its `extra_variables` argument and levels already on the ART grid through `art_levels`.
 
 **Node statistics.** `noise_abatement_2017.build_sphere(node_statistics=True)` (CLI
@@ -296,7 +298,7 @@ adding them left `DATABASE_FORMAT_VERSION` at 1. A file written before them has 
 
 | attribute | content |
 | --- | --- |
-| `panam_tool` | the writer: `noise_abatement_2017.build_sphere`, `flight_acoustics.write_aam_hemisphere_netcdf` (called directly), `flight_acoustics.build_empirical_database` or `flight_acoustics.build_database_from_norah2` |
+| `panam_tool` | the writer: `noise_abatement_2017.build_sphere`, `sphere_statistics.write_averaged_sphere`, `flight_acoustics.write_aam_hemisphere_netcdf` (called directly), `flight_acoustics.build_empirical_database` or `flight_acoustics.build_database_from_norah2` |
 | `panam_version` | `git describe --always --dirty` of the PANAM source directory; `unknown` without git |
 | `panam_created_utc` | when the file was written, UTC, ISO 8601 to the second, e.g. `2026-10-11T14:03:22Z` |
 | `panam_python`, `panam_numpy`, `panam_scipy`, `panam_netcdf4`, `panam_numba` | library versions; `not installed` when absent |
@@ -320,6 +322,7 @@ instead:
 | writer | `panam_inputs` |
 | --- | --- |
 | `build_sphere` | `test` (the aircraft), `run`, `output_path`, `reference_sphere`, `norah2_directory`, `plate_table_directory`, `samples_path` |
+| `write_averaged_sphere` | `filename`, `sources` (the averaged runs) |
 | `write_aam_hemisphere_netcdf` (called directly) | `filename` |
 | `build_empirical_database` | `directory_name`, `database_filename`, `hover_source`, `spheres` and `exclude` when given, and `merged_spheres` (a list of file-name lists, one per condition `merge_repeats` averaged) when any were merged |
 | `build_database_from_norah2` | `hem_files`, `database_filename` |

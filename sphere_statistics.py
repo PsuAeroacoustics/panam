@@ -25,6 +25,7 @@ import scipy.sparse as sparse
 from netCDF4 import Dataset
 
 import flight_acoustics as fa
+import provenance
 from panam_acoustics.plotting import acoustic_plot_style
 
 #: How a sphere file's -999 (or >1e34) cell is read: left out, or zero power.
@@ -150,8 +151,10 @@ def average_spheres(paths_or_datasets, min_runs=1, missing='no_data', speed_tole
         A :func:`read_sphere`-style dict with the averaged ``levels_db`` (dB), plus
         ``n_runs`` (int, shaped as ``levels_db``: the runs covering each cell),
         ``amplitude_sd_db`` (dB: the sample standard deviation, ddof 1, of the
-        finite levels of a cell; NaN where fewer than two are finite) and
-        ``sources`` (the input names).
+        finite levels of a cell; NaN where fewer than two are finite),
+        ``sources`` (the input names) and ``settings`` (``min_runs``, ``missing``
+        and the two tolerances, for the provenance stamp of
+        :func:`write_averaged_sphere`).
     """
     min_runs = int(min_runs)
     if min_runs < 1:
@@ -211,6 +214,9 @@ def average_spheres(paths_or_datasets, min_runs=1, missing='no_data', speed_tole
         doppler_shift_removed=flags[0] if flags else None,
         azimuth_reference=labeled[0] if labeled else None,
         sources=[s['name'] for s in spheres],
+        settings=dict(min_runs=min_runs, missing=missing,
+                      speed_tolerance_knots=float(speed_tolerance_knots),
+                      flight_path_angle_tolerance_deg=float(flight_path_angle_tolerance_deg)),
     )
 
 
@@ -221,7 +227,10 @@ def write_averaged_sphere(filename, average, title=None, overwrite=True):
     levels are written as they are, -999 where missing or below -100 dB, with the
     runs' mean weight as EMPTY_WEIGHT.  Two extra variables follow, which AAM and
     NICE-OPS do not read: ``N_RUNS`` (i4, the runs covering each cell) and
-    ``AMPLITUDE_SD_DB`` (f4, dB, -999 where undefined).
+    ``AMPLITUDE_SD_DB`` (f4, dB, -999 where undefined).  The provenance stamp names
+    ``sphere_statistics.write_averaged_sphere`` as the tool, hashes the averaging
+    settings (``average['settings']``) and lists the averaged runs by file name in
+    ``panam_inputs``.
 
     Args:
         filename: output path.
@@ -241,6 +250,10 @@ def write_averaged_sphere(filename, average, title=None, overwrite=True):
         title=title if title is not None else 'Energy average of {} spheres'.format(
             len(average.get('sources', []))),
         overwrite=overwrite,
+        provenance=provenance.build_provenance(
+            'sphere_statistics.write_averaged_sphere', dict(average.get('settings', {})),
+            inputs=dict(filename=os.path.basename(os.fspath(filename)),
+                        sources=[os.path.basename(os.fspath(name)) for name in average.get('sources', [])])),
         extra_variables={'N_RUNS': (np.asarray(average['n_runs'], dtype=np.int32), ''),
                          'AMPLITUDE_SD_DB': (average['amplitude_sd_db'], 'DECIBEL')})
 
