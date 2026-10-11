@@ -101,7 +101,20 @@ def _check_same_grid(spheres):
                 raise ValueError('{} and {} have different {}'.format(first['name'], sphere['name'], key))
 
 
-def average_spheres(paths_or_datasets, min_runs=1, missing='no_data', speed_tolerance_knots=0.0):
+def _check_spread(spheres, key, tolerance, label, units):
+    """Refuse spheres whose ``key`` values spread (max - min) by more than ``tolerance``."""
+    tolerance = float(tolerance)
+    if len(spheres) < 2 or tolerance == np.inf:
+        return
+    values = np.array([s[key] for s in spheres], dtype=float)
+    if not np.ptp(values) <= tolerance:    # NaN (a missing value) is refused
+        raise ValueError('{} differs by more than {} {} between the spheres: {}'.format(
+            label, tolerance, units,
+            ', '.join('{} ({} {})'.format(s['name'], s[key], units) for s in spheres)))
+
+
+def average_spheres(paths_or_datasets, min_runs=1, missing='no_data', speed_tolerance_knots=0.0,
+                    flight_path_angle_tolerance_deg=np.inf):
     """Energy-average AAM spheres of repeat runs, cell by cell.
 
     Each cell (direction and band) is averaged over the runs that cover it, those
@@ -110,17 +123,22 @@ def average_spheres(paths_or_datasets, min_runs=1, missing='no_data', speed_tole
     ``min_runs`` do.
 
     Every file must share PHI, THETA, FREQUENCY, RADIUS, the azimuth reference (a
-    file without one is 'track') and DOPPLER_SHIFT_REMOVED (a file without it is 0);
-    SPEED may differ by ``speed_tolerance_knots``.  The result carries the mean SPEED,
-    FLIGHT_PATH_ANGLE and weight of the runs.
+    file without one is 'track') and DOPPLER_SHIFT_REMOVED (a file without it is 0).
+    The SPEED values may spread (largest minus smallest) by ``speed_tolerance_knots``,
+    and the FLIGHT_PATH_ANGLE values by ``flight_path_angle_tolerance_deg``.  A file
+    without SPEED, or without FLIGHT_PATH_ANGLE when that tolerance is finite, is
+    refused when there are several.  The result carries the mean SPEED, FLIGHT_PATH_ANGLE and weight of the
+    runs.
 
     Args:
         paths_or_datasets: sphere file paths, open ``netCDF4.Dataset`` objects, or
             :func:`read_sphere` dicts.  An averaged sphere given again counts as one run.
         min_runs: fewest covering runs a cell needs to get a level (default 1).
         missing: how a -999 cell reads; see :func:`read_sphere` (default 'no_data').
-        speed_tolerance_knots: largest SPEED difference from the first file allowed,
-            kt (default 0: the same to float32).
+        speed_tolerance_knots: largest spread of SPEED between the files, kt
+            (default 0: the same to float32).
+        flight_path_angle_tolerance_deg: largest spread of FLIGHT_PATH_ANGLE between
+            the files, deg (default inf: not checked).
 
     Returns:
         A :func:`read_sphere`-style dict with the averaged ``levels_db`` (dB), plus
@@ -141,10 +159,9 @@ def average_spheres(paths_or_datasets, min_runs=1, missing='no_data', speed_tole
         if sphere['radius_ft'] != first['radius_ft']:
             raise ValueError('{} has RADIUS {} ft, {} has {} ft'.format(
                 sphere['name'], sphere['radius_ft'], first['name'], first['radius_ft']))
-        if not abs(sphere['speed_knots'] - first['speed_knots']) <= float(speed_tolerance_knots):
-            raise ValueError('{} has SPEED {} kt, {} has {} kt (tolerance {} kt)'.format(
-                sphere['name'], sphere['speed_knots'], first['name'], first['speed_knots'],
-                speed_tolerance_knots))
+    _check_spread(spheres, 'speed_knots', speed_tolerance_knots, 'SPEED', 'kt')
+    _check_spread(spheres, 'flight_path_angle_deg', flight_path_angle_tolerance_deg,
+                  'FLIGHT_PATH_ANGLE', 'deg')
     references = [s['azimuth_reference'] for s in spheres]
     if len({'track' if r is None else r for r in references}) > 1:
         raise ValueError('azimuth_reference differs between the spheres: {}'.format(

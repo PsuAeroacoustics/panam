@@ -98,6 +98,23 @@ def test_mismatched_spheres_are_refused(tmp_path, change):
         ss.average_spheres([a, b])
 
 
+def test_the_speed_tolerance_bounds_the_spread_of_all_runs(tmp_path):
+    spheres = [_sphere(tmp_path / '{}.nc'.format(speed), _levels(80.0), speed_knots=speed)
+               for speed in (60.0, 58.0, 62.0)]
+    with pytest.raises(ValueError, match='SPEED'):
+        ss.average_spheres(spheres, speed_tolerance_knots=2.0)
+    assert ss.average_spheres(spheres, speed_tolerance_knots=4.0)['speed_knots'] == pytest.approx(60.0)
+
+
+def test_the_flight_path_angle_tolerance_refuses_different_conditions(tmp_path):
+    level = _sphere(tmp_path / 'level.nc', _levels(80.0), flight_path_angle_deg=0.0)
+    descent = _sphere(tmp_path / 'descent.nc', _levels(80.0), flight_path_angle_deg=-9.0)
+    with pytest.raises(ValueError, match='FLIGHT_PATH_ANGLE'):
+        ss.average_spheres([level, descent], flight_path_angle_tolerance_deg=3.0)
+    average = ss.average_spheres([level, descent])     # default: not checked
+    assert average['flight_path_angle_deg'] == pytest.approx(-4.5)
+
+
 def test_mismatched_bands_are_refused(tmp_path):
     a = _sphere(tmp_path / 'a.nc', _levels(80.0))
     b = tmp_path / 'b.nc'

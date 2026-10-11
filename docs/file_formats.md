@@ -215,6 +215,12 @@ only up to the gridded hemisphere.
 -inf (no energy): NaN, which the shipped 2017 spheres use; any value at or below -998; and
 any value above 1e34, which older PANAM output used.
 
+**Averaging spheres.** `sphere_statistics.read_sphere` (used by `average_spheres`,
+`compare_spheres` and `sphere_diff.py`) reads the same three conventions differently: by
+default (`missing='no_data'`) a -999 or >1e34 cell is NaN, no data, so the run is left out of
+that cell's average; with `missing='no_energy'` it is -inf, a run with zero power, as
+`mask_missing_levels` reads it. NaN on disk is always no data.
+
 **Database.** A `coverage` cell is 1 only where its band level and its direction's EAA were
 finite in the source sphere. It is 0 for cells that were gated, masked or below the -100 dB
 floor (all -999 in the sphere file), for the mirrored upper surface, for hover cells whose

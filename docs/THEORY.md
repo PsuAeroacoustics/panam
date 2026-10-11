@@ -910,8 +910,11 @@ These are in PANAM but not used to build the databases.
   grid are averaged cell by cell in energy over the $N$ runs that cover the cell,
   $L = 10\lg\left(\tfrac1N\sum_i 10^{L_i/10}\right)$, a run with no energy there counting as
   $P_i = 0$. A cell is $-\infty$ only if every covering run is, and NaN where no run (or fewer than
-  `min_runs`) covers it. The spread is the sample standard deviation of the finite $L_i$, in dB.
-  Files whose grid, bands, radius, speed, azimuth reference or Doppler flag differ are refused.
+  `min_runs`) covers it. From sphere files, -999 is read as no data by default, so $P_i = 0$
+  applies only to an in-memory $-\infty$ or with `missing='no_energy'`. The spread is the sample
+  standard deviation of the finite $L_i$, in dB. Files whose grid, bands, radius, azimuth
+  reference or Doppler flag differ are refused, as are files whose speeds (or, on request,
+  flight path angles) spread by more than a tolerance.
 - **Sphere comparison** (`sphere_statistics.compare_spheres`). Per band, the difference
   $\Delta L = L_B - L_A$ over the cells finite in both spheres gives the mean, root mean square,
   5th and 95th percentiles and an area-weighted mean,

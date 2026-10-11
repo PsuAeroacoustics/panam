@@ -27,7 +27,10 @@ def build_parser():
                          help='Fewest covering runs a cell needs to get a level (default 1)')
     average.add_argument('--missing', choices=ss.MISSING_MEANINGS, default='no_data', help=MISSING_HELP)
     average.add_argument('--speed-tolerance', type=float, default=0.0,
-                         help='Largest SPEED difference allowed between the inputs, kt (default 0)')
+                         help='Largest spread (max - min) of SPEED allowed between the inputs, kt (default 0)')
+    average.add_argument('--fpa-tolerance', type=float, default=float('inf'),
+                         help='Largest spread (max - min) of FLIGHT_PATH_ANGLE allowed between the '
+                              'inputs, deg (default inf: not checked)')
     average.add_argument('-t', '--title', default=None,
                          help='Title of the written file (default names the number of inputs)')
 
@@ -54,7 +57,8 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     if args.command == 'average':
         average = ss.average_spheres(args.inputs, min_runs=args.min_runs, missing=args.missing,
-                                     speed_tolerance_knots=args.speed_tolerance)
+                                     speed_tolerance_knots=args.speed_tolerance,
+                                     flight_path_angle_tolerance_deg=args.fpa_tolerance)
         ss.write_averaged_sphere(args.output, average, title=args.title)
         print('Wrote {} from {} spheres; {} of {} cells have a level'.format(
             args.output, len(args.inputs), int(np.sum(~np.isnan(average['levels_db']))),
