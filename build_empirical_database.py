@@ -189,7 +189,7 @@ def recipe_options(args, parser, argv=None):
         return options
     import build_recipe
     recipe = build_recipe.load_recipe(args.recipe).database_options()
-    merged = build_recipe.merge(recipe, options, build_recipe.explicit_keywords(parser, argv, CLI_KEYWORDS))
+    merged, _ = build_recipe.apply(parser, argv, recipe, options, CLI_KEYWORDS)
     explicit = build_recipe.explicit_destinations(parser, argv)
     given = {field: getattr(args, destination) for destination, field in ATMOSPHERE_FIELDS.items()
              if destination in explicit}

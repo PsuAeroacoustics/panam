@@ -94,6 +94,18 @@ PATH_KEYS = ('root', 'reference_directory', 'plate_table_directory', 'ray_profil
 #: Recipe keys that are not keywords of the functions, per section.
 EXTRA_KEYS = dict(spheres=(), hover_source=(), database=('fixed_load_factor',))
 
+#: Per kind of section: the functions it feeds (a later one's defaults win), the
+#: keys it refuses and how an error names the functions.
+_SPHERE_SECTION = ((na.build_sphere, na.build_all), SPHERE_REFUSED,
+                   'noise_abatement_2017.build_all or build_sphere')
+_DATABASE_SECTION = ((fa.build_empirical_database,), DATABASE_REFUSED,
+                     'flight_acoustics.build_empirical_database')
+
+
+def _section(section):
+    """(functions, refused, target) of ``section``: [database] or a sphere section."""
+    return _DATABASE_SECTION if section == 'database' else _SPHERE_SECTION
+
 
 def _keywords(*functions):
     return {name for function in functions
@@ -103,31 +115,21 @@ def _keywords(*functions):
 
 def function_defaults(section):
     """The defaults of the keywords a recipe section feeds, from the function signatures."""
-    functions = ((fa.build_empirical_database,) if section == 'database'
-                 else (na.build_sphere, na.build_all))
-    return {name: parameter.default for function in functions
+    return {name: parameter.default for function in _section(section)[0]
             for name, parameter in inspect.signature(function).parameters.items()
             if parameter.default is not inspect.Parameter.empty}
 
 
 def allowed_keys(section):
     """The keys a recipe section takes, from the signatures of the functions it feeds."""
-    if section == 'database':
-        keys = _keywords(fa.build_empirical_database) - set(DATABASE_REFUSED)
-    else:
-        keys = _keywords(na.build_all, na.build_sphere) - set(SPHERE_REFUSED)
-    return keys | set(EXTRA_KEYS[section])
-
-
-def _targets(section):
-    return ('flight_acoustics.build_empirical_database' if section == 'database'
-            else 'noise_abatement_2017.build_all or build_sphere')
+    functions, refused, _ = _section(section)
+    return (_keywords(*functions) - set(refused)) | set(EXTRA_KEYS[section])
 
 
 def _check_section(path, section, values):
     if not isinstance(values, dict):
         raise ValueError('{}: [{}] must be a table'.format(path, section))
-    refused = DATABASE_REFUSED if section == 'database' else SPHERE_REFUSED
+    _, refused, targets = _section(section)
     allowed = allowed_keys(section)
     for key, value in values.items():
         where = '{}: [{}] {}'.format(path, section, key)
@@ -136,7 +138,7 @@ def _check_section(path, section, values):
         if key not in allowed:
             close = difflib.get_close_matches(key, sorted(allowed), n=3)
             raise ValueError('{}: unknown key, not a keyword of {}{}'.format(
-                where, _targets(section), '; did you mean {}?'.format(', '.join(close)) if close else ''))
+                where, targets, '; did you mean {}?'.format(', '.join(close)) if close else ''))
         if key == 'interpolation':
             if not isinstance(value, dict):
                 raise ValueError('{} must be a table ([{}.interpolation])'.format(where, section))
@@ -306,6 +308,16 @@ def explicit_keywords(parser, argv, destination_keywords):
     for destination in explicit_destinations(parser, argv):
         keywords.update(destination_keywords.get(destination, (destination,)))
     return keywords
+
+
+def apply(parser, argv, recipe_options, cli_options, destination_keywords):
+    """``cli_options`` with ``recipe_options`` for every keyword ``argv`` does not set.
+
+    Returns ``(merged, explicit)``: the :func:`merge` of the two and the keywords the
+    command line set (:func:`explicit_keywords`).
+    """
+    explicit = explicit_keywords(parser, argv, destination_keywords)
+    return merge(recipe_options, cli_options, explicit), explicit
 
 
 def merge(recipe_options, cli_options, explicit):

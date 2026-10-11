@@ -2929,8 +2929,7 @@ def main(argv=None):
             recipe_options = recipe.sphere_options(hover_source=args.hover_source)
         except (ValueError, LookupError, OSError) as error:
             parser.error(str(error))
-        explicit = build_recipe.explicit_keywords(parser, argv, CLI_KEYWORDS)
-        options = build_recipe.merge(recipe_options, options, explicit)
+        options, explicit = build_recipe.apply(parser, argv, recipe_options, options, CLI_KEYWORDS)
         # A keyword neither in the recipe nor on the command line takes the function's
         # default, so that a recipe builds the same spheres here as from Python.  Only
         # point_stride has a command-line default (10) other than the function's (1).
