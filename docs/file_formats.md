@@ -196,20 +196,35 @@ adding them left `DATABASE_FORMAT_VERSION` at 1. A file written before them has 
 | `panam_version` | `git describe --always --dirty` of the PANAM source directory; `unknown` without git |
 | `panam_created_utc` | when the file was written, UTC, ISO 8601 to the second, e.g. `2026-10-11T14:03:22Z` |
 | `panam_python`, `panam_numpy`, `panam_scipy`, `panam_netcdf4`, `panam_numba` | library versions; `not installed` when absent |
-| `panam_settings` | the writer's arguments as canonical JSON: keys sorted, no whitespace, ASCII |
+| `panam_settings` | the writer's processing arguments as canonical JSON: keys sorted, no whitespace, ASCII |
 | `panam_settings_sha256` | SHA-256 (hex) of `panam_settings` |
+| `panam_inputs` | what identifies the file, as canonical JSON, not hashed: its own name and its inputs by file name (see below) |
 
 The settings are reduced to plain JSON before they are written: numpy arrays and scalars to
-lists and numbers, a callable to its qualified name (with its `description`, if it has one),
-an object such as an `Atmosphere` to its public attributes and type name. A path is reduced
-to its file name: the builders' path arguments always, and any other string that is an
-absolute path or starts with `~`. No stamp names a directory of the machine that wrote it.
-Equal settings give equal text and an equal hash, so two files built with the same settings
-can be compared by `panam_settings_sha256` alone. Each stamp names its own output file, so
-files written under different names differ in the hash.
+lists and numbers, a non-finite number to the text `nan`, `inf` or `-inf` (the JSON is
+strict, with no `NaN` or `Infinity`), a callable to its qualified name (with its
+`description`, if it has one), an object such as an `Atmosphere` to its public attributes
+and type name. A path is reduced to its file name: the builders' path arguments always, and
+any other string that is an absolute path or starts with `~`. No stamp names a directory of
+the machine that wrote it.
 
-`build_sphere` passes every one of its arguments (the archive by its aircraft name). Its
-record, and the `--manifest` CSV, also carry the settings in
+The file's identity is kept out of the hashed settings and written to `panam_inputs`
+instead:
+
+| writer | `panam_inputs` |
+| --- | --- |
+| `build_sphere` | `test` (the aircraft), `run`, `output_path`, `reference_sphere`, `norah2_directory`, `plate_table_directory`, `samples_path` |
+| `write_aam_hemisphere_netcdf` (called directly) | `filename` |
+| `build_empirical_database` | `directory_name`, `database_filename`, `hover_source` |
+| `build_database_from_norah2` | `hem_files`, `database_filename` |
+
+Where an identity changes the processing, the settings record that much: `build_sphere`
+records `reference_sphere_given` (a reference sphere sets the grid and bands) and
+`build_empirical_database` records `hover_source_given`. Equal processing settings give
+equal text and an equal hash, so `panam_settings_sha256` alone says whether two spheres, or
+two databases, were built with the same settings, whatever their names or runs.
+
+`build_sphere`'s record, and the `--manifest` CSV, also carry the settings in
 `noise_abatement_2017.RECORDED_SETTINGS` as given, `panam_version` and `settings_sha256`.
 
 ## How a bin's state travels

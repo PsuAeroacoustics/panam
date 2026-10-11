@@ -1389,19 +1389,27 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     R66 day 231) is depropagated in a 20 C, 20 % RH, 101.325 kPa standard day with a logged
     warning, and its sphere records the air density as NaN with source ``'none'``.
 
-    The sphere carries the provenance stamp of :mod:`provenance`: every argument of
-    this call (``test`` by its aircraft, paths by file name) as canonical JSON.
+    The sphere carries the provenance stamp of :mod:`provenance`: the processing
+    arguments of this call as canonical JSON, and what identifies the sphere (the
+    aircraft, the run, and the output, reference, NORAH2, plate-table and samples
+    paths by file name) in ``panam_inputs``.  Equal processing settings give an
+    equal ``settings_sha256`` across runs.
 
     Returns a dict describing what was processed, so a batch caller can log and
     audit it without re-opening the output.  It includes the settings of
     :data:`RECORDED_SETTINGS` as given, the code version (``panam_version``) and the
     stamp's ``settings_sha256``.
     """
-    settings = dict(locals(), test=test.aircraft)
+    settings = dict(locals())
+    inputs = dict(test=test.aircraft, run=str(run))
     for name in ('output_path', 'reference_sphere', 'norah2_directory', 'plate_table_directory',
                  'samples_path'):
-        if settings[name] is not None:
-            settings[name] = os.path.basename(os.path.normpath(os.path.expanduser(str(settings[name]))))
+        value = settings.pop(name)
+        inputs[name] = None if value is None else os.path.basename(
+            os.path.normpath(os.path.expanduser(str(value))))
+    del settings['test'], settings['run']
+    # A reference sphere sets the grid and bands, so whether one was given is a setting.
+    settings['reference_sphere_given'] = reference_sphere is not None
     if rim_elevation_deg is None:
         rim_elevation_deg = DEFAULT_RIM_ELEVATION_DEG
     row = test.by_run[run]
@@ -1624,7 +1632,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
                  range_ft=scattered['range'], source_height_ft=scattered['source_height'], run=str(run))
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)) or '.', exist_ok=True)
-    stamp = provenance.build_provenance('noise_abatement_2017.build_sphere', settings)
+    stamp = provenance.build_provenance('noise_abatement_2017.build_sphere', settings, inputs=inputs)
     fa.write_aam_hemisphere_netcdf(
         output_path,
         hemisphere,

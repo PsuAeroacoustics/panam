@@ -9,8 +9,11 @@ are optional: no reader requires them.  See ``docs/file_formats.md``.
 
 The settings are written as canonical JSON (sorted keys, no whitespace), so
 equal settings give the same text and the same SHA-256 whatever order they
-were given in.  A stamp must not carry a machine path: a path is reduced to
-its file name (see :func:`canonical_settings`).
+were given in.  The file's identity (its own name, the run, the input files)
+is kept out of the settings and written separately as ``panam_inputs``, so
+that files built with the same processing settings share the hash.  A stamp
+must not carry a machine path: a path is reduced to its file name (see
+:func:`canonical_settings`).
 """
 
 import dataclasses
@@ -34,6 +37,7 @@ __all__ = ['PROVENANCE_ATTRIBUTES', 'build_provenance', 'canonical_settings', 'c
 PROVENANCE_ATTRIBUTES = (
     'panam_tool', 'panam_version', 'panam_created_utc', 'panam_python', 'panam_numpy',
     'panam_scipy', 'panam_netcdf4', 'panam_numba', 'panam_settings', 'panam_settings_sha256',
+    'panam_inputs',
 )
 
 _SOURCE_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
@@ -89,6 +93,8 @@ def _callable_name(value):
 def canonical_settings(value):
     """``value`` reduced to plain JSON types, the same for equal settings.
 
+    - non-finite floats: the text 'nan', 'inf' or '-inf' (JSON has no
+      number for them);
     - dicts: keys as text (JSON sorts them when written);
     - lists, tuples and sets: lists (a set sorted by its JSON text);
     - numpy arrays and scalars: lists and Python numbers;
@@ -99,8 +105,12 @@ def canonical_settings(value):
       ``{'type': name, ...public attributes}``;
     - anything else: its ``str``.
     """
-    if value is None or isinstance(value, (bool, int, float)):
+    if value is None or isinstance(value, (bool, int)):
         return value
+    if isinstance(value, float):
+        if np.isnan(value):
+            return 'nan'
+        return value if np.isfinite(value) else ('inf' if value > 0 else '-inf')
     if isinstance(value, np.generic):
         return canonical_settings(value.item())
     if isinstance(value, np.ndarray):
@@ -129,25 +139,32 @@ def canonical_settings(value):
 
 def settings_json(settings):
     """Canonical JSON text of ``settings`` (:func:`canonical_settings`), keys sorted,
-    no whitespace, ASCII only (a NETCDF3_CLASSIC attribute takes nothing else)."""
+    no whitespace, ASCII only (a NETCDF3_CLASSIC attribute takes nothing else).
+    Strict JSON: a non-finite number is written as text, never as ``NaN``."""
     return json.dumps(canonical_settings(settings), sort_keys=True, separators=(',', ':'),
-                      ensure_ascii=True)
+                      ensure_ascii=True, allow_nan=False)
 
 
-def build_provenance(tool, settings):
+def build_provenance(tool, settings, inputs=None):
     """The provenance stamp of a file written by ``tool`` with ``settings``.
 
     Args:
         tool: name of the function or script that writes the file.
-        settings: dict of the settings the file was built with, in any units
-            (they are recorded, not interpreted).
+        settings: dict of the processing settings the file was built with, in
+            any units (they are recorded, not interpreted).  Leave out what
+            names the file or its inputs, so that equal settings give an equal
+            hash across files.
+        inputs: dict of what identifies this file: its own name, the run, the
+            input files.  Recorded as canonical JSON in ``panam_inputs`` (paths
+            reduced to file names), not hashed.  None records ``{}``.
 
     Returns:
         dict of text, keyed by the attribute names of
         :data:`PROVENANCE_ATTRIBUTES`: the tool, the code version
         (:func:`code_version`), the creation time (UTC, ISO 8601, whole
         seconds), the Python, numpy, scipy, netCDF4 and numba versions, the
-        canonical settings JSON (:func:`settings_json`) and its SHA-256 (hex).
+        canonical settings JSON (:func:`settings_json`), its SHA-256 (hex)
+        and the canonical JSON of ``inputs``.
     """
     text = settings_json(settings)
     return {
@@ -162,6 +179,7 @@ def build_provenance(tool, settings):
         'panam_numba': _package_version('numba'),
         'panam_settings': text,
         'panam_settings_sha256': hashlib.sha256(text.encode('ascii')).hexdigest(),
+        'panam_inputs': settings_json({} if inputs is None else inputs),
     }
 
 

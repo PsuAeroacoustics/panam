@@ -41,7 +41,7 @@ def _assert_stamp(path, tool):
     assert stamp['panam_version']
     assert stamp['panam_created_utc'].endswith('Z')
     assert stamp['panam_settings_sha256'] == hashlib.sha256(stamp['panam_settings'].encode()).hexdigest()
-    return json.loads(stamp['panam_settings'])
+    return json.loads(stamp['panam_settings']), json.loads(stamp['panam_inputs'])
 
 
 def test_the_hash_is_the_same_for_equal_settings():
@@ -73,6 +73,26 @@ def test_paths_callables_and_objects_are_reduced():
     assert settings['atmosphere']['temperature'] == 293.15
 
 
+def test_non_finite_numbers_are_written_as_strict_json():
+    assert provenance.settings_json({'x': np.inf}) == '{"x":"inf"}'
+    assert provenance.settings_json({'x': [float('nan'), -np.inf, np.float32(1.5)]}) == \
+        '{"x":["nan","-inf",1.5]}'
+
+    def refuse(constant):
+        raise AssertionError('non-standard JSON constant ' + constant)
+    stamp = provenance.build_provenance('t', dict(cap=np.inf, levels=np.array([np.nan, 1.0])))
+    assert json.loads(stamp['panam_settings'], parse_constant=refuse) == \
+        dict(cap='inf', levels=['nan', 1.0])
+
+
+def test_inputs_are_recorded_apart_from_the_hashed_settings():
+    one = provenance.build_provenance('t', dict(gate=10.0), inputs=dict(run='1', output='/a/b/one.nc'))
+    two = provenance.build_provenance('t', dict(gate=10.0), inputs=dict(run='2', output='two.nc'))
+    assert one['panam_settings_sha256'] == two['panam_settings_sha256']
+    assert json.loads(one['panam_inputs']) == dict(run='1', output='one.nc')
+    assert provenance.build_provenance('t', {})['panam_inputs'] == '{}'
+
+
 def test_the_code_version_falls_back_to_unknown(monkeypatch):
     def missing(*args, **kwargs):
         raise FileNotFoundError('git')
@@ -86,14 +106,15 @@ def test_the_sphere_writer_stamps_its_arguments_without_paths(tmp_path):
     path.parent.mkdir()
     fa.write_aam_hemisphere_netcdf(str(path), sphere_helpers.minimal_hemisphere(), mode='third_octave',
                                    radius_ft=100.0, speed_knots=60.0, title='t')
-    settings = _assert_stamp(path, 'flight_acoustics.write_aam_hemisphere_netcdf')
-    assert settings['filename'] == 'X101.nc' and settings['speed_knots'] == 60.0
+    settings, inputs = _assert_stamp(path, 'flight_acoustics.write_aam_hemisphere_netcdf')
+    assert inputs == dict(filename='X101.nc') and settings['speed_knots'] == 60.0
+    assert 'filename' not in settings
     _assert_no_machine_path(path, tmp_path)
 
     stamp = provenance.build_provenance('caller', dict(band_snr_gate_db=10.0))
     fa.write_aam_hemisphere_netcdf(str(path), sphere_helpers.minimal_hemisphere(), mode='third_octave',
                                    radius_ft=100.0, provenance=stamp)
-    assert _assert_stamp(path, 'caller') == dict(band_snr_gate_db=10.0)
+    assert _assert_stamp(path, 'caller') == (dict(band_snr_gate_db=10.0), {})
 
 
 def test_the_empirical_database_records_its_build(tmp_path, monkeypatch):
@@ -107,9 +128,10 @@ def test_the_empirical_database_records_its_build(tmp_path, monkeypatch):
                                 load_factors=[1.0, 2.0], extended_flight_path_angles=(-24.0, 35.0),
                                 hover_source=str(spheres / 'X101.nc'))
     path = tmp_path / 'out' / 'db.nod'
-    settings = _assert_stamp(path, 'flight_acoustics.build_empirical_database')
-    assert settings['directory_name'] == 'spheres' and settings['database_filename'] == 'db.nod'
-    assert settings['hover_source'] == 'X101.nc'
+    settings, inputs = _assert_stamp(path, 'flight_acoustics.build_empirical_database')
+    assert inputs == dict(directory_name='spheres', database_filename='db.nod', hover_source='X101.nc')
+    assert not {'directory_name', 'database_filename', 'hover_source'} & set(settings)
+    assert settings['hover_source_given'] is True
     assert settings['load_factors'] == [1.0, 2.0]
     with Dataset(str(path)) as database:
         np.testing.assert_array_equal(database.load_factors, [1.0, 2.0])
@@ -122,12 +144,20 @@ def test_the_empirical_database_records_its_build(tmp_path, monkeypatch):
         assert 'load_factors' not in database.ncattrs()
         assert 'extended_flight_path_angles_deg' not in database.ncattrs()
 
+    # The same settings under another output name: the same settings hash.
+    renamed = tmp_path / 'renamed.nod'
+    fa.build_empirical_database(str(spheres), str(renamed), load_factors=None)
+    with Dataset(str(fixed)) as one, Dataset(str(renamed)) as two:
+        assert one.panam_settings_sha256 == two.panam_settings_sha256
+        assert json.loads(two.panam_inputs)['database_filename'] == 'renamed.nod'
+
 
 def test_the_norah2_database_records_its_build(tmp_path):
     files = three_hems(tmp_path)
     path = tmp_path / 'norah2.nod'
     fa.build_database_from_norah2(files, str(path), speed_mapping='ground_speed', **VEHICLE)
-    settings = _assert_stamp(path, 'flight_acoustics.build_database_from_norah2')
-    assert settings['hem_files'] == ['X_0.hem', 'X_1.hem', 'X_2.hem']
+    settings, inputs = _assert_stamp(path, 'flight_acoustics.build_database_from_norah2')
+    assert inputs == dict(hem_files=['X_0.hem', 'X_1.hem', 'X_2.hem'], database_filename='norah2.nod')
+    assert 'hem_files' not in settings
     assert settings['speed_mapping'] == 'ground_speed'
     _assert_no_machine_path(path, tmp_path)

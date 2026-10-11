@@ -611,8 +611,31 @@ def test_the_sphere_build_records_its_settings(tmp_path):
         text = sphere.panam_settings
         assert sphere.panam_tool == 'noise_abatement_2017.build_sphere'
         assert sphere.panam_settings_sha256 == row['settings_sha256'] == record['settings_sha256']
+        inputs = sphere.panam_inputs
     assert hashlib.sha256(text.encode()).hexdigest() == record['settings_sha256']
     settings = json.loads(text)
-    assert settings['test'] == 'AS350B3' and settings['output_path'] == os.path.basename(record['output'])
-    assert settings['plate_table_directory'] is None and settings['band_snr_gate_db'] == 6.0
-    assert str(tmp_path) not in text and os.path.realpath(str(tmp_path)) not in text
+    assert settings['band_snr_gate_db'] == 6.0 and settings['reference_sphere_given'] is False
+    assert not {'test', 'run', 'output_path', 'plate_table_directory'} & set(settings)
+    identity = json.loads(inputs)
+    assert identity['test'] == 'AS350B3' and identity['run'] == '289108'
+    assert identity['output_path'] == os.path.basename(record['output'])
+    assert identity['plate_table_directory'] is None
+    for spelling in (text, inputs):
+        assert str(tmp_path) not in spelling and os.path.realpath(str(tmp_path)) not in spelling
+
+
+def test_spheres_built_with_equal_settings_share_the_settings_hash(tmp_path):
+    """The hash covers the processing settings, not the file's name: two spheres
+    written under different names with the same settings record the same hash."""
+    from netCDF4 import Dataset
+    _archive(tmp_path)
+    test = na.NoiseAbatementTest('AS350B3', root=str(tmp_path))
+    first = na.build_sphere(test, '289108', str(tmp_path / 'a' / 'one.nc'), board_correction='flat')
+    second = na.build_sphere(test, '289108', str(tmp_path / 'b' / 'two.nc'), board_correction='flat')
+    changed = na.build_sphere(test, '289108', str(tmp_path / 'c' / 'one.nc'), board_correction='flat',
+                              band_snr_gate_db=6.0)
+    assert first['settings_sha256'] == second['settings_sha256']
+    assert changed['settings_sha256'] != first['settings_sha256']
+    with Dataset(first['output']) as one, Dataset(second['output']) as two:
+        assert one.panam_settings == two.panam_settings
+        assert one.panam_inputs != two.panam_inputs
