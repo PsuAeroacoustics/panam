@@ -75,12 +75,34 @@ The main options:
 | `--no-track-check`, `--min-height-above-array-ft` | check on, 10 ft | see [options](#options) |
 | `--tone-aware` | off | file each tone whole in the band of its own frequency |
 | `--tone-split` | off | also write each run's tonal and broadband parts (implies `--tone-aware`; see below) |
+| `--skip-existing` | off | keep a run whose outputs (sphere, NORAH2 file and parts when asked for) all exist |
+| `--skip-unchanged` | off | keep a run whose existing sphere has this build's settings hash and input signature |
+| `--jobs N` | 1 | build N runs at once in worker processes; the output is the same as with 1 |
+| `-v`, `-q`, `--log-file FILE` | INFO, stderr | log DEBUG too, or only WARNING (`-qq` ERROR); also append the log to FILE |
 
 `python noise_abatement_2017.py -h` lists the depropagation settings, among them
 `--band-snr-gate-db`, `--max-absorption-correction-db`, `--min-elevation-deg`,
 `--max-propagation-range-ft`, `--point-stride`, `--board-correction` and
 `--third-octave-method`. Some of the 2017 release's settings have no command-line option;
 see [the 2017 release settings](#the-2017-release-settings).
+
+`--skip-existing` and `--skip-unchanged` resume or refresh a build. A run counts as built
+when its sphere exists, with its NORAH2 file under `--norah2-directory` and its parts under
+`--tone-split`. `--skip-unchanged` also needs the sphere's `panam_settings_sha256` to equal this
+build's and its `panam_input_signature` to equal the signature of the run's input files now:
+the track, the run and ambient recordings, the reference and microphone lists, the day's
+weather station files and the reference sphere, by name, size and modification time. A
+skipped run keeps its files and is listed in the manifest, with `skipped` set to `exists` or
+`unchanged`, and in the NORAH2 triangulation. Every sphere and database is written to a
+temporary file and moved into place when complete, so an interrupted build leaves no partial
+sphere for either option to keep.
+
+`--jobs N` (`build_all(jobs=N)`) builds N runs at once in processes started with the spawn
+method. The plate tables are computed first, in the parent, so the workers read them from
+the cache. The parent prefetches each run before it hands it to a worker. Records come back
+in run order, so the manifest and the triangulation are those of `--jobs 1`. From Python,
+`ray_models` and `winds` must be None, a dict or a module-level function, since they are sent
+to the workers.
 
 The command line builds only flight spheres. To build a hover sphere, call
 `build_sphere(..., nose_from_heading=True)` from Python.
@@ -159,7 +181,9 @@ each. They are cached under `~/.cache/panam/plate_tables`, or `--plate-table-dir
 command line's default,
 `--point-stride 10`, depropagates every tenth track sample. `build_sphere` and `build_all`
 default to 1, which is about ten times slower. `build_all` warms a cloud-synced archive's
-cache ahead of each run, and `--no-prefetch` turns that off. Database size depends on the
+cache ahead of each run, and `--no-prefetch` turns that off. `--jobs` divides the computation,
+not the download: with a cloud-synced archive that is not yet on the disk, the prefetch can
+take as long as the build. Database size depends on the
 load factors and the spectra:
 
 - B407 with the eight-rung load-factor ladder: 548 MB.

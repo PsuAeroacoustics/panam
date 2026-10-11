@@ -278,6 +278,7 @@ adding them left `DATABASE_FORMAT_VERSION` at 1. A file written before them has 
 | `panam_settings` | the writer's processing arguments as canonical JSON: keys sorted, no whitespace, ASCII |
 | `panam_settings_sha256` | SHA-256 (hex) of `panam_settings` |
 | `panam_inputs` | what identifies the file, as canonical JSON, not hashed: its own name and its inputs by file name (see below) |
+| `panam_input_signature` | spheres from `build_sphere` only: SHA-256 (hex) of the name, size and modification time of each input file (`provenance.file_signature` of `noise_abatement_2017.run_input_files`); `build_all(skip_unchanged=True)` compares it |
 
 The settings are reduced to plain JSON before they are written: numpy arrays and scalars to
 lists and numbers, a non-finite number to the text `nan`, `inf` or `-inf` (the JSON is

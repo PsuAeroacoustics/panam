@@ -811,3 +811,165 @@ def test_spheres_built_with_equal_settings_share_the_settings_hash(tmp_path):
     with Dataset(first['output']) as one, Dataset(second['output']) as two:
         assert one.panam_settings == two.panam_settings
         assert one.panam_inputs != two.panam_inputs
+
+
+def _add_copied_run(root, run='289110', number='110'):
+    """Add run ``run`` to the _archive, a copy of run 289108 (track and recordings)."""
+    import shutil
+    base = root / 'AS350B3'
+    with open(base / 'AS350B3FullRefList.csv', 'a') as handle:
+        handle.write('{},L1,A,0,0,100.0,{}\n'.format(run, number))
+    shutil.copy(base / 'AS350B3_AC_Data' / '289108AC.csv', base / 'AS350B3_AC_Data' / (run + 'AC.csv'))
+    acoustic = base / 'AS350B3_Acoustic_Data' / '289'
+    for mic in ARCHIVE_MICS:
+        shutil.copy(acoustic / '289108_{}_pascal.nc'.format(mic), acoustic / '{}_{}_pascal.nc'.format(run, mic))
+
+
+def _manifest_rows(path):
+    import csv
+    with open(path, newline='') as handle:
+        return list(csv.DictReader(handle))
+
+
+def _no_build(*args, **kwargs):
+    raise AssertionError('build_sphere was called')
+
+
+def test_skip_existing_keeps_built_spheres_and_lists_them(monkeypatch, tmp_path):
+    """A second build with skip_existing builds nothing, keeps the files, and still
+    lists every sphere in the manifest, so the database step takes them."""
+    _archive(tmp_path)
+    out = tmp_path / 'out'
+    first, failures = na.build_all('AS350B3', str(out), root=str(tmp_path), prefetch=False,
+                                   board_correction='flat', manifest_path=str(tmp_path / 'first.csv'))
+    assert failures == [] and 'skipped' not in first[0]
+    assert 'skipped' not in _manifest_rows(tmp_path / 'first.csv')[0]
+    written = os.path.getmtime(first[0]['output'])
+    monkeypatch.setattr(na, 'build_sphere', _no_build)
+    manifest = tmp_path / 'manifest.csv'
+    records, failures = na.build_all('AS350B3', str(out), root=str(tmp_path), prefetch=False,
+                                     board_correction='flat', band_snr_gate_db=3.0, skip_existing=True,
+                                     manifest_path=str(manifest))
+    assert failures == [] and [r['run'] for r in records] == ['289108']
+    record = records[0]
+    assert record['skipped'] == 'exists' and record['output'] == first[0]['output']
+    assert record['settings_sha256'] == first[0]['settings_sha256']
+    np.testing.assert_allclose(record['speed_knots'], first[0]['speed_knots'], rtol=1e-6)
+    assert os.path.getmtime(record['output']) == written
+    assert _manifest_rows(manifest)[0]['skipped'] == 'exists'
+    assert na.select_from_manifest(str(manifest)) == [os.path.basename(record['output'])]
+
+
+def test_skip_existing_rebuilds_a_run_missing_one_of_its_outputs(tmp_path):
+    """With tone_split, a run whose part sphere is gone is built again."""
+    _archive(tmp_path)
+    out = tmp_path / 'out'
+    first, _ = na.build_all('AS350B3', str(out), root=str(tmp_path), prefetch=False,
+                            board_correction='flat', tone_aware=True, tone_split=True)
+    os.remove(first[0]['tonal_output'])
+    records, failures = na.build_all('AS350B3', str(out), root=str(tmp_path), prefetch=False,
+                                     board_correction='flat', tone_aware=True, tone_split=True,
+                                     skip_existing=True)
+    assert failures == [] and 'skipped' not in records[0]
+    assert os.path.exists(first[0]['tonal_output'])
+
+
+def test_skip_unchanged_rebuilds_only_on_new_settings_or_inputs(monkeypatch, tmp_path):
+    from netCDF4 import Dataset
+    import provenance
+    _archive(tmp_path)
+    out = tmp_path / 'out'
+    arguments = dict(root=str(tmp_path), prefetch=False, board_correction='flat', point_stride=2)
+    first, _ = na.build_all('AS350B3', str(out), **arguments)
+    test = na.NoiseAbatementTest('AS350B3', root=str(tmp_path))
+    signature = provenance.file_signature(na.run_input_files(test, '289108'))
+    with Dataset(first[0]['output']) as sphere:
+        assert sphere.panam_input_signature == signature == first[0]['input_signature']
+
+    built = []
+    build_sphere = na.build_sphere
+
+    def counting(test, run, *args, **kwargs):
+        built.append(run)
+        return build_sphere(test, run, *args, **kwargs)
+    monkeypatch.setattr(na, 'build_sphere', counting)
+
+    records, _ = na.build_all('AS350B3', str(out), skip_unchanged=True, **arguments)
+    assert built == [] and records[0]['skipped'] == 'unchanged'
+    records, _ = na.build_all('AS350B3', str(out), skip_unchanged=True, **dict(arguments, point_stride=3))
+    assert built == ['289108'] and 'skipped' not in records[0]
+    records, _ = na.build_all('AS350B3', str(out), skip_unchanged=True, **dict(arguments, point_stride=3))
+    assert built == ['289108'] and records[0]['skipped'] == 'unchanged'
+    # A recording replaced since: same name, a new modification time.
+    recording = tmp_path / 'AS350B3' / 'AS350B3_Acoustic_Data' / '289' / '289101_2_pascal.nc'
+    stamp = os.stat(recording)
+    os.utime(recording, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 10 ** 9))
+    records, _ = na.build_all('AS350B3', str(out), skip_unchanged=True, **dict(arguments, point_stride=3))
+    assert built == ['289108', '289108'] and 'skipped' not in records[0]
+
+
+def _comparable(record):
+    """A build record with its output directories left out, and NaN as text (NaN != NaN)."""
+    def plain(key, value):
+        if key.endswith('output') and value:
+            return os.path.basename(value)
+        return 'nan' if isinstance(value, float) and np.isnan(value) else value
+    return {key: plain(key, value) for key, value in record.items()}
+
+
+def test_parallel_build_matches_the_serial_one(monkeypatch, tmp_path):
+    """jobs=2 gives the records, failures, manifest and spheres of jobs=1, in run
+    order.  The plate tables are computed in this process (here by a stub the
+    workers do not see), so the workers read them from the cache."""
+    import functools
+    import axisymmetric_bem as ab
+    import flight_acoustics as fa
+    _archive(tmp_path)
+    _add_copied_run(tmp_path)
+    # With the real table's signature, so that the cache key is the one the workers compute.
+    monkeypatch.setattr(ab, 'table', functools.wraps(ab.table)(_plate_table_stub(3.0)))
+    results = {}
+    for jobs in (1, 2):
+        monkeypatch.setattr(na, '_PLATE_TABLES', {})
+        out = tmp_path / 'jobs{}'.format(jobs)
+        records, failures = na.build_all('AS350B3', str(out), root=str(tmp_path), prefetch=False,
+                                         runs=['289110', '999999', '289108'], jobs=jobs, point_stride=2,
+                                         plate_table_directory=str(tmp_path / 'tables{}'.format(jobs)),
+                                         manifest_path=str(out / 'manifest.csv'))
+        rows = _manifest_rows(out / 'manifest.csv')
+        levels = [fa.load_nc_sphere(r['output'])[0] for r in records]
+        results[jobs] = ([_comparable(r) for r in records], failures,
+                         [_comparable(row) for row in rows], levels)
+    serial, parallel = results[1], results[2]
+    assert [r['run'] for r in parallel[0]] == ['289110', '289108']
+    assert [f['run'] for f in parallel[1]] == ['999999']
+    assert parallel[0] == serial[0] and parallel[1] == serial[1] and parallel[2] == serial[2]
+    for one, two in zip(serial[3], parallel[3]):
+        np.testing.assert_array_equal(one, two)
+
+
+def test_parallel_build_refuses_what_a_worker_cannot_receive(tmp_path):
+    _archive(tmp_path)
+    with pytest.raises(TypeError, match='ray_models'):
+        na.build_all('AS350B3', str(tmp_path / 'out'), root=str(tmp_path), jobs=2,
+                     ray_models=lambda run: None)
+    with pytest.raises(ValueError, match='jobs'):
+        na.build_all('AS350B3', str(tmp_path / 'out'), root=str(tmp_path), jobs=0)
+
+
+@pytest.mark.parametrize('flags, info, debug', [((), True, False), (('-q',), False, False),
+                                                 (('-v',), True, True)])
+def test_the_cli_log_level_and_log_file(tmp_path, flags, info, debug):
+    import logging
+    _archive(tmp_path)
+    log = tmp_path / 'logs' / 'build.log'
+    root = logging.getLogger()
+    level, handlers = root.level, list(root.handlers)
+    # Run 999999 has no data: its prefetch logs a DEBUG message.
+    assert na.main(['AS350B3', str(tmp_path / 'out'), '--root', str(tmp_path), '--board-correction', 'flat',
+                    '--runs', '289108', '999999', '--log-file', str(log), *flags]) == 0
+    text = log.read_text()
+    assert ('INFO [1/2] 289108 -> ' in text) is info
+    assert ('DEBUG prefetch skipped run 999999' in text) is debug
+    assert 'WARNING [2/2] 999999 failed' in text
+    assert root.level == level and root.handlers == handlers

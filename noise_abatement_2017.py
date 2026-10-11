@@ -51,13 +51,16 @@ import contextlib
 import os
 import csv
 import glob
+import inspect
 import logging
+import multiprocessing
+import pickle
 import re
 import warnings
 from collections import defaultdict
 
 import numpy as np
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from netCDF4 import Dataset
 
 import flight_acoustics as fa
@@ -121,6 +124,13 @@ DEFAULT_RIM_ELEVATION_DEG = 14.0
 
 #: Threads used to warm the cloud-storage cache ahead of each run.
 PREFETCH_WORKERS = 24
+
+#: The atmosphere a run without usable ground weather is depropagated in:
+#: 20 C, 101.325 kPa, 20 % relative humidity (fa.Atmosphere arguments).
+STANDARD_DAY = dict(temperature=293.15, pressure=101.325, relative_humidity=20.0)
+
+#: The command line's log format.
+LOG_FORMAT = '%(asctime)s %(levelname)s %(message)s'
 
 #: Third-octave band centers carried by the legacy spheres.
 LEGACY_BAND_CENTERS_HZ = np.array([
@@ -1225,6 +1235,13 @@ def sound_speed_ft_s(atmosphere):
     return float(fa.unit_conversion.len_conv(atmosphere.soundspeed, from_units='m', to_units='ft'))
 
 
+def _weather_station_files(test, run):
+    """The ground weather station files of ``run``'s day, sorted (see :func:`run_atmosphere`)."""
+    return sorted(glob.glob(os.path.join(test.base, test.aircraft + '_Weather',
+                                         test.aircraft + '_Ground[_ ]Stations',
+                                         '{}_{}_*.csv'.format(test.aircraft, run[:3]))))
+
+
 def run_atmosphere(test, run, fallback=None):
     """Atmosphere measured by the ground weather stations at the time of ``run``.
 
@@ -1250,12 +1267,8 @@ def run_atmosphere(test, run, fallback=None):
     except (TypeError, ValueError, AttributeError):
         run_seconds = None
 
-    day = run[:3]
     samples = []
-    pattern = os.path.join(test.base, test.aircraft + '_Weather',
-                           test.aircraft + '_Ground[_ ]Stations',
-                           '{}_{}_*.csv'.format(test.aircraft, day))
-    for path in sorted(glob.glob(pattern)):
+    for path in _weather_station_files(test, run):
         try:
             data = np.genfromtxt(path, delimiter=',', names=True)
         except Exception:                               # noqa: BLE001
@@ -1317,6 +1330,15 @@ def legacy_sphere_grid(path):
                     radius_ft=float(np.ravel(handle['RADIUS'][:])[0]))
 
 
+def tone_split_paths(output_path):
+    """Where ``build_sphere(tone_split=True)`` writes the parts of the sphere at ``output_path``:
+    ``{'tonal': <dir>/tonal/<stem>_tonal.nc, 'broadband': <dir>/broadband/<stem>_broadband.nc}``."""
+    directory, name = os.path.split(os.path.abspath(output_path))
+    stem, extension = os.path.splitext(name)
+    return {part: os.path.join(directory, part, '{}_{}{}'.format(stem, part, extension))
+            for part in ('tonal', 'broadband')}
+
+
 def norah2_file_name(sphere_prefix, speed_knots, fpa_deg, run_number):
     """``[type]_[procedure]_[IAS]kts_[gamma]deg_[run].hem``, as NORAH2 names its files.
 
@@ -1344,6 +1366,28 @@ RECORDED_SETTINGS = (
     'azi_step', 'elv_step', 'rmax', 'apply_absorption_deprop', 'max_propagation_range_ft',
     'min_steady_duration_s', 'nose_from_heading', 'flip_y_for_geometry', 'track_check',
 )
+
+
+def _sphere_settings(arguments):
+    """The provenance settings and inputs of a :func:`build_sphere` call.
+
+    ``arguments`` maps every parameter of :func:`build_sphere` to its value,
+    defaults included (its ``locals()`` on entry, or a bound signature).
+    Returns ``(settings, inputs)`` for :func:`provenance.build_provenance`:
+    the processing arguments, and what identifies the sphere, with paths
+    reduced to file names.
+    """
+    settings = dict(arguments)
+    test, run = settings.pop('test'), settings.pop('run')
+    inputs = dict(test=test.aircraft, run=str(run))
+    for name in ('output_path', 'reference_sphere', 'norah2_directory', 'plate_table_directory',
+                 'samples_path'):
+        value = settings.pop(name)
+        inputs[name] = None if value is None else os.path.basename(
+            os.path.normpath(os.path.expanduser(str(value))))
+    # A reference sphere sets the grid and bands, so whether one was given is a setting.
+    settings['reference_sphere_given'] = arguments['reference_sphere'] is not None
+    return settings, inputs
 
 
 def build_sphere(test, run, output_path, *, reference_sphere=None,
@@ -1488,21 +1532,13 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     :data:`RECORDED_SETTINGS` as given, the code version (``panam_version``) and the
     stamp's ``settings_sha256``.
     """
-    settings = dict(locals())
-    inputs = dict(test=test.aircraft, run=str(run))
-    for name in ('output_path', 'reference_sphere', 'norah2_directory', 'plate_table_directory',
-                 'samples_path'):
-        value = settings.pop(name)
-        inputs[name] = None if value is None else os.path.basename(
-            os.path.normpath(os.path.expanduser(str(value))))
-    del settings['test'], settings['run']
-    # A reference sphere sets the grid and bands, so whether one was given is a setting.
-    settings['reference_sphere_given'] = reference_sphere is not None
+    settings, inputs = _sphere_settings(locals())
     if rim_elevation_deg is None:
         rim_elevation_deg = DEFAULT_RIM_ELEVATION_DEG
     if tone_split and not tone_aware:
         raise ValueError('tone_split needs tone_aware=True')
     row = test.by_run[run]
+    input_signature = provenance.file_signature(run_input_files(test, run, gate_ambient, reference_sphere))
     track = load_track(test.track_path(run))
     if nose_from_heading:
         # A hover's flight path angle is the direction of its drift, erratic at a few tenths
@@ -1563,7 +1599,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
         except ValueError as error:
             logging.warning('Run %s: %s; depropagating in a 20 C, 20 %% RH, 101.325 kPa standard day',
                             run, error)
-            atmosphere = fa.Atmosphere(temperature=293.15, pressure=101.325, relative_humidity=20.0)
+            atmosphere = fa.Atmosphere(**STANDARD_DAY)
             density_source = 'none'
     if check is not None:
         mean_height_ft = check.metrics['mean_height_above_array_ft']
@@ -1739,10 +1775,8 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     spheres = [(output_path, hemisphere, title)]
     part_paths = {}
     if tone_split:
-        directory, name = os.path.split(os.path.abspath(output_path))
-        stem, extension = os.path.splitext(name)
+        part_paths = tone_split_paths(output_path)
         for part in ('tonal', 'broadband'):
-            part_paths[part] = os.path.join(directory, part, '{}_{}{}'.format(stem, part, extension))
             os.makedirs(os.path.dirname(part_paths[part]), exist_ok=True)
             bands = dict(hemisphere['third_octave'], bands_db=hemisphere['third_octave'][part + '_db'])
             spheres.append((part_paths[part], dict(hemisphere, third_octave=bands), '{} {}'.format(title, part)))
@@ -1750,7 +1784,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
         # Each file is stamped with its own name; the settings, and their hash, are shared.
         stamp = provenance.build_provenance(
             'noise_abatement_2017.build_sphere', settings,
-            inputs=dict(inputs, output_path=os.path.basename(path)))
+            inputs=dict(inputs, output_path=os.path.basename(path)), input_signature=input_signature)
         fa.write_aam_hemisphere_netcdf(
             path,
             sphere,
@@ -1819,7 +1853,12 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
                                          sorted((ground or SITE_GROUND).items())),
                 panam_version=stamp['panam_version'],
                 settings_sha256=stamp['panam_settings_sha256'],
+                input_signature=input_signature,
                 **{name: settings[name] for name in RECORDED_SETTINGS})
+
+
+#: build_sphere's parameters, for working out the settings of a call without making it.
+_BUILD_SPHERE_SIGNATURE = inspect.signature(build_sphere)
 
 
 # --------------------------------------------------------------------------
@@ -1879,10 +1918,179 @@ def _prefetch_run(test, run, gate_ambient=True, done=None):
     _prefetch(paths)
 
 
+def run_input_files(test, run, gate_ambient=True, reference_sphere=None):
+    """Every file :func:`build_sphere` reads for ``run``, sorted: the track, the
+    run's and its ambient run's recordings (:func:`_run_file_paths`), the reference
+    and microphone lists, the day's weather station files and ``reference_sphere``.
+    :func:`provenance.file_signature` of them is the sphere's input signature."""
+    paths = [test.track_path(run)] + _run_file_paths(test, run, gate_ambient)
+    for pattern in ('*FullRefList.csv', '*MicFullList.csv', '*StaticList.csv'):
+        paths += glob.glob(os.path.join(test.base, pattern))
+    paths += _weather_station_files(test, run)
+    if reference_sphere is not None:
+        paths.append(os.fspath(reference_sphere))
+    return sorted(set(paths))
+
+
+def _per_run(source, run):
+    """``source(run)`` for a callable, ``source.get(run)`` for a mapping, None for None."""
+    if source is None:
+        return None
+    return source(run) if callable(source) else source.get(run)
+
+
+def _build_run(test, run, output_path, reference, norah2_directory, ray_models, winds, kwargs):
+    """:func:`build_sphere` for one run of :func:`build_all`: ``(record, None)``,
+    or ``(None, error text)`` if it fails."""
+    try:
+        record = build_sphere(test, run, output_path, reference_sphere=reference,
+                              norah2_directory=norah2_directory, ray_model=_per_run(ray_models, run),
+                              wind=_per_run(winds, run), **kwargs)
+    except Exception as error:                          # noqa: BLE001
+        return None, str(error)
+    return record, None
+
+
+def _norah2_output(test, run, norah2_directory):
+    """The NORAH2 .hem file an earlier build wrote for ``run`` in ``norah2_directory``, or None."""
+    prefix = AIRCRAFT_SPHERE_PREFIX.get(test.aircraft, test.aircraft)
+    number = test.by_run.get(run, {}).get('run_num', run)
+    matches = sorted(glob.glob(os.path.join(os.path.abspath(os.path.expanduser(norah2_directory)),
+                                            glob.escape('{}_'.format(prefix)) + '*'
+                                            + glob.escape('_{}.hem'.format(number)))))
+    return matches[0] if matches else None
+
+
+def _skip_reason(test, run, output_path, call, skip_existing, skip_unchanged, ray_models):
+    """Why :func:`build_all` need not build ``run``: 'exists', 'unchanged' or None.
+
+    A run counts as built only when every file its build writes exists: the
+    sphere, its NORAH2 file when ``call`` has a ``norah2_directory`` and its
+    parts when it asks for ``tone_split``.  'unchanged' also needs the sphere's
+    ``panam_settings_sha256`` to equal this call's and its
+    ``panam_input_signature`` to equal :func:`run_input_files`' signature now.
+    """
+    if not (skip_existing or skip_unchanged):
+        return None
+    outputs = [output_path]
+    if call.get('tone_split'):
+        outputs += list(tone_split_paths(output_path).values())
+    if not all(os.path.exists(path) for path in outputs):
+        return None
+    if call.get('norah2_directory') is not None and _norah2_output(
+            test, run, call['norah2_directory']) is None:
+        return None
+    if skip_existing:
+        return 'exists'
+    arguments = dict(call, ray_model=_per_run(ray_models, run))
+    bound = _BUILD_SPHERE_SIGNATURE.bind(test, run, output_path, **arguments)
+    bound.apply_defaults()
+    settings, _ = _sphere_settings(bound.arguments)
+    signature = provenance.file_signature(run_input_files(
+        test, run, arguments.get('gate_ambient', True), arguments.get('reference_sphere')))
+    try:
+        with Dataset(output_path) as sphere:
+            stamp = {name: sphere.getncattr(name) for name in sphere.ncattrs()}
+    except OSError:
+        return None
+    if (stamp.get('panam_settings_sha256') == provenance.settings_sha256(settings)
+            and stamp.get(provenance.INPUT_SIGNATURE_ATTRIBUTE) == signature):
+        return 'unchanged'
+    return None
+
+
+def _skipped_record(test, run, output_path, norah2_directory, reason):
+    """The record of a run :func:`build_all` skipped, read from its existing sphere:
+    enough for the manifest, :func:`select_from_manifest` and the NORAH2 triangulation."""
+    row = test.by_run.get(run, {})
+    with Dataset(output_path) as sphere:
+        speed = float(np.ravel(sphere['SPEED'][:])[0])
+        angle = float(np.ravel(sphere['FLIGHT_PATH_ANGLE'][:])[0])
+        stamp = {name: sphere.getncattr(name) for name in sphere.ncattrs()}
+    parts = tone_split_paths(output_path)
+    return dict(run=run, output=output_path, skipped=reason,
+                norah2_output=None if norah2_directory is None else _norah2_output(test, run, norah2_directory),
+                tonal_output=parts['tonal'] if os.path.exists(parts['tonal']) else None,
+                broadband_output=parts['broadband'] if os.path.exists(parts['broadband']) else None,
+                condition=row.get('test_cond'), layout=row.get('layout'),
+                speed_knots=speed, flight_path_angle_deg=angle,
+                panam_version=stamp.get('panam_version', ''),
+                settings_sha256=stamp.get('panam_settings_sha256', ''),
+                input_signature=stamp.get(provenance.INPUT_SIGNATURE_ATTRIBUTE, ''))
+
+
+def _warm_plate_tables(test, plans, kwargs):
+    """Compute, in this process, the plate tables the runs of ``plans`` need, so that
+    parallel workers read them from the cache rather than each computing them.
+
+    Mirrors how :func:`build_sphere` picks the sound speed, the bands and the
+    microphones.  A run whose tables cannot be worked out here is skipped: its
+    build meets the same problem and reports it.
+    """
+    if kwargs.get('board_correction', 'plate_bem') != 'plate_bem':
+        return
+    for plan in plans:
+        run = plan['run']
+        try:
+            speed = kwargs.get('speed_of_sound_ft_s')
+            if speed is None:
+                atmosphere = kwargs.get('atmosphere')
+                if atmosphere is None:
+                    try:
+                        atmosphere = run_atmosphere(test, run)
+                    except ValueError:
+                        atmosphere = fa.Atmosphere(**STANDARD_DAY)
+                speed = sound_speed_ft_s(atmosphere)
+            reference = legacy_sphere_grid(plan['reference'])
+            bands = LEGACY_BAND_CENTERS_HZ if reference is None else reference['band_centers_hz']
+            mics = test.ground_board_mics(run)
+            ambient = test.ambient_run(run) if kwargs.get('gate_ambient', True) else None
+            if ambient is not None:
+                mics = [m for m in mics if m in test.acoustic_files.get(ambient, {})]
+            for instrument in sorted({test.instrument_types[m] for m in mics}):
+                plate_table(instrument, speed, bands, ground=kwargs.get('ground'),
+                            directory=kwargs.get('plate_table_directory'))
+        except Exception as error:                      # noqa: BLE001
+            logging.debug('no plate tables warmed for run %s (%s)', run, error)
+
+
+#: State of a build_all worker process, set once by _start_worker.
+_WORKER = {}
+
+
+def _start_worker(aircraft, root, norah2_directory, ray_models, winds, kwargs, log_level, log_files):
+    """Initialize a :func:`build_all` worker process: its logging and its own
+    :class:`NoiseAbatementTest`."""
+    configure_logging(log_level=log_level)
+    for path in log_files:
+        handler = logging.FileHandler(path, encoding='utf-8')
+        handler.setFormatter(logging.Formatter(LOG_FORMAT))
+        logging.getLogger().addHandler(handler)
+    _WORKER.update(test=NoiseAbatementTest(aircraft, root=root), norah2_directory=norah2_directory,
+                   ray_models=ray_models, winds=winds, kwargs=kwargs)
+
+
+def _worker_build(run, output_path, reference):
+    """:func:`_build_run` in a worker process."""
+    return _build_run(_WORKER['test'], run, output_path, reference, _WORKER['norah2_directory'],
+                      _WORKER['ray_models'], _WORKER['winds'], _WORKER['kwargs'])
+
+
+def _check_picklable(jobs, **values):
+    """Refuse, before anything is built, a value a worker process cannot receive."""
+    for name, value in values.items():
+        try:
+            pickle.dumps(value)
+        except Exception as error:                      # noqa: BLE001
+            raise TypeError('build_all(jobs={}) sends {} to worker processes, so it must be None, a dict '
+                            'or a module-level function, and every build_sphere argument must be '
+                            'picklable: {}'.format(jobs, name, error)) from None
+
+
 def build_all(aircraft, output_directory, *, root=None, runs=None,
               steady_only=True, reference_directory=None, sphere_prefix=None,
               manifest_path=None, prefetch=True, norah2_directory=None, ray_models=None, winds=None,
-              **kwargs):
+              skip_existing=False, skip_unchanged=False, jobs=1, **kwargs):
     """Rebuild every usable run for one aircraft.
 
     ``winds``, if given, is called with each run id and returns that run's ``wind`` for
@@ -1895,8 +2103,8 @@ def build_all(aircraft, output_directory, *, root=None, runs=None,
 
     ``ray_models``, if given, is called with each run id and returns that run's
     ``ray_model`` for :func:`build_sphere` (its own atmosphere, or ``'wind'`` for its
-    wind from ``winds``), or None to build that run along straight lines; the
-    manifest's ``rays`` column says which.
+    wind from ``winds``), or None to build that run along straight lines; a mapping
+    of run id to ray model works too.  The manifest's ``rays`` column says which.
 
     ``norah2_directory``, if given, also receives each sphere as a NORAH2
     ``.hem`` file and, once the batch is done, the ``[prefix]_Triangulation.int``
@@ -1914,8 +2122,32 @@ def build_all(aircraft, output_directory, *, root=None, runs=None,
     legacy Be407 database restricts to as well, though nothing there enforced
     it explicitly.
 
-    Returns ``(records, failures)``.
+    ``skip_existing`` (default False) does not rebuild a run whose outputs all
+    exist: its sphere, and its NORAH2 file and tonal and broadband parts when
+    asked for.  ``skip_unchanged`` (default False) does not rebuild one whose
+    outputs exist and whose sphere's ``panam_settings_sha256`` and
+    ``panam_input_signature`` (:func:`run_input_files`) match this build's.  A
+    skipped run keeps its files; its record, read from the sphere, carries
+    ``skipped`` ('exists' or 'unchanged') and goes into the manifest and the
+    NORAH2 triangulation like a built one.
+
+    ``jobs`` (default 1) builds that many runs at once, in worker processes
+    started with the spawn method.  Each worker opens the dataset itself.  The
+    plate tables are computed first, in this process, so the workers read them
+    from the cache.  ``ray_models``, ``winds`` and every :func:`build_sphere`
+    argument go to the workers, so they must be picklable: None, a dict or a
+    module-level function, not a lambda or a nested function (TypeError
+    otherwise).  The records come back in run order, so the manifest and the
+    triangulation are the same as with ``jobs=1``.  This process prefetches each
+    run before it hands it to a worker.
+
+    Returns ``(records, failures)``, each in run order.
     """
+    jobs = int(jobs)
+    if jobs < 1:
+        raise ValueError('jobs must be at least 1, not {}'.format(jobs))
+    if jobs > 1:
+        _check_picklable(jobs, ray_models=ray_models, winds=winds, kwargs=kwargs)
     test = NoiseAbatementTest(aircraft, root=root)
     if runs is None:
         runs = test.runs(steady_only=steady_only)
@@ -1923,52 +2155,91 @@ def build_all(aircraft, output_directory, *, root=None, runs=None,
     output_directory = os.path.abspath(os.path.expanduser(output_directory))
     os.makedirs(output_directory, exist_ok=True)
 
-    records, failures = [], []
-    pool = ThreadPoolExecutor(max_workers=1) if prefetch and runs else None
+    # Each run: (record, None) once built or skipped, (None, error) once failed.
+    outcomes = {}
+    plans = []
+    for number, run in enumerate(runs, start=1):
+        row = test.by_run.get(run, {})
+        name = '{}{}.nc'.format(prefix, row.get('run_num', run))
+        reference = None
+        if reference_directory:
+            candidate = os.path.join(os.path.expanduser(reference_directory), name)
+            reference = candidate if os.path.exists(candidate) else None
+        plan = dict(number=number, run=run, name=name, output=os.path.join(output_directory, name),
+                    reference=reference)
+        if skip_existing or skip_unchanged:
+            try:
+                call = dict(kwargs, reference_sphere=reference, norah2_directory=norah2_directory,
+                            wind=_per_run(winds, run))
+                reason = _skip_reason(test, run, plan['output'], call, skip_existing, skip_unchanged,
+                                      ray_models)
+                if reason is not None:
+                    outcomes[number] = (_skipped_record(test, run, plan['output'], norah2_directory,
+                                                        reason), None)
+                    logging.info('[%d/%d] %s skipped: %s %s', number, len(runs), run, name, reason)
+                    continue
+            except Exception as error:                  # noqa: BLE001
+                logging.debug('run %s: not skipped (%s)', run, error)
+        plans.append(plan)
+
+    def report(plan, outcome):
+        outcomes[plan['number']] = outcome
+        record, error = outcome
+        if record is None:
+            logging.warning('[%d/%d] %s failed: %s', plan['number'], len(runs), plan['run'], error)
+        else:
+            logging.info('[%d/%d] %s -> %s  %.1f kt  %+.1f deg  %d mics  ambient %s',
+                         plan['number'], len(runs), plan['run'], plan['name'], record['speed_knots'],
+                         record['flight_path_angle_deg'], record['mics'], record['ambient_run'])
+
     gate_ambient = kwargs.get('gate_ambient', True)
     prefetched = set()
+    if jobs == 1:
+        pool = ThreadPoolExecutor(max_workers=1) if prefetch and plans else None
 
-    def prefetch_next(index):
-        return (pool.submit(_prefetch_run, test, runs[index], gate_ambient, prefetched)
-                if index < len(runs) else None)
+        def prefetch_next(index):
+            return (pool.submit(_prefetch_run, test, plans[index]['run'], gate_ambient, prefetched)
+                    if index < len(plans) else None)
 
-    try:
-        pending = prefetch_next(0) if pool else None
-        for number, run in enumerate(runs, start=1):
-            if pending is not None:
-                pending.result()
-                pending = prefetch_next(number)
+        try:
+            pending = prefetch_next(0) if pool else None
+            for index, plan in enumerate(plans, start=1):
+                if pending is not None:
+                    pending.result()
+                    pending = prefetch_next(index)
+                report(plan, _build_run(test, plan['run'], plan['output'], plan['reference'],
+                                        norah2_directory, ray_models, winds, kwargs))
+        finally:
+            if pool is not None:
+                pool.shutdown(cancel_futures=True)
+    elif plans:
+        _warm_plate_tables(test, plans, kwargs)
+        log_files = [handler.baseFilename for handler in logging.getLogger().handlers
+                     if isinstance(handler, logging.FileHandler)]
+        executor = ProcessPoolExecutor(
+            max_workers=min(jobs, len(plans)), mp_context=multiprocessing.get_context('spawn'),
+            initializer=_start_worker,
+            initargs=(aircraft, root, norah2_directory, ray_models, winds, kwargs,
+                      logging.getLogger().getEffectiveLevel(), log_files))
+        try:
+            futures = {}
+            for plan in plans:
+                if prefetch:
+                    _prefetch_run(test, plan['run'], gate_ambient, prefetched)
+                futures[executor.submit(_worker_build, plan['run'], plan['output'], plan['reference'])] = plan
+            for future in as_completed(futures):
+                report(futures[future], future.result())
+        finally:
+            executor.shutdown(cancel_futures=True)
+
+    records = [outcomes[n][0] for n in sorted(outcomes) if outcomes[n][0] is not None]
+    failures = []
+    for number in sorted(outcomes):
+        if outcomes[number][0] is None:
+            run = runs[number - 1]
             row = test.by_run.get(run, {})
-            name = '{}{}.nc'.format(prefix, row.get('run_num', run))
-            reference = None
-            if reference_directory:
-                candidate = os.path.join(os.path.expanduser(reference_directory), name)
-                reference = candidate if os.path.exists(candidate) else None
-            try:
-                if winds is None:
-                    wind = None
-                elif callable(winds):
-                    wind = winds(run)
-                else:
-                    wind = winds.get(run)
-                record = build_sphere(test, run, os.path.join(output_directory, name),
-                                      reference_sphere=reference, norah2_directory=norah2_directory,
-                                      ray_model=ray_models(run) if ray_models is not None else None,
-                                      wind=wind, **kwargs)
-            except Exception as error:                  # noqa: BLE001
-                logging.warning('[%d/%d] %s failed: %s', number, len(runs), run, error)
-                failures.append(dict(run=run, error=str(error),
-                                     condition=row.get('test_cond'),
-                                     layout=row.get('layout')))
-                continue
-            records.append(record)
-            logging.info('[%d/%d] %s -> %s  %.1f kt  %+.1f deg  %d mics  ambient %s',
-                         number, len(runs), run, name, record['speed_knots'],
-                         record['flight_path_angle_deg'], record['mics'],
-                         record['ambient_run'])
-    finally:
-        if pool is not None:
-            pool.shutdown(cancel_futures=True)
+            failures.append(dict(run=run, error=outcomes[number][1], condition=row.get('test_cond'),
+                                 layout=row.get('layout')))
     if norah2_directory is not None and len(records) >= 3:
         triangulation = os.path.join(os.path.abspath(os.path.expanduser(norah2_directory)),
                                      '{}_Triangulation.int'.format(prefix))
@@ -1986,7 +2257,10 @@ def build_all(aircraft, output_directory, *, root=None, runs=None,
 
 
 def write_manifest(path, records, failures):
-    """Record what went into the spheres, so a database can be audited later."""
+    """Record what went into the spheres, so a database can be audited later.
+
+    A ``skipped`` column, added when a record has one (``build_all(skip_existing=True)``
+    or ``skip_unchanged=True``), says which spheres were kept from an earlier build."""
     path = os.path.abspath(os.path.expanduser(path))
     os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
     fields = ['run', 'output', 'norah2_output', 'condition', 'layout', 'ambient_run',
@@ -1998,6 +2272,8 @@ def write_manifest(path, records, failures):
               'min_height_above_array_ft', 'gross_weight_lb', 'air_density_kg_m3', 'air_density_source',
               'wind_source', 'wind_units', 'wind_along_track', 'wind_cross_track', 'airspeed_knots',
               *RECORDED_SETTINGS, 'panam_version', 'settings_sha256', 'error']
+    if any(record.get('skipped') for record in records):
+        fields.insert(fields.index('error'), 'skipped')
     with open(path, 'w', encoding='utf-8', newline='') as handle:
         writer = csv.DictWriter(handle, fieldnames=fields, extrasaction='ignore')
         writer.writeheader()
@@ -2141,6 +2417,35 @@ def write_track_checks(path, records):
             writer.writerow(record)
 
 
+def configure_logging(verbosity=0, log_file=None, log_level=None):
+    """Set up logging for the command line and return the file handler it adds, or None.
+
+    The level is INFO, one step quieter per unit of negative ``verbosity``
+    (WARNING, ERROR, CRITICAL) and DEBUG for a positive one; ``log_level``, if
+    given, sets it instead.  Messages go to stderr (unless the root logger
+    already has a handler) and, with ``log_file``, are appended to that file too.
+    """
+    if log_level is None:
+        log_level = min(max(logging.INFO - 10 * int(verbosity), logging.DEBUG), logging.CRITICAL)
+    logging.basicConfig(format=LOG_FORMAT)
+    root = logging.getLogger()
+    root.setLevel(log_level)
+    if not log_file:
+        return None
+    path = os.path.abspath(os.path.expanduser(log_file))
+    os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+    handler = logging.FileHandler(path, encoding='utf-8')
+    handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    root.addHandler(handler)
+    return handler
+
+
+def _wind_rays(run):
+    """``ray_models`` for ``--ray-model wind``: every run along its wind's rays.
+    Module-level, so that ``--jobs`` can send it to worker processes."""
+    return 'wind'
+
+
 def main(argv=None):
     import argparse
 
@@ -2238,6 +2543,22 @@ def main(argv=None):
                              'measured one')
     parser.add_argument('--no-prefetch', action='store_true',
                         help='do not warm the cloud-storage cache ahead of each run')
+    parser.add_argument('--skip-existing', action='store_true',
+                        help='do not rebuild a run whose sphere (and NORAH2 file and tonal and broadband '
+                             'parts, when asked for) already exists in output_directory; default: rebuild')
+    parser.add_argument('--skip-unchanged', action='store_true',
+                        help='do not rebuild a run whose existing sphere was built with the same settings '
+                             '(panam_settings_sha256) from the same input files (panam_input_signature: '
+                             'names, sizes and modification times); default: rebuild')
+    parser.add_argument('--jobs', type=int, default=1,
+                        help='build this many runs at once in worker processes (default %(default)s); '
+                             'the output is the same as with 1')
+    parser.add_argument('-v', '--verbose', action='count', default=0,
+                        help='log more: DEBUG messages too (default: INFO and above)')
+    parser.add_argument('-q', '--quiet', action='count', default=0,
+                        help='log less: -q WARNING and above, -qq ERROR and above (default: INFO and above)')
+    parser.add_argument('--log-file', default=None,
+                        help='also append the log to this file (default: stderr only)')
     parser.add_argument('--no-ambient-gate', action='store_true',
                         help='reproduce the uncorrected legacy behavior')
     parser.add_argument('--tone-aware', action='store_true',
@@ -2248,8 +2569,23 @@ def main(argv=None):
                              '<name>_broadband.nc, in tonal/ and broadband/ under output_directory; '
                              'implies --tone-aware (default off)')
     args = parser.parse_args(argv)
+    if args.jobs < 1:
+        parser.error('--jobs must be at least 1')
 
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+    root = logging.getLogger()
+    previous_level = root.level
+    handler = configure_logging(args.verbose - args.quiet, args.log_file)
+    try:
+        return _run_command(parser, args)
+    finally:
+        root.setLevel(previous_level)
+        if handler is not None:
+            root.removeHandler(handler)
+            handler.close()
+
+
+def _run_command(parser, args):
+    """Everything :func:`main` does once its arguments are parsed and logging is set up."""
     if args.plate_cache:
         directory = os.path.abspath(os.path.expanduser(args.plate_table_directory
                                                        or default_plate_table_directory()))
@@ -2306,12 +2642,14 @@ def main(argv=None):
         prefetch=not args.no_prefetch,
         azimuth_reference=args.azimuth_reference,
         winds=read_winds(args.winds) if args.winds else None,
-        ray_models=(lambda run: 'wind') if args.ray_model == 'wind' else None,
+        ray_models=_wind_rays if args.ray_model == 'wind' else None,
         track_check=not args.no_track_check,
         min_height_above_array_ft=args.min_height_above_array_ft,
         tone_aware=args.tone_aware or args.tone_split,
-        tone_split=args.tone_split)
-    logging.info('Built %d spheres, %d failures', len(records), len(failures))
+        tone_split=args.tone_split,
+        skip_existing=args.skip_existing, skip_unchanged=args.skip_unchanged, jobs=args.jobs)
+    skipped = sum(1 for record in records if record.get('skipped'))
+    logging.info('Built %d spheres, skipped %d, %d failures', len(records) - skipped, skipped, len(failures))
     return 0 if records else 1
 
 

@@ -14,6 +14,10 @@ is kept out of the settings and written separately as ``panam_inputs``, so
 that files built with the same processing settings share the hash.  A stamp
 must not carry a machine path: a path is reduced to its file name (see
 :func:`canonical_settings`).
+
+A stamp can also carry an input signature (:func:`file_signature`): a hash of
+the names, sizes and modification times of the files a build read, which
+``noise_abatement_2017.build_all(skip_unchanged=True)`` compares.
 """
 
 import dataclasses
@@ -30,8 +34,9 @@ import subprocess
 
 import numpy as np
 
-__all__ = ['PROVENANCE_ATTRIBUTES', 'build_provenance', 'canonical_settings', 'code_version',
-           'settings_json', 'write_provenance']
+__all__ = ['INPUT_SIGNATURE_ATTRIBUTE', 'PROVENANCE_ATTRIBUTES', 'build_provenance',
+           'canonical_settings', 'code_version', 'file_signature', 'settings_json',
+           'settings_sha256', 'write_provenance']
 
 #: Every attribute a stamp writes, in the order it writes them.
 PROVENANCE_ATTRIBUTES = (
@@ -39,6 +44,10 @@ PROVENANCE_ATTRIBUTES = (
     'panam_scipy', 'panam_netcdf4', 'panam_numba', 'panam_settings', 'panam_settings_sha256',
     'panam_inputs',
 )
+
+#: The optional attribute that holds a stamp's input signature (:func:`file_signature`),
+#: written after :data:`PROVENANCE_ATTRIBUTES` when the writer gives one.
+INPUT_SIGNATURE_ATTRIBUTE = 'panam_input_signature'
 
 _SOURCE_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 
@@ -145,7 +154,32 @@ def settings_json(settings):
                       ensure_ascii=True, allow_nan=False)
 
 
-def build_provenance(tool, settings, inputs=None):
+def settings_sha256(settings):
+    """SHA-256 (hex) of :func:`settings_json` of ``settings``: a stamp's
+    ``panam_settings_sha256``, computed without building the stamp."""
+    return hashlib.sha256(settings_json(settings).encode('ascii')).hexdigest()
+
+
+def file_signature(paths):
+    """SHA-256 (hex) of the file name, size (bytes) and modification time (ns) of each of ``paths``.
+
+    A cheap test of whether a build's input files changed: it reads no file
+    content, so it does not pull a cloud-storage placeholder down.  The paths
+    are sorted, and each is recorded by its file name only, so the signature
+    names no directory.  A missing file is recorded as missing.  Copying the
+    files elsewhere keeps the signature only if the copy keeps their times.
+    """
+    entries = []
+    for path in sorted(set(os.fspath(path) for path in paths)):
+        try:
+            status = os.stat(path)
+            entries.append([_basename(path), status.st_size, status.st_mtime_ns])
+        except OSError:
+            entries.append([_basename(path), None, None])
+    return hashlib.sha256(json.dumps(entries, separators=(',', ':')).encode('utf-8')).hexdigest()
+
+
+def build_provenance(tool, settings, inputs=None, input_signature=None):
     """The provenance stamp of a file written by ``tool`` with ``settings``.
 
     Args:
@@ -157,6 +191,9 @@ def build_provenance(tool, settings, inputs=None):
         inputs: dict of what identifies this file: its own name, the run, the
             input files.  Recorded as canonical JSON in ``panam_inputs`` (paths
             reduced to file names), not hashed.  None records ``{}``.
+        input_signature: text that changes when the input files change, such as
+            :func:`file_signature` of them, recorded as
+            :data:`INPUT_SIGNATURE_ATTRIBUTE`.  None (the default) records none.
 
     Returns:
         dict of text, keyed by the attribute names of
@@ -164,10 +201,10 @@ def build_provenance(tool, settings, inputs=None):
         (:func:`code_version`), the creation time (UTC, ISO 8601, whole
         seconds), the Python, numpy, scipy, netCDF4 and numba versions, the
         canonical settings JSON (:func:`settings_json`), its SHA-256 (hex)
-        and the canonical JSON of ``inputs``.
+        and the canonical JSON of ``inputs``; and, when given, the input signature.
     """
     text = settings_json(settings)
-    return {
+    stamp = {
         'panam_tool': str(tool),
         'panam_version': code_version(),
         'panam_created_utc': datetime.datetime.now(datetime.timezone.utc).replace(
@@ -181,6 +218,9 @@ def build_provenance(tool, settings, inputs=None):
         'panam_settings_sha256': hashlib.sha256(text.encode('ascii')).hexdigest(),
         'panam_inputs': settings_json({} if inputs is None else inputs),
     }
+    if input_signature is not None:
+        stamp[INPUT_SIGNATURE_ATTRIBUTE] = str(input_signature)
+    return stamp
 
 
 def write_provenance(dataset, provenance):
@@ -188,6 +228,6 @@ def write_provenance(dataset, provenance):
     the open netCDF ``dataset``.  None writes nothing."""
     if provenance is None:
         return
-    for name in PROVENANCE_ATTRIBUTES:
+    for name in PROVENANCE_ATTRIBUTES + (INPUT_SIGNATURE_ATTRIBUTE,):
         if name in provenance:
             dataset.setncattr(name, str(provenance[name]))
