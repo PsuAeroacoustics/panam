@@ -142,3 +142,33 @@ def test_harmonic_ratio_refuses_bands_outside_the_spectrum():
     with pytest.raises(ValueError, match='outside'):
         bvi_harmonic_ratio(psd, freqs, BPF)
     assert np.isfinite(bvi_harmonic_ratio(psd, freqs, BPF, high_harmonics=(6, 20)))
+
+
+def test_harmonic_ratio_moves_the_bands_with_the_doppler_factor():
+    # A loading harmonic received ahead (D = 1.14, 5th harmonic at 114 Hz)
+    # and behind (D = 0.88, 6th harmonic at about 106 Hz) of the aircraft.
+    freqs, _ = flat_spectrum()
+    psd = np.full((freqs.size, 2), -np.inf)
+    psd[freqs == 30.0] = 70.0             # a low-band reference tone in both
+    psd[freqs == 114.0, 0] = 80.0         # 1.14 * 5 * BPF
+    psd[freqs == 106.0, 1] = 80.0         # 0.88 * 6 * BPF, rounded to a bin
+    # A scalar source bpf files the 5th harmonic as BVI and the 6th as low.
+    scalar = bvi_harmonic_ratio(psd, freqs, BPF)
+    assert np.isfinite(scalar[0]) and scalar[1] == -np.inf
+    # The received bpf per direction puts each back in its own band.
+    doppler = np.array([1.14, 0.88])
+    ratio = bvi_harmonic_ratio(psd, freqs, doppler * BPF)
+    assert ratio[0] == -np.inf
+    assert ratio[1] == pytest.approx(10.0, abs=1e-9)
+
+
+def test_harmonic_ratio_bpf_broadcasts_over_a_grid():
+    freqs, psd = flat_spectrum()
+    psd = np.broadcast_to(psd[:, None, None], (freqs.size, 2, 3))
+    ratio = bvi_harmonic_ratio(psd, freqs, np.array([[BPF], [1.1 * BPF]]))
+    assert ratio.shape == (2, 3)
+    np.testing.assert_allclose(ratio, 10 * np.log10(7.0), atol=1e-9)
+    with pytest.raises(ValueError, match='broadcast'):
+        bvi_harmonic_ratio(psd, freqs, np.full(4, BPF))
+    with pytest.raises(ValueError, match='outside'):
+        bvi_harmonic_ratio(psd, freqs, np.array([[BPF], [1.3 * BPF]]))

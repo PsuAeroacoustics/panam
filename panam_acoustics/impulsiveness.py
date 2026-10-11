@@ -8,12 +8,15 @@ spectral ratio:
   (Pearson's kurtosis, not the excess): 1.5 for a sine, 3 for Gaussian noise,
   large for a sparse train of pulses.
 * ``pulse_peak_to_rms``: the peak of the pressure band-passed to the pulse
-  band (by default the 6th to 40th blade-passage harmonics) over the RMS of
-  the full-band frame.  It measures how large the impulsive part of the
+  band ``band_hz`` (for BVI, the 6th to 40th blade-passage harmonics,
+  ``(5.5 * bpf, 40.5 * bpf)``) over the RMS of the full-band frame.  It measures how large the impulsive part of the
   waveform is against everything else the microphone hears.
 * ``bvi_harmonic_ratio``: the energy in mid-frequency blade-passage harmonics
   over the energy in the low harmonics, in dB, from a narrowband PSD such as
-  ``depropagate_hemisphere(..., narrowband=True)['narrowband']``.
+  ``depropagate_hemisphere(..., narrowband=True)['narrowband']``.  That
+  spectrum is in received frequency, so the blade-passage frequency passed
+  for each direction is the received one, the Doppler factor times the
+  source's.
 
 The waveform statistics take a microphone pressure history in Pa (any
 consistent pressure unit; the results are ratios) at ``sampling_rate`` Hz,
@@ -207,12 +210,19 @@ def pulse_peak_to_rms(pressure, sampling_rate, frame_time, *, band_hz, hop_time=
 
 
 def _harmonic_band_energy(power, freqs, width, lower, upper):
-    """Sum of power * bin width over bins with lower <= f < upper; NaN if a bin is NaN."""
-    inside = (freqs >= lower) & (freqs < upper)
-    if not inside.any():
-        raise ValueError("no frequency bin falls in [{:g}, {:g}) Hz".format(lower, upper))
-    selected = power[inside] * width[inside].reshape((-1,) + (1,) * (power.ndim - 1))
-    return np.sum(selected, axis=0)
+    """Sum of power * bin width over bins with lower <= f < upper, per direction.
+
+    ``lower`` and ``upper`` have the shape of ``power.shape[1:]``.  A NaN bin
+    in the band gives NaN; NaN bins outside it are ignored.
+    """
+    f = freqs.reshape((-1,) + (1,) * (power.ndim - 1))
+    inside = (f >= lower[None]) & (f < upper[None])
+    if not inside.any(axis=0).all():
+        raise ValueError("no frequency bin falls in a harmonic band "
+                         "[{:g}, {:g}) Hz".format(float(np.min(lower)), float(np.max(upper))))
+    w = width.reshape(f.shape)
+    with np.errstate(invalid="ignore"):
+        return np.sum(np.where(inside, power * w, 0.0), axis=0)
 
 
 def bvi_harmonic_ratio(spectrum, freqs, bpf, low_harmonics=(1, 5), high_harmonics=(6, 40)):
@@ -229,35 +239,54 @@ def bvi_harmonic_ratio(spectrum, freqs, bpf, low_harmonics=(1, 5), high_harmonic
     It is an energy ratio, so it can be evaluated on gridded narrowband
     sphere output, unlike the waveform statistics of this module.
 
+    The narrowband sphere of ``depropagate_hemisphere`` is in received
+    frequency: ``remove_doppler`` refiles only the third-octave bands.  A
+    harmonic emitted at ``k * bpf`` arrives at ``D * k * bpf``, with the
+    Doppler factor ``D = 1 / (1 - M_r)``, about 1.14 ahead of and 0.88
+    behind an aircraft at 80 kt.  The band edges must move with it, or ahead
+    of the aircraft the 5th harmonic lands in the BVI band and behind it the
+    6th lands in the low band.  Pass ``bpf`` as an array of the received
+    blade-passage frequency per direction, ``D`` times the source value; a
+    scalar ``bpf`` is valid only where ``D`` is near 1, as in hover or
+    overhead.
+
     Args:
         spectrum: (Nf, ...) PSD in dB re any reference (the reference
             cancels), such as ``hemisphere['narrowband']['psd_db']``
             (Nf, Nelv, Nazi).  ``-inf`` is a bin with no energy; NaN is no
             data.
         freqs: (Nf,) ascending bin center frequencies, Hz.
-        bpf: blade-passage frequency, Hz (main-rotor blades times rotor
-            rotation frequency).
+        bpf: received blade-passage frequency, Hz (main-rotor blades times
+            rotor rotation frequency, times the Doppler factor): a scalar,
+            or an array that broadcasts against ``spectrum.shape[1:]``,
+            one value per direction.
         low_harmonics: ``(k1, k2)`` inclusive range of low harmonics;
             default ``(1, 5)``.
         high_harmonics: ``(k1, k2)`` inclusive range of BVI harmonics;
             default ``(6, 40)``.
 
     Returns:
-        ndarray (...) of the ratio in dB: NaN where either band holds a NaN
-        bin or both have no energy, ``-inf`` where only the high band has
-        no energy, ``+inf`` where only the low band has none.
+        ndarray (...) of the ratio in dB, of shape ``spectrum.shape[1:]``:
+        NaN where either band holds a NaN bin or both have no energy,
+        ``-inf`` where only the high band has no energy, ``+inf`` where only
+        the low band has none.
 
     Raises:
-        ValueError: when a band reaches outside ``freqs``, or contains no bin.
+        ValueError: when a band reaches outside ``freqs``, or contains no bin,
+            in any direction.
     """
     freqs = np.asarray(freqs, dtype=float)
     spectrum = np.asarray(spectrum, dtype=float)
-    bpf = float(bpf)
     if freqs.ndim != 1 or freqs.size < 2 or np.any(np.diff(freqs) <= 0.0):
         raise ValueError("freqs must be a 1-D ascending array of at least 2 frequencies")
     if spectrum.shape[0] != freqs.size:
         raise ValueError("spectrum's first axis must match freqs")
-    if bpf <= 0.0:
+    try:
+        bpf = np.broadcast_to(np.asarray(bpf, dtype=float), spectrum.shape[1:])
+    except ValueError:
+        raise ValueError("bpf must broadcast against spectrum.shape[1:] = {}".format(
+            spectrum.shape[1:])) from None
+    if not np.all(bpf > 0.0):
         raise ValueError("bpf must be positive")
     width = np.gradient(freqs)
     edge0, edge1 = freqs[0] - 0.5 * width[0], freqs[-1] + 0.5 * width[-1]
@@ -268,9 +297,10 @@ def bvi_harmonic_ratio(spectrum, freqs, bpf, low_harmonics=(1, 5), high_harmonic
         if not 1 <= int(k1) <= int(k2):
             raise ValueError("harmonic ranges must satisfy 1 <= k1 <= k2")
         lower, upper = (int(k1) - 0.5) * bpf, (int(k2) + 0.5) * bpf
-        if lower < edge0 or upper > edge1:
+        if np.min(lower) < edge0 or np.max(upper) > edge1:
             raise ValueError("harmonics {}-{} ({:g}-{:g} Hz) reach outside the spectrum "
-                             "({:g}-{:g} Hz)".format(k1, k2, lower, upper, edge0, edge1))
+                             "({:g}-{:g} Hz)".format(k1, k2, float(np.min(lower)),
+                                                     float(np.max(upper)), edge0, edge1))
         energies.append(_harmonic_band_energy(power, freqs, width, lower, upper))
     low, high = energies
     with np.errstate(divide="ignore", invalid="ignore"):

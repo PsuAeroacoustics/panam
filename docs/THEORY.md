@@ -865,7 +865,12 @@ narrowband PSD, such as the `narrowband` grid of `depropagate_hemisphere`. Harmo
 blade-passage frequency $f_b$ owns $[(k - \tfrac12)f_b, (k + \tfrac12)f_b)$, so the ratio is
 $10\lg(E_{k_3..k_4}/E_{k_1..k_2})$, $E$ the PSD power times bin width summed over the bins whose
 centers lie in the band, by default harmonics 6–40 over 1–5. A $-\infty$ bin adds no energy and
-a NaN bin makes the ratio NaN.
+a NaN bin makes the ratio NaN. The narrowband grid is in received frequency (`remove_doppler`
+refiles only the third-octave bands, §3.3), so harmonic $k$ arrives at $Dkf_b$ and $f_b$ must be
+the received blade-passage frequency, $D$ times the source's, given per direction as an array.
+With the source value the bands are misplaced by $D$: at 80 kt, $D \approx 1.14$ ahead of the
+aircraft puts the 5th harmonic in the BVI band, and $D \approx 0.88$ behind it puts the 6th in
+the low band. A scalar $f_b$ is valid only where $D \approx 1$, in hover or overhead.
 
 The harmonic ratio is an energy ratio and can be taken from a gridded sphere; the waveform
 statistics are not gridded and have no sphere-file or database field. Depropagation scales
