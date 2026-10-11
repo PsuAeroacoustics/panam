@@ -14,6 +14,12 @@ is kept out of the settings and written separately as ``panam_inputs``, so
 that files built with the same processing settings share the hash.  A stamp
 must not carry a machine path: a path is reduced to its file name (see
 :func:`canonical_settings`).
+
+A stamp can also carry an input signature (:func:`file_signature`): a hash of
+the names, sizes and modification times of the files a build read, which
+``noise_abatement_2017.build_all(skip_unchanged=True)`` compares, and a build
+record (:func:`record_json`): what ``noise_abatement_2017.build_sphere`` returned,
+from which ``build_all`` rebuilds the manifest row of a run it skips.
 """
 
 import dataclasses
@@ -30,8 +36,10 @@ import subprocess
 
 import numpy as np
 
-__all__ = ['PROVENANCE_ATTRIBUTES', 'build_provenance', 'canonical_settings', 'code_version',
-           'settings_json', 'write_provenance']
+__all__ = ['BUILD_RECORD_ATTRIBUTE', 'INPUT_SIGNATURE_ATTRIBUTE', 'PROVENANCE_ATTRIBUTES',
+           'build_provenance', 'canonical_settings', 'code_version', 'file_signature',
+           'read_record_json', 'record_json', 'settings_json', 'settings_sha256',
+           'write_provenance']
 
 #: Every attribute a stamp writes, in the order it writes them.
 PROVENANCE_ATTRIBUTES = (
@@ -39,6 +47,14 @@ PROVENANCE_ATTRIBUTES = (
     'panam_scipy', 'panam_netcdf4', 'panam_numba', 'panam_settings', 'panam_settings_sha256',
     'panam_inputs',
 )
+
+#: The optional attribute that holds a stamp's input signature (:func:`file_signature`),
+#: written after :data:`PROVENANCE_ATTRIBUTES` when the writer gives one.
+INPUT_SIGNATURE_ATTRIBUTE = 'panam_input_signature'
+
+#: The optional attribute that holds a stamp's build record (:func:`record_json`),
+#: written after the input signature when the writer gives one.
+BUILD_RECORD_ATTRIBUTE = 'panam_build_record'
 
 _SOURCE_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 
@@ -145,7 +161,83 @@ def settings_json(settings):
                       ensure_ascii=True, allow_nan=False)
 
 
-def build_provenance(tool, settings, inputs=None):
+def settings_sha256(settings):
+    """SHA-256 (hex) of :func:`settings_json` of ``settings``: a stamp's
+    ``panam_settings_sha256``, computed without building the stamp."""
+    return hashlib.sha256(settings_json(settings).encode('ascii')).hexdigest()
+
+
+def file_signature(paths):
+    """SHA-256 (hex) of the file name, size (bytes) and modification time (ns) of each of ``paths``.
+
+    A cheap test of whether a build's input files changed: it reads no file
+    content, so it does not pull a cloud-storage placeholder down.  The paths
+    are sorted, and each is recorded by its file name only, so the signature
+    names no directory.  A missing file is recorded as missing.  Copying the
+    files elsewhere keeps the signature only if the copy keeps their times.
+    """
+    entries = []
+    for path in sorted(set(os.fspath(path) for path in paths)):
+        try:
+            status = os.stat(path)
+            entries.append([_basename(path), status.st_size, status.st_mtime_ns])
+        except OSError:
+            entries.append([_basename(path), None, None])
+    return hashlib.sha256(json.dumps(entries, separators=(',', ':')).encode('utf-8')).hexdigest()
+
+
+def _record_value(value):
+    """One value of a build record as JSON that :func:`_restore_value` turns back into it."""
+    if value is None or isinstance(value, (bool, int, str)):
+        return _basename(value) if isinstance(value, str) and _is_path_text(value) else value
+    if isinstance(value, np.generic):
+        return _record_value(value.item())
+    if isinstance(value, float):
+        return value if np.isfinite(value) else {'float': repr(value)}
+    if isinstance(value, tuple):
+        return {'tuple': [_record_value(item) for item in value]}
+    if isinstance(value, (list, np.ndarray)):
+        return [_record_value(item) for item in list(value)]
+    if isinstance(value, dict):
+        return {'dict': {str(key): _record_value(item) for key, item in value.items()}}
+    raise TypeError('a build record holds plain values, not {}'.format(type(value).__name__))
+
+
+def _restore_value(value):
+    """The value :func:`_record_value` encoded."""
+    if isinstance(value, list):
+        return [_restore_value(item) for item in value]
+    if isinstance(value, dict):
+        (kind, item), = value.items()
+        if kind == 'float':
+            return float(item)
+        if kind == 'tuple':
+            return tuple(_restore_value(entry) for entry in item)
+        return {key: _restore_value(entry) for key, entry in item.items()}
+    return value
+
+
+def record_json(record):
+    """A build record (a dict of plain values) as JSON text that :func:`read_record_json`
+    turns back into an equal dict.
+
+    Unlike :func:`settings_json`, nothing is reduced: floats keep every digit (a
+    non-finite one is tagged ``{"float": "nan"}``), tuples and dicts are tagged so
+    they come back as tuples and dicts, numpy scalars become Python numbers.  A
+    string that is a machine path (absolute or starting with '~') is reduced to
+    its file name, since a stamp names no directory; leave the paths out.  Keys
+    sorted, no whitespace, ASCII only, strict JSON.
+    """
+    return json.dumps({str(key): _record_value(value) for key, value in record.items()},
+                      sort_keys=True, separators=(',', ':'), ensure_ascii=True, allow_nan=False)
+
+
+def read_record_json(text):
+    """The dict :func:`record_json` wrote as ``text``."""
+    return {key: _restore_value(value) for key, value in json.loads(text).items()}
+
+
+def build_provenance(tool, settings, inputs=None, input_signature=None, build_record=None):
     """The provenance stamp of a file written by ``tool`` with ``settings``.
 
     Args:
@@ -157,6 +249,12 @@ def build_provenance(tool, settings, inputs=None):
         inputs: dict of what identifies this file: its own name, the run, the
             input files.  Recorded as canonical JSON in ``panam_inputs`` (paths
             reduced to file names), not hashed.  None records ``{}``.
+        input_signature: text that changes when the input files change, such as
+            :func:`file_signature` of them, recorded as
+            :data:`INPUT_SIGNATURE_ATTRIBUTE`.  None (the default) records none.
+        build_record: dict of plain values describing the build, recorded as
+            :func:`record_json` in :data:`BUILD_RECORD_ATTRIBUTE`.  None (the
+            default) records none.
 
     Returns:
         dict of text, keyed by the attribute names of
@@ -164,10 +262,11 @@ def build_provenance(tool, settings, inputs=None):
         (:func:`code_version`), the creation time (UTC, ISO 8601, whole
         seconds), the Python, numpy, scipy, netCDF4 and numba versions, the
         canonical settings JSON (:func:`settings_json`), its SHA-256 (hex)
-        and the canonical JSON of ``inputs``.
+        and the canonical JSON of ``inputs``; and, when given, the input signature
+        and the build record.
     """
     text = settings_json(settings)
-    return {
+    stamp = {
         'panam_tool': str(tool),
         'panam_version': code_version(),
         'panam_created_utc': datetime.datetime.now(datetime.timezone.utc).replace(
@@ -181,6 +280,11 @@ def build_provenance(tool, settings, inputs=None):
         'panam_settings_sha256': hashlib.sha256(text.encode('ascii')).hexdigest(),
         'panam_inputs': settings_json({} if inputs is None else inputs),
     }
+    if input_signature is not None:
+        stamp[INPUT_SIGNATURE_ATTRIBUTE] = str(input_signature)
+    if build_record is not None:
+        stamp[BUILD_RECORD_ATTRIBUTE] = record_json(build_record)
+    return stamp
 
 
 def write_provenance(dataset, provenance):
@@ -188,6 +292,6 @@ def write_provenance(dataset, provenance):
     the open netCDF ``dataset``.  None writes nothing."""
     if provenance is None:
         return
-    for name in PROVENANCE_ATTRIBUTES:
+    for name in PROVENANCE_ATTRIBUTES + (INPUT_SIGNATURE_ATTRIBUTE, BUILD_RECORD_ATTRIBUTE):
         if name in provenance:
             dataset.setncattr(name, str(provenance[name]))

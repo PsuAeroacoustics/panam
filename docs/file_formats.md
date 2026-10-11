@@ -8,6 +8,11 @@ This page describes the files PANAM writes and reads at its boundaries:
   `build_database_from_norah2` write;
 - `vehicle.cfg`, which the user writes (`example_data/vehicle.cfg` is an example).
 
+PANAM writes each sphere and database to a temporary file beside the output, named
+`.<name>.<pid>.tmp`, and moves it into place only when it is complete. A failed or interrupted
+write leaves neither a partial file nor a damaged earlier one, and a `*.nc` or `*.nod` glob
+never matches the temporary file.
+
 How the files are made is in [`database_build.md`](database_build.md) and
 [`norah2_import.md`](norah2_import.md). The equations behind the values are in
 [`THEORY.md`](THEORY.md).
@@ -273,6 +278,8 @@ adding them left `DATABASE_FORMAT_VERSION` at 1. A file written before them has 
 | `panam_settings` | the writer's processing arguments as canonical JSON: keys sorted, no whitespace, ASCII |
 | `panam_settings_sha256` | SHA-256 (hex) of `panam_settings` |
 | `panam_inputs` | what identifies the file, as canonical JSON, not hashed: its own name and its inputs by file name (see below) |
+| `panam_input_signature` | spheres from `build_sphere` only: SHA-256 (hex) of the name, size and modification time of each input file (`provenance.file_signature` of `noise_abatement_2017.run_input_files`); `build_all(skip_unchanged=True)` compares it |
+| `panam_build_record` | spheres from `build_sphere` only: the record `build_sphere` returned (the manifest columns) without its paths and stamp columns, as JSON with keys sorted and tuples, dicts and non-finite floats tagged (`{"tuple": [...]}`, `{"dict": {...}}`, `{"float": "nan"}`; `provenance.read_record_json` reads it); `build_all` rebuilds a skipped run's manifest row from it |
 
 The settings are reduced to plain JSON before they are written: numpy arrays and scalars to
 lists and numbers, a non-finite number to the text `nan`, `inf` or `-inf` (the JSON is
