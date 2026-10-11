@@ -897,8 +897,12 @@ These are in PANAM but not used to build the databases.
   logarithms of the parameters, within $1 \le \sigma_e \le 10^5$ kPa·s/m² and
   $10^{-2} \le \alpha_e \le 10^3$ m⁻¹, from the best of a coarse grid in $\sigma_e$; $\alpha_e$
   can instead be held, at 0 for the site ground (§4.6). The covariance is $s^2(J^\mathsf{T}J)^{-1}$
-  of the log parameters, with $J$ the Jacobian of $r$ and $s^2 = \sum r_{bj}^2/(N - p)$, carried
-  to $\sigma_e$ and $\alpha_e$ by the delta method. It ignores the robust loss and any correlation
+  of the log parameters, the robust Gauss-Newton approximation: $J$ is the Jacobian of $r$ scaled
+  by the loss, $J_{bj} = \sqrt{\rho'(z) + 2z\rho''(z)}\,\partial r_{bj}/\partial(\ln\sigma_e, \ln\alpha_e)$
+  with $z = r_{bj}^2/s_f^2$, which is $(1 + z)^{-3/4}\,\partial r_{bj}/\partial(\ldots)$ for soft-L1,
+  and $s^2 = \sum s_f^2\,\rho(r_{bj}^2/s_f^2)/(N - p)$, so a gross outlier raises $s^2$ in proportion to $|r_{bj}|$, not $r_{bj}^2$.
+  Both reduce to the ordinary least-squares forms for residuals well below $s_f$. The covariance
+  is carried to $\sigma_e$ and $\alpha_e$ by the delta method. It ignores any correlation
   between bands and frames. The target is the pole level re free field because that is what
   `pole_level` returns. Forming $\Delta L_{bj}$ from measurements, for example from a co-located
   plate microphone and its modeled transfer function, is left to the caller.

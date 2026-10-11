@@ -988,7 +988,9 @@ def fit_ground_impedance(frequency, source_height, ground_distance, pole_height,
     ----------
     frequency : (band,) band center frequencies, Hz.
     source_height, ground_distance : (frame,) source height above the ground
-        and horizontal source-to-pole distance, ft.
+        and horizontal source-to-pole distance, ft; a scalar is broadcast
+        against the other (a constant-height pass, a hover at several
+        distances).
     pole_height : microphone height above the ground, ft.
     sound_speed : ft/s.
     level_difference : (band, frame) measured L_pole - L_free, dB.  NaN or
@@ -1002,23 +1004,26 @@ def fit_ground_impedance(frequency, source_height, ground_distance, pole_height,
     -------
     dict with ``sigma_e`` (kPa s/m^2) and ``alpha_e`` (1/m); ``covariance``
     of (sigma_e, alpha_e) and ``log_covariance`` of their logarithms, both
-    s^2 (J^T J)^-1 from the weighted Jacobian at the solution (1x1 when
-    alpha_e is held), with s^2 the weighted residual sum of squares over the
-    degrees of freedom; ``standard_error`` (same units as the parameters,
+    s^2 (J^T J)^-1 at the solution (1x1 when alpha_e is held), with J the
+    weighted Jacobian scaled by the robust loss (J^T J is the Gauss-Newton
+    Hessian of the robust cost) and s^2 twice the robust cost over the
+    degrees of freedom, which a gross outlier raises in proportion to its
+    residual rather than its square;
+    ``standard_error`` (same units as the parameters,
     from the log covariance by the delta method); ``prediction`` (band, frame)
     dB; ``residual`` (band, frame) prediction minus measurement, dB, NaN
     where left out; ``band_rms`` (band,) rms residual, dB; ``rms``, dB;
     ``n`` (points used); ``fitted`` (parameter names); ``at_bound`` and
-    ``success``.  The covariance ignores the robust loss and any correlation
-    between bands and frames: use it for ranking, and scatter over independent
+    ``success``.  The covariance ignores any correlation between bands and
+    frames: use it for ranking, and scatter over independent
     runs for intervals.
     """
     from scipy.optimize import least_squares
     if target != 'pole':
         raise ValueError("target must be 'pole', not {!r}".format(target))
     f = np.atleast_1d(np.asarray(frequency, dtype=float))
-    hs = np.atleast_1d(np.asarray(source_height, dtype=float))
-    d2 = np.atleast_1d(np.asarray(ground_distance, dtype=float))
+    hs, d2 = np.broadcast_arrays(np.atleast_1d(np.asarray(source_height, dtype=float)),
+                                 np.atleast_1d(np.asarray(ground_distance, dtype=float)))
     y = np.asarray(level_difference, dtype=float).reshape(f.size, hs.size)
     w = np.broadcast_to(np.ones(1) if weights is None else np.asarray(weights, dtype=float), y.shape)
     use = np.isfinite(y) & np.isfinite(w) & (w > 0.0)
@@ -1049,7 +1054,9 @@ def fit_ground_impedance(frequency, source_height, ground_distance, pole_height,
     prediction = predict(res.x)
     residual = np.where(use, prediction - y, np.nan)
     dof = max(1, int(use.sum()) - p.size)
-    s2 = float(np.sum((root_w * residual[use]) ** 2) / dof)
+    # res.jac is scipy's loss-scaled Jacobian (J^T J is the Gauss-Newton
+    # Hessian of the robust cost), so s^2 is the robust cost too.
+    s2 = float(2.0 * res.cost / dof)
     log_cov = np.linalg.pinv(res.jac.T @ res.jac) * s2
     cov = log_cov * np.outer(p, p)
     counts = use.sum(axis=1)

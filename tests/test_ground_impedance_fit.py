@@ -80,3 +80,25 @@ def test_nan_and_zero_weight_points_are_left_out():
 def test_unknown_target_is_rejected():
     with pytest.raises(ValueError, match='target'):
         gp.fit_ground_impedance(BANDS, HS, D2, POLE, C, synthetic(150.0, 30.0, 0.0, 0), target='plate')
+
+
+def test_outliers_do_not_inflate_the_standard_errors():
+    measured = synthetic(150.0, 30.0, 0.3, 2)
+    clean = gp.fit_ground_impedance(BANDS, HS, D2, POLE, C, measured)
+    rng = np.random.default_rng(3)
+    bad = rng.choice(measured.size, size=8, replace=False)
+    measured.flat[bad] += rng.choice([-15.0, 15.0], size=bad.size)
+    fit = gp.fit_ground_impedance(BANDS, HS, D2, POLE, C, measured)
+    # Eight points 50 noise standard deviations off: the robust cost grows with
+    # |r|, not r^2, so s grows about 5 times rather than 13 times.
+    ratio = fit['standard_error'] / clean['standard_error']
+    assert np.all(ratio < 6.0)
+
+
+def test_scalar_source_height_is_broadcast_against_the_distances():
+    level = gp.pole_level(BANDS, np.full(D2.shape, 100.0), D2, POLE, C, 'variable_porosity',
+                          sigma_e=150.0, alpha_e=30.0)
+    fit = gp.fit_ground_impedance(BANDS, 100.0, D2, POLE, C, level)
+    assert fit['prediction'].shape == (BANDS.size, D2.size)
+    assert fit['sigma_e'] == pytest.approx(150.0, rel=1e-4)
+    assert fit['alpha_e'] == pytest.approx(30.0, rel=1e-4)
