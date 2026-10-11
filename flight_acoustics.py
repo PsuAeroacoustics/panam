@@ -3,6 +3,7 @@ import contextlib
 import fnmatch
 import os
 import re
+import shutil
 import warnings
 from collections import namedtuple
 from configparser import ConfigParser
@@ -2885,12 +2886,17 @@ def _atomic_output(path):
     partial file appears.  The writer must close the temporary file inside the
     block.  The process id keeps parallel workers writing the same name apart.
     (Not mkstemp: its file is private, 0600, and os.replace would keep that.)
+    A symbolic link is written through, as ``open(path, 'w')`` would: the
+    temporary file sits beside the link's target and replaces the target, and the
+    link stays.  An existing file's permission bits are kept.
     """
-    path = os.path.abspath(os.path.expanduser(os.fspath(path)))
+    path = os.path.realpath(os.path.expanduser(os.fspath(path)))
     temporary = os.path.join(os.path.dirname(path), '.{}.{}.tmp'.format(
         os.path.basename(path), os.getpid()))
     try:
         yield temporary
+        if os.path.exists(path):
+            shutil.copymode(path, temporary)
         os.replace(temporary, path)
     except BaseException:
         with contextlib.suppress(OSError):
