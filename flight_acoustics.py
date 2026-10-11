@@ -2724,11 +2724,24 @@ def mask_missing_levels(amplitude):
     masked one, so downstream arithmetic behaves the same whichever it was.
     """
     amplitude = np.asarray(amplitude, dtype=float).copy()
-    missing = (np.isnan(amplitude)
-               | (amplitude <= AAM_MISSING_THRESHOLD)
-               | (amplitude > AAM_LEGACY_MISSING_THRESHOLD))
-    amplitude[missing] = -np.inf
+    amplitude[np.isnan(amplitude) | missing_level_sentinel(amplitude)] = -np.inf
     return amplitude
+
+
+def band_index(frequency_hz, band_hz):
+    """Index of the first band center in ``frequency_hz`` (Hz) within 0.1 % of
+    ``band_hz`` (Hz), or None when there is none."""
+    match = np.flatnonzero(np.isclose(frequency_hz, band_hz, rtol=1e-3, atol=0.0))
+    return int(match[0]) if match.size else None
+
+
+def missing_level_sentinel(levels_db):
+    """True where a sphere level on disk is a missing-level sentinel: -999 or below, or > 1e34.
+
+    NaN, the third convention :func:`mask_missing_levels` accepts, is not a
+    sentinel and gives False.
+    """
+    return (levels_db <= AAM_MISSING_THRESHOLD) | (levels_db > AAM_LEGACY_MISSING_THRESHOLD)
 
 
 def interpolate_hemisphere_power(levels_db, elv_grid_deg, azi_grid_deg, azi_q_deg, elv_q_deg):
@@ -3051,7 +3064,7 @@ def write_aam_hemisphere_netcdf(
                     if key not in ('hemisphere', 'run_metadata', 'provenance', 'filename',
                                    'art_levels', 'extra_variables')}
         provenance = _provenance.build_provenance('flight_acoustics.write_aam_hemisphere_netcdf',
-                                                  settings, inputs={'filename': _path_name(filename)})
+                                                  settings, inputs={'filename': _provenance.path_name(filename)})
 
     if azimuth_reference is not None and azimuth_reference not in AZIMUTH_REFERENCES:
         raise ValueError('azimuth_reference must be one of {}, not {!r}'.format(
@@ -4086,8 +4099,8 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
     # path's directories name this machine's layout too).
     settings = {key: value for key, value in locals().items()
                 if key not in ('hem_files', 'database_filename', 'overwrite')}
-    inputs = dict(hem_files=[_path_name(f) for f in hem_files],
-                  database_filename=_path_name(database_filename))
+    inputs = dict(hem_files=[_provenance.path_name(f) for f in hem_files],
+                  database_filename=_provenance.path_name(database_filename))
     if speed_mapping not in NORAH2_SPEED_MAPPINGS:
         raise ValueError('speed_mapping is required and must be one of {}: whether ACSPEED is an '
                          'indicated airspeed to convert to true airspeed or a ground speed. Got {!r}'
@@ -4612,12 +4625,17 @@ CONDITION_ORIGINS = ('measured', 'extended_flight_path_angle', 'synthesized_hove
 def _read_azimuth_reference(filename):
     """The azimuth_reference a sphere file carries, or None if it has none."""
     with Dataset(filename, mode='r') as handle:
-        if 'azimuth_reference' not in handle.ncattrs():
-            return None
-        value = str(handle.getncattr('azimuth_reference'))
+        return _azimuth_reference_of(handle, filename)
+
+
+def _azimuth_reference_of(handle, name):
+    """:func:`_read_azimuth_reference` of an open sphere ``handle``; ``name`` labels errors."""
+    if 'azimuth_reference' not in handle.ncattrs():
+        return None
+    value = str(handle.getncattr('azimuth_reference'))
     if value not in AZIMUTH_REFERENCES:
         raise ValueError('{}: azimuth_reference must be one of {}, found {!r}'.format(
-            filename, AZIMUTH_REFERENCES, value))
+            name, AZIMUTH_REFERENCES, value))
     return value
 
 
@@ -4705,13 +4723,17 @@ def _read_doppler_shift_removed(filename):
     (stationary-frame) ones.  :func:`write_aam_hemisphere_netcdf` writes it.
     """
     with Dataset(filename, mode='r') as file_handle:
-        if 'DOPPLER_SHIFT_REMOVED' not in file_handle.variables:
-            return None
-        raw = np.ma.filled(np.ma.asarray(file_handle.variables['DOPPLER_SHIFT_REMOVED'][...],
-                                         dtype=float), np.nan)
+        return _doppler_shift_removed_of(file_handle, filename)
+
+
+def _doppler_shift_removed_of(handle, name):
+    """:func:`_read_doppler_shift_removed` of an open sphere ``handle``; ``name`` labels errors."""
+    if 'DOPPLER_SHIFT_REMOVED' not in handle.variables:
+        return None
+    raw = np.ma.filled(np.ma.asarray(handle.variables['DOPPLER_SHIFT_REMOVED'][...], dtype=float), np.nan)
     flag = np.asarray(raw, dtype=float).ravel()
     if flag.size != 1 or flag[0] not in (0.0, 1.0):
-        raise ValueError('{}: DOPPLER_SHIFT_REMOVED must be 0 or 1, found {}'.format(filename, raw))
+        raise ValueError('{}: DOPPLER_SHIFT_REMOVED must be 0 or 1, found {}'.format(name, raw))
     return int(flag[0])
 
 
@@ -5193,14 +5215,14 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                 if key not in ('directory_name', 'database_filename', 'hover_source',
                                'spheres', 'exclude')}
     settings['hover_source_given'] = hover_source is not None
-    inputs = dict(directory_name=_path_name(directory_name),
-                  database_filename=_path_name(database_filename),
-                  hover_source=None if hover_source is None else _path_name(hover_source))
+    inputs = dict(directory_name=_provenance.path_name(directory_name),
+                  database_filename=_provenance.path_name(database_filename),
+                  hover_source=None if hover_source is None else _provenance.path_name(hover_source))
     # Which spheres a build uses is its input, not a processing setting.
     if spheres is not None and not isinstance(spheres, (str, os.PathLike)):
-        inputs['spheres'] = sorted(_path_name(sphere) for sphere in spheres)
+        inputs['spheres'] = sorted(_provenance.path_name(sphere) for sphere in spheres)
     if exclude is not None:
-        inputs['exclude'] = sorted(_path_name(pattern) for pattern in (
+        inputs['exclude'] = sorted(_provenance.path_name(pattern) for pattern in (
             [exclude] if isinstance(exclude, (str, os.PathLike)) else exclude))
     # TODO add reinterpolation flag
 
@@ -5392,10 +5414,20 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
 def _sphere_condition(filename):
     """The (SPEED kt, FLIGHT_PATH_ANGLE deg) a sphere file records, NaN where unreadable."""
     with Dataset(filename, mode='r') as handle:
-        with np.errstate(invalid='ignore'):
-            return tuple(float(np.ravel(np.ma.filled(np.ma.asarray(
-                handle.variables[name][...], dtype=float), np.nan))[0])
-                for name in ('SPEED', 'FLIGHT_PATH_ANGLE'))
+        return _read_scalar(handle, 'SPEED'), _read_scalar(handle, 'FLIGHT_PATH_ANGLE')
+
+
+def _read_scalar(handle, name, *default):
+    """A netCDF variable's first value as a float, NaN where masked.
+
+    Without ``default`` a missing variable raises KeyError; with it, the default
+    is returned instead.
+    """
+    if default and name not in handle.variables:
+        return default[0]
+    with np.errstate(invalid='ignore'):
+        return float(np.ravel(np.ma.filled(np.ma.asarray(handle.variables[name][...], dtype=float),
+                                           np.nan))[0])
 
 
 def _group_repeat_conditions(filenames, speed_tolerance_knots=0.0):
@@ -5505,11 +5537,6 @@ def _select_sphere_files(directory_name, spheres=None, exclude=None):
     excluded = [f for f in candidates
                 if any(fnmatch.fnmatchcase(os.path.basename(f), p) for p in patterns)]
     return [f for f in candidates if f not in excluded], excluded
-
-
-def _path_name(path):
-    """The file (or directory) name of ``path``, for a provenance stamp."""
-    return os.path.basename(os.path.normpath(os.path.expanduser(os.fspath(path))))
 
 
 def _write_database_root(ncdatabase, *, fixed_load_factor, speed_reference, atmosphere,

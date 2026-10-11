@@ -39,23 +39,14 @@ def _read_handle(handle, name, missing):
     variables = handle.variables
     with np.errstate(invalid='ignore'):
         levels = read(variables['AMPLITUDE'])
-        sentinel = ((levels <= fa.AAM_MISSING_THRESHOLD)
-                    | (levels > fa.AAM_LEGACY_MISSING_THRESHOLD))
+        sentinel = fa.missing_level_sentinel(levels)
     levels[sentinel] = np.nan if missing == 'no_data' else -np.inf
 
     def scalar(variable_name, default):
-        if variable_name not in variables:
-            return default
-        return float(np.ravel(read(variables[variable_name]))[0])
+        return fa._read_scalar(handle, variable_name, default)
 
-    doppler = scalar('DOPPLER_SHIFT_REMOVED', None)
-    if doppler is not None and doppler not in (0.0, 1.0):
-        raise ValueError('{}: DOPPLER_SHIFT_REMOVED must be 0 or 1, found {}'.format(name, doppler))
-    reference = (str(handle.getncattr('azimuth_reference'))
-                 if 'azimuth_reference' in handle.ncattrs() else None)
-    if reference is not None and reference not in fa.AZIMUTH_REFERENCES:
-        raise ValueError('{}: azimuth_reference must be one of {}, found {!r}'.format(
-            name, fa.AZIMUTH_REFERENCES, reference))
+    doppler = fa._doppler_shift_removed_of(handle, name)
+    reference = fa._azimuth_reference_of(handle, name)
     weight = sum(scalar(n, 0.0) for n in ('EMPTY_WEIGHT', 'FUEL_WEIGHT', 'LOAD_WEIGHT'))
     return dict(
         name=name,
@@ -67,7 +58,7 @@ def _read_handle(handle, name, missing):
         speed_knots=scalar('SPEED', float('nan')),
         flight_path_angle_deg=scalar('FLIGHT_PATH_ANGLE', float('nan')),
         weight_lb=weight,
-        doppler_shift_removed=None if doppler is None else int(doppler),
+        doppler_shift_removed=doppler,
         azimuth_reference=reference,
     )
 
@@ -252,8 +243,8 @@ def write_averaged_sphere(filename, average, title=None, overwrite=True):
         overwrite=overwrite,
         provenance=provenance.build_provenance(
             'sphere_statistics.write_averaged_sphere', dict(average.get('settings', {})),
-            inputs=dict(filename=os.path.basename(os.fspath(filename)),
-                        sources=[os.path.basename(os.fspath(name)) for name in average.get('sources', [])])),
+            inputs=dict(filename=provenance.path_name(filename),
+                        sources=[provenance.path_name(name) for name in average.get('sources', [])])),
         extra_variables={'N_RUNS': (np.asarray(average['n_runs'], dtype=np.int32), ''),
                          'AMPLITUDE_SD_DB': (average['amplitude_sd_db'], 'DECIBEL')})
 
@@ -452,10 +443,10 @@ def compare_spheres(a, b, bands=None, missing='no_data'):
     else:
         index = []
         for band in np.atleast_1d(np.asarray(bands, dtype=float)):
-            match = np.flatnonzero(np.isclose(frequency, band, rtol=1e-3, atol=0.0))
-            if match.size == 0:
+            match = fa.band_index(frequency, band)
+            if match is None:
                 raise ValueError('no {} Hz band in the spheres'.format(band))
-            index.append(int(match[0]))
+            index.append(match)
         index = np.asarray(index)
     level_a = a['levels_db'][:, :, index]
     level_b = b['levels_db'][:, :, index]
@@ -522,11 +513,11 @@ def plot_sphere_difference(result, band=None, level_range=None, grid_convention=
         field = result['overall_difference_db']
         label = 'Overall level difference B - A, dB'
     else:
-        match = np.flatnonzero(np.isclose(result['frequency_hz'], band, rtol=1e-3, atol=0.0))
-        if match.size == 0:
+        match = fa.band_index(result['frequency_hz'], band)
+        if match is None:
             raise ValueError('no {} Hz band in the comparison'.format(band))
-        field = result['difference_db'][:, :, match[0]]
-        label = '{:g} Hz level difference B - A, dB'.format(result['frequency_hz'][match[0]])
+        field = result['difference_db'][:, :, match]
+        label = '{:g} Hz level difference B - A, dB'.format(result['frequency_hz'][match])
     if not np.any(np.isfinite(field)):
         raise ValueError('no cell is finite in both spheres')
     if level_range is None:

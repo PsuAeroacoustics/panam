@@ -1391,8 +1391,7 @@ def _sphere_settings(arguments):
     for name in ('output_path', 'reference_sphere', 'norah2_directory', 'plate_table_directory',
                  'samples_path'):
         value = settings.pop(name)
-        inputs[name] = None if value is None else os.path.basename(
-            os.path.normpath(os.path.expanduser(str(value))))
+        inputs[name] = None if value is None else provenance.path_name(value)
     # A reference sphere sets the grid and bands, so whether one was given is a setting.
     settings['reference_sphere_given'] = arguments['reference_sphere'] is not None
     return settings, inputs
@@ -2006,8 +2005,8 @@ def _sphere_record(test, run, output_path):
             details = provenance.read_record_json(stamp[provenance.BUILD_RECORD_ATTRIBUTE])
         else:
             details = dict(condition=row.get('test_cond'), layout=row.get('layout'),
-                           speed_knots=float(np.ravel(sphere['SPEED'][:])[0]),
-                           flight_path_angle_deg=float(np.ravel(sphere['FLIGHT_PATH_ANGLE'][:])[0]),
+                           speed_knots=fa._read_scalar(sphere, 'SPEED'),
+                           flight_path_angle_deg=fa._read_scalar(sphere, 'FLIGHT_PATH_ANGLE'),
                            track_flags=UNKNOWN_TRACK_FLAGS)
     return stamp, details
 

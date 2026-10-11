@@ -27,6 +27,7 @@ import numpy as np
 from netCDF4 import Dataset
 
 import flight_acoustics as fa
+import provenance
 from panam_acoustics.plotting import acoustic_plot_style
 
 #: The condition variables every group must carry (R2), each with one value.
@@ -154,6 +155,26 @@ def _scalar(group, name, default=np.nan):
     return float(np.asarray(group.variables[name][...]).reshape(-1)[0])
 
 
+def _group_or_shared(variables, root, name, shared):
+    """A group's variable ``name`` as floats, else the root's when ``shared``.
+
+    Args:
+        variables: the group's netCDF variables.
+        root: the root variables' values by name.
+        name: the variable.
+        shared: whether the root's copy stands in for a missing group variable
+            (the database is ``shared_grid_and_frequency``).
+
+    Returns:
+        (values, where): where is 'group', 'root' or None (values None).
+    """
+    if name in variables:
+        return np.asarray(variables[name][...], dtype=float), 'group'
+    if shared and name in root:
+        return np.asarray(root[name], dtype=float), 'root'
+    return None, None
+
+
 def _root(database):
     variables = {name: _value(variable) for name, variable in database.variables.items()}
     attributes = {name: database.getncattr(name) for name in database.ncattrs()}
@@ -194,11 +215,8 @@ def load_nod(path, weight_coefficient=None):
             group = database.groups[name]
 
             def array(variable, root_fallback=True):
-                if variable in group.variables:
-                    return np.asarray(group.variables[variable][...], dtype=float)
-                if root_fallback and shared and variable in root_variables:
-                    return np.asarray(root_variables[variable], dtype=float)
-                return None
+                return _group_or_shared(group.variables, root_variables, variable,
+                                        root_fallback and shared)[0]
 
             amplitude = array('amplitude', root_fallback=False)
             frequency = array('frequency') if amplitude is not None else None
@@ -348,15 +366,13 @@ def validate_nod(path):
             # R4, C3: the channel directions, here or at the root.
             directions = {}
             for variable in ('phi', 'theta'):
-                if variable in variables:
-                    values = np.asarray(variables[variable][...], dtype=float)
-                    if shared and variable in root and not np.array_equal(values, root[variable]):
-                        violate('C3', name, f'{variable} differs from the shared root {variable}')
-                elif shared and variable in root:
-                    values = np.asarray(root[variable], dtype=float)
-                else:
+                values, where = _group_or_shared(variables, root, variable, shared)
+                if where is None:
                     violate('R4', name, f'no {variable}, in the group or shared at the root')
                     continue
+                if where == 'group' and shared and variable in root \
+                        and not np.array_equal(values, root[variable]):
+                    violate('C3', name, f'{variable} differs from the shared root {variable}')
                 if n_channels is not None and values.size != n_channels:
                     violate('R4', name, f'{variable} has {values.size} values for {n_channels} channels')
                     continue
@@ -371,21 +387,18 @@ def validate_nod(path):
 
             # C4, C5: the spectrum's grid and values.
             amplitude = None
-            frequency = None
             if 'amplitude' in variables:
                 amplitude_variable = variables['amplitude']
                 amplitude = np.asarray(amplitude_variable[...], dtype=float)
                 if amplitude_variable.dimensions != ('PHI', 'THETA', 'frequency'):
                     violate('C4', name, f'amplitude is over {amplitude_variable.dimensions}, '
                                         "not ('PHI', 'THETA', 'frequency')")
-                if 'frequency' in variables:
-                    frequency = np.asarray(variables['frequency'][...], dtype=float)
-                    if shared and 'frequency' in root and not np.array_equal(frequency, root['frequency']):
-                        violate('C3', name, 'frequency differs from the shared root frequency')
-                elif shared and 'frequency' in root:
-                    frequency = np.asarray(root['frequency'], dtype=float)
-                else:
+                frequency, where = _group_or_shared(variables, root, 'frequency', shared)
+                if where is None:
                     violate('C3', name, 'amplitude without frequency, in the group or shared at the root')
+                elif where == 'group' and shared and 'frequency' in root \
+                        and not np.array_equal(frequency, root['frequency']):
+                    violate('C3', name, 'frequency differs from the shared root frequency')
                 if amplitude.ndim == 3:
                     n_phi, n_theta, n_bands = amplitude.shape
                     if frequency is not None and frequency.size != n_bands:
@@ -568,8 +581,7 @@ def _differ(a, b):
 
 
 def _energy_db(levels, axis=None):
-    with np.errstate(divide='ignore'):
-        return 10.0 * np.log10(np.sum(10.0 ** (levels / 10.0), axis=axis))
+    return fa.power_to_db(np.sum(10.0 ** (levels / 10.0), axis=axis))
 
 
 def _max_abs_difference(a, b):
@@ -617,7 +629,7 @@ def _compare_condition(a, b):
 
 #: Root attributes of the provenance stamp that name a file and its build time
 #: rather than its content; :func:`compare_databases` does not compare them.
-IDENTITY_ATTRIBUTES = ('panam_created_utc', 'panam_inputs')
+IDENTITY_ATTRIBUTES = provenance.IDENTITY_ATTRIBUTES
 
 
 def compare_databases(a, b):
@@ -832,10 +844,9 @@ def plot_condition(condition, quantity='dBA', band_hz=None, level_range=None, gr
             raise ValueError(f'{condition.name} has no band levels')
         if band_hz is None:
             raise ValueError('quantity band needs a band center')
-        match = np.flatnonzero(np.isclose(condition.frequency_hz, band_hz, rtol=1e-3, atol=0.0))
-        if match.size == 0:
+        band = fa.band_index(condition.frequency_hz, band_hz)
+        if band is None:
             raise ValueError(f'{condition.name} has no {band_hz:g} Hz band')
-        band = match[0]
     levels = None
     cmap = None
     radius = f'{condition.radius_m:g} m'

@@ -23,6 +23,7 @@ from which ``build_all`` rebuilds the manifest row of a run it skips.
 """
 
 import dataclasses
+import functools
 import datetime
 import hashlib
 import importlib.metadata
@@ -36,8 +37,9 @@ import subprocess
 
 import numpy as np
 
-__all__ = ['BUILD_RECORD_ATTRIBUTE', 'INPUT_SIGNATURE_ATTRIBUTE', 'PROVENANCE_ATTRIBUTES',
-           'build_provenance', 'canonical_settings', 'code_version', 'file_signature',
+__all__ = ['BUILD_RECORD_ATTRIBUTE', 'IDENTITY_ATTRIBUTES', 'INPUT_SIGNATURE_ATTRIBUTE',
+           'PROVENANCE_ATTRIBUTES', 'build_provenance', 'canonical_settings', 'code_version',
+           'file_signature', 'path_name',
            'read_record_json', 'record_json', 'settings_json', 'settings_sha256',
            'write_provenance']
 
@@ -47,6 +49,10 @@ PROVENANCE_ATTRIBUTES = (
     'panam_scipy', 'panam_netcdf4', 'panam_numba', 'panam_settings', 'panam_settings_sha256',
     'panam_inputs',
 )
+
+#: The stamp attributes that name a file and its build time rather than its
+#: content: they differ between any two builds of the same file.
+IDENTITY_ATTRIBUTES = ('panam_created_utc', 'panam_inputs')
 
 #: The optional attribute that holds a stamp's input signature (:func:`file_signature`),
 #: written after :data:`PROVENANCE_ATTRIBUTES` when the writer gives one.
@@ -74,12 +80,19 @@ def code_version():
     return version if result.returncode == 0 and version else 'unknown'
 
 
+@functools.lru_cache(maxsize=None)
 def _package_version(name):
     """The installed version of distribution ``name``, or 'not installed'."""
     try:
         return importlib.metadata.version(name)
     except importlib.metadata.PackageNotFoundError:
         return 'not installed'
+
+
+def path_name(path):
+    """The file (or directory) name of ``path``, for a stamp: '~' expanded and a
+    trailing separator ignored."""
+    return os.path.basename(os.path.normpath(os.path.expanduser(os.fspath(path))))
 
 
 def _is_path_text(text):
