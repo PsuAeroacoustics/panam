@@ -565,6 +565,16 @@ def read_table_npz(path):
     return table, key
 
 
+def read_table_key(path):
+    """The key :func:`write_table_npz` stored, without loading the table's arrays.
+    Raises ValueError as :func:`read_table_npz` does."""
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            return str(data['_key'])
+    except (KeyError, EOFError, zipfile.BadZipFile) as error:
+        raise ValueError('{} is not a plate table: {!r}'.format(path, error)) from None
+
+
 def board_level(bands, source_height, ground_distance, sound_speed, table, sub_bands=None,
                 source_dx=None, source_dy=None, mirror_y=False):
     """The microphone on the plate lying on the ground (flush or inverted, per the table),

@@ -48,6 +48,7 @@ variables.
 """
 
 import contextlib
+import functools
 import os
 import csv
 import glob
@@ -1115,6 +1116,19 @@ def default_plate_table_directory():
     return os.path.join(os.path.expanduser('~'), '.cache', 'panam', 'plate_tables')
 
 
+def _plate_table_directory(directory=None):
+    """``directory`` as an absolute path, '~' expanded; None gives
+    :func:`default_plate_table_directory`."""
+    return os.path.abspath(os.path.expanduser(directory or default_plate_table_directory()))
+
+
+def _plate_table_speed(sound_speed_ft_s):
+    """The sound speed (ft/s) a plate table is computed at: ``sound_speed_ft_s``
+    rounded to a step of :data:`PLATE_TABLE_SOUND_SPEED_STEP`."""
+    step = np.log1p(PLATE_TABLE_SOUND_SPEED_STEP)
+    return float(np.exp(np.round(np.log(sound_speed_ft_s) / step) * step))
+
+
 def plate_table(instrument, sound_speed_ft_s, bands, ground=None, directory=None, **options):
     """The axisymmetric BEM table (:func:`axisymmetric_bem.table`) for one board type.
 
@@ -1136,8 +1150,7 @@ def plate_table(instrument, sound_speed_ft_s, bands, ground=None, directory=None
     import hashlib
     import json
     ground = dict(SITE_GROUND if ground is None else ground)
-    step = np.log1p(PLATE_TABLE_SOUND_SPEED_STEP)
-    speed = float(np.exp(np.round(np.log(sound_speed_ft_s) / step) * step))
+    speed = _plate_table_speed(sound_speed_ft_s)
     bands = np.asarray(bands, dtype=float)
     mic_height = BOARD_MIC_HEIGHT_FT[instrument]
     # Keyed on what the table depends on, not the instrument's name.
@@ -1152,7 +1165,7 @@ def plate_table(instrument, sound_speed_ft_s, bands, ground=None, directory=None
     name = 'h{:.2f}mm_{}_c{:.2f}_b{}-{:g}-{:g}_v{}_{}.npz'.format(
         mic_height * 304.8, ground_name, speed, bands.size, bands[0], bands[-1], ab.PLATE_TABLE_VERSION,
         hashlib.sha256(key.encode()).hexdigest()[:12])
-    directory = os.path.abspath(os.path.expanduser(directory or default_plate_table_directory()))
+    directory = _plate_table_directory(directory)
     path = os.path.join(directory, name)
     table = None
     if os.path.exists(path):
@@ -1168,10 +1181,9 @@ def plate_table(instrument, sound_speed_ft_s, bands, ground=None, directory=None
         flow = ground.get('sigma', ground.get('sigma_e'))
         table = ab.table(bands, speed, flow_resistance=flow, ground=ground, mic_height=mic_height, **options)
         os.makedirs(directory, exist_ok=True)
-        temporary = path + '.{}.tmp'.format(os.getpid())
-        with open(temporary, 'wb') as handle:
+        # Parallel builds may race; either copy is right.
+        with fa._atomic_output(path) as temporary, open(temporary, 'wb') as handle:
             ab.write_table_npz(handle, table, key)
-        os.replace(temporary, path)             # parallel builds may race; either copy is right
     _PLATE_TABLES[key] = table
     return table
 
@@ -1184,14 +1196,14 @@ def plate_table_cache(directory=None):
     'old format' (a .pkl from before versioning) or 'unreadable'."""
     import axisymmetric_bem as ab
     import json
-    directory = os.path.abspath(os.path.expanduser(directory or default_plate_table_directory()))
+    directory = _plate_table_directory(directory)
     records = []
     for path in sorted(glob.glob(os.path.join(directory, '*.npz')) + glob.glob(os.path.join(directory, '*.pkl'))):
         if path.endswith('.pkl'):
             status = 'old format'
         else:
             try:
-                version = json.loads(ab.read_table_npz(path)[1])['version']
+                version = json.loads(ab.read_table_key(path))['version']
                 status = 'current' if version == ab.PLATE_TABLE_VERSION else 'old version {}'.format(version)
             except (OSError, ValueError, KeyError, TypeError):
                 status = 'unreadable'
@@ -1203,8 +1215,8 @@ def clear_plate_table_cache(directory=None):
     """Delete the plate tables (.npz, old .pkl and leftover .tmp files) in
     ``directory`` (default :func:`default_plate_table_directory`), but not the
     directory or any other file.  Returns the number of files deleted."""
-    directory = os.path.abspath(os.path.expanduser(directory or default_plate_table_directory()))
-    paths = [path for pattern in ('*.npz', '*.pkl', '*.npz.*.tmp', '*.pkl.*.tmp')
+    directory = _plate_table_directory(directory)
+    paths = [path for pattern in ('*.npz', '*.pkl', '.*.npz.*.tmp', '*.npz.*.tmp', '*.pkl.*.tmp')
              for path in glob.glob(os.path.join(directory, pattern))]
     for path in paths:
         os.remove(path)
@@ -1329,6 +1341,29 @@ def legacy_sphere_grid(path):
                     theta_deg=np.array(handle['THETA'][:], dtype=float),
                     band_centers_hz=np.array(handle['FREQUENCY'][:], dtype=float),
                     radius_ft=float(np.ravel(handle['RADIUS'][:])[0]))
+
+
+def _sphere_grid(reference):
+    """(band centers Hz, PHI deg, THETA deg) of a build: a :func:`legacy_sphere_grid`
+    ``reference``'s, or :data:`LEGACY_BAND_CENTERS_HZ` and None, None (the writer's
+    default grid) without one."""
+    if reference is None:
+        return LEGACY_BAND_CENTERS_HZ, None, None
+    return reference['band_centers_hz'], reference['phi_deg'], reference['theta_deg']
+
+
+def _run_atmosphere_or_standard_day(test, run):
+    """(atmosphere, error): :func:`run_atmosphere` and None, or, without usable
+    ground weather, :data:`STANDARD_DAY` and the ValueError that said so."""
+    try:
+        return run_atmosphere(test, run), None
+    except ValueError as error:
+        return fa.Atmosphere(**STANDARD_DAY), error
+
+
+def _mics_with_ambient(test, mics, ambient_run):
+    """The microphones of ``mics`` that have a recording in ``ambient_run``."""
+    return [m for m in mics if m in test.acoustic_files.get(ambient_run, {})]
 
 
 def tone_split_paths(output_path):
@@ -1607,13 +1642,11 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
 
     density_source = 'caller'
     if atmosphere is None:
-        try:
-            atmosphere = run_atmosphere(test, run)
-            density_source = 'ground stations'
-        except ValueError as error:
+        atmosphere, error = _run_atmosphere_or_standard_day(test, run)
+        density_source = 'ground stations'
+        if error is not None:
             logging.warning('Run %s: %s; depropagating in a 20 C, 20 %% RH, 101.325 kPa standard day',
                             run, error)
-            atmosphere = fa.Atmosphere(**STANDARD_DAY)
             density_source = 'none'
     if check is not None:
         mean_height_ft = check.metrics['mean_height_above_array_ft']
@@ -1679,7 +1712,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     elif not gate_ambient:
         ambient_source = 'none'
     if ambient_run is not None:
-        mics = [m for m in mics if m in test.acoustic_files.get(ambient_run, {})]
+        mics = _mics_with_ambient(test, mics, ambient_run)
         if not mics:
             raise ValueError('Run {}: no microphone has both run and ambient data'.format(run))
 
@@ -1710,13 +1743,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     elif ambient_source.startswith('percentile'):
         ambient_percentile = float(ambient_fallback_percentile)
 
-    reference = legacy_sphere_grid(reference_sphere)
-    if reference is not None:
-        band_centers = reference['band_centers_hz']
-        phi_deg, theta_deg = reference['phi_deg'], reference['theta_deg']
-    else:
-        band_centers = LEGACY_BAND_CENTERS_HZ
-        phi_deg = theta_deg = None
+    band_centers, phi_deg, theta_deg = _sphere_grid(legacy_sphere_grid(reference_sphere))
 
     receiver_response = None
     if board_correction == 'plate_bem':
@@ -2012,7 +2039,8 @@ def _sphere_record(test, run, output_path):
 
 
 def _skip_reason(test, run, output_path, call, skip_existing, skip_unchanged, ray_models):
-    """Why :func:`build_all` need not build ``run``: 'exists', 'unchanged' or None.
+    """Why :func:`build_all` need not build ``run`` ('exists', 'unchanged' or None),
+    and the sphere's :func:`_sphere_record` (None when it was not read).
 
     A run counts as built only when every file its build writes exists: the
     sphere, its NORAH2 file when ``call`` has a ``norah2_directory`` and its
@@ -2021,21 +2049,21 @@ def _skip_reason(test, run, output_path, call, skip_existing, skip_unchanged, ra
     ``panam_input_signature`` to equal :func:`run_input_files`' signature now.
     """
     if not (skip_existing or skip_unchanged):
-        return None
+        return None, None
     outputs = [output_path]
     if call.get('tone_split'):
         outputs += list(tone_split_paths(output_path).values())
     if not all(os.path.exists(path) for path in outputs):
-        return None
+        return None, None
     try:
         stamp, details = _sphere_record(test, run, output_path)
     except (OSError, KeyError, IndexError, ValueError):
-        return None
+        return None, None
     if call.get('norah2_directory') is not None and _norah2_output(
             test, run, call['norah2_directory'], details) is None:
-        return None
+        return None, (stamp, details)
     if skip_existing:
-        return 'exists'
+        return 'exists', (stamp, details)
     arguments = dict(call, ray_model=_per_run(ray_models, run))
     bound = _BUILD_SPHERE_SIGNATURE.bind(test, run, output_path, **arguments)
     bound.apply_defaults()
@@ -2045,8 +2073,8 @@ def _skip_reason(test, run, output_path, call, skip_existing, skip_unchanged, ra
         arguments['ray_model']))
     if (stamp.get('panam_settings_sha256') == provenance.settings_sha256(settings)
             and stamp.get(provenance.INPUT_SIGNATURE_ATTRIBUTE) == signature):
-        return 'unchanged'
-    return None
+        return 'unchanged', (stamp, details)
+    return None, (stamp, details)
 
 
 #: track_flags of a skipped run whose sphere has no build record (written before
@@ -2054,7 +2082,7 @@ def _skip_reason(test, run, output_path, call, skip_existing, skip_unchanged, ra
 UNKNOWN_TRACK_FLAGS = 'unknown: the sphere has no build record'
 
 
-def _skipped_record(test, run, output_path, norah2_directory, reason):
+def _skipped_record(test, run, output_path, norah2_directory, reason, sphere_record=None):
     """The record of a run :func:`build_all` skipped, read from its existing sphere.
 
     The sphere's build record (``panam_build_record``, the record
@@ -2067,9 +2095,10 @@ def _skipped_record(test, run, output_path, norah2_directory, reason):
     A sphere without a build record gives only the run's identity, its speed and
     flight path angle from the sphere's float32 ``SPEED`` and ``FLIGHT_PATH_ANGLE``,
     and ``track_flags`` :data:`UNKNOWN_TRACK_FLAGS`, so that a run whose flags are
-    not known is never taken as unflagged.
+    not known is never taken as unflagged.  ``sphere_record``, the sphere's
+    :func:`_sphere_record` when already read, saves reading it again.
     """
-    stamp, details = _sphere_record(test, run, output_path)
+    stamp, details = sphere_record or _sphere_record(test, run, output_path)
     if provenance.BUILD_RECORD_ATTRIBUTE not in stamp:
         logging.warning('run %s: %s has no build record; its manifest row has no track flags',
                         run, os.path.basename(output_path))
@@ -2086,16 +2115,18 @@ def _skipped_record(test, run, output_path, norah2_directory, reason):
                 skipped=reason)
 
 
-def _warm_plate_tables(test, plans, kwargs):
-    """Compute, in this process, the plate tables the runs of ``plans`` need, so that
-    parallel workers read them from the cache rather than each computing them.
+def _plate_table_jobs(test, plans, kwargs):
+    """The distinct :func:`plate_table` arguments the runs of ``plans`` need.
 
-    Mirrors how :func:`build_sphere` picks the sound speed, the bands and the
-    microphones.  A run whose tables cannot be worked out here is skipped: its
-    build meets the same problem and reports it.
+    Picks the sound speed, the bands and the microphones as :func:`build_sphere`
+    does.  A run whose tables cannot be worked out here is left out: its build
+    meets the same problem and reports it.  Returns a list of
+    ``(instrument, sound_speed_ft_s, bands, ground, directory)``.
     """
     if kwargs.get('board_correction', 'plate_bem') != 'plate_bem':
-        return
+        return []
+    bands_of = {}
+    jobs = {}
     for plan in plans:
         run = plan['run']
         try:
@@ -2103,26 +2134,44 @@ def _warm_plate_tables(test, plans, kwargs):
             if speed is None:
                 atmosphere = kwargs.get('atmosphere')
                 if atmosphere is None:
-                    try:
-                        atmosphere = run_atmosphere(test, run)
-                    except ValueError:
-                        atmosphere = fa.Atmosphere(**STANDARD_DAY)
+                    atmosphere, _ = _run_atmosphere_or_standard_day(test, run)
                 speed = sound_speed_ft_s(atmosphere)
-            reference = legacy_sphere_grid(plan['reference'])
-            bands = LEGACY_BAND_CENTERS_HZ if reference is None else reference['band_centers_hz']
+            if plan['reference'] not in bands_of:
+                bands_of[plan['reference']] = _sphere_grid(legacy_sphere_grid(plan['reference']))[0]
+            bands = bands_of[plan['reference']]
             mics = test.ground_board_mics(run)
             ambient = test.ambient_run(run) if kwargs.get('gate_ambient', True) else None
             if ambient is not None:
-                mics = [m for m in mics if m in test.acoustic_files.get(ambient, {})]
+                mics = _mics_with_ambient(test, mics, ambient)
             for instrument in sorted({test.instrument_types[m] for m in mics}):
-                plate_table(instrument, speed, bands, ground=kwargs.get('ground'),
-                            directory=kwargs.get('plate_table_directory'))
+                key = (instrument, _plate_table_speed(speed), tuple(np.asarray(bands, dtype=float)))
+                jobs.setdefault(key, (instrument, speed, bands, kwargs.get('ground'),
+                                      kwargs.get('plate_table_directory')))
         except Exception as error:                      # noqa: BLE001
             logging.debug('no plate tables warmed for run %s (%s)', run, error)
+    return list(jobs.values())
+
+
+def _warm_plate_tables(test, plans, kwargs):
+    """Compute, in this process, the plate tables the runs of ``plans`` need
+    (:func:`_plate_table_jobs`), so that parallel workers read them from the cache
+    rather than each computing them.  A table that fails here is left to its builds."""
+    for instrument, speed, bands, ground, directory in _plate_table_jobs(test, plans, kwargs):
+        try:
+            plate_table(instrument, speed, bands, ground=ground, directory=directory)
+        except Exception as error:                      # noqa: BLE001
+            logging.debug('plate table for %s not warmed (%s)', instrument, error)
 
 
 #: State of a build_all worker process, set once by _start_worker.
 _WORKER = {}
+
+
+@functools.lru_cache(maxsize=None)
+def _open_test(aircraft, root):
+    """The :class:`NoiseAbatementTest` of ``aircraft`` at ``root``, opened once per
+    process: a :func:`build_all` worker and the ray models it unpickles share it."""
+    return NoiseAbatementTest(aircraft, root=root)
 
 
 def _start_worker(aircraft, root, norah2_directory, ray_models, winds, kwargs, log_level, log_files):
@@ -2130,10 +2179,8 @@ def _start_worker(aircraft, root, norah2_directory, ray_models, winds, kwargs, l
     :class:`NoiseAbatementTest`."""
     configure_logging(log_level=log_level)
     for path in log_files:
-        handler = logging.FileHandler(path, encoding='utf-8')
-        handler.setFormatter(logging.Formatter(LOG_FORMAT))
-        logging.getLogger().addHandler(handler)
-    _WORKER.update(test=NoiseAbatementTest(aircraft, root=root), norah2_directory=norah2_directory,
+        _add_log_file(path)
+    _WORKER.update(test=_open_test(aircraft, root), norah2_directory=norah2_directory,
                    ray_models=ray_models, winds=winds, kwargs=kwargs)
 
 
@@ -2251,11 +2298,11 @@ def build_all(aircraft, output_directory, *, root=None, runs=None,
             try:
                 call = dict(kwargs, reference_sphere=reference, norah2_directory=norah2_directory,
                             wind=_per_run(winds, run))
-                reason = _skip_reason(test, run, plan['output'], call, skip_existing, skip_unchanged,
-                                      ray_models)
+                reason, sphere_record = _skip_reason(test, run, plan['output'], call, skip_existing,
+                                                     skip_unchanged, ray_models)
                 if reason is not None:
                     outcomes[number] = (_skipped_record(test, run, plan['output'], norah2_directory,
-                                                        reason), None)
+                                                        reason, sphere_record), None)
                     logging.info('[%d/%d] %s skipped: %s %s', number, len(runs), run, name, reason)
                     continue
             except Exception as error:                  # noqa: BLE001
@@ -2296,20 +2343,26 @@ def build_all(aircraft, output_directory, *, root=None, runs=None,
         _warm_plate_tables(test, plans, kwargs)
         log_files = [handler.baseFilename for handler in logging.getLogger().handlers
                      if isinstance(handler, logging.FileHandler)]
+        # test.root, resolved, so that a worker and the ray models it unpickles share
+        # one NoiseAbatementTest (_open_test).
         executor = ProcessPoolExecutor(
             max_workers=min(jobs, len(plans)), mp_context=multiprocessing.get_context('spawn'),
             initializer=_start_worker,
-            initargs=(aircraft, root, norah2_directory, ray_models, winds, kwargs,
+            initargs=(aircraft, test.root, norah2_directory, ray_models, winds, kwargs,
                       logging.getLogger().getEffectiveLevel(), log_files))
+        pool = ThreadPoolExecutor(max_workers=1) if prefetch else None
         try:
-            futures = {}
-            for plan in plans:
-                if prefetch:
-                    _prefetch_run(test, plan['run'], gate_ambient, prefetched)
-                futures[executor.submit(_worker_build, plan['run'], plan['output'], plan['reference'])] = plan
+            futures = {executor.submit(_worker_build, plan['run'], plan['output'], plan['reference']): plan
+                       for plan in plans}
+            # Pulled in plan order, ahead of the workers, without holding them back.
+            if pool is not None:
+                for plan in plans:
+                    pool.submit(_prefetch_run, test, plan['run'], gate_ambient, prefetched)
             for future in as_completed(futures):
                 report(futures[future], future.result())
         finally:
+            if pool is not None:
+                pool.shutdown(cancel_futures=True)
             executor.shutdown(cancel_futures=True)
 
     records = [outcomes[n][0] for n in sorted(outcomes) if outcomes[n][0] is not None]
@@ -2376,12 +2429,7 @@ class _ProfileRayModels:
 
     def _dataset(self):
         if self.test is None:
-            aircraft, root = self.dataset
-            worker = _WORKER.get('test')
-            if worker is not None and (worker.aircraft, worker.root) == (aircraft, root):
-                self.test = worker
-            else:
-                self.test = NoiseAbatementTest(aircraft, root=root)
+            self.test = _open_test(*self.dataset)
         return self.test
 
     def __call__(self, run):
@@ -2574,9 +2622,15 @@ def configure_logging(verbosity=0, log_file=None, log_level=None):
         return None
     path = os.path.abspath(os.path.expanduser(log_file))
     os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+    return _add_log_file(path)
+
+
+def _add_log_file(path):
+    """Append the root logger's messages to the file ``path`` in :data:`LOG_FORMAT`;
+    returns the handler."""
     handler = logging.FileHandler(path, encoding='utf-8')
     handler.setFormatter(logging.Formatter(LOG_FORMAT))
-    root.addHandler(handler)
+    logging.getLogger().addHandler(handler)
     return handler
 
 
@@ -2904,8 +2958,7 @@ def main(argv=None):
 def _run_command(parser, args, options):
     """Everything :func:`main` does once its arguments are parsed and logging is set up."""
     if args.plate_cache:
-        directory = os.path.abspath(os.path.expanduser(options['plate_table_directory']
-                                                       or default_plate_table_directory()))
+        directory = _plate_table_directory(options['plate_table_directory'])
         if args.plate_cache == 'clear':
             print('Deleted {} plate tables from {}'.format(clear_plate_table_cache(directory), directory))
             return 0
