@@ -279,8 +279,9 @@ cannot restore the gated cell's -inf.
 `nod_database.compare_databases(a, b)` matches conditions by advance ratio, flight path
 angle and thrust coefficient. It reports the root variables and attributes that differ (not
 `panam_created_utc` and `panam_inputs`, which name the build rather than its content), the
-conditions in only one file, and for each matched condition the per-band difference of the
-energy summed over the cells finite in both, the largest level differences, and the
+conditions in only one file, and for each matched condition the group scalars that differ
+(`radius_m`, `rotor_scale_m`, `doppler_shift_removed`, `condition_origin`), the per-band
+difference of the energy summed over the cells finite in both, the largest level differences, and the
 coverage gained and lost. `compare_databases.py` prints the same report.
 
 `nod_tool.py` inspects one database: `list` prints a row per condition (its coverage

@@ -487,6 +487,8 @@ class ConditionDifference:
             channels' dBA) that hold energy in one database and -inf in the other.
         coverage_gained, coverage_lost: cells with coverage 0 in a and 1 in b, and
             the reverse; None unless both carry coverage of the same shape.
+        scalar_differences: {name: (value in a, value in b)} for each of
+            :data:`CONDITION_SCALARS` that differs.
     """
     key: tuple
     group_a: str
@@ -501,9 +503,15 @@ class ConditionDifference:
     finite_only_in_b: int = 0
     coverage_gained: int = None
     coverage_lost: int = None
+    scalar_differences: dict = field(default_factory=dict)
 
     def differs(self, tolerance_db=0.0):
         """Whether anything here differs by more than tolerance_db (dB)."""
+        return bool(self.scalar_differences) or self.levels_differ(tolerance_db)
+
+    def levels_differ(self, tolerance_db=0.0):
+        """Whether the grid, levels (by more than tolerance_db, dB), energy cells
+        or coverage differ; :attr:`scalar_differences` aside."""
         largest = np.nanmax([self.max_abs_band_difference_db, self.max_abs_dba_difference_db,
                              self.max_abs_eaa_difference_db, -np.inf])
         return bool(self.grid_differs or largest > tolerance_db or self.finite_only_in_a
@@ -544,6 +552,10 @@ class DatabaseComparison:
             if not c.differs(tolerance_db):
                 continue
             head = f'{c.group_a} / {c.group_b}:'
+            for name, (va, vb) in sorted(c.scalar_differences.items()):
+                lines.append(f'{head} {name} {_short(va)} -> {_short(vb)}')
+            if not c.levels_differ(tolerance_db):
+                continue
             if c.grid_differs:
                 lines.append(f'{head} grid or bands differ; levels not compared')
                 continue
@@ -589,8 +601,16 @@ def _max_abs_difference(a, b):
     return float(np.max(np.abs(b[both] - a[both]))) if both.any() else np.nan
 
 
+#: NodCondition fields that change how NICE-OPS reads a group's levels;
+#: :func:`compare_databases` reports each one that differs.
+CONDITION_SCALARS = ('radius_m', 'rotor_scale_m', 'doppler_shift_removed', 'condition_origin')
+
+
 def _compare_condition(a, b):
     result = ConditionDifference(a.key, a.name, b.name)
+    result.scalar_differences = {name: (getattr(a, name), getattr(b, name))
+                                 for name in CONDITION_SCALARS
+                                 if _differ(getattr(a, name), getattr(b, name))}
     if (a.phi_deg.shape != b.phi_deg.shape or not np.array_equal(a.phi_deg, b.phi_deg)
             or not np.array_equal(a.theta_deg, b.theta_deg)
             or (a.amplitude is None) != (b.amplitude is None)):
@@ -645,9 +665,10 @@ def compare_databases(a, b):
     Returns:
         :class:`DatabaseComparison`: the root variables and attributes that differ
         (apart from :data:`IDENTITY_ATTRIBUTES`, which differ between any two builds),
-        the unmatched conditions of each, and per matched condition the per-band
-        energy difference (dB), the largest level differences and the coverage
-        gained and lost.
+        the unmatched conditions of each, and per matched condition the
+        :data:`CONDITION_SCALARS` that differ (sphere radius, rotor scale, Doppler
+        convention, origin), the per-band energy difference (dB), the largest level
+        differences and the coverage gained and lost.
     """
     a = a if isinstance(a, NodDatabase) else load_nod(a)
     b = b if isinstance(b, NodDatabase) else load_nod(b)

@@ -5,7 +5,9 @@ Usage:  python compare_databases.py A.nod B.nod [--tolerance DB] [--validate]
 Conditions are matched by advance ratio, flight path angle and thrust
 coefficient, not by group name.  The report lists the root variables and
 attributes that differ, the conditions found in only one file, and for each
-matched condition the per-band energy difference (B minus A), the largest
+matched condition the group scalars that differ (sphere radius, rotor
+scale, Doppler convention, origin), the per-band energy difference (B minus
+A), the largest
 level differences and the coverage gained and lost.  The exit status is 0
 when the databases agree within the tolerance, 1 when they differ, and 2 when
 --validate finds a contract violation.  See nod_database.compare_databases.

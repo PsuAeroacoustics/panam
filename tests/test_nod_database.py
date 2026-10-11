@@ -331,6 +331,28 @@ def test_coverage_gained_and_lost_and_energy_on_one_side(tmp_path, shared):
     assert (difference.finite_only_in_a, difference.finite_only_in_b) == (1, 0)
 
 
+def test_a_changed_reference_radius_or_doppler_convention_differs(tmp_path, shared):
+    """Identical levels with another sphere radius or Doppler convention are a
+    different database to NICE-OPS."""
+    changed = tmp_path / 'changed.nod'
+    changed.write_bytes(shared.read_bytes())
+    with Dataset(str(changed), 'a') as nc:
+        group = nc['sphere0']
+        group['radius'][...] = 2.0 * np.asarray(group['radius'][...])
+        doppler = int(np.asarray(group['DOPPLER_SHIFT_REMOVED'][...]))
+        group['DOPPLER_SHIFT_REMOVED'][...] = 1 - doppler
+    comparison = nd.compare_databases(shared, changed)
+    assert comparison.differs()
+    first = comparison.conditions[0]
+    assert set(first.scalar_differences) == {'radius_m', 'doppler_shift_removed'}
+    assert first.scalar_differences['doppler_shift_removed'] == (doppler, 1 - doppler)
+    assert not first.levels_differ()
+    assert not any(c.differs() for c in comparison.conditions[1:])
+    summary = comparison.summary()
+    assert 'radius_m' in summary and 'doppler_shift_removed' in summary
+    assert 'dBA up to' not in summary
+
+
 def test_unmatched_conditions_and_root_differences(tmp_path, shared):
     ladder = _build(tmp_path, 'ladder.nod', load_factors=(1.0, 2.0), speed_reference='air')
     comparison = nd.compare_databases(shared, ladder)
