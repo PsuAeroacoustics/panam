@@ -90,8 +90,9 @@ do both. The examples write to `demo_plots/` in the current directory;
 
 Loudness and sharpness of a one-third-octave spectrum are library functions, not a
 script: `panam_acoustics.psychoacoustics.loudness_zwicker` (ISO 532-1:2017, stationary,
-25 Hz to 12.5 kHz) and `sharpness_din` (DIN 45692); see
-[THEORY §9](docs/THEORY.md#9-metrics).
+25 Hz to 12.5 kHz) and `sharpness_din` (DIN 45692). `iso_532_1_levels` picks those bands out of
+a PANAM 10 Hz to 10 kHz spectrum and sets 12.5 kHz to no energy, which understates the loudness
+by the 12.5 kHz content; see [THEORY §9](docs/THEORY.md#9-metrics).
 
 ## Data locations
 

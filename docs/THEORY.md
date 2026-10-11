@@ -862,7 +862,9 @@ bracketed by that column and the next.
 
 **Loudness** (`panam_acoustics.psychoacoustics.loudness_zwicker`) follows the stationary method
 of ISO 532-1:2017 (Zwicker) [51] from 28 one-third-octave band levels $L_i$, 25 Hz to 12.5 kHz,
-for a free (frontal) or diffuse field. The 11 bands up to 250 Hz are first corrected for the
+for a free (frontal) or diffuse field. PANAM's spheres and hemispheres stop at 10 kHz;
+`iso_532_1_levels` takes their 25 Hz to 10 kHz bands and sets 12.5 kHz to no energy, so the
+loudness omits whatever that band holds. The 11 bands up to 250 Hz are first corrected for the
 equal-loudness contours, $L_i + \Delta L_i(L_i)$ with the correction looked up by level range
 (tables RAP, DLL), and summed in energy into the three lowest critical-band levels (25–80 Hz,
 100–160 Hz, 200–250 Hz). Each of the 20 approximated critical bands $k$, with level $L_k$, then has
@@ -1003,7 +1005,7 @@ Functions are in `flight_acoustics.py` unless another module is named. Tests are
 | §8 NORAH2 | `build_database_from_norah2`, `norah2_levels_at_radius`, `norah2_speed_knots`, `humid_air_density`, `fill_norah2_empty_cells`, `write_norah2_hemisphere`, `write_norah2_levels`, `write_norah2_triangulation`, `norah2umapr` | `test_norah2_import.py`, `test_write_norah2_hemisphere.py` |
 | §8 Sphere to NORAH2 | `sphere_to_norah2.sphere_to_norah2`, `sphere_levels_on_norah2_grid` (through the `sphere_to_norah2.py` CLI) | `test_sphere_to_norah2.py`, `test_cli_scripts.py` (smoke) |
 | §9 Metrics | `sound_exposure_level`, `ten_db_down_interval`, `noys`, `perceived_noise_level`, `tone_correction`, `effective_perceived_noise_level`, `mil_std_1474e_nondetectability_distance` | `test_sound_exposure_level.py`, `test_pnl_epnl.py`, `test_mil_std_nondetectability.py` |
-| §9 Loudness, sharpness | `panam_acoustics.psychoacoustics.loudness_zwicker`, `loudness_level`, `sharpness_din` | `test_psychoacoustics.py` |
+| §9 Loudness, sharpness | `panam_acoustics.psychoacoustics.loudness_zwicker`, `loudness_level`, `sharpness_din`, `iso_532_1_levels` | `test_psychoacoustics.py` |
 | §10 VKF | `vold_kalman_filter.vold_kalman_filter` | `test_vold_kalman_filter.py` |
 | §10 Ground-board models, two-path fit | `ground_plane.board_*`, `disc_bem_scattered`, `raised_plate_scattering`, `fit_two_path`, `height_from_path_difference` | `test_ground_plane.py`, `test_ground_validation.py`, `test_axisymmetric_bem.py` |
 | §10 Array planning | `linear_array_plan` (through the `array_planner.py design` CLI); `array_coverage`, `hover_array_coverage`, `takeoff_array_coverage` | `test_array_planner.py` (the CLI's spacing and options); the coverage functions: none |

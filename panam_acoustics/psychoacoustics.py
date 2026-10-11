@@ -184,6 +184,52 @@ def loudness_level(loudness_sone):
     return out[()] if out.ndim == 0 else out
 
 
+def iso_532_1_levels(frequency_hz, levels_db, missing_12k5=-np.inf):
+    """Pick the 28 ISO 532-1 bands out of a one-third octave spectrum.
+
+    PANAM's spheres and hemispheres carry 31 bands from 10 Hz to 10 kHz, and
+    :func:`loudness_zwicker` takes 28 from 25 Hz to 12.5 kHz.  Each ISO band is
+    matched to the band of ``frequency_hz`` within 1/12 octave of its nominal
+    center.  When the spectrum has no 12.5 kHz band, that band is filled with
+    ``missing_12k5``.  The default, -inf (no energy), lets the loudness be
+    computed but understates it by whatever the 12.5 kHz band holds.  NaN
+    (no data) makes the loudness of every spectrum NaN.
+
+    Args:
+        frequency_hz: (Nf,) one-third octave band centers (Hz), exact or nominal.
+        levels_db: (..., Nf) band levels (dB re 20 uPa).
+        missing_12k5: level (dB) used for 12.5 kHz when ``frequency_hz`` lacks it.
+
+    Returns:
+        (..., 28) levels (dB) in the bands of :data:`ISO_532_1_BAND_CENTERS_HZ`.
+
+    Raises:
+        ValueError: a band from 25 Hz to 10 kHz is missing, or two bands of
+            ``frequency_hz`` match one ISO band.
+    """
+    frequency_hz = np.asarray(frequency_hz, dtype=float).ravel()
+    levels_db = np.asarray(levels_db, dtype=float)
+    if levels_db.ndim < 1 or levels_db.shape[-1] != frequency_hz.size:
+        raise ValueError(f'levels_db must end in the {frequency_hz.size} bands of frequency_hz, '
+                         f'not shape {levels_db.shape}')
+    with np.errstate(divide='ignore', invalid='ignore'):
+        octaves = np.abs(np.log2(frequency_hz[None, :] / ISO_532_1_BAND_CENTERS_HZ[:, None]))
+    match = octaves < 1.0 / 12.0
+    out = np.empty(levels_db.shape[:-1] + (ISO_532_1_BAND_CENTERS_HZ.size,))
+    for band, center in enumerate(ISO_532_1_BAND_CENTERS_HZ):
+        index = np.flatnonzero(match[band])
+        if index.size > 1:
+            raise ValueError(f'two bands of frequency_hz match the {center:g} Hz band')
+        if index.size == 1:
+            out[..., band] = levels_db[..., index[0]]
+        elif band == ISO_532_1_BAND_CENTERS_HZ.size - 1:
+            out[..., band] = missing_12k5
+        else:
+            raise ValueError(f'frequency_hz has no {center:g} Hz band: ISO 532-1 needs every '
+                             'band from 25 Hz to 10 kHz')
+    return out
+
+
 def loudness_zwicker(third_octave_levels_db, field='free'):
     """Stationary loudness by ISO 532-1:2017 (Zwicker) from one-third octave band levels.
 

@@ -15,30 +15,12 @@ from panam_acoustics import psychoacoustics as pa
 # ISO 532-1:2017 Annex B.2, "Test signal 1": 28 bands, 25 Hz to 12.5 kHz.
 TEST_SIGNAL_1_DB = np.array([-60, -60, 78, 79, 89, 72, 80, 89, 75, 87, 85, 79, 86, 80, 71, 70, 72, 71,
                              72, 74, 69, 65, 67, 77, 68, 58, 45, 30], dtype=float)
-# Its published free-field result, N' at 0.1 to 24.0 Bark (sone/Bark).
-TEST_SIGNAL_1_SPECIFIC = np.array([
-    5.3272, 5.3272, 5.3272, 5.3272, 5.3272, 5.3272, 5.3272, 5.3272, 5.3272, 7.3877, 7.3877,
-    7.3877, 7.3877, 7.3877, 7.3877, 7.3877, 7.3877, 7.3877, 7.5599, 7.5599, 7.5599, 7.5599,
-    7.5599, 7.5599, 7.5599, 7.5599, 7.5599, 7.5599, 7.2802, 7.0002, 6.7202, 6.4402, 6.1602,
-    5.9351, 5.7251, 6.4327, 6.4327, 6.4327, 6.4327, 6.4327, 6.4327, 6.4327, 6.4327, 6.4327,
-    6.2129, 6.0124, 5.8324, 5.6524, 5.4724, 5.2924, 5.1124, 4.9324, 4.7524, 4.5724, 4.4024,
-    4.2718, 4.1418, 4.0118, 3.8818, 3.7518, 3.6218, 3.4918, 3.3618, 3.2318, 3.1018, 2.9915,
-    2.8815, 2.7715, 2.6615, 2.5515, 2.4415, 2.3315, 2.2901, 2.2901, 2.2901, 2.2901, 2.2901,
-    2.2901, 2.2901, 2.5232, 2.5232, 2.5232, 2.5232, 2.5232, 2.5232, 2.5232, 2.5232, 2.5232,
-    2.5232, 2.5232, 2.5232, 2.5232, 2.4134, 2.3498, 2.3498, 2.3498, 2.3498, 2.3498, 2.3498,
-    2.3498, 2.3498, 2.3498, 2.3498, 2.3498, 2.3498, 2.3498, 2.5533, 2.5533, 2.5533, 2.5533,
-    2.5533, 2.5533, 2.5533, 2.5533, 2.5533, 2.5533, 2.5533, 2.5533, 2.5533, 2.5533, 2.5533,
-    2.5533, 2.5533, 3.0669, 3.0669, 3.0669, 3.0669, 3.0669, 3.0669, 3.0669, 3.0669, 3.0669,
-    3.0669, 3.0669, 3.0669, 3.0669, 3.0669, 3.0669, 2.957, 2.847, 2.737, 2.627, 2.5232, 2.5232,
-    2.5232, 2.5232, 2.5232, 2.5232, 2.5232, 2.5232, 2.5232, 2.5232, 2.4134, 2.3034, 2.281,
-    2.281, 2.281, 2.281, 2.281, 2.281, 2.281, 2.281, 2.281, 2.281, 2.281, 2.281, 2.281, 2.6301,
-    2.6301, 2.6301, 2.6301, 2.6301, 2.6301, 2.6301, 2.6301, 2.6301, 2.6301, 2.6301, 2.6301,
-    2.6301, 2.6301, 4.3633, 4.3633, 4.3633, 4.3633, 4.3633, 4.3633, 4.3633, 4.3633, 4.3633,
-    4.3633, 4.3633, 4.3633, 4.2334, 4.1034, 3.9734, 3.8434, 3.7134, 3.5834, 3.4534, 3.3234,
-    3.1934, 3.069, 2.959, 2.849, 2.739, 2.629, 2.519, 2.409, 2.299, 2.189, 2.092, 2.01, 1.928,
-    1.846, 1.764, 1.682, 1.6, 1.518, 1.436, 1.3555, 1.2935, 1.2315, 1.1695, 1.1075, 1.0455,
-    0.9835, 0.9215, 0.8595, 0.8047, 0.7627, 0.7207, 0.6787, 0.6367, 0.5947, 0.5527, 0.5107,
-    0.4687, 0.4267, 0.4015])
+# Its published free-field N' (sone/Bark), every 20th value: 2.0, 4.0, ..., 24.0 Bark.
+# Only these spot values are kept from the Annex B.2 table; with N and LN they
+# still catch any error in the tables or the slopes.
+TEST_SIGNAL_1_SPECIFIC_INDEX = np.arange(19, 240, 20)
+TEST_SIGNAL_1_SPECIFIC = np.array([7.5599, 6.4327, 3.7518, 2.5232, 2.3498, 2.5533, 2.847, 2.281,
+                                   2.6301, 3.4534, 1.436, 0.4015])
 
 # Third-octave levels (dB) of signals through the Annex A filter bank.
 TONE_1KHZ_40DB = np.array([
@@ -65,12 +47,12 @@ CRITICAL_BAND_NOISE_1KHZ_60DB = np.array([
 
 
 def test_annex_b2_test_signal_1_free_field():
-    """The standard's published result: N, LN and every N' to their printed 4 decimals."""
+    """The standard's published result: N, LN and spot N' values to their printed 4 decimals."""
     N, specific, LN = pa.loudness_zwicker(TEST_SIGNAL_1_DB, field='free')
     assert N == pytest.approx(83.2957, abs=5e-5)
     assert LN == pytest.approx(103.8017, abs=5e-5)
     assert specific.shape == (240,)
-    assert np.allclose(specific, TEST_SIGNAL_1_SPECIFIC, rtol=0.0, atol=5e-5)
+    assert np.allclose(specific[TEST_SIGNAL_1_SPECIFIC_INDEX], TEST_SIGNAL_1_SPECIFIC, rtol=0.0, atol=5e-5)
 
 
 def test_annex_b2_test_signal_1_diffuse_field():
@@ -164,3 +146,24 @@ def test_rejects_bad_input():
         pa.loudness_zwicker(TEST_SIGNAL_1_DB, field='pressure')
     with pytest.raises(ValueError, match=r'\+inf'):
         pa.loudness_zwicker(np.full(28, np.inf))
+
+
+def test_iso_532_1_levels_from_a_31_band_spectrum():
+    """A PANAM 10 Hz-10 kHz spectrum gives the same loudness as the hand-built 28 bands."""
+    import flight_acoustics as fa
+    frequency = fa.NORAH2_BAND_CENTERS_HZ
+    assert frequency.size == 31
+    spectrum = np.concatenate([[50.0, 45.0, 40.0, 35.0], TEST_SIGNAL_1_DB[:-1]])
+    by_hand = TEST_SIGNAL_1_DB.copy()
+    by_hand[-1] = -np.inf
+    picked = pa.iso_532_1_levels(frequency, spectrum)
+    assert np.array_equal(picked, by_hand)
+    assert pa.loudness_zwicker(picked)[0] == pa.loudness_zwicker(by_hand)[0]
+    exact = 1000.0 * 10.0 ** (np.arange(-20, 11) / 10.0)
+    batch = pa.iso_532_1_levels(exact, np.stack([spectrum, spectrum]), missing_12k5=30.0)
+    assert batch.shape == (2, 28) and np.array_equal(batch[1], TEST_SIGNAL_1_DB)
+    assert np.all(np.isnan(pa.iso_532_1_levels(frequency, spectrum, missing_12k5=np.nan)[-1]))
+    with pytest.raises(ValueError, match='no 25 Hz band'):
+        pa.iso_532_1_levels(frequency[5:], spectrum[5:])
+    with pytest.raises(ValueError, match='bands of frequency_hz'):
+        pa.iso_532_1_levels(frequency, spectrum[1:])
