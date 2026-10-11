@@ -2,7 +2,8 @@
 
 The writers are :func:`flight_acoustics.build_empirical_database` and
 :func:`flight_acoustics.build_database_from_norah2`; the file contract is
-``docs/file_formats.md``.  This module only reads:
+``docs/file_formats.md``.  This module only reads; ``nod_tool.py`` and
+``compare_databases.py`` are its command lines:
 
 - :func:`load_nod` returns the conditions of a database, with both the
   per-group and the ``shared_grid_and_frequency`` layout, and both a load
@@ -11,6 +12,9 @@ The writers are :func:`flight_acoustics.build_empirical_database` and
   numbers of ``docs/file_formats.md#checking-a-database``.
 - :func:`compare_databases` reports what differs between two databases.
 - :func:`to_frame` gives a long pandas DataFrame, when pandas is installed.
+- :func:`summarize_condition`, :func:`select_condition`, :func:`plot_condition`
+  (a Lambert map of one quantity) and :func:`plot_envelope` (the conditions in
+  speed and flight path angle) inspect a database.
 
 Units: speed in knots, angles in degrees, radii in meters, frequency in Hz,
 levels in dB, EAA in dB per 1000 m.  Angles are ART angles (phi 0 below,
@@ -23,6 +27,7 @@ import numpy as np
 from netCDF4 import Dataset
 
 import flight_acoustics as fa
+from panam_acoustics.plotting import acoustic_plot_style
 
 #: The condition variables every group must carry (R2), each with one value.
 CONDITION_VARIABLES = ('radius', 'rotor_scale', 'advance_ratio', 'flight_path_angle',
@@ -698,3 +703,177 @@ def to_frame(database):
         frame['condition_origin'] = c.condition_origin
         frames.append(frame)
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def summarize_condition(condition):
+    """One row of ``nod_tool.py list``: what a condition is and how full it is.
+
+    Args:
+        condition: a :class:`NodCondition`.
+
+    Returns:
+        dict with group, speed_kt (kt), flight_path_angle_deg (deg), load_factor
+        (1; NaN when unknown), condition_origin (None when the group does not say),
+        coverage_fraction (the fraction of coverage cells set, 1; NaN without
+        coverage) and dBA_max (the largest channel dBA, dB; -inf when no
+        direction has energy, NaN without channels).
+    """
+    coverage = np.nan if condition.coverage is None or condition.coverage.size == 0 \
+        else float(np.mean(condition.coverage))
+    return dict(group=condition.name, speed_kt=condition.speed_kt,
+                flight_path_angle_deg=condition.flight_path_angle_deg,
+                load_factor=condition.load_factor, condition_origin=condition.condition_origin,
+                coverage_fraction=coverage,
+                dBA_max=float(np.max(condition.dBA)) if condition.dBA.size else np.nan)
+
+
+def select_condition(database, speed_kt, flight_path_angle_deg, load_factor=None,
+                     speed_tolerance_kt=0.5, angle_tolerance_deg=0.05):
+    """The condition of a database at a speed and flight path angle.
+
+    Args:
+        database: a :class:`NodDatabase`.
+        speed_kt: speed, kt.
+        flight_path_angle_deg: flight path angle, deg, negative in descent.
+        load_factor: the load factor, 1, that picks one of several conditions at
+            that speed and angle (a load factor ladder); default None, which
+            needs the match to be unique.
+        speed_tolerance_kt, angle_tolerance_deg: how far a condition may be from
+            the speed (kt, default 0.5) and the angle (deg, default 0.05).
+
+    Returns:
+        the matching :class:`NodCondition`.
+
+    Raises:
+        ValueError: no condition matches, or several do and ``load_factor`` does
+            not pick one (e.g. the load factors are unknown: pass the
+            weight coefficient to :func:`load_nod`).
+    """
+    matches = [c for c in database
+               if abs(c.speed_kt - speed_kt) <= speed_tolerance_kt
+               and abs(c.flight_path_angle_deg - flight_path_angle_deg) <= angle_tolerance_deg]
+    if load_factor is not None and len(matches) > 1:
+        matches = [c for c in matches if np.isclose(c.load_factor, load_factor, rtol=0.0, atol=1e-3)]
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        raise ValueError(f'no condition at {speed_kt:g} kt and {flight_path_angle_deg:g} deg'
+                         + ('' if load_factor is None else f', load factor {load_factor:g}'))
+    raise ValueError('{} conditions at {:g} kt and {:g} deg ({}); give the load factor or the group'.format(
+        len(matches), speed_kt, flight_path_angle_deg, ', '.join(c.name for c in matches)))
+
+
+#: The quantities :func:`plot_condition` maps.
+PLOT_QUANTITIES = ('dBA', 'EAA', 'band', 'coverage')
+
+
+def _channel_grid(condition, values):
+    """``values`` over the channels as the (n_phi, n_theta) grid they flatten (C4)."""
+    n_phi = condition.amplitude.shape[0] if condition.amplitude is not None \
+        else np.unique(condition.phi_deg).size
+    return np.asarray(values, dtype=float).reshape(n_phi, -1)
+
+
+@acoustic_plot_style
+def plot_condition(condition, quantity='dBA', band_hz=None, level_range=None, grid_convention='art'):
+    """Map one quantity of a condition on a Lambert equal-area projection.
+
+    Args:
+        condition: a :class:`NodCondition`.
+        quantity: one of :data:`PLOT_QUANTITIES`: 'dBA' (A-weighted level at the
+            sphere radius, dB), 'EAA' (dB per 1000 m), 'band' (the stored band
+            level at the sphere radius, dB; needs ``band_hz``) or 'coverage' (1
+            where measured; with spectra, the band ``band_hz``, or without it the
+            fraction of bands measured in each direction).
+        band_hz: band center, Hz, for 'band' and 'coverage'; matched to 0.1 %.
+        level_range: (low, high) color range in the quantity's unit; default
+            the finite data's range (0 to 1 for coverage).
+        grid_convention: grid lines, as :func:`flight_acoustics.plot_lambert_ea`
+            (default 'art').
+
+    Returns:
+        matplotlib Figure.  -inf levels (no energy) and missing cells are blank.
+
+    Raises:
+        ValueError: an unknown quantity, a band the condition does not have,
+            or a quantity the group does not store.
+    """
+    if quantity not in PLOT_QUANTITIES:
+        raise ValueError(f'quantity {quantity!r} is not one of {PLOT_QUANTITIES}')
+    band = None
+    if band_hz is not None or quantity == 'band':
+        if condition.amplitude is None:
+            raise ValueError(f'{condition.name} has no band levels')
+        if band_hz is None:
+            raise ValueError('quantity band needs a band center')
+        match = np.flatnonzero(np.isclose(condition.frequency_hz, band_hz, rtol=1e-3, atol=0.0))
+        if match.size == 0:
+            raise ValueError(f'{condition.name} has no {band_hz:g} Hz band')
+        band = match[0]
+    levels = None
+    cmap = None
+    radius = f'{condition.radius_m:g} m'
+    if quantity == 'dBA':
+        field = _channel_grid(condition, condition.dBA)
+        label = f'A-weighted level at {radius}, dBA'
+    elif quantity == 'EAA':
+        field = _channel_grid(condition, condition.EAA)
+        label = 'Excess atmospheric attenuation, dB/1000 m'
+    elif quantity == 'band':
+        field = condition.amplitude[:, :, band]
+        label = f'{condition.frequency_hz[band]:g} Hz band level at {radius}, dB'
+    else:
+        if condition.coverage is None:
+            raise ValueError(f'{condition.name} has no coverage')
+        if condition.coverage.ndim == 3:
+            coverage = condition.coverage
+            field = coverage[:, :, band] if band is not None else np.mean(coverage, axis=2)
+            label = ('Measured' if band is not None else 'Fraction of bands measured')
+            if band is not None:
+                label += f', {condition.frequency_hz[band]:g} Hz'
+        else:
+            field = _channel_grid(condition, condition.coverage)
+            label = 'Measured'
+        field = np.asarray(field, dtype=float)
+        level_range = (0.0, 1.0) if level_range is None else level_range
+        levels = np.linspace(level_range[0], level_range[1], 11)
+        cmap = 'viridis'
+    if not np.any(np.isfinite(field)):
+        raise ValueError(f'{condition.name} has no finite {quantity} to map')
+    phi = _channel_grid(condition, condition.phi_deg)
+    theta = _channel_grid(condition, condition.theta_deg)
+    azi, elv = fa.art2umapr(np.radians(phi), np.radians(theta))
+    fig, _, _ = fa.plot_lambert_ea(azi, elv, field, level_range, grid_convention=grid_convention,
+                                   levels=levels, cmap=cmap, colorbar_label=label)
+    return fig
+
+
+@acoustic_plot_style
+def plot_envelope(database):
+    """Scatter a database's conditions in speed and flight path angle, colored
+    by ``condition_origin``.
+
+    Args:
+        database: a :class:`NodDatabase`.
+
+    Returns:
+        matplotlib Figure: speed (kt) against flight path angle (deg), or
+        advance ratio against flight path angle when the root has no tip speed.
+        Conditions of a load factor ladder share a point.
+    """
+    import matplotlib.pyplot as plt
+    speeds = np.array([c.speed_kt for c in database], dtype=float)
+    by_speed = bool(speeds.size) and bool(np.all(np.isfinite(speeds)))
+    x = speeds if by_speed else np.array([c.advance_ratio for c in database], dtype=float)
+    y = np.array([c.flight_path_angle_deg for c in database], dtype=float)
+    origins = [c.condition_origin or 'not given' for c in database]
+    fig, ax = plt.subplots(facecolor='white')
+    known = [o for o in CONDITION_ORIGINS if o in origins]
+    for k, origin in enumerate(known + sorted(set(origins) - set(known))):
+        chosen = np.array([o == origin for o in origins])
+        ax.scatter(x[chosen], y[chosen], color=f'C{k}', label=origin.replace('_', ' '), zorder=3)
+    ax.set_xlabel('Speed, kt' if by_speed else 'Advance ratio')
+    ax.set_ylabel('Flight path angle, deg')
+    if origins:
+        ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.18), ncol=3, frameon=False)
+    return fig

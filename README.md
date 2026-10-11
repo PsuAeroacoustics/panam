@@ -85,6 +85,7 @@ scripts take no options and run as soon as they start, `-h` included:
 | `noise_abatement_2017.py` | Build source spheres from the 2017 Noise Abatement flight test; `--check-tracks` checks the tracks without building; `--tone-split` also writes tonal and broadband spheres; `--plate-cache list` or `clear` inspects or empties the plate-table cache | Yes: the 2017 archive (not for `--plate-cache`) |
 | `build_empirical_database.py` | Build a NICE-OPS database from a directory of spheres and its `vehicle.cfg`; `--manifest` and `--exclude` select the spheres | Your spheres |
 | `norah2_to_nod.py` | Build a NICE-OPS database from NORAH2 `.hem` hemispheres | `.hem` files |
+| `nod_tool.py` | Inspect a NICE-OPS database: `list` its conditions (speed, flight path angle, load factor, origin, coverage, maximum dBA), `plot` a Lambert map of one condition's dBA, EAA, band level or coverage, plot its `envelope` in speed and flight path angle, `check` the file contract | Your database |
 | `compare_databases.py` | Compare two NICE-OPS databases: per-band energy, coverage, unmatched conditions, root attributes; `--validate` checks the file contract | Your databases |
 | `sphere_to_norah2.py` | Convert an AAM sphere to a NORAH2 `.hem` hemisphere; the measurement atmosphere is required | No (bundled sphere) |
 | `nc_lambert_ea.py` | Plot a sphere's levels on a Lambert equal-area projection | No (bundled sphere) |

@@ -244,6 +244,35 @@ def test_array_planner_subcommands_run(tmp_path):
     assert (tmp_path / 'array.kmz').stat().st_size > 0
 
 
+def test_nod_tool_subcommands_run(tmp_path):
+    import flight_acoustics as fa
+    from netCDF4 import Dataset
+    write_sphere_directory(tmp_path / 'spheres', [(minimal_hemisphere(), 60, -3), (minimal_hemisphere(), 80, 0)])
+    with pytest.warns(UserWarning):
+        fa.build_empirical_database(str(tmp_path / 'spheres'), str(tmp_path / 'db.nod'), load_factors=None)
+    result = run_here('nod_tool.py', 'list', 'db.nod', cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    rows = [line.split() for line in result.stdout.splitlines()]
+    assert rows[0][0] == 'group' and len(rows) == 6
+    assert rows[1][:5] == ['sphere0', '60.0', '-3.00', '1', 'measured']
+    for args, image in ((['-g', 'sphere1'], 'dba.png'), (['-c=80:0', '-q', 'band', '-b', '125'], 'band.png'),
+                        (['-g', 'sphere0', '-q', 'coverage'], 'coverage.png')):
+        result = run_here('nod_tool.py', 'plot', 'db.nod', *args, '-o', image, cwd=tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert (tmp_path / image).stat().st_size > 0
+    assert run_here('nod_tool.py', 'plot', 'db.nod', '-c=70:0', '-o', 'x.png', cwd=tmp_path).returncode != 0
+    result = run_here('nod_tool.py', 'envelope', 'db.nod', '-o', 'envelope.png', cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / 'envelope.png').stat().st_size > 0
+    result = run_here('nod_tool.py', 'check', 'db.nod', cwd=tmp_path)
+    assert result.returncode == 0 and 'no violations' in result.stdout
+    with Dataset(str(tmp_path / 'db.nod'), 'a') as ds:
+        ds.groups['sphere1'].setncattr('condition_origin', 'guessed')
+    result = run_here('nod_tool.py', 'check', 'db.nod', cwd=tmp_path)
+    assert result.returncode == 1
+    assert result.stdout.startswith('C12 [sphere1]')
+
+
 def test_sphere_diff_averages_and_compares(tmp_path):
     import numpy as np
     louder = minimal_hemisphere()

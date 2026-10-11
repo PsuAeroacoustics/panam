@@ -258,6 +258,11 @@ conditions in only one file, and for each matched condition the per-band differe
 energy summed over the cells finite in both, the largest level differences, and the
 coverage gained and lost. `compare_databases.py` prints the same report.
 
+`nod_tool.py` inspects one database: `list` prints a row per condition, `plot` maps a
+condition's `dBA`, `EAA`, one band of `amplitude` or `coverage` on a Lambert projection,
+`envelope` plots the conditions in speed and flight path angle by `condition_origin`, and
+`check` prints the `validate_nod` violations and exits with status 1 when there is one.
+
 ## Provenance stamp
 
 The AAM sphere and the database root carry these optional text attributes, written by
