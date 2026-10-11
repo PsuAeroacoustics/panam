@@ -908,6 +908,71 @@ def test_skip_unchanged_rebuilds_only_on_new_settings_or_inputs(monkeypatch, tmp
     assert built == ['289108', '289108'] and 'skipped' not in records[0]
 
 
+def test_a_skipped_run_keeps_the_manifest_row_of_its_build(monkeypatch, tmp_path):
+    """A resumed build lists a skipped run as its original build did: its track flags
+    (so --skip-flagged still leaves a flagged run out), its rays, window and settings,
+    and its float64 speed and flight path angle in the NORAH2 triangulation."""
+    _archive(tmp_path)
+    out, norah2 = tmp_path / 'out', tmp_path / 'norah2'
+    check = na.run_track_check
+
+    def flagging(*args, **kwargs):
+        result = check(*args, **kwargs)
+        result.flags.append('a flag for the test')
+        return result
+    monkeypatch.setattr(na, 'run_track_check', flagging)
+    arguments = dict(root=str(tmp_path), prefetch=False, board_correction='flat', point_stride=2,
+                     runs=['289108'], norah2_directory=str(norah2))
+    first, failures = na.build_all('AS350B3', str(out), manifest_path=str(tmp_path / 'first.csv'),
+                                   **arguments)
+    assert failures == [] and 'a flag for the test' in first[0]['track_flags']
+    assert na.select_from_manifest(str(tmp_path / 'first.csv'), skip_flagged=True) == []
+    monkeypatch.setattr(na, 'build_sphere', _no_build)
+    triangulation = []
+    monkeypatch.setattr(na.fa, 'write_norah2_triangulation',
+                        lambda path, entries: triangulation.append(entries))
+    for option in ('skip_existing', 'skip_unchanged'):
+        manifest = tmp_path / '{}.csv'.format(option)
+        records, failures = na.build_all('AS350B3', str(out), manifest_path=str(manifest),
+                                         **{option: True}, **arguments)
+        assert failures == [] and records[0]['skipped'] in ('exists', 'unchanged')
+        record = dict(records[0])
+        del record['skipped']
+        assert _comparable(record) == _comparable(first[0])
+        assert type(record['window_s']) is tuple
+        assert na.select_from_manifest(str(manifest), skip_flagged=True) == []
+        rows, original = _manifest_rows(manifest)[0], _manifest_rows(tmp_path / 'first.csv')[0]
+        assert {key: rows[key] for key in original} == original
+    # Bypass build_all (three records are needed): the triangulation carries the float64 values.
+    assert triangulation == []
+    record = na._skipped_record(na.NoiseAbatementTest('AS350B3', root=str(tmp_path)), '289108',
+                                first[0]['output'], str(norah2), 'exists')
+    assert record['speed_knots'] == first[0]['speed_knots']
+    assert record['flight_path_angle_deg'] == first[0]['flight_path_angle_deg']
+    assert record['norah2_output'] == first[0]['norah2_output']
+
+
+def test_a_skipped_sphere_without_a_build_record_counts_as_flagged(tmp_path):
+    """A sphere written before build records were gives no track flags, so the
+    manifest marks them unknown and --skip-flagged leaves the run out."""
+    from netCDF4 import Dataset
+    import provenance
+    _archive(tmp_path)
+    out = tmp_path / 'out'
+    first, _ = na.build_all('AS350B3', str(out), root=str(tmp_path), prefetch=False,
+                            board_correction='flat', point_stride=2)
+    with Dataset(first[0]['output'], 'a') as sphere:
+        sphere.delncattr(provenance.BUILD_RECORD_ATTRIBUTE)
+    manifest = tmp_path / 'manifest.csv'
+    records, _ = na.build_all('AS350B3', str(out), root=str(tmp_path), prefetch=False,
+                              board_correction='flat', point_stride=2, skip_existing=True,
+                              manifest_path=str(manifest))
+    assert records[0]['track_flags'] == na.UNKNOWN_TRACK_FLAGS
+    np.testing.assert_allclose(records[0]['speed_knots'], first[0]['speed_knots'], rtol=1e-6)
+    assert na.select_from_manifest(str(manifest)) == [os.path.basename(first[0]['output'])]
+    assert na.select_from_manifest(str(manifest), skip_flagged=True) == []
+
+
 def _comparable(record):
     """A build record with its output directories left out, and NaN as text (NaN != NaN)."""
     def plain(key, value):

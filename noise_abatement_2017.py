@@ -1770,6 +1770,41 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
                  range_ft=scattered['range'], source_height_ft=scattered['source_height'], run=str(run),
                  **parts)
 
+    # The record, without its paths and stamp: written into each sphere as its build
+    # record, so that build_all can list a run it skips as this build listed it.
+    details = dict(condition=row.get('test_cond'),
+                   layout=row.get('layout'), ambient_run=ambient_run,
+                   ambient_source=ambient_source,
+                   mics=len(mics), speed_knots=speed_knots, flight_path_angle_deg=fpa_deg,
+                   window_s=(float(segment['time'][0] - track['time'][0]),
+                             float(segment['time'][-1] - track['time'][0])),
+                   window_points=int(index_stop - index_start),
+                   min_elevation_deg=min_elevation_deg,
+                   max_array_range_ft=max_array_range_ft,
+                   temperature_k=atmosphere.temperature,
+                   relative_humidity=atmosphere.relative_humidity,
+                   pressure_kpa=atmosphere.pressure,
+                   speed_of_sound_ft_s=speed_of_sound_ft_s,
+                   azimuth_reference=azimuth_reference,
+                   track_flags='; '.join(check.flags) if check is not None else 'not checked',
+                   min_height_above_array_ft=(check.metrics['min_height_above_array_ft']
+                                              if check is not None else float('nan')),
+                   gross_weight_lb=run_metadata['gross_weight_lb'],
+                   air_density_kg_m3=air_density, air_density_source=density_source,
+                   wind_source=wind_source, wind_units=wind_units, wind_along_track=wind_along,
+                   wind_cross_track=wind_cross, airspeed_knots=airspeed_knots,
+                   rays='straight' if ray_model is None else getattr(ray_model, 'description', 'custom'),
+                   interpolation=('fixed rmax {:g}'.format(rmax) if interpolation is None else
+                                  'adaptive ' + ' '.join('{}={}'.format(k, v) for k, v in sorted(
+                                      dict(fa.ADAPTIVE_INTERPOLATION, **interpolation).items()))),
+                   gaps=(hemisphere.get('interpolation', {}).get('gaps', 0)),
+                   rim_range='' if max_rim_range_ft is None else '{:g} ft below {:g} deg'.format(
+                       max_rim_range_ft, rim_elevation_deg),
+                   board_correction=board_correction if board_correction == 'flat' else
+                   'plate_bem ' + ' '.join('{}={}'.format(k, v) for k, v in
+                                            sorted((ground or SITE_GROUND).items())),
+                   **{name: settings[name] for name in RECORDED_SETTINGS})
+
     os.makedirs(os.path.dirname(os.path.abspath(output_path)) or '.', exist_ok=True)
     title = sphere_title(AIRCRAFT_SPHERE_PREFIX.get(test.aircraft, test.aircraft), row.get('run_num', run), run[:3])
     spheres = [(output_path, hemisphere, title)]
@@ -1784,7 +1819,8 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
         # Each file is stamped with its own name; the settings, and their hash, are shared.
         stamp = provenance.build_provenance(
             'noise_abatement_2017.build_sphere', settings,
-            inputs=dict(inputs, output_path=os.path.basename(path)), input_signature=input_signature)
+            inputs=dict(inputs, output_path=os.path.basename(path)), input_signature=input_signature,
+            build_record=details)
         fa.write_aam_hemisphere_netcdf(
             path,
             sphere,
@@ -1820,41 +1856,8 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
 
     return dict(run=run, output=output_path, norah2_output=norah2_output_path,
                 tonal_output=part_paths.get('tonal'), broadband_output=part_paths.get('broadband'),
-                condition=row.get('test_cond'),
-                layout=row.get('layout'), ambient_run=ambient_run,
-                ambient_source=ambient_source,
-                mics=len(mics), speed_knots=speed_knots, flight_path_angle_deg=fpa_deg,
-                window_s=(float(segment['time'][0] - track['time'][0]),
-                          float(segment['time'][-1] - track['time'][0])),
-                window_points=int(index_stop - index_start),
-                min_elevation_deg=min_elevation_deg,
-                max_array_range_ft=max_array_range_ft,
-                temperature_k=atmosphere.temperature,
-                relative_humidity=atmosphere.relative_humidity,
-                pressure_kpa=atmosphere.pressure,
-                speed_of_sound_ft_s=speed_of_sound_ft_s,
-                azimuth_reference=azimuth_reference,
-                track_flags='; '.join(check.flags) if check is not None else 'not checked',
-                min_height_above_array_ft=(check.metrics['min_height_above_array_ft']
-                                           if check is not None else float('nan')),
-                gross_weight_lb=run_metadata['gross_weight_lb'],
-                air_density_kg_m3=air_density, air_density_source=density_source,
-                wind_source=wind_source, wind_units=wind_units, wind_along_track=wind_along,
-                wind_cross_track=wind_cross, airspeed_knots=airspeed_knots,
-                rays='straight' if ray_model is None else getattr(ray_model, 'description', 'custom'),
-                interpolation=('fixed rmax {:g}'.format(rmax) if interpolation is None else
-                               'adaptive ' + ' '.join('{}={}'.format(k, v) for k, v in sorted(
-                                   dict(fa.ADAPTIVE_INTERPOLATION, **interpolation).items()))),
-                gaps=(hemisphere.get('interpolation', {}).get('gaps', 0)),
-                rim_range='' if max_rim_range_ft is None else '{:g} ft below {:g} deg'.format(
-                    max_rim_range_ft, rim_elevation_deg),
-                board_correction=board_correction if board_correction == 'flat' else
-                'plate_bem ' + ' '.join('{}={}'.format(k, v) for k, v in
-                                         sorted((ground or SITE_GROUND).items())),
-                panam_version=stamp['panam_version'],
-                settings_sha256=stamp['panam_settings_sha256'],
-                input_signature=input_signature,
-                **{name: settings[name] for name in RECORDED_SETTINGS})
+                **details, panam_version=stamp['panam_version'],
+                settings_sha256=stamp['panam_settings_sha256'], input_signature=input_signature)
 
 
 #: build_sphere's parameters, for working out the settings of a call without making it.
@@ -1999,24 +2002,48 @@ def _skip_reason(test, run, output_path, call, skip_existing, skip_unchanged, ra
     return None
 
 
+#: track_flags of a skipped run whose sphere has no build record (written before
+#: build records were): not blank, so select_from_manifest(skip_flagged=True) leaves it out.
+UNKNOWN_TRACK_FLAGS = 'unknown: the sphere has no build record'
+
+
 def _skipped_record(test, run, output_path, norah2_directory, reason):
-    """The record of a run :func:`build_all` skipped, read from its existing sphere:
-    enough for the manifest, :func:`select_from_manifest` and the NORAH2 triangulation."""
+    """The record of a run :func:`build_all` skipped, read from its existing sphere.
+
+    The sphere's build record (``panam_build_record``, the record
+    :func:`build_sphere` returned, without its paths and stamp) gives every
+    manifest column as the original build wrote it, the float64 speed and flight
+    path angle among them, so the manifest row and the NORAH2 triangulation are
+    those of a full build.  The paths are this build's, the stamp columns come
+    from the sphere's provenance attributes, and ``skipped`` is ``reason``.
+
+    A sphere without a build record gives only the run's identity, its speed and
+    flight path angle from the sphere's float32 ``SPEED`` and ``FLIGHT_PATH_ANGLE``,
+    and ``track_flags`` :data:`UNKNOWN_TRACK_FLAGS`, so that a run whose flags are
+    not known is never taken as unflagged.
+    """
     row = test.by_run.get(run, {})
     with Dataset(output_path) as sphere:
-        speed = float(np.ravel(sphere['SPEED'][:])[0])
-        angle = float(np.ravel(sphere['FLIGHT_PATH_ANGLE'][:])[0])
         stamp = {name: sphere.getncattr(name) for name in sphere.ncattrs()}
+        if provenance.BUILD_RECORD_ATTRIBUTE in stamp:
+            details = provenance.read_record_json(stamp[provenance.BUILD_RECORD_ATTRIBUTE])
+        else:
+            logging.warning('run %s: %s has no build record; its manifest row has no track flags',
+                            run, os.path.basename(output_path))
+            details = dict(condition=row.get('test_cond'), layout=row.get('layout'),
+                           speed_knots=float(np.ravel(sphere['SPEED'][:])[0]),
+                           flight_path_angle_deg=float(np.ravel(sphere['FLIGHT_PATH_ANGLE'][:])[0]),
+                           track_flags=UNKNOWN_TRACK_FLAGS)
     parts = tone_split_paths(output_path)
-    return dict(run=run, output=output_path, skipped=reason,
+    return dict(run=run, output=output_path,
                 norah2_output=None if norah2_directory is None else _norah2_output(test, run, norah2_directory),
                 tonal_output=parts['tonal'] if os.path.exists(parts['tonal']) else None,
                 broadband_output=parts['broadband'] if os.path.exists(parts['broadband']) else None,
-                condition=row.get('test_cond'), layout=row.get('layout'),
-                speed_knots=speed, flight_path_angle_deg=angle,
+                **details,
                 panam_version=stamp.get('panam_version', ''),
                 settings_sha256=stamp.get('panam_settings_sha256', ''),
-                input_signature=stamp.get(provenance.INPUT_SIGNATURE_ATTRIBUTE, ''))
+                input_signature=stamp.get(provenance.INPUT_SIGNATURE_ATTRIBUTE, ''),
+                skipped=reason)
 
 
 def _warm_plate_tables(test, plans, kwargs):
@@ -2126,10 +2153,13 @@ def build_all(aircraft, output_directory, *, root=None, runs=None,
     exist: its sphere, and its NORAH2 file and tonal and broadband parts when
     asked for.  ``skip_unchanged`` (default False) does not rebuild one whose
     outputs exist and whose sphere's ``panam_settings_sha256`` and
-    ``panam_input_signature`` (:func:`run_input_files`) match this build's.  A
-    skipped run keeps its files; its record, read from the sphere, carries
-    ``skipped`` ('exists' or 'unchanged') and goes into the manifest and the
-    NORAH2 triangulation like a built one.
+    ``panam_input_signature`` (:func:`run_input_files`) match this build's; the
+    code version is not compared, so rebuild without it after updating PANAM.  A
+    skipped run keeps its files; its record, rebuilt from the sphere's build
+    record (:func:`_skipped_record`), is the one its original build returned
+    (track flags, rays, window and settings included) plus ``skipped`` ('exists'
+    or 'unchanged'), and goes into the manifest and the NORAH2 triangulation like
+    a built one.
 
     ``jobs`` (default 1) builds that many runs at once, in worker processes
     started with the spawn method.  Each worker opens the dataset itself.  The
@@ -2549,7 +2579,8 @@ def main(argv=None):
     parser.add_argument('--skip-unchanged', action='store_true',
                         help='do not rebuild a run whose existing sphere was built with the same settings '
                              '(panam_settings_sha256) from the same input files (panam_input_signature: '
-                             'names, sizes and modification times); default: rebuild')
+                             'names, sizes and modification times); default: rebuild.  A change to '
+                             'the PANAM code does not count: rebuild without it after updating PANAM')
     parser.add_argument('--jobs', type=int, default=1,
                         help='build this many runs at once in worker processes (default %(default)s); '
                              'the output is the same as with 1')

@@ -219,3 +219,20 @@ def test_the_input_signature_follows_size_and_time_and_names_no_directory(tmp_pa
     stamp = provenance.build_provenance('t', {}, input_signature=signature)
     assert stamp[provenance.INPUT_SIGNATURE_ATTRIBUTE] == signature
     assert provenance.INPUT_SIGNATURE_ATTRIBUTE not in provenance.build_provenance('t', {})
+
+
+def test_a_build_record_reads_back_equal():
+    """record_json keeps every float digit, NaN, tuples, dicts and numpy scalars,
+    reduces machine paths to file names, and a stamp writes it when given."""
+    record = dict(run='289108', speed=60.123456789012345, angle=np.float64(-6.000000000000001),
+                  mics=np.int64(12), window=(1.5, 30.25), height=float('nan'), level=float('-inf'),
+                  flags='', none=None, flag=True, nested={'a': [1, (2, 3)]}, path='/Users/me/a.nc')
+    back = provenance.read_record_json(provenance.record_json(record))
+    assert back.pop('path') == 'a.nc' and record.pop('path')
+    assert np.isnan(back.pop('height')) and np.isnan(record.pop('height'))
+    assert back == record
+    assert type(back['window']) is tuple and type(back['nested']['a'][1]) is tuple
+    assert type(back['mics']) is int
+    stamp = provenance.build_provenance('t', {}, build_record={'a': 1.0})
+    assert provenance.read_record_json(stamp[provenance.BUILD_RECORD_ATTRIBUTE]) == {'a': 1.0}
+    assert provenance.BUILD_RECORD_ATTRIBUTE not in provenance.build_provenance('t', {})
