@@ -60,6 +60,16 @@ def parse_arguments(argv=None):
                         help="fill each NOVALUE cell from its nearest filled direction, as NORAH2's "
                              'own predictor does (coverage stays 0); without it NICE-OPS reads them '
                              'as unmeasured')
+    parser.add_argument('--synthesize-hover', action='store_true',
+                        help='add a hover (advance ratio 0, at -12, 0 and +12 deg) averaged fore to '
+                             'aft in energy from the slowest file within 2 deg of level flight, as '
+                             'build_empirical_database makes one (default: off, so NICE-OPS clamps '
+                             'states slower than the slowest file)')
+    parser.add_argument('--scale-tip-speed-by-rmomega', action='store_true',
+                        help="form each file's advance ratio with the tip speed times RmOmega / 100 "
+                             '(RmOmega: rotor speed, percent of nominal; files without one in '
+                             '50-130 %% are refused); C_T stays nominal (default: off, nominal tip '
+                             'speed)')
     parser.add_argument('--no-spectrum', action='store_true',
                         help='write dBA and EAA only, without the band levels')
     parser.add_argument('--overwrite', action='store_true', help='replace an existing output')
@@ -101,11 +111,16 @@ def main(argv=None):
         accept_ground_included=args.accept_ground_included,
         mirror_rotor=args.mirror_rotor,
         fill_empty=args.fill_empty,
+        synthesize_hover=args.synthesize_hover,
+        scale_tip_speed_by_rmomega=args.scale_tip_speed_by_rmomega,
         store_spectrum=not args.no_spectrum,
         overwrite=args.overwrite)
     for condition in conditions:
-        print('{source}: {speed_knots:.2f} kt, {flight_path_angle_deg:+.2f} deg, mu {advance_ratio:.4f}'
-              .format(**condition))
+        label = condition['source']
+        if condition['condition_origin'] == 'synthesized_hover':
+            label = 'hover from ' + label
+        print('{}: {speed_knots:.2f} kt, {flight_path_angle_deg:+.2f} deg, mu {advance_ratio:.4f}'
+              .format(label, **condition))
     print(f'Wrote {len(conditions)} condition(s) to {args.output}')
     return 0
 

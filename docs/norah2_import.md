@@ -32,6 +32,8 @@ compares tip speed, radius, weight and C_T with the database's and refuses a mis
 | `--accept-ground-included` | off | convert FREEFIELD = 0 tables (see [ground](#3-ground-freefield--0-tables)) |
 | `--mirror-rotor` | off | reverse the azimuth (see [rotor sense](#4-rotor-sense)) |
 | `--fill-empty` | off | fill NOVALUE cells from the nearest direction (see [missing cells](#missing-cells)) |
+| `--synthesize-hover` | off | add a hover made from the slowest level file (see [hover](#5-hover)) |
+| `--scale-tip-speed-by-rmomega` | off | form each file's advance ratio with its own rotor speed (see [rotor speed](#6-rotor-speed-rmomega)) |
 | `--no-spectrum` | off | write dBA and EAA only |
 | `--overwrite` | off | replace an existing output |
 
@@ -154,6 +156,52 @@ azimuth is reversed: phi -> -phi (NORAH2 User Manual, Annex C). `mirror_rotor`
 property of how the set is used, so it is off by default, and it is recorded at the root
 (`norah2_mirror_rotor`).
 
+### 5. Hover
+
+NORAH2 has no two-axis hover hemisphere: its hover tables have one axis and are refused
+(above). Without a hover, NICE-OPS clamps every state slower than the slowest file to that
+file. For the R44 set that is 36 kt, so a slow approach spends part of its states clamped
+on advance ratio.
+
+`synthesize_hover` (`--synthesize-hover`) adds the hover `build_empirical_database` makes
+(THEORY §7.4), from the converted levels. The source is the slowest file within 2 deg of
+level flight (`LEVEL_FLIGHT_TOLERANCE`), or the slowest overall, with a warning, if none is.
+Its band levels at the sphere radius are averaged fore and aft in energy, and a cell keeps
+coverage 1 only where both partners were measured. With `fill_empty`, the filled levels are
+averaged, and the coverage is still taken before the fill. SPLA and EAA are recomputed from
+the averaged spectrum. The hover is written at advance ratio 0 and at -12, 0 and +12 deg.
+
+Its groups carry `condition_origin = 'synthesized_hover'`, and the source file's
+`norah2_source` and constants, so `norah2_ACSPEED` is the source's speed, not 0. The root
+records the source as `norah2_hover_source` (`none` without the option). In the R44 set the
+source is `R44_Flyover_55kts_0deg.hem`: the 36 kt approaches are not level. A file at 0 kt
+and 0 or ±12 deg duplicates a hover condition and is refused with the hover named.
+
+The option is off by default, because the hover is made from a forward-flight condition
+(for the R44, a 55 kt flyover), not measured. The average keeps none of the source's fore-aft
+directivity.
+
+### 6. Rotor speed: RmOmega
+
+RmOmega is the main rotor speed in percent of nominal. By default it is recorded and does
+not change the condition: the advance ratio is formed with the vehicle's nominal tip speed.
+`scale_tip_speed_by_rmomega` (`--scale-tip-speed-by-rmomega`) forms each file's advance
+ratio with the tip speed its rotor ran at (THEORY §8):
+
+    mu = 0.514444 V / (V_tip RmOmega / 100)
+
+The thrust coefficient stays C_W at the nominal tip speed, and so does the root's
+`main_rotor_tip_speed_meters_per_sec`. NICE-OPS forms the trajectory's C_T with its vehicle
+file's tip speed, and its load-factor scaling would otherwise read the lower rotor speed as
+extra thrust. A file without RmOmega, or with one outside 50-130 %, is refused: some A109
+files carry -999 or -479. The root records `norah2_scale_tip_speed_by_rmomega` (0 or 1).
+The hover is at advance ratio 0 either way.
+
+In the R44 set, RmOmega is 97.5-100 %, so the option raises the advance ratios by up to
+2.6 %. The option is off by default, because it moves files within the condition hull:
+NICE-OPS forms the trajectory's advance ratio with the nominal tip speed, so a file flown at
+a lower rotor speed is then found at the advance ratio it flew rather than at its airspeed.
+
 ## Missing cells
 
 NOVALUE cells are written as missing (-inf), with coverage 0. NICE-OPS reads that as
@@ -221,6 +269,8 @@ partial database nor a damaged earlier one.
 - `ias_to_tas` without a usable measurement atmosphere or density;
 - files with different angle grids or bands, a file that is all NOVALUE, the same file twice
   (also through a symbolic link), or the output among the inputs;
+- with `scale_tip_speed_by_rmomega`, a file without RmOmega or with one outside 50-130 %;
+- with `synthesize_hover`, a file at the hover's condition (0 kt at 0 or ±12 deg);
 - an existing output, from the command line without `--overwrite` (the function's
   `overwrite` defaults to True);
 - two files at one flight condition (NICE-OPS takes one sphere per condition);
@@ -238,12 +288,11 @@ condition rather than interpolating:
 
 ## Not done
 
-- **No hover is synthesized.** `build_empirical_database` makes one from the slowest level
-  sphere; this importer writes only what the files hold. NICE-OPS clamps below the slowest
-  hemisphere (R44: 36 kt), so a slow approach spends part of its states clamped on advance
-  ratio.
-- **Rotor speed.** RmOmega is recorded but does not change the tip speed or the advance
-  ratio.
+- **No hover by default.** Without `synthesize_hover` the importer writes only what the
+  files hold, and NICE-OPS clamps below the slowest hemisphere (R44: 36 kt).
+- **Rotor speed changes only the advance ratio.** With `scale_tip_speed_by_rmomega`, the
+  thrust coefficient stays at the nominal tip speed, and the levels are not adjusted for
+  rotor speed.
 - **The receiver correction cannot be undone.** NORAH builds with a constant
   pressure-doubling G on its plate microphones, where PANAM divides out a boundary-element
   model of the plate on the site ground. The difference is a fraction of a dB rms, with a
@@ -254,8 +303,9 @@ condition rather than interpolating:
 
 `tests/test_norah2_import.py` covers the conversion: a round trip through
 `write_norah2_hemisphere`, the file's own reference atmosphere, the geometry and
-`mirror_rotor`, missing cells and `fill_empty`, both speed mappings, every refusal and
-warning above, and the command line. With the NORAH2 package configured as `norah2` in
+`mirror_rotor`, missing cells and `fill_empty`, both speed mappings, the synthesized hover
+(its source, the energy average, its coverage before a fill, the fallback and the duplicate),
+the RmOmega scaling and its refusals, every refusal and warning above, and the command line. With the NORAH2 package configured as `norah2` in
 `local_paths`, it also converts the shipped R44 set (`-m data`). The list of checks, the
 mutants they catch, and a smoke test through NICE-OPS are kept in
 [`notes/norah2_import_checks.md`](notes/norah2_import_checks.md).

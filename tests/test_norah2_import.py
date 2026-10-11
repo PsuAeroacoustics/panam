@@ -489,6 +489,114 @@ def test_overwrite_false_refuses_and_inputs_are_not_outputs(tmp_path):
         build(files, link)
 
 
+def test_synthesized_hover_is_the_slowest_level_file_averaged_fore_to_aft(tmp_path):
+    """The hover is X_1 (80 kt, 0 deg; X_0 at -6 deg is not level) averaged in energy."""
+    files = three_hems(tmp_path, nose_boost_db=6.0, starboard_boost_db=20.0, minimum_level_db=60.0)
+    plain = tmp_path / 'plain.nod'
+    hover = tmp_path / 'hover.nod'
+    build(files, plain)
+    rows = build(files, hover, synthesize_hover=True)
+    assert [r['condition_origin'] for r in rows] == ['measured'] * 3 + ['synthesized_hover'] * 3
+    assert all(r['source'] == 'X_1.hem' for r in rows[3:])
+    with Dataset(str(plain)) as nc:
+        assert len(nc.groups) == 3 and nc.norah2_hover_source == 'none'
+    _, thetas, source, source_coverage, _, _ = group_grid(hover, 'sphere1')
+    assert np.array_equal(group_grid(plain, 'sphere1')[2], source)
+    expected_coverage = source_coverage.astype(bool)
+    expected_coverage = expected_coverage & expected_coverage[:, ::-1, :]
+    with Dataset(str(hover)) as nc:
+        assert len(nc.groups) == 6 and nc.norah2_hover_source == 'X_1.hem'
+        assert 'condition_origin' not in nc['sphere1'].ncattrs()
+        for k, angle in zip((3, 4, 5), (-12.0, 0.0, 12.0)):
+            group = nc[f'sphere{k}']
+            assert float(group['advance_ratio'][0]) == 0.0
+            assert float(group['flight_path_angle'][0]) == angle
+            assert group.condition_origin == 'synthesized_hover'
+            assert group.norah2_source == 'X_1.hem' and group.norah2_ACSPEED == 80.0
+    for k in (3, 4, 5):
+        _, _, amplitude, coverage, dba, eaa = group_grid(hover, f'sphere{k}')
+        # Fore and aft partners, in energy: 10 lg((10^(a/10) + 10^(b/10)) / 2).
+        with np.errstate(divide='ignore'):
+            energy = 10.0 * np.log10(0.5 * (10.0 ** (source / 10.0) + 10.0 ** (source[:, ::-1] / 10.0)))
+        finite = np.isfinite(energy)
+        assert np.array_equal(np.isfinite(amplitude), finite)
+        assert np.allclose(amplitude[finite], energy[finite], atol=1e-9)
+        assert np.array_equal(amplitude, amplitude[:, ::-1])
+        assert np.array_equal(coverage.astype(bool), expected_coverage)
+        with Dataset(str(hover)) as nc:
+            frequency = np.array(nc['frequency'][:])
+        spla, eaa_expected = fa._finite_sphere_levels(
+            *fa.spla_and_eaa_from_spectrum(amplitude, frequency, 1000.0, Atmosphere(
+                temperature=293.15, pressure=101.325, relative_humidity=20.0)))
+        assert np.allclose(dba[np.isfinite(spla)], spla[np.isfinite(spla)], atol=1e-9)
+        assert np.allclose(eaa, eaa_expected, atol=1e-9)
+    # The fore-aft average is what makes the hover differ from its source.
+    assert not np.allclose(source[np.isfinite(source)], amplitude[np.isfinite(source)])
+
+
+def test_synthesized_hover_coverage_is_taken_before_the_fill(tmp_path):
+    files = three_hems(tmp_path, starboard_boost_db=20.0, minimum_level_db=60.0)
+    plain = tmp_path / 'plain.nod'
+    filled = tmp_path / 'filled.nod'
+    build(files, plain, synthesize_hover=True)
+    build(files, filled, synthesize_hover=True, fill_empty=True)
+    _, _, a_plain, c_plain, _, _ = group_grid(plain, 'sphere4')
+    _, _, a_fill, c_fill, _, _ = group_grid(filled, 'sphere4')
+    assert np.array_equal(c_plain, c_fill)
+    assert np.isneginf(a_plain[:, :, 5]).any() and np.all(np.isfinite(a_fill[:, :, 5]))
+
+
+def test_synthesized_hover_falls_back_to_the_slowest_and_refuses_a_duplicate(tmp_path):
+    steep = [write_hem(tmp_path / f's{i}.hem', speed, angle)
+             for i, (speed, angle) in enumerate([(70.0, -6.0), (60.0, -9.0), (100.0, -3.0)])]
+    with pytest.warns(UserWarning, match='No sphere within 2 degrees of level flight'):
+        rows = build(steep, tmp_path / 'steep.nod', synthesize_hover=True)
+    assert rows[3]['source'] == 's1.hem'
+    idle = write_hem(tmp_path / 'idle.hem', 0.0, 0.0)
+    with pytest.raises(ValueError, match='idle.hem and the hover synthesized from idle.hem'):
+        build(three_hems(tmp_path) + [idle], tmp_path / 'x.nod', synthesize_hover=True)
+    assert not (tmp_path / 'x.nod').exists()
+
+
+def test_tip_speed_is_scaled_by_rmomega_only_when_asked(tmp_path):
+    files = three_hems(tmp_path)
+    for path, percent in zip(files, (95.0, 100.0, 104.0)):
+        edit_constant(path, 'RmOmega', f'{percent:g}')
+    nominal = tmp_path / 'nominal.nod'
+    scaled = tmp_path / 'scaled.nod'
+    build(files, nominal)
+    rows = build(files, scaled, scale_tip_speed_by_rmomega=True, synthesize_hover=True)
+    tip = VEHICLE['main_rotor_tip_speed_mps']
+    ct = VEHICLE['vehicle_weight_newtons'] / (1.225 * np.pi * 5.03 ** 2 * tip ** 2)
+    for path, factors in ((nominal, (1.0, 1.0, 1.0)), (scaled, (0.95, 1.0, 1.04))):
+        with Dataset(str(path)) as nc:
+            assert float(nc['main_rotor_tip_speed_meters_per_sec'][...]) == tip
+            assert nc.norah2_scale_tip_speed_by_rmomega == int(path == scaled)
+            for k, (speed, factor) in enumerate(zip((60.0, 80.0, 100.0), factors)):
+                group = nc[f'sphere{k}']
+                assert float(group['advance_ratio'][0]) == pytest.approx(
+                    0.514444 * speed / (tip * factor), rel=1e-12)
+                assert float(group['thrust_coefficient'][0]) == pytest.approx(ct, rel=1e-12)
+    assert rows[0]['main_rotor_tip_speed_mps'] == pytest.approx(0.95 * tip)
+    assert [r['advance_ratio'] for r in rows[3:]] == [0.0, 0.0, 0.0]
+
+
+def test_rmomega_scaling_refuses_a_missing_or_unusable_rotor_speed(tmp_path):
+    files = three_hems(tmp_path)
+    edit_constant(files[0], 'RmOmega', '-999')
+    with pytest.raises(ValueError, match='X_0.hem: RmOmega = -999 is not a rotor speed'):
+        build(files, tmp_path / 'x.nod', scale_tip_speed_by_rmomega=True)
+    build(files, tmp_path / 'y.nod')
+    raw = Path(files[1]).read_bytes().decode('ascii').split('\r\n')
+    kept = [line for line in raw if not line.startswith('RmOmega\t')]
+    kept[1] = kept[1].replace('14', '13', 1)
+    Path(files[1]).write_bytes('\r\n'.join(kept).encode('ascii'))
+    edit_constant(files[0], 'RmOmega', '100')
+    with pytest.raises(ValueError, match='X_1.hem: no RmOmega'):
+        build(files, tmp_path / 'x.nod', scale_tip_speed_by_rmomega=True)
+    assert not (tmp_path / 'x.nod').exists()
+
+
 def test_read_vehicle_rotor_data(tmp_path):
     sections = {'Main Rotor': {'radius': '5.03', 'tip speed': '214.88', 'blades': '2'},
                 'Atmosphere': {'density': '1.2', 'temperature': '300'},
@@ -541,6 +649,13 @@ def test_command_line(tmp_path):
     result = _run(*files, '-o', 'c.nod', '--tip-speed', '214.88', '--rotor-radius', '5.03',
                   '--weight-kg', '861', '--speed', 'ground-speed', '--accept-ground-included', cwd=tmp_path)
     assert result.returncode == 0, result.stderr
+    result = _run(*files, '-o', 'd.nod', '--vehicle', str(vehicle), '--speed', 'ground-speed',
+                  '--accept-ground-included', '--synthesize-hover', '--scale-tip-speed-by-rmomega',
+                  cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert 'Wrote 6 condition(s)' in result.stdout and 'hover from X_1.hem' in result.stdout
+    with Dataset(str(tmp_path / 'd.nod')) as nc:
+        assert nc.norah2_hover_source == 'X_1.hem' and nc.norah2_scale_tip_speed_by_rmomega == 1
 
 
 @pytest.mark.data
