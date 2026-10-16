@@ -1,6 +1,6 @@
 """End-to-end checks of the sphere-completion path against a real sphere file.
 
-These exercise what a NICE-OPS database actually contains.  The failure modes
+These exercise what a NICEOPS database actually contains.  The failure modes
 being guarded against were all invisible to unit tests of the helpers alone:
 duplicated (phi, theta) points, hover spheres laid out differently from
 forward-flight spheres, and EAA describing a different sphere than dBA.

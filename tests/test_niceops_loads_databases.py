@@ -1,9 +1,9 @@
-"""A PANAM-built .nod database, loaded by NICE-OPS itself.
+"""A PANAM-built .nod database, loaded by NICEOPS itself.
 
 panam's own tests read back the names and shapes it writes; only the consumer
 checks the rest of the contract (rotor_scale present, amplitude rows matching
 the channels, coverage lengths, equal bands and channel counts across groups).
-These run NICE-OPS's self-test on a small database, and export a sphere back
+These run NICEOPS's self-test on a small database, and export a sphere back
 to check its orientation.  They skip when the executable is not configured.
 """
 import subprocess
@@ -56,7 +56,7 @@ def test_niceops_self_test_passes_on_a_panam_database(spheres, tmp_path, options
 
 
 def test_niceops_refuses_a_database_without_rotor_scale(spheres, tmp_path):
-    """The self-test above is a real check: NICE-OPS stops on a broken database."""
+    """The self-test above is a real check: NICEOPS stops on a broken database."""
     database = tmp_path / 'database.nod'
     fa.build_empirical_database(str(spheres), str(database))
     with Dataset(str(database), 'a') as ds:
@@ -67,7 +67,7 @@ def test_niceops_refuses_a_database_without_rotor_scale(spheres, tmp_path):
 
 
 def test_niceops_exports_the_source_sphere_back_unchanged(spheres, tmp_path):
-    """At a stored condition NICE-OPS's AAM export is the source sphere: the
+    """At a stored condition NICEOPS's AAM export is the source sphere: the
     same levels on the same PHI/THETA, so neither side is mirrored."""
     database = tmp_path / 'database.nod'
     fa.build_empirical_database(str(spheres), str(database), load_factors=None)

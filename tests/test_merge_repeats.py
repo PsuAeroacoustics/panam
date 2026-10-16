@@ -1,6 +1,6 @@
 """build_empirical_database's merge_repeats: repeat runs of one condition, energy-averaged.
 
-Without it, two spheres at one speed and flight path angle are refused, as NICE-OPS
+Without it, two spheres at one speed and flight path angle are refused, as NICEOPS
 refuses them.  With it, they become one condition whose levels are the energy
 average of the two, and the database names both files.
 """

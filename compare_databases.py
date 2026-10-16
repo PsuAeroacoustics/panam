@@ -1,4 +1,4 @@
-"""Compare two NICE-OPS databases (.nod) and report what differs.
+"""Compare two NICEOPS databases (.nod) and report what differs.
 
 Usage:  python compare_databases.py A.nod B.nod [--tolerance DB] [--validate]
 
@@ -20,8 +20,8 @@ import nod_database
 
 def parse_arguments(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument('database_a', help='first NICE-OPS database (.nod)')
-    parser.add_argument('database_b', help='second NICE-OPS database (.nod)')
+    parser.add_argument('database_a', help='first NICEOPS database (.nod)')
+    parser.add_argument('database_b', help='second NICEOPS database (.nod)')
     parser.add_argument('--tolerance', type=float, default=0.0,
                         help='level differences up to this many dB (dB per 1000 m for EAA) are '
                              'not reported; a finite number, at least 0 (default %(default)g)')

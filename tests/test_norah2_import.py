@@ -1,4 +1,4 @@
-"""NORAH2 .hem hemispheres into a NICE-OPS database (build_database_from_norah2, norah2_to_nod.py)."""
+"""NORAH2 .hem hemispheres into a NICEOPS database (build_database_from_norah2, norah2_to_nod.py)."""
 import glob
 import json
 import os
@@ -414,7 +414,7 @@ def test_conditions_must_be_distinct_and_span_both_axes(tmp_path):
     level = [write_hem(tmp_path / f'l{i}.hem', speed, 0.0) for i, speed in enumerate((60.0, 80.0, 100.0))]
     with pytest.raises(ValueError, match='do not vary in both'):
         build(level, tmp_path / 'x.nod')
-    # Two are enough for NICE-OPS to refuse a constant axis (it stops the run).
+    # Two are enough for NICEOPS to refuse a constant axis (it stops the run).
     with pytest.raises(ValueError, match='do not vary in both'):
         build(level[:2], tmp_path / 'x.nod')
     assert not (tmp_path / 'x.nod').exists()
@@ -425,7 +425,7 @@ def test_conditions_must_be_distinct_and_span_both_axes(tmp_path):
 
 
 def test_collinear_conditions_are_warned_about(tmp_path):
-    """Three conditions on one line: NICE-OPS triangulates no simplex and takes the nearest."""
+    """Three conditions on one line: NICEOPS triangulates no simplex and takes the nearest."""
     line = [write_hem(tmp_path / f'c{i}.hem', speed, angle)
             for i, (speed, angle) in enumerate([(60.0, -6.0), (80.0, -3.0), (100.0, 0.0)])]
     with pytest.warns(UserWarning, match='lie on one line'):

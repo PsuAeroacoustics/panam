@@ -394,7 +394,7 @@ def tone_correction(band_levels, masked=False):
     every band below SPL(d) is treated so, which keeps an inaudible band
     rising out of a steep high-frequency fall from reading as a tone -- the
     prediction's counterpart of excluding tones in masked bands (FAA AC 36-4,
-    Appendix 2) and NICE-OPS's ToneMasking::below_noy_floor.
+    Appendix 2) and NICEOPS's ToneMasking::below_noy_floor.
 
     Args:
         band_levels: (n_times, 24) or (24,) SPL in dB, bands 50 Hz..10 kHz
@@ -1516,7 +1516,7 @@ def depropagate_hemisphere(
 
     ``ray_model``, if given, replaces the straight line in uniform air with a
     refracted ray (see :mod:`refracted_rays`, which defines the interface and
-    wraps NICE-OPS's ray tracer).  For each sampled emission point and
+    wraps NICEOPS's ray tracer).  For each sampled emission point and
     microphone it supplies where the sample is filed (the ray's launch
     depression in place of the straight line's elevation; the azimuth is
     unchanged), the reception time, the range spherical spreading is undone
@@ -1635,7 +1635,7 @@ def depropagate_hemisphere(
             sits near a band edge: at 46 kt the main rotor's 55 Hz harmonic is received at
             58-60 Hz ahead, in the 63 Hz band, and 50-52 Hz behind.  Only the FFT method
             supports it.  Use it for a sphere a hover is synthesized from; a flight sphere
-            NICE-OPS reads must keep received frequencies, since NICE-OPS applies no shift.
+            NICEOPS reads must keep received frequencies, since NICEOPS applies no shift.
             A band whose scaled edges reach past ``freq_range`` is missing for that sample
             rather than integrated over part of its width.
         air_relative_doppler: if True (with remove_doppler and a ray model that returns
@@ -3819,15 +3819,15 @@ def write_norah2_triangulation(filename, hemispheres, *, corrections=NORAH2_DEFA
     return triangles
 
 
-# --- Importing NORAH2 hemispheres into a NICE-OPS database -------------------
+# --- Importing NORAH2 hemispheres into a NICEOPS database -------------------
 #
 # The two formats disagree on four things, each worth a decibel or more if it
 # is carried across unconverted (measured; see docs/norah2_import.md):
 #
 # - Levels.  A .hem stores levels at POLDIST (60 m) with the absorption over
 #   those 60 m included, in the reference atmosphere TAMB/RELHUM/PAMB (ICAO,
-#   25 C and 70 %).  A NICE-OPS sphere stores them at its own radius with the
-#   absorption of that first radius kept and nothing beyond it, which NICE-OPS
+#   25 C and 70 %).  A NICEOPS sphere stores them at its own radius with the
+#   absorption of that first radius kept and nothing beyond it, which NICEOPS
 #   adds back from the surface outward.  Read as lossless, the 60 m of ICAO
 #   absorption is 0.33 dB of LA at the median (0.77 at worst), and 4-6 dB in
 #   the 8-10 kHz bands.
@@ -3836,7 +3836,7 @@ def write_norah2_triangulation(filename, hemispheres, *, corrections=NORAH2_DEFA
 #   on who wrote it (panam writes ground speed: its tracks carry no airspeed),
 #   so the importer will not guess.
 # - Ground.  FREEFIELD = 2 hemispheres are free field.  FREEFIELD = 0 ones
-#   (NORAH2's hover tables) include the ground reflection, which NICE-OPS's
+#   (NORAH2's hover tables) include the ground reflection, which NICEOPS's
 #   ground model would then add a second time.
 # - Rotor sense.  NORAH2 represents a type whose main rotor turns the other way
 #   by its class's hemispheres with the azimuth reversed (phi -> -phi, D1.5d
@@ -3854,7 +3854,7 @@ STANDARD_SEA_LEVEL_DENSITY = 1.225
 DRY_AIR_GAS_CONSTANT = 287.058
 WATER_VAPOR_GAS_CONSTANT = 461.495
 
-#: Radius of every sphere in a panam-built NICE-OPS database: 100 ft.
+#: Radius of every sphere in a panam-built NICEOPS database: 100 ft.
 DATABASE_SPHERE_RADIUS_M = 30.48
 
 #: The table constants a .hem must carry for it to be converted.
@@ -3897,10 +3897,10 @@ def _norah2_reference_atmosphere(constants, filename):
 
 
 def norah2_levels_at_radius(hemisphere, radius_m=DATABASE_SPHERE_RADIUS_M, absorption_band_method='center'):
-    """Band levels of a loaded .hem moved from POLDIST to a NICE-OPS sphere's radius.
+    """Band levels of a loaded .hem moved from POLDIST to a NICEOPS sphere's radius.
 
     The level at POLDIST includes absorption from the center out to POLDIST in
-    the file's reference atmosphere (TAMB/RELHUM/PAMB).  A NICE-OPS sphere keeps
+    the file's reference atmosphere (TAMB/RELHUM/PAMB).  A NICEOPS sphere keeps
     the absorption over its own first ``radius_m`` and is otherwise lossless, so
     the absorption between ``radius_m`` and POLDIST is taken back out and the
     spreading undone::
@@ -3993,7 +3993,7 @@ def norah2_speed_knots(constants, speed_mapping, filename='', air_density=None):
 def read_vehicle_rotor_data(filename):
     """Main rotor radius (m), tip speed (m/s), weight (N) and density (kg/m^3) of a vehicle file.
 
-    Takes either the NICE-OPS vehicle JSON or panam's ``vehicle.cfg``; both have
+    Takes either the NICEOPS vehicle JSON or panam's ``vehicle.cfg``; both have
     sections ``Main Rotor`` (radius, tip speed), ``Vehicle`` (weight, a mass in
     kg) and ``Atmosphere`` (density, the one the thrust coefficient is formed
     with).  Refuses a file that lacks any of them.
@@ -4028,7 +4028,7 @@ def fill_norah2_empty_cells(levels_db, phi_deg, theta_deg):
 
     NORAH2 does this at use time: a .hem leaves 33-62 % of its lower-hemisphere
     bins at NOVALUE, and its predictor takes an empty bin's level from the
-    nearest bin that has one.  NICE-OPS instead reads an unmeasured cell as no
+    nearest bin that has one.  NICEOPS instead reads an unmeasured cell as no
     data, which drops out of a blend where neighbors have data and is silence
     where none do.  This reproduces NORAH2's behavior in the database, band by
     band.  "Nearest" is the smallest angle between the two directions (body
@@ -4069,10 +4069,10 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
                                fill_empty=False, synthesize_hover=False,
                                scale_tip_speed_by_rmomega=False, store_spectrum=True, overwrite=True,
                                absorption_band_method='center'):
-    """Build a NICE-OPS database from NORAH2 (HELENA, ECAC Doc 32) ``.hem`` hemispheres.
+    """Build a NICEOPS database from NORAH2 (HELENA, ECAC Doc 32) ``.hem`` hemispheres.
 
     One condition per file, at load factor 1 with ``fixed_load_factor`` set, so
-    NICE-OPS scales the level to the trajectory's thrust coefficient itself.
+    NICEOPS scales the level to the trajectory's thrust coefficient itself.
     Each file is converted as follows:
 
     - levels moved from POLDIST to ``radius_m`` (see :func:`norah2_levels_at_radius`):
@@ -4080,7 +4080,7 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
       and POLDIST in the file's reference atmosphere taken back out, which
       leaves the first ``radius_m`` of absorption in the sphere as panam's own
       databases keep it;
-    - NOVALUE (-999) cells stored as missing (-inf, which NICE-OPS reads as
+    - NOVALUE (-999) cells stored as missing (-inf, which NICEOPS reads as
       unmeasured) with coverage 0; a direction with no band left has dBA -inf
       and EAA 0.  With ``fill_empty`` they take their nearest filled
       direction's level instead, as NORAH2 does at use time, still with
@@ -4114,7 +4114,7 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
         database_filename: output .nod path.
         main_rotor_tip_speed_mps, main_rotor_radius_m, vehicle_weight_newtons:
             the vehicle.  They set the advance ratio and thrust coefficient of
-            every condition and are written at the root, where NICE-OPS
+            every condition and are written at the root, where NICEOPS
             compares them with its vehicle file.  Required: a .hem carries none
             of them.
         speed_mapping: ``'ias_to_tas'`` or ``'ground_speed'``; required, see
@@ -4129,16 +4129,16 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
         accept_ground_included: convert FREEFIELD = 0 hemispheres, whose levels
             include the ground reflection, with a warning instead of refusing
             them.  Their levels are taken as free field, so the ground is
-            counted twice wherever NICE-OPS applies its own ground model.
+            counted twice wherever NICEOPS applies its own ground model.
         mirror_rotor: reverse the azimuth (phi -> -phi), NORAH2's way of
             using a class's hemispheres for a type whose main rotor turns the
             other way.
         fill_empty: fill each NOVALUE cell from its nearest filled direction
             (:func:`fill_norah2_empty_cells`), as NORAH2 does at use time.  The
-            filled cells keep coverage 0.  Off by default: NICE-OPS then reads
+            filled cells keep coverage 0.  Off by default: NICEOPS then reads
             them as unmeasured, silent where no neighbor has data.
         synthesize_hover: add a hover synthesized from the slowest level
-            condition (above).  Off by default: NICE-OPS then clamps every state
+            condition (above).  Off by default: NICEOPS then clamps every state
             slower than the slowest file to it.  The theta grid must be
             symmetric about 90 deg, so that theta and 180 - theta are both on it.
         scale_tip_speed_by_rmomega: form each file's advance ratio with the tip
@@ -4147,7 +4147,7 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
             A file without RmOmega, or with one outside 50-130 %, is refused.
             The thrust coefficient and the root's tip speed stay nominal.  Off
             by default.
-        store_spectrum: keep the band levels in each group, as NICE-OPS's
+        store_spectrum: keep the band levels in each group, as NICEOPS's
             spectral path needs.  Without them only dBA and EAA are written.
         overwrite: if False, refuse an existing ``database_filename``.
         absorption_band_method: how band absorption is formed, both in the move
@@ -4234,10 +4234,10 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
         if freefield == 0.0:
             if not accept_ground_included:
                 raise ValueError(f'{name}: FREEFIELD = 0, so its levels include the ground '
-                                 'reflection (NORAH2 writes its hover tables so). NICE-OPS adds '
+                                 'reflection (NORAH2 writes its hover tables so). NICEOPS adds '
                                  'its own ground; pass accept_ground_included to convert it anyway.')
             warnings.warn(f'{name}: FREEFIELD = 0 (ground reflection included) converted as free '
-                          'field; the ground is counted twice wherever NICE-OPS applies its own')
+                          'field; the ground is counted twice wherever NICEOPS applies its own')
         elif freefield != 2.0:
             raise ValueError(f'{name}: FREEFIELD = {freefield:g} is not a convention this importer '
                              'knows (2 = free field with absorption to POLDIST, 0 = ground included)')
@@ -4327,7 +4327,7 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
                                    condition_origin='synthesized_hover',
                                    constants=source_condition['constants']))
 
-    # NICE-OPS refuses two spheres at one condition, and a set of two or more
+    # NICEOPS refuses two spheres at one condition, and a set of two or more
     # that does not span both axes it triangulates over; say so here, naming
     # the files.
     keys = {}
@@ -4338,28 +4338,28 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
             label = f'the hover synthesized from {label}'
         if key in keys:
             raise ValueError('{} and {} have the same flight condition ({:.4g} kt, {:.4g} deg); '
-                             'NICE-OPS takes one sphere per condition, so merge or drop one'
+                             'NICEOPS takes one sphere per condition, so merge or drop one'
                              .format(keys[key], label, condition['speed_knots'],
                                      condition['flight_path_angle_deg']))
         keys[key] = label
     if len(conditions) >= 2:
         mus = np.array([c['advance_ratio'] for c in conditions])
         gammas = np.array([c['flight_path_angle_deg'] for c in conditions])
-        # NICE-OPS refuses a database of two or more spheres in which either
+        # NICEOPS refuses a database of two or more spheres in which either
         # axis is constant, not only one of three or more (measured on the
         # pinned binary: two level-flight spheres stop the run).
         if np.ptp(mus) == 0.0 or np.ptp(gammas) == 0.0:
             raise ValueError('the hemispheres do not vary in both speed and flight path angle '
-                             f'({", ".join(c["source"] for c in conditions)}); NICE-OPS refuses a '
+                             f'({", ".join(c["source"] for c in conditions)}); NICEOPS refuses a '
                              'database of two or more spheres that does not')
     if len(conditions) < 3:
-        warnings.warn(f'{len(conditions)} hemisphere(s): NICE-OPS takes the nearest condition '
+        warnings.warn(f'{len(conditions)} hemisphere(s): NICEOPS takes the nearest condition '
                       'rather than interpolating between fewer than three')
     elif _conditions_are_collinear(mus, gammas):
-        # NICE-OPS loads these, but its triangulation has no simplex (it logs
+        # NICEOPS loads these, but its triangulation has no simplex (it logs
         # "0 simplices") and every query falls back to the nearest condition.
         warnings.warn(f'the {len(conditions)} hemispheres lie on one line in (speed, flight path '
-                      'angle), so NICE-OPS finds no triangle among them and takes the nearest '
+                      'angle), so NICEOPS finds no triangle among them and takes the nearest '
                       'condition rather than interpolating')
 
     # Written to a temporary file beside the output and moved into place only
@@ -4403,7 +4403,7 @@ def _norah2_rotor_speed_fraction(constants, filename):
 def _conditions_are_collinear(mus, gammas):
     """Whether (advance ratio, flight path angle) points all lie on one line.
 
-    Taken as NICE-OPS takes them, each axis normalized onto [0, 1] (a
+    Taken as NICEOPS takes them, each axis normalized onto [0, 1] (a
     collinear set stays collinear under that, and the tolerance then has a
     scale).  A constant axis is collinear.
     """
@@ -4671,10 +4671,10 @@ _SphereCondition = namedtuple('_SphereCondition', [
 #: Per-group run metadata in a database (:func:`add_sphere_group`'s ``run_metadata``):
 #: the name of each numeric group attribute (f8, NaN when unknown) and its units, written
 #: beside it as the text attribute ``<name>_units`` (None: the wind units the caller
-#: declared).  They are group attributes, not variables: NICE-OPS's nc_open reads every
+#: declared).  They are group attributes, not variables: NICEOPS's nc_open reads every
 #: dataset's metadata in every group eagerly, and six one-element variables per group
 #: made a 1432-group database (B407_ambient_gated) load 0.23 s (31%) slower in every
-#: NICE-OPS run, where the same values as attributes, with their units, cost nothing
+#: NICEOPS run, where the same values as attributes, with their units, cost nothing
 #: measurable (0.72 s either way).
 GROUP_RUN_METADATA_NUMBERS = (
     ('gross_weight', 'N'),
@@ -4928,9 +4928,9 @@ def _complete_sphere_with_coverage(phi_list, theta_list, spla, eaa, amplitude, m
     n_source = len(phi_list)
     phi_full_list = np.concatenate((np.asarray(phi_list, dtype=float), mirror_phi))
     # Rows sorted by phi, so the spectra -- written gridded, without angles of
-    # their own -- are in the sorted order NICE-OPS reads them in.  Until
+    # their own -- are in the sorted order NICEOPS reads them in.  Until
     # 2026-09-25 they were left in completion order (-90..90, then the mirrored
-    # upper surface), which NICE-OPS read as sorted and so put every spectrum
+    # upper surface), which NICEOPS read as sorted and so put every spectrum
     # in the wrong direction.  dBA/EAA carry their angles per channel and were
     # never affected.
     order = np.argsort(phi_full_list, kind='stable')
@@ -5126,7 +5126,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                              azimuth_reference=None, spheres=None, exclude=None,
                              absorption_band_method='center', merge_repeats=False,
                              merge_speed_tolerance=0.0):
-    """Build a NICE-OPS sphere database from a directory of sphere files.
+    """Build a NICEOPS sphere database from a directory of sphere files.
 
     directory_name holds vehicle.cfg and, unless ``spheres`` says otherwise,
     the sphere files: every ``*.nc`` in it.  database_filename is the output,
@@ -5151,7 +5151,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     a 5 g pull-up, rather than the uniform default here.
 
     Pass ``load_factors=None`` to write each condition once, at the LF=1
-    reference only, and let NICE-OPS scale levels (and, for a spectral
+    reference only, and let NICEOPS scale levels (and, for a spectral
     database, every band) to the queried load factor analytically instead of
     from stored samples.  It carries the same information: every load factor
     this function would otherwise materialise is the *same* spectrum offset by
@@ -5161,13 +5161,13 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     could not derive from one.  The results are not identical, though.  The
     fixed database gets the 20*log10 law exactly at every load factor above
     1 g and leaves lower ones unscaled; a ladder reproduces the law only at
-    its stored load factors, NICE-OPS interpolating linearly in C_T between
+    its stored load factors, NICEOPS interpolating linearly in C_T between
     them (at 4 g between stored 3 and 5 g, 11.76 dB rather than 12.04), and
     scales the entries below 1 g it stores (0.7 g: -3.1 dB) except LF=0,
     which is stored unscaled.  It shrinks a database
     roughly in proportion to the load factor count (measured on Be407: 547.9
     MB -> well under 100 MB). The database is written with a root
-    ``fixed_load_factor`` flag so NICE-OPS knows the scaling is safe to apply
+    ``fixed_load_factor`` flag so NICEOPS knows the scaling is safe to apply
     -- it must NOT be inferred for a database built some other way, e.g. from
     genuinely separate measurements at different thrust conditions whose
     spectral *shape*, not just level, could differ with load factor.
@@ -5197,18 +5197,18 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
 
     clamp_empty_directions replaces the NaN that EAA becomes where ambient
     gating emptied a direction (``-inf - -inf``) with zero.  A NaN there is not
-    local: it put 886 NaN cells into a NICE-OPS footprint.  The dBA level is
+    local: it put 886 NaN cells into a NICEOPS footprint.  The dBA level is
     left as it falls out, -inf included; see :func:`_finite_sphere_levels`.
 
     store_spectrum keeps the source spectrum (frequency + amplitude) in each
-    sphere group.  NICE-OPS's spectral evaluation reads it, with the per-band
+    sphere group.  NICEOPS's spectral evaluation reads it, with the per-band
     coverage; without it only the broadband dBA/EAA path is available.  It also
     lets a database be re-reduced -- different weighting, a different
     propagation distance -- without the original sphere files.  It accounts for
     roughly seven eighths of the file size, so turn it off only for databases
     that will be used for broadband levels alone.
 
-    The database records what it was built against, so NICE-OPS can refuse a
+    The database records what it was built against, so NICEOPS can refuse a
     mismatch instead of passing it silently.  Root attributes: speed_reference
     ("ground" or "air"; the reference the conditions' advance ratio and flight
     path angle are taken in), and build_temperature_K, build_pressure_kPa and
@@ -5229,7 +5229,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     The root text attribute azimuth_reference ('track' or 'heading', see
     :data:`AZIMUTH_REFERENCES`) is always written: what the flight spheres'
     azimuth is measured from, the ground track or the airframe's heading, for
-    NICE-OPS to orient its sphere by.  It is the value every source sphere in
+    NICEOPS to orient its sphere by.  It is the value every source sphere in
     the directory carries (``build_sphere(azimuth_reference=)``); azimuth_reference,
     when given, is assumed for spheres that carry none and must agree with those
     that do, and spheres filed in different frames are refused.  Without either,
@@ -5247,7 +5247,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     wind_source, wind_units, wind_reference_direction,
     air_density_source, source_sphere (the sphere file's name) and
     condition_origin ('measured', 'extended_flight_path_angle' or
-    'synthesized_hover').  NICE-OPS reads none of them; they are recorded so
+    'synthesized_hover').  NICEOPS reads none of them; they are recorded so
     that air-referenced or per-run C_T labels can be tested without a rebuild.
 
     The root also records the build itself: the text attributes of
@@ -5265,7 +5265,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     'integrated' (ISO 9613-1 integrated over the band, flat band levels).  The
     database records it only in the provenance settings.
 
-    NICE-OPS takes one sphere per flight condition, so two spheres with the
+    NICEOPS takes one sphere per flight condition, so two spheres with the
     same SPEED and FLIGHT_PATH_ANGLE (equal to 1e-9 kt and deg) are refused.
     merge_repeats=True energy-averages them instead, with
     :func:`sphere_statistics.average_spheres` (a -999 cell is no data, left out
@@ -5338,7 +5338,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     repeats = [files for files in condition_files if len(files) > 1]
     if repeats and not merge_repeats:
         speed, angle = _sphere_condition(repeats[0][0])
-        raise ValueError('{} have the same flight condition ({:.4g} kt, {:.4g} deg); NICE-OPS takes '
+        raise ValueError('{} have the same flight condition ({:.4g} kt, {:.4g} deg); NICEOPS takes '
                          'one sphere per condition, so merge or drop one (merge_repeats=True, '
                          'or --merge-repeats, energy-averages them)'.format(
                              ' and '.join(os.path.basename(f) for f in repeats[0]), speed, angle))
@@ -5628,11 +5628,11 @@ def _write_database_root(ncdatabase, *, fixed_load_factor, speed_reference, atmo
     if azimuth_reference not in AZIMUTH_REFERENCES:
         raise ValueError('azimuth_reference must be one of {}, not {!r}'.format(
             AZIMUTH_REFERENCES, azimuth_reference))
-    # NICE-OPS requires this flag; it reads it unconditionally at load time.
+    # NICEOPS requires this flag; it reads it unconditionally at load time.
     ncdatabase.createVariable("same_grid", 'b')
     ncdatabase['same_grid'][:] = True
     # Optional: absent (old files) or false means every stored condition is a
-    # real, independent sample and NICE-OPS must not scale between them.  True
+    # real, independent sample and NICEOPS must not scale between them.  True
     # means every condition was synthesized from one LF=1 reference by a
     # uniform dB offset, so the reader may reproduce load factors this file
     # never stored by applying that same offset analytically.
@@ -5654,7 +5654,7 @@ def _write_database_root(ncdatabase, *, fixed_load_factor, speed_reference, atmo
     ncdatabase.build_relative_humidity_percent = float(atmosphere.relative_humidity)
 
     # Root vehicle data, as carried by every shipped database (S-76D_M3.nod,
-    # AW139_M1.nod, Be407_spectral.nod).  NICE-OPS reads them to redimensionalize
+    # AW139_M1.nod, Be407_spectral.nod).  NICEOPS reads them to redimensionalize
     # the sphere conditions and, for --export_aam, in preference to anything it
     # would otherwise infer, so leaving them out quietly changes what it does.
     # main_rotor_radius_meters restates each group's rotor_scale; tip speed and
@@ -5726,7 +5726,7 @@ def _finite_sphere_levels(spla, eaa):
     ``SPLA = -inf``, so ``EAA = SPLA - SPLAa`` is ``-inf - -inf``, a NaN.
 
     The level itself is left alone, including when it is -inf. That was checked
-    against NICE-OPS rather than assumed (its build/niceops, B205 track, Be407
+    against NICEOPS rather than assumed (its build/niceops, B205 track, Be407
     database, patching the directions a flyover actually uses so the test is
     demonstrably sensitive -- 26.9 dB of footprint change):
 
@@ -5756,7 +5756,7 @@ def add_sphere_group(ncdatabase, groupname, phi, theta, radius, SPLA, EAA, speed
     of :data:`GROUP_RUN_METADATA_NUMBERS` is written as an f8 attribute of the group
     (NaN where unknown) with its units in the text attribute ``<name>_units``, and
     each of :data:`GROUP_RUN_METADATA_TEXT` as a text attribute.  Attributes, not
-    variables, for NICE-OPS's load time (see :data:`GROUP_RUN_METADATA_NUMBERS`).
+    variables, for NICEOPS's load time (see :data:`GROUP_RUN_METADATA_NUMBERS`).
 
     doppler_shift_removed, when given, is written as the group's scalar int
     DOPPLER_SHIFT_REMOVED (0 received-frame, 1 de-Dopplerized).  coverage, when

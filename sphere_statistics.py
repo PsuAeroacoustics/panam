@@ -217,7 +217,7 @@ def write_averaged_sphere(filename, average, title=None, overwrite=True):
     Through :func:`flight_acoustics.write_aam_hemisphere_netcdf` (``art_levels``): the
     levels are written as they are, -999 where missing or below -100 dB, with the
     runs' mean weight as EMPTY_WEIGHT.  Two extra variables follow, which AAM and
-    NICE-OPS do not read: ``N_RUNS`` (i4, the runs covering each cell) and
+    NICEOPS do not read: ``N_RUNS`` (i4, the runs covering each cell) and
     ``AMPLITUDE_SD_DB`` (f4, dB, -999 where undefined).  The provenance stamp names
     ``sphere_statistics.write_averaged_sphere`` as the tool, hashes the averaging
     settings (``average['settings']``) and lists the averaged runs by file name in

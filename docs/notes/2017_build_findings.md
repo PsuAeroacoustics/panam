@@ -22,7 +22,7 @@ clockwise of the flight cards' relative directions may be the same 9 degrees. Th
 measured-hover analyses in the companion validation study (its B407 and R66 hover
 depropagations), and any database whose `hover_correction` came from them, were built with
 the turned azimuths and want rebuilding. The B407 hover correction that study applies is not
-one of them: it is fitted to NICE-OPS predictions against the measured microphones, not to
+one of them: it is fitted to NICEOPS predictions against the measured microphones, not to
 these spheres.
 
 On run 285236 the microphone list puts microphones 1, 3, 10, 17 and 36 within 0.6 ft in plan
@@ -107,10 +107,10 @@ Relabeling by either did not improve held-out SEL in the evaluation that motivat
 nothing uses them; they are recorded so that air-referenced or per-run labels can be tested
 without a rebuild.
 
-The group metadata are attributes rather than variables for NICE-OPS's sake. netCDF-4 opens
-every dataset in every group when a file is opened, and NICE-OPS's database load is mostly
+The group metadata are attributes rather than variables for NICEOPS's sake. netCDF-4 opens
+every dataset in every group when a file is opened, and NICEOPS's database load is mostly
 that. Six one-element variables per group took the 1432-group `B407_ambient_gated.nod` from
-0.72 to 0.95 s per NICE-OPS run (31%, every run, footprint unchanged); the same values as
+0.72 to 0.95 s per NICEOPS run (31%, every run, footprint unchanged); the same values as
 group attributes, with their units, cost nothing measurable.
 
 The 2017 LIDAR's speed unit was settled as knots on 2026-10-05, as the data report says: the
@@ -131,8 +131,8 @@ sideslip; a crab offset has to be fitted per day, never per aircraft.
 On a synthetic pass flown 10 deg crabbed, the heading-filed samples are the track-filed ones
 turned by exactly 10 deg, at the same elevations and the same levels.
 
-In the evaluation, moving only NICE-OPS's nose to the heading took the windy day's held-out
-SEL from 1.69 to 1.53 dB rms (1.54 with NICE-OPS's `--nose heading` as merged, which the
+In the evaluation, moving only NICEOPS's nose to the heading took the windy day's held-out
+SEL from 1.69 to 1.53 dB rms (1.54 with NICEOPS's `--nose heading` as merged, which the
 validation study's paper scores); the heading frame on the build side as well, emulated by
 turning each held-out sphere by its own build crab rather than by a rebuild, gave 1.50, and on
 the calm day the both-sides version cost +0.025 dB. No heading-frame rebuild had been scored

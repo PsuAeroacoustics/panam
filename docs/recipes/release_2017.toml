@@ -1,4 +1,4 @@
-# The 2017 release: the B407 database built for the NICE-OPS validation study.
+# The 2017 release: the B407 database built for the NICEOPS validation study.
 # docs/database_build.md, "The 2017 release settings", gives each value against PANAM's default.
 #
 #   python noise_abatement_2017.py B407 $OUT/spheres/Be407 --recipe docs/recipes/release_2017.toml \

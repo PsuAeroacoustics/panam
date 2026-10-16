@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Inspect a NICE-OPS database (.nod): list its conditions, map one, plot its envelope, check it."""
+"""Inspect a NICEOPS database (.nod): list its conditions, map one, plot its envelope, check it."""
 import argparse
 import math
 import sys
@@ -10,7 +10,7 @@ from cli import add_output_options, colon_pair, save_or_show
 
 def build_parser():
     parser = argparse.ArgumentParser(
-        description='Inspect a NICE-OPS database (.nod): list its conditions, map one quantity of '
+        description='Inspect a NICEOPS database (.nod): list its conditions, map one quantity of '
                     'a condition on a Lambert equal-area projection, plot the flight envelope it '
                     'covers, or check it against docs/file_formats.md.')
     parser.add_argument('--weight-coefficient', type=float, default=None,
@@ -24,13 +24,13 @@ def build_parser():
                             'lower hemisphere (|phi| <= 90 deg, the part a measurement can cover) and the '
                             'largest channel dBA (dB, at the sphere radius).',
         help='list the conditions')
-    listing.add_argument('database', help='NICE-OPS database (.nod)')
+    listing.add_argument('database', help='NICEOPS database (.nod)')
 
     plot = commands.add_parser(
         'plot', description='Map one quantity of one condition on a Lambert equal-area projection '
                             'with ART grid lines.',
         help='map one condition')
-    plot.add_argument('database', help='NICE-OPS database (.nod)')
+    plot.add_argument('database', help='NICEOPS database (.nod)')
     which = plot.add_mutually_exclusive_group(required=True)
     which.add_argument('-g', '--group', help='The condition by group name, e.g. sphere0')
     which.add_argument('-c', '--condition', type=colon_pair,
@@ -54,14 +54,14 @@ def build_parser():
         'envelope', description='Scatter the conditions in speed (kt) and flight path angle (deg), '
                                 'colored by condition_origin.',
         help='plot the conditions in speed and flight path angle')
-    envelope.add_argument('database', help='NICE-OPS database (.nod)')
+    envelope.add_argument('database', help='NICEOPS database (.nod)')
     add_output_options(envelope)
 
     check = commands.add_parser(
         'check', description='Check the database against docs/file_formats.md and print each '
                              'violation; the exit status is 1 when there is one, else 0.',
         help='check the file contract')
-    check.add_argument('database', help='NICE-OPS database (.nod)')
+    check.add_argument('database', help='NICEOPS database (.nod)')
     return parser
 
 

@@ -1,4 +1,4 @@
-"""nod_database: reading, checking and comparing NICE-OPS databases.
+"""nod_database: reading, checking and comparing NICEOPS databases.
 
 conftest.py also runs validate_nod on every database the other tests build.
 """
@@ -333,7 +333,7 @@ def test_coverage_gained_and_lost_and_energy_on_one_side(tmp_path, shared):
 
 def test_a_changed_reference_radius_or_doppler_convention_differs(tmp_path, shared):
     """Identical levels with another sphere radius or Doppler convention are a
-    different database to NICE-OPS."""
+    different database to NICEOPS."""
     changed = tmp_path / 'changed.nod'
     changed.write_bytes(shared.read_bytes())
     with Dataset(str(changed), 'a') as nc:

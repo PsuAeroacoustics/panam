@@ -223,7 +223,7 @@ def test_every_group_carries_its_runs_metadata(tmp_path):
             assert a['advance_ratio'][0] == pytest.approx(0.514444 * 60.0 / tip_speed)
             assert a.getncattr('gross_weight_units') == 'N' and a.getncattr('air_density_units') == 'kg m-3'
             assert a.getncattr('wind_along_track_units') == 'kt' and a.getncattr('advance_ratio_air_units') == '1'
-            # Attributes, not variables (NICE-OPS's load time).
+            # Attributes, not variables (NICEOPS's load time).
             assert not {'gross_weight', 'air_density', 'thrust_coefficient_run'} & set(a.variables)
             assert a.getncattr('wind_source') == 'lidar' and a.getncattr('air_density_source') == 'ground stations'
             assert a.getncattr('wind_reference_direction') == 'ground track'

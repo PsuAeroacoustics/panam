@@ -2,7 +2,7 @@
 
 PANAM is a Python toolkit for rotorcraft aeroacoustics. It turns flight-test
 microphone recordings into source noise spheres, builds the sphere databases
-(`.nod`) that the NICE-OPS footprint model reads, converts NORAH2 hemispheres
+(`.nod`) that the NICEOPS footprint model reads, converts NORAH2 hemispheres
 to the same format, and plots spheres, footprints and spectrograms.
 
 ## Install
@@ -86,10 +86,10 @@ options, each example does what it did before it had options.
 | Script | Purpose | Needs external data? |
 |---|---|---|
 | `noise_abatement_2017.py` | Build source spheres from the 2017 Noise Abatement flight test; `--check-tracks` checks the tracks without building; `--tone-split` also writes tonal and broadband spheres; `--node-statistics` adds per-cell sample counts and level spread; `--skip-existing` or `--skip-unchanged` resumes a build; `--jobs N` builds N runs at once; `--plate-cache list` or `clear` inspects or empties the plate-table cache; `--recipe` reads the settings from a build recipe (`docs/recipes/release_2017.toml`) | Yes: the 2017 archive (not for `--plate-cache`) |
-| `build_empirical_database.py` | Build a NICE-OPS database from a directory of spheres and its `vehicle.cfg`; `--manifest` and `--exclude` select the spheres; `--merge-repeats` energy-averages repeat runs; `--recipe` reads the settings from a build recipe | Your spheres |
-| `norah2_to_nod.py` | Build a NICE-OPS database from NORAH2 `.hem` hemispheres | `.hem` files |
-| `nod_tool.py` | Inspect a NICE-OPS database: `list` its conditions (speed, flight path angle, load factor, origin, coverage, maximum dBA), `plot` a Lambert map of one condition's dBA, EAA, band level or coverage, plot its `envelope` in speed and flight path angle, `check` the file contract | Your database |
-| `compare_databases.py` | Compare two NICE-OPS databases: per-band energy, coverage, unmatched conditions, root attributes; `--validate` checks the file contract | Your databases |
+| `build_empirical_database.py` | Build a NICEOPS database from a directory of spheres and its `vehicle.cfg`; `--manifest` and `--exclude` select the spheres; `--merge-repeats` energy-averages repeat runs; `--recipe` reads the settings from a build recipe | Your spheres |
+| `norah2_to_nod.py` | Build a NICEOPS database from NORAH2 `.hem` hemispheres | `.hem` files |
+| `nod_tool.py` | Inspect a NICEOPS database: `list` its conditions (speed, flight path angle, load factor, origin, coverage, maximum dBA), `plot` a Lambert map of one condition's dBA, EAA, band level or coverage, plot its `envelope` in speed and flight path angle, `check` the file contract | Your database |
+| `compare_databases.py` | Compare two NICEOPS databases: per-band energy, coverage, unmatched conditions, root attributes; `--validate` checks the file contract | Your databases |
 | `sphere_to_norah2.py` | Convert an AAM sphere to a NORAH2 `.hem` hemisphere; the measurement atmosphere is required | No (bundled sphere) |
 | `nc_lambert_ea.py` | Plot a sphere's levels on a Lambert equal-area projection | No (bundled sphere) |
 | `sphere_diff.py` | Energy-average repeat-run spheres (`average`), or print and map the band-by-band level difference of two spheres (`compare`) | Your spheres |
@@ -135,13 +135,13 @@ variable `PANAM_<NAME>` (for example `PANAM_NORAH2`), then `local_paths.toml`.
 | `noise_abatement_2017` | 2017 FAA/NASA Noise Abatement flight test archive | `noise_abatement_2017.py` (or `--root`), track-check tests |
 | `as350_demo` | AS350 demo data (`Acoustic/`, `Ambient/`, `AAM/`, `Tracking/`) | `AS350_289108_demo.py` and `as350_flip_check.py` (or `--basepath`) |
 | `norah2` | EASA NORAH2 public distribution (`Hemispheres/`) | NORAH2 tests |
-| `niceops` | NICE-OPS executable | tests that load PANAM databases in NICE-OPS |
-| `niceops_ray_geometry` | NICE-OPS ray-geometry executable | refracted-ray tests |
+| `niceops` | NICEOPS executable | tests that load PANAM databases in NICEOPS |
+| `niceops_ray_geometry` | NICEOPS ray-geometry executable | refracted-ray tests |
 | `b407_legacy_spheres` | legacy B407 sphere directory, the recipe's `reference_directory` | `docs/recipes/release_2017.toml` |
-| `b407_ray_profiles` | per-run NICE-OPS atmosphere CSVs (`<run>.csv`, heights in ft), the recipe's `ray_profiles` | `docs/recipes/release_2017.toml` |
+| `b407_ray_profiles` | per-run NICEOPS atmosphere CSVs (`<run>.csv`, heights in ft), the recipe's `ray_profiles` | `docs/recipes/release_2017.toml` |
 
 The 2017 archive and the AS350 demo data are not distributed with PANAM. The
-NICE-OPS executables come from a NICE-OPS build.
+NICEOPS executables come from a NICEOPS build.
 
 `as350_flip_check.py` also reads the older variable `AS350_DEMO_PATH`, ahead of
 `as350_demo`.
@@ -153,7 +153,7 @@ pytest                  # from the repository root
 pytest -m "not data"    # skip the tests that read the external datasets
 ```
 
-Tests whose data or NICE-OPS executables are not configured are skipped, so a
+Tests whose data or NICEOPS executables are not configured are skipped, so a
 fresh checkout passes with skips. The `data` tests can take minutes on a cold
 cloud drive.
 
@@ -168,7 +168,7 @@ cloud drive.
 - [`docs/file_formats.md`](docs/file_formats.md): the sphere netCDF file, the
   `.nod` database contract and `vehicle.cfg`.
 - [`docs/norah2_import.md`](docs/norah2_import.md): converting NORAH2
-  hemispheres to a NICE-OPS database.
+  hemispheres to a NICEOPS database.
 - [`docs/DEVELOPING.md`](docs/DEVELOPING.md): for developers: code layout,
   conventions, testing.
 - [`AGENTS.md`](AGENTS.md): instructions for AI coding tools.

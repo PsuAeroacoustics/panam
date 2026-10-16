@@ -188,7 +188,7 @@ def synthesize_band_histories(sphere, track, mics, *, times=None, speed_of_sound
         doppler_shift: the hemisphere is filed at emitted frequencies
             (``depropagate_hemisphere(remove_doppler=True)``): shift each band to
             the received frequencies.  Default False: the hemisphere is filed at
-            received frequencies, as a flight sphere for NICE-OPS is.
+            received frequencies, as a flight sphere for NICEOPS is.
         air_relative_doppler: with ``doppler_shift`` and a ray model returning
             ``emission_direction`` and ``doppler_speed``, take D = 1 / (1 - v.n /
             (c + W.n)) instead of the straight line's 1 / (1 - v.u / c).

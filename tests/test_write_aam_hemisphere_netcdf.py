@@ -184,7 +184,7 @@ def test_missing_bands_are_written_as_the_aam_sentinel(tmp_path):
 
 
 def test_database_carries_the_root_vehicle_fields_niceops_reads(tmp_path):
-    """The shipped .nod files all carry these; NICE-OPS cross-checks tip speed
+    """The shipped .nod files all carry these; NICEOPS cross-checks tip speed
     against them and prefers them for --export_aam."""
     import flight_acoustics as fa_mod
 
@@ -225,7 +225,7 @@ def _sphere_dir_with_two_conditions(tmp_path):
 def test_load_factors_none_writes_one_group_per_condition_at_the_lf1_reference(tmp_path):
     """See the docstring: every load factor add_sphere_group would otherwise
     materialise is the *same* spectrum at a uniform dB offset, so with
-    load_factors=None NICE-OPS is expected to reproduce them analytically
+    load_factors=None NICEOPS is expected to reproduce them analytically
     instead of finding them stored."""
     sphere_dir = _sphere_dir_with_two_conditions(tmp_path)
 
@@ -294,7 +294,7 @@ def test_denormal_band_power_is_written_as_missing_not_as_minus_3000_db(tmp_path
 def test_empty_directions_leave_a_usable_eaa(tmp_path):
     """A gated-out direction must not put a NaN in EAA.
 
-    Checked against NICE-OPS itself: a -inf dBA is harmless (its exposure
+    Checked against NICEOPS itself: a -inf dBA is harmless (its exposure
     integral sums energy, so the direction simply contributes nothing), but a
     NaN EAA put 886 NaN cells into a 120x120 footprint. So the level is left
     alone, including -inf, and only EAA is given a value.
@@ -367,7 +367,7 @@ def _sphere_dir_with_mismatched_grids(tmp_path):
 def test_shared_grid_and_frequency_is_detected_and_deduplicated(tmp_path):
     """When every condition shares one phi/theta grid and one frequency axis
     (the normal case -- see build_empirical_database's docstring), they are
-    written once at the root instead of once per condition, and NICE-OPS is
+    written once at the root instead of once per condition, and NICEOPS is
     expected to read them from there instead of expecting them per group.
     """
     sphere_dir = _sphere_dir_with_two_conditions(tmp_path)

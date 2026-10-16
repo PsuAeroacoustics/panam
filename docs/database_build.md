@@ -1,7 +1,7 @@
 # Building spheres and databases from the 2017 flight test
 
 This is how to turn the 2017 FAA/NASA Noise Abatement flight test into AAM source spheres
-(`.nc`) and a NICE-OPS database (`.nod`). It is also the reference for the build's track
+(`.nc`) and a NICEOPS database (`.nod`). It is also the reference for the build's track
 frame, track check, per-run metadata and azimuth frame. What the files contain is in
 [`file_formats.md`](file_formats.md), and the models are in [`THEORY.md`](THEORY.md). The
 results of checking the 2017 data, and the heading-frame evaluation, are kept as a record in
@@ -71,7 +71,7 @@ The main options:
 | `--norah2-directory DIR` | none | also write each sphere as a NORAH2 `.hem`, and `<prefix>_Triangulation.int` |
 | `--winds FILE` | none | the wind at the aircraft per run, recorded (see [per-run metadata](#per-run-metadata)) |
 | `--ray-model` | `straight` | `straight`, or `wind`: depropagate along straight rays carried by each run's wind from `--winds`, uniform over the path; a run without a wind fails |
-| `--ray-profiles DIR` | none | depropagate along refracted rays through each run's NICE-OPS atmosphere CSV, `<run>.csv` (heights in ft), traced by `niceops_ray_geometry`; straight lines for a run without one |
+| `--ray-profiles DIR` | none | depropagate along refracted rays through each run's NICEOPS atmosphere CSV, `<run>.csv` (heights in ft), traced by `niceops_ray_geometry`; straight lines for a run without one |
 | `--recipe FILE.toml` | none | take settings from a [build recipe](#build-recipes); options given override it |
 | `--azimuth-reference` | `track` | `track` or `heading` (see [the heading frame](#the-heading-frame)) |
 | `--no-track-check`, `--min-height-above-array-ft` | check on, 10 ft | see [options](#options) |
@@ -156,7 +156,7 @@ leaves out runs whose track check raised a flag. `--sphere FILE` names spheres o
 instead, and `--exclude` takes shell patterns as well as names. The database's root attribute
 `source_spheres` lists the file names used, and `excluded_spheres` those `--exclude` left out.
 
-NICE-OPS takes one sphere per flight condition, so two spheres with the same speed and flight
+NICEOPS takes one sphere per flight condition, so two spheres with the same speed and flight
 path angle are refused. `--merge-repeats` energy-averages such repeat runs into one condition
 instead (`sphere_statistics.average_spheres`), and `--merge-speed-tolerance KT` also merges
 spheres at one flight path angle whose speeds lie within KT of the slowest. The merged
@@ -168,7 +168,7 @@ each flag defaults to the function's default (`python build_empirical_database.p
 them with their units):
 
 - load factors of 0.7, 1.1, 1.5, 1.9 and 2.3 g (`--load-factors`, or `--fixed-load-factor`
-  for one 1 g reference that NICE-OPS scales);
+  for one 1 g reference that NICEOPS scales);
 - no extended flight path angles (`--extended-fpa LO:HI`, deg);
 - a hover synthesized from the slowest sphere within 2° of level flight, as built
   (`--hover-source`, `--level-flight-tolerance`; the `--hover-source` path is taken
@@ -184,15 +184,15 @@ correction is a Python callable and has no flag; a [build recipe](#build-recipes
 `"module:callable"`. `--recipe FILE.toml` takes the recipe's `[database]` settings, and
 options given on the command line override them.
 
-### 6. Load it in NICE-OPS
+### 6. Load it in NICEOPS
 
 ```sh
 niceops -d ~/panam_out/Be407.nod --self_test -l ~/panam_out/self_test.log
 ```
 
-If NICE-OPS accepts the database, the log ends with "Self test passed".
+If NICEOPS accepts the database, the log ends with "Self test passed".
 `tests/test_niceops_loads_databases.py` runs this same check. Use the same vehicle data in
-NICE-OPS as in `vehicle.cfg`.
+NICEOPS as in `vehicle.cfg`.
 
 ### Time and disk
 
@@ -370,7 +370,7 @@ the value every source sphere carries. The rules for mixed sources:
   with the ones that carry it;
 - spheres filed in different frames are refused, as mixed `DOPPLER_SHIFT_REMOVED` is.
 
-NICE-OPS (`--nose`) reads the attribute to choose its nose. For `heading` it uses the
+NICEOPS (`--nose`) reads the attribute to choose its nose. For `heading` it uses the
 heading at all speeds, which then needs the run's `--frame_bearing` for an AC track. The
 hover groups are heading-oriented on both sides whatever the attribute says.
 
@@ -380,7 +380,7 @@ refuses to write a database without one. A NORAH2 import
 
 ## The 2017 release settings
 
-The 2017 release is the B407 database built for the NICE-OPS validation study. It was built
+The 2017 release is the B407 database built for the NICEOPS validation study. It was built
 with PANAM's functions, but not with all of their defaults. The table gives both. "PANAM
 default" is the default of `build_sphere` (or `build_empirical_database`), with the command
 line's default added where it differs.
@@ -441,7 +441,7 @@ Two [`local_paths`](../local_paths.example.toml) entries give the recipe's input
 
 - `b407_legacy_spheres`: the directory of the shipped legacy B407 spheres, whose grids the
   new spheres take (`reference_directory`).
-- `b407_ray_profiles`: the directory of per-run NICE-OPS atmosphere CSVs, `<run>.csv` with
+- `b407_ray_profiles`: the directory of per-run NICEOPS atmosphere CSVs, `<run>.csv` with
   heights in ft (`ray_profiles`). PANAM does not build these profiles.
 
 The same build from Python:

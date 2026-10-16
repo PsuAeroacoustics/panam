@@ -16,7 +16,7 @@ import local_paths
 
 
 def executable(name):
-    """A NICE-OPS executable, or None: local_paths (PANAM_<NAME> or
+    """A NICEOPS executable, or None: local_paths (PANAM_<NAME> or
     local_paths.toml), then the variable <NAME>, then PATH."""
     return (local_paths.data_path(name, required=False) or os.environ.get(name.upper())
             or shutil.which(name))
