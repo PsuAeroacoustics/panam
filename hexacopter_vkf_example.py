@@ -2,28 +2,46 @@
 """
 Hexacopter Acoustic Signal Separation using Vold-Kalman Filter
 
-This script applies the Vold-Kalman filter to separate harmonic components
-of acoustic data from a reconfigurable hexacopter with 6 rotors.  The number
-of rotors is taken from the RPM record.  By default the filter tracks the
-orders at the rotors' own speeds; with a microphone position
-(``VKF_DOPPLER_RECEIVER``) it tracks them as the microphone hears them, delayed
-and Doppler-shifted along the aircraft's track (order_tracking.py).
+The bundled record (example_data/F100_20_P#1[FA1FZC-3.h5].mat) is one 100 ft,
+20 mph flyover of a reconfigurable hexacopter: the pressures of 16 microphones
+as recorded, the aircraft track from its autopilot, the speeds of its six
+rotors and the microphone positions.  The script resamples one microphone's
+pressure onto emission time with flight_acoustics.dedopplerize
+(docs/THEORY.md §10), which removes the propagation delay and the Doppler
+shift, and then separates the blade-passage harmonics of every rotor with the
+Vold-Kalman filter at the speeds the rotors turned.  The number of rotors is
+taken from the speed record.  The settings at the top of the file keep the
+first ten harmonics, which stand above the broadband floor on this record,
+with bandwidths that follow how narrow the de-Dopplerized tones are: 5 Hz for
+the fundamental, 3 Hz for harmonics 2-4 and 2 Hz above.
+
+``--doppler track`` instead filters the signal as recorded at the speeds the
+microphone hears, delayed and Doppler-shifted along the track
+(order_tracking.observed_order_track), and ``--doppler none`` filters it as
+recorded at the rotors' own speeds, which leaves each harmonic off by up to
+2.5 % on this pass.
+
+Microphones 1-12 and 16 are on ground boards; 13-15 are on 1.2 m poles beside
+boards 8, 10 and 6, and their spectra carry ground-reflection interference
+(info.micType in the file).
 
 Translated from a MATLAB script developed by Joel Sundar Rachaprolu at Penn State
 University. 
 """
 
 import argparse
+import functools
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.io import loadmat
 from scipy.interpolate import interp1d
-from scipy.signal import resample_poly
+from scipy.ndimage import uniform_filter1d
+from scipy.signal import butter, resample_poly, sosfiltfilt, spectrogram
 import os
 import time
 import concurrent.futures as cf
 from vold_kalman_filter import vold_kalman_filter
-from flight_acoustics import highpass
+from flight_acoustics import P_REF, dedopplerize, highpass, psd_welch
 from order_tracking import observed_order_track
 from cli import add_output_options, save_all_or_show
 
@@ -36,42 +54,64 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # The bundled record, found beside this script whatever the current directory.
 MAT_FILE = os.path.join(HERE, 'example_data', 'F100_20_P#1[FA1FZC-3.h5].mat')
 DOWNSAMPLE_FACTOR = 8
-HIGHPASS_CUTOFF_HZ = 100
+# Low enough to keep the blade-passage fundamental, 45-90 Hz on this record.
+HIGHPASS_CUTOFF_HZ = 30
 
 # VKF settings
-MIC_RANGE = 16
-# Blade-passage-frequency harmonics k x BPF; the first (45-90 Hz on this
-# record) lies below the 100 Hz high-pass.
-VKF_ORDERS = list(range(2, 31))
-VKF_P = 1
+# Microphone to separate, 1-based: 16 lies beneath the flight path.
+MIC = 16
+# Blade-passage-frequency harmonics k x BPF.  Above the 10th, the rotors'
+# harmonics lie within about 3 dB of the broadband floor on this record, and
+# their components would be mostly broadband noise.
+VKF_ORDERS = list(range(1, 11))
+VKF_P = 2
+# Full -3 dB bandwidth of each harmonic, Hz.  De-Dopplerized, about 90 % of a
+# tone's energy lies within 3 Hz of its track; the strong fundamental takes a
+# wider band and the weaker harmonics narrower ones, which admit less noise.
+VKF_BANDWIDTH_HZ = {k: 5.0 if k == 1 else 3.0 if k <= 4 else 2.0 for k in VKF_ORDERS}
+# The bandwidth of a harmonic the table leaves out: VKF_BW_PERCENT of its
+# frequency, clipped to [VKF_MIN_BW, VKF_MAX_BW] Hz.
 VKF_MIN_BW = 3
 VKF_MAX_BW = 9
 VKF_BW_PERCENT = 0.05
 VKF_SOLVER = "auto"  # banded Cholesky; sparse UMFPACK/SuperLU when needed
 VKF_USE_COUPLING = True  # False is faster but less accurate
 VKF_N_JOBS = None  # defaults to CPU count
-# Microphone position (x, y, z), m, in the aircraft position's frame.  None
-# filters at the rotors' own speeds; a position filters at the speeds the
-# microphone hears (propagation delay and Doppler shift along the track).
-VKF_DOPPLER_RECEIVER = None
+# How the Doppler shift is handled, and the title of the signal's plots.
+# 'dedopplerize': resample onto emission time and filter at the rotors' speeds;
+# 'track': filter the recorded signal at the speeds the microphone hears;
+# 'none': filter the recorded signal at the rotors' speeds.
+DOPPLER = 'dedopplerize'
+TITLES = {'dedopplerize': 'De-Dopplerized (emission time)', 'track': 'As recorded, Doppler-shifted tracks',
+          'none': 'As recorded (reception time)'}
+DOPPLER_MODES = tuple(TITLES)
 SOUND_SPEED_M_S = 343.0
+NO_BLADE = 2
 
 # Plot settings
 PLOT_INTERACTIVE = False
-PLOT_MIC = 1
 ZOOM_TIME_WINDOW = (108, 108.2)
+# Bands of the residual-energy summary, Hz.
+RESIDUAL_BANDS_HZ = ((40, 100), (100, 300), (300, 600), (600, 1000), (1000, 2000))
+# Spectrogram figure: band (Hz) and rotor whose blade-passage harmonics are
+# drawn.  R2's 4th and 5th harmonics are the strongest tones in this band.
+SPECTROGRAM_BAND_HZ = (270, 400)
+SPECTROGRAM_ROTOR = 2
+SPECTROGRAM_WINDOW_S = 0.25
+PSD_LABEL = 'PSD, dB re (20 µPa)²/Hz'
 
-def load_hexacopter_data(mat_file_path, downsample_factor=8):
-    """Load and downsample hexacopter acoustic and aircraft data.
+def load_hexacopter_data(mat_file_path):
+    """Load hexacopter acoustic and aircraft data at the recorded rate.
     
     Args:
         mat_file_path: Path to .mat file containing hexacopter data.
-        downsample_factor: Factor by which to downsample acoustic data (default: 8).
         
     Returns:
-        Dictionary with keys: acoustics_T, acoustics_P, aircraft_time, aircraft_rpm
-        (rad/s), fs (Hz), and, when the file has them, track_time (s) and
-        track_position (n, 3), m.
+        Dictionary with keys: acoustics_T (s), acoustics_P (n, n_mics), Pa, as
+        stored (float32 in the bundled record), aircraft_time (s),
+        aircraft_rpm (n_time, n_rotors), rad/s, and, when the file has them,
+        track_time (s), track_position (n, 3), m, mic_location (n_mics, 3),
+        m, in the track's frame, and mic_type (n_mics,), 'ground' or 'pole'.
     """
     print("Loading data from:", mat_file_path)
     
@@ -80,35 +120,31 @@ def load_hexacopter_data(mat_file_path, downsample_factor=8):
     aircraft = mat_data['aircraft']
     
     acoustics_T = acoustics['T'].item()
+    # The recorder's float32 samples; one microphone at a time is taken in float64.
     acoustics_P = acoustics['P'].item()
     aircraft_time = aircraft['time_onboard'].item()
-    aircraft_rpm = aircraft['rpm'].item()
+    aircraft_rpm = np.asarray(aircraft['rpm'].item(), dtype=float)
+    aircraft_rpm = aircraft_rpm.reshape(len(aircraft_rpm), -1)
     
     print(f"Original data shape: T={acoustics_T.shape}, P={acoustics_P.shape}")
     print(f"Aircraft RPM shape: {aircraft_rpm.shape}")
     
-    # Downsample the acoustic data.  Low-pass before keeping every Nth sample:
-    # plain slicing folded everything above the new Nyquist back into the band,
-    # +3 dB at 2-3 kHz and +6 dB at 3-4 kHz on this record.
-    acoustics_T = acoustics_T[::downsample_factor]
-    acoustics_P = resample_poly(acoustics_P, 1, downsample_factor, axis=0)
-    
-    print(f"Downsampled data shape: T={acoustics_T.shape}, P={acoustics_P.shape}")
-    
-    # Calculate sampling frequency
-    fs = int(np.round(1.0 / (acoustics_T[1] - acoustics_T[0])))
-    print(f"Sampling frequency: {fs} Hz")
+    print(f"Sampling frequency: {1.0 / (acoustics_T[1] - acoustics_T[0]):.0f} Hz")
     
     data = {
         'acoustics_T': acoustics_T,
         'acoustics_P': acoustics_P,
         'aircraft_time': aircraft_time,
         'aircraft_rpm': aircraft_rpm,
-        'fs': fs
     }
     if 'T' in aircraft.dtype.names and 'position' in aircraft.dtype.names:
         data['track_time'] = aircraft['T'].item()
         data['track_position'] = np.asarray(aircraft['position'].item()).T
+    info = mat_data.get('info')
+    if info is not None and 'micLocation' in info.dtype.names:
+        data['mic_location'] = np.asarray(info['micLocation'].item(), dtype=float).T
+    if info is not None and 'micType' in info.dtype.names:
+        data['mic_type'] = np.atleast_1d(info['micType'].item()).astype(str)
     return data
 
 
@@ -133,6 +169,24 @@ def apply_highpass_filter(acoustics_P, cutoff_freq, fs):
                                 for i in range(acoustics_P.shape[1])])
 
 
+def rotor_speed_function(aircraft_time, aircraft_rpm):
+    """Rotor speeds at any times: cubic inside the speed record, its first or
+    last speed outside it, since a cubic extrapolated past the record runs away.
+
+    Args:
+        aircraft_time: Times of the speed record, s.
+        aircraft_rpm: Rotor speeds, rad/s, shape (n_time, n_rotors) or
+            (n_time,) for a single rotor.
+
+    Returns:
+        A function of times, s, that returns speeds, rad/s, shape (n, n_rotors).
+    """
+    aircraft_time = np.asarray(aircraft_time, dtype=float)
+    rpm = np.asarray(aircraft_rpm, dtype=float)
+    cubic = interp1d(aircraft_time, rpm.reshape(len(rpm), -1), kind='cubic', axis=0)
+    return lambda t: cubic(np.clip(t, aircraft_time[0], aircraft_time[-1]))
+
+
 def interpolate_rpm_to_acoustic_time(aircraft_time, aircraft_rpm, acoustics_T):
     """Interpolate RPM data to acoustic sampling times.
     
@@ -143,23 +197,85 @@ def interpolate_rpm_to_acoustic_time(aircraft_time, aircraft_rpm, acoustics_T):
         acoustics_T: Acoustic time vector to interpolate to.
         
     Returns:
-        Interpolated rotor speed array, rad/s, shape (len(acoustics_T), n_rotors).
+        Interpolated rotor speed array, rad/s, shape (len(acoustics_T), n_rotors),
+        held at the ends of the speed record (:func:`rotor_speed_function`).
     """
     print(f"Interpolating RPM data...")
-    
-    # Handle single rotor case
-    if aircraft_rpm.ndim == 1:
-        aircraft_rpm = aircraft_rpm[:, np.newaxis]
-    
-    n_rotors = aircraft_rpm.shape[1]
-    rpmo = np.zeros((len(acoustics_T), n_rotors))
-    for rotor_idx in range(n_rotors):
-        interp_func = interp1d(aircraft_time, aircraft_rpm[:, rotor_idx], 
-                               kind='cubic', fill_value='extrapolate')
-        rpmo[:, rotor_idx] = interp_func(acoustics_T)
-    
+    rpmo = rotor_speed_function(aircraft_time, aircraft_rpm)(acoustics_T)
     print(f"RPM range: {rpmo.min():.1f} - {rpmo.max():.1f} rad/s")
     return rpmo
+
+
+def microphone_position(data, mic, receiver=None):
+    """Position (x, y, z), m, of microphone ``mic`` (1-based) in the track's
+    frame: ``receiver`` when given, otherwise the file's.  None when the record
+    has no aircraft track or no position for the microphone."""
+    if 'track_time' not in data or 'track_position' not in data:
+        return None
+    if receiver is not None:
+        return np.asarray(receiver, dtype=float)
+    if 'mic_location' not in data:
+        return None
+    return np.asarray(data['mic_location'][mic - 1], dtype=float)
+
+
+def dedopplerize_record(data, mic, sound_speed=SOUND_SPEED_M_S, receiver=None):
+    """One microphone's pressure on the emission-time grid of the aircraft track.
+
+    Args:
+        data: Dictionary from load_hexacopter_data, with acoustics_T (s),
+            acoustics_P (n, n_mics), Pa, track_time (s), track_position
+            (m, 3), m, and, unless ``receiver`` is given, mic_location
+            (n_mics, 3), m, in the track's frame.  The acoustic times must be
+            on the track's clock.
+        mic: Microphone, 1-based.
+        sound_speed: Speed of sound, m/s.
+        receiver: Microphone position (x, y, z), m, in place of row ``mic``
+            of mic_location.
+
+    Returns:
+        Tuple (emission_times, pressure): emission times, s, spaced as the
+        acoustic samples, and the pressure, Pa, received at each emission
+        time plus the propagation time.  Emission times whose sound reached
+        the microphone outside the record are left out.
+    """
+    observer = microphone_position(data, mic, receiver)
+    if observer is None:
+        raise ValueError(f"the record has no aircraft track or no position for microphone {mic}, "
+                         "so it cannot be de-Dopplerized")
+    time_ = np.asarray(data['acoustics_T'], dtype=float)
+    pressure = np.asarray(data['acoustics_P'])[:, mic - 1].astype(float)
+    emission_times, dedopplerized = dedopplerize(
+        time_[np.newaxis, :], pressure[np.newaxis, :], sound_speed, np.asarray(data['track_time'], dtype=float),
+        np.asarray(data['track_position'], dtype=float), observer[np.newaxis, :])
+    received = np.flatnonzero(np.isfinite(dedopplerized[0]))
+    if len(received) == 0:
+        raise ValueError('no sound emitted along the track reaches the microphone inside the record')
+    kept = slice(received[0], received[-1] + 1)
+    return emission_times[kept], dedopplerized[0, kept]
+
+
+def downsample_and_filter(time_, pressure, downsample_factor, highpass_cutoff):
+    """Low-pass and decimate a signal, then high-pass it.
+
+    Args:
+        time_: Sample times, s, equally spaced.
+        pressure: Pressure, Pa, one value per sample time.
+        downsample_factor: Integer decimation factor.
+        highpass_cutoff: High-pass cutoff, Hz.
+
+    Returns:
+        Tuple (time, pressure, fs): the decimated times (s), the filtered
+        pressure (Pa) and the new sampling frequency (Hz).
+    """
+    # Low-pass before keeping every Nth sample: plain slicing folded everything
+    # above the new Nyquist back into the band, +3 dB at 2-3 kHz and +6 dB at
+    # 3-4 kHz on this record.
+    if downsample_factor > 1:
+        pressure = resample_poly(pressure, 1, downsample_factor)
+        time_ = np.asarray(time_)[::downsample_factor][:len(pressure)]
+    fs = int(np.round(1.0 / (time_[1] - time_[0])))
+    return time_, apply_highpass_filter(pressure, highpass_cutoff, fs), fs
 
 
 def setup_segmentation(n_samples, segment_fraction=0.01, overlap_factor=4, stride_factor=10):
@@ -189,7 +305,7 @@ def setup_segmentation(n_samples, segment_fraction=0.01, overlap_factor=4, strid
 
 
 def process_segment_serial(seg_idx, spacing, cutoff, xo, to, rpmo, orders, no_blade,
-                          fs, bw_percent, min_bw, max_bw, p, solver, use_coupling,
+                          fs, bandwidth_of, p, solver, use_coupling,
                           total_spacing, total_start):
     """Process a single segment in serial mode.
     
@@ -203,9 +319,8 @@ def process_segment_serial(seg_idx, spacing, cutoff, xo, to, rpmo, orders, no_bl
         orders: Iterable of blade-passage-frequency harmonics (k x BPF) to extract.
         no_blade: Number of blades per rotor.
         fs: Sampling frequency in Hz.
-        bw_percent: Bandwidth as percentage of frequency.
-        min_bw: Minimum bandwidth in Hz.
-        max_bw: Maximum bandwidth in Hz.
+        bandwidth_of: Function of (harmonic, frequency) giving its bandwidth,
+            Hz (:func:`harmonic_bandwidth` with its rule fixed).
         p: VK filter order.
         solver: VKF solver (see vold_kalman_filter).
         use_coupling: Whether to include cross-order coupling.
@@ -227,7 +342,7 @@ def process_segment_serial(seg_idx, spacing, cutoff, xo, to, rpmo, orders, no_bl
 
     _, tmp_P_ordLoop, t_center, rpm_center, orig_center = _process_segment(
         seg_idx, xo[start_idx:end_idx, :], to[start_idx:end_idx], rpmo[start_idx:end_idx, :],
-        orders, no_blade, fs, bw_percent, min_bw, max_bw, p, solver, use_coupling, cutoff)
+        orders, no_blade, fs, bandwidth_of, p, solver, use_coupling, cutoff)
 
     seg_time = time.time() - seg_start
     elapsed = time.time() - total_start
@@ -238,6 +353,28 @@ def process_segment_serial(seg_idx, spacing, cutoff, xo, to, rpmo, orders, no_bl
     return tmp_P_ordLoop, t_center, rpm_center, orig_center, tmp_P_ordLoop.shape[0]
 
 
+def harmonic_bandwidth(order, freq, bandwidth, bw_percent, min_bw, max_bw):
+    """Full -3 dB bandwidth, Hz, of one blade-passage harmonic.
+
+    Args:
+        order: The harmonic, k x BPF.
+        freq: Its frequency, Hz, shape (n_samples, n_rotors).
+        bandwidth: None, a number (Hz, every harmonic) or a mapping from
+            harmonic to Hz; harmonics it leaves out take the rule below.
+        bw_percent, min_bw, max_bw: The rule: bw_percent of the frequency,
+            clipped to [min_bw, max_bw] Hz.
+
+    Returns:
+        A number, or an array shaped like ``freq``, Hz.
+    """
+    if isinstance(bandwidth, dict):
+        if order in bandwidth:
+            return float(bandwidth[order])
+    elif bandwidth is not None:
+        return float(bandwidth)
+    return np.clip(freq * bw_percent, min_bw, max_bw)
+
+
 def _process_segment(
     seg_idx,
     x_src,
@@ -246,9 +383,7 @@ def _process_segment(
     orders,
     no_blade,
     fs,
-    bw_percent,
-    min_bw,
-    max_bw,
+    bandwidth_of,
     p,
     solver,
     use_coupling,
@@ -264,9 +399,7 @@ def _process_segment(
         orders: Tuple of blade-passage-frequency harmonics (k x BPF) to extract.
         no_blade: Number of blades per rotor.
         fs: Sampling frequency in Hz.
-        bw_percent: Bandwidth as percentage of frequency.
-        min_bw: Minimum bandwidth in Hz.
-        max_bw: Maximum bandwidth in Hz.
+        bandwidth_of: Function of (harmonic, frequency) giving its bandwidth, Hz.
         p: VK filter order.
         solver: VKF solver (see vold_kalman_filter).
         use_coupling: Whether to include cross-order coupling.
@@ -284,7 +417,7 @@ def _process_segment(
 
     for order in orders:
         freq_all_rotors = rpm * order * no_blade / (2 * np.pi)
-        bandwidth_all = np.clip(freq_all_rotors * bw_percent, min_bw, max_bw)
+        bandwidth_all = bandwidth_of(order, freq_all_rotors)
 
         for mic in range(n_mics):
             y, ph, _ = vold_kalman_filter(
@@ -331,14 +464,9 @@ def heard_rotor_speed(data, acoustics_T, receiver, sound_speed):
         raise ValueError('the record has no aircraft position, so the Doppler shift cannot be predicted')
     position = np.asarray(data['track_position'], dtype=float)
     track = {'time': data['track_time'], 'x': position[:, 0], 'y': position[:, 1], 'z': position[:, 2]}
-    rpm = np.asarray(data['aircraft_rpm'], dtype=float)
-    rpm = rpm.reshape(len(rpm), -1)
-    # The same cubic interpolation as interpolate_rpm_to_acoustic_time, at the
-    # emission times, held at the ends of the RPM record: emission precedes
-    # reception, and a cubic extrapolated over the delay runs away.
-    rpm_time = np.asarray(data['aircraft_time'], dtype=float)
-    cubic = interp1d(rpm_time, rpm, kind='cubic', axis=0)
-    speed = lambda t: cubic(np.clip(t, rpm_time[0], rpm_time[-1]))
+    # At the emission times, held at the ends of the speed record: emission
+    # precedes reception, and a cubic extrapolated over the delay runs away.
+    speed = rotor_speed_function(data['aircraft_time'], data['aircraft_rpm'])
     heard = observed_order_track(acoustics_T, track, receiver, speed, 1, sound_speed,
                                  speed_unit='rad/s') * (2 * np.pi)
     known = np.isfinite(heard[:, 0])
@@ -351,13 +479,56 @@ def heard_rotor_speed(data, acoustics_T, receiver, sound_speed):
     return heard
 
 
-def separate_hexacopter_acoustics(mat_file_path, mic_range=16, 
-                                   orders=range(2, 31), p=1,
-                                   min_bw=3, max_bw=9, bw_percent=0.05,
-                                   solver="auto", use_coupling=True,
-                                   n_jobs=None, downsample_factor=8,
-                                   highpass_cutoff=100, receiver=None,
-                                   sound_speed=343.0):
+def prepare_signal(data, mic, doppler=DOPPLER, receiver=None, sound_speed=SOUND_SPEED_M_S,
+                   downsample_factor=DOWNSAMPLE_FACTOR, highpass_cutoff=HIGHPASS_CUTOFF_HZ):
+    """One microphone's signal and the rotor speeds the filter follows in it.
+
+    Args:
+        data: Dictionary from load_hexacopter_data at the recorded rate.
+        mic: Microphone, 1-based.
+        doppler: 'dedopplerize' (resample onto emission time; rotor speeds at
+            emission time), 'track' (the recorded signal; rotor speeds as the
+            microphone hears them) or 'none' (the recorded signal; rotor speeds
+            at the reception times).
+        receiver: Microphone position (x, y, z), m, in place of the file's.
+        sound_speed: Speed of sound, m/s.
+        downsample_factor: Decimation applied before the separation.
+        highpass_cutoff: High-pass cutoff, Hz.
+
+    Returns:
+        Tuple (time, pressure, speed, fs): times, s (emission time for
+        'dedopplerize', reception time otherwise), pressure, Pa, rotor speeds,
+        rad/s, shape (n, n_rotors), and the sampling frequency, Hz.
+    """
+    if doppler not in DOPPLER_MODES:
+        raise ValueError(f"doppler must be one of {DOPPLER_MODES}, not {doppler!r}")
+    n_mics = np.shape(data['acoustics_P'])[1]
+    if not 1 <= mic <= n_mics:
+        raise ValueError(f"mic must be between 1 and {n_mics}, not {mic}")
+    if doppler == 'dedopplerize':
+        time_, pressure = dedopplerize_record(data, mic, sound_speed, receiver)
+    else:
+        time_ = np.asarray(data['acoustics_T'], dtype=float)
+        pressure = np.asarray(data['acoustics_P'])[:, mic - 1].astype(float)
+    time_, pressure, fs = downsample_and_filter(time_, pressure, downsample_factor, highpass_cutoff)
+    if doppler == 'track':
+        position = microphone_position(data, mic, receiver)
+        if position is None:
+            raise ValueError(f"the record has no aircraft track or no position for microphone {mic}, "
+                             "so the Doppler shift cannot be predicted")
+        speed = heard_rotor_speed(data, time_, position, sound_speed)
+    else:
+        speed = interpolate_rpm_to_acoustic_time(data['aircraft_time'], data['aircraft_rpm'], time_)
+    return time_, pressure, speed, fs
+
+
+def separate_hexacopter_acoustics(mat_file_path, mic=MIC,
+                                   orders=VKF_ORDERS, p=VKF_P,
+                                   min_bw=VKF_MIN_BW, max_bw=VKF_MAX_BW, bw_percent=VKF_BW_PERCENT,
+                                   solver=VKF_SOLVER, use_coupling=VKF_USE_COUPLING,
+                                   n_jobs=None, downsample_factor=DOWNSAMPLE_FACTOR,
+                                   highpass_cutoff=HIGHPASS_CUTOFF_HZ, doppler=DOPPLER, receiver=None,
+                                   sound_speed=SOUND_SPEED_M_S, bandwidth=VKF_BANDWIDTH_HZ):
     """
     Separate hexacopter acoustic signals using Vold-Kalman filtering.
     
@@ -365,21 +536,19 @@ def separate_hexacopter_acoustics(mat_file_path, mic_range=16,
     ----------
     mat_file_path : str
         Path to .mat file containing hexacopter data
-    mic_range : int, optional
-        Microphone index to process (1-based to match MATLAB), default 16
+    mic : int, optional
+        Microphone to process, 1-based, default 16
     orders : iterable, optional
         Blade-passage-frequency harmonics k x BPF to extract (order k is at
-        k * no_blade times the shaft frequency), default range(2, 31).  The
-        first harmonic is left out because on the example record (BPF 45-90 Hz)
-        it lies below the 100 Hz high-pass.
+        k * no_blade times the shaft frequency), default 1-10 (VKF_ORDERS).
     p : int, optional
-        VK filter order, default 1
+        VK filter order, default 2
     min_bw : float, optional
-        Bandwidth floor in Hz, default 3
+        Bandwidth floor in Hz, default 3, for harmonics ``bandwidth`` leaves out
     max_bw : float, optional
-        Bandwidth ceiling in Hz, default 9
+        Bandwidth ceiling in Hz, default 9, likewise
     bw_percent : float, optional
-        Bandwidth as percentage of frequency, default 0.05 (5%)
+        Bandwidth as percentage of frequency, default 0.05 (5%), likewise
     solver : {"auto", "umfpack", "superlu"}, optional
         VKF solver (see vold_kalman_filter), default "auto": banded Cholesky,
         with the sparse solvers when it does not apply
@@ -387,63 +556,85 @@ def separate_hexacopter_acoustics(mat_file_path, mic_range=16,
         Whether to include cross-order coupling (B_U) terms, default True
     n_jobs : int or None, optional
         Number of parallel workers for segment processing. Defaults to CPU count.
+    downsample_factor : int, optional
+        Decimation of the recorded signal before the separation, default 8.
+    highpass_cutoff : float, optional
+        High-pass cutoff, Hz, default 30.
+    doppler : {'dedopplerize', 'track', 'none'}, optional
+        How the Doppler shift is handled (see :func:`prepare_signal`), default
+        'dedopplerize'.  The first two need the aircraft track, which must
+        share the acoustic and RPM clock.
     receiver : array_like or None, optional
         Microphone position (x, y, z), m, in the frame of the file's aircraft
-        position.  None (default) tracks the orders at the rotors' own speeds.
-        A position tracks them as the microphone hears them:
-        order_tracking.observed_order_track delays and Doppler-shifts each
-        rotor's speed along the aircraft track, which must share the acoustic
-        and RPM clock.  Samples heard before the track starts or after it ends
-        take the nearest predicted speed.
+        position, in place of the file's position for ``mic``.
     sound_speed : float, optional
-        Speed of sound, m/s, used with ``receiver``; default 343.0.
+        Speed of sound, m/s, default 343.0.
+    bandwidth : float, dict or None, optional
+        Full -3 dB bandwidth of each harmonic, Hz: a number for all of them or
+        a mapping from harmonic to Hz (default VKF_BANDWIDTH_HZ: 5 Hz for the
+        fundamental, 3 Hz for harmonics 2-4, 2 Hz above).  Harmonics it leaves
+        out, or all of them with None, take bw_percent of their frequency,
+        clipped to [min_bw, max_bw].
     
     Returns
     -------
     dict
         Dictionary containing:
-        - 'P': separated pressures, shape (n_samples, n_rotors, n_mics)
-        - 'T': time vector
-        - 'rpm': speed of each rotor, rad/s, shape (n_samples, n_rotors); with
-          ``receiver``, the speed as heard at the microphone
-        - 'original': original signal before separation
+        - 'P': separated pressures, shape (n_samples, n_rotors, 1)
+        - 'T': time vector, s: emission time for 'dedopplerize', reception
+          time otherwise
+        - 'rpm': speed of each rotor, rad/s, shape (n_samples, n_rotors), as
+          the filter followed it
+        - 'original': signal before separation, shape (n_samples, 1)
         - 'fs': sampling frequency
     """
-    orders = tuple(orders)  # iterated once per segment, so not a one-shot generator
+    data = load_hexacopter_data(mat_file_path)
+    print(f"Processing microphone {mic} ({doppler})")
+    to, xo, rpmo, fs = prepare_signal(data, mic, doppler=doppler, receiver=receiver, sound_speed=sound_speed,
+                                      downsample_factor=downsample_factor, highpass_cutoff=highpass_cutoff)
+    return separate_orders(to, xo[:, np.newaxis], rpmo, fs, orders=orders, p=p, min_bw=min_bw, max_bw=max_bw,
+                           bw_percent=bw_percent, solver=solver, use_coupling=use_coupling,
+                           n_jobs=n_jobs, bandwidth=bandwidth)
 
-    # Load and preprocess data
-    data = load_hexacopter_data(mat_file_path, downsample_factor=downsample_factor)
-    acoustics_T = data['acoustics_T']
-    acoustics_P = data['acoustics_P']
-    aircraft_time = data['aircraft_time']
-    aircraft_rpm = data['aircraft_rpm']
-    fs = data['fs']
-    
-    # Apply highpass filter
-    acoustics_P = apply_highpass_filter(acoustics_P, highpass_cutoff, fs)
-    
-    # Convert mic_range from 1-based (MATLAB) to 0-based (Python)
-    mic_idx = mic_range - 1
-    
-    # Extract time and pressure for selected microphone
-    to = acoustics_T
-    xo = acoustics_P[:, mic_idx:mic_idx+1]  # Keep 2D for consistency
-    
-    print(f"Processing microphone {mic_range} (index {mic_idx})")
-    print(f"Signal shape: {xo.shape}")
-    
-    # Rotor speeds at the acoustic samples: as the receiver hears them, if given
-    rpmo = (heard_rotor_speed(data, to, receiver, sound_speed) if receiver is not None
-            else interpolate_rpm_to_acoustic_time(aircraft_time, aircraft_rpm, to))
+
+def separate_orders(to, xo, rpmo, fs, orders=VKF_ORDERS, p=VKF_P, min_bw=VKF_MIN_BW, max_bw=VKF_MAX_BW,
+                    bw_percent=VKF_BW_PERCENT, solver=VKF_SOLVER, use_coupling=VKF_USE_COUPLING, n_jobs=None,
+                    no_blade=NO_BLADE, bandwidth=VKF_BANDWIDTH_HZ):
+    """Separate the rotor orders of signals already loaded and filtered.
+
+    The segment loop of :func:`separate_hexacopter_acoustics`.
+
+    Parameters
+    ----------
+    to : ndarray
+        Time vector, s, shape (n_samples,).
+    xo : ndarray
+        Pressures, Pa, shape (n_samples, n_mics).
+    rpmo : ndarray
+        Speed of each rotor at ``to``, rad/s, shape (n_samples, n_rotors):
+        the speeds whose orders the signals carry.
+    fs : float
+        Sampling frequency, Hz.
+    orders, p, min_bw, max_bw, bw_percent, solver, use_coupling, n_jobs, bandwidth
+        As for :func:`separate_hexacopter_acoustics`.
+    no_blade : int, optional
+        Blades per rotor, default 2.
+
+    Returns
+    -------
+    dict
+        As :func:`separate_hexacopter_acoustics` returns, with n_mics columns.
+    """
+    orders = tuple(orders)  # iterated once per segment, so not a one-shot generator
+    # A partial of a module-level function, so it reaches the worker processes.
+    bandwidth_of = functools.partial(harmonic_bandwidth, bandwidth=bandwidth, bw_percent=bw_percent,
+                                     min_bw=min_bw, max_bw=max_bw)
     n_rotors = rpmo.shape[1]
     
     # Set up segmentation
     spacing, cutoff, increment = setup_segmentation(len(to))
     
     print(f"Extracting orders: {list(orders)}")
-    
-    # Number of blades per rotor
-    no_blade = 2
     
     # Pre-calculate total output size for efficiency
     total_samples = sum(spacing[i+1] - spacing[i] for i in range(len(spacing)-1))
@@ -481,9 +672,7 @@ def separate_hexacopter_acoustics(mat_file_path, mic_range=16,
                         orders,
                         no_blade,
                         fs,
-                        bw_percent,
-                        min_bw,
-                        max_bw,
+                        bandwidth_of,
                         p,
                         solver,
                         use_coupling,
@@ -511,7 +700,7 @@ def separate_hexacopter_acoustics(mat_file_path, mic_range=16,
         for seg_idx in range(len(spacing) - 1):
             tmp_P, t_center, rpm_center, orig_center, seg_size = process_segment_serial(
                 seg_idx, spacing, cutoff, xo, to, rpmo, orders, no_blade,
-                fs, bw_percent, min_bw, max_bw, p, solver, use_coupling,
+                fs, bandwidth_of, p, solver, use_coupling,
                 len(spacing) - 1, total_start
             )
             
@@ -540,6 +729,35 @@ def separate_hexacopter_acoustics(mat_file_path, mic_range=16,
     return result
 
 
+def separation_residual(separated):
+    """What the separation leaves of the first microphone's signal, Pa."""
+    return separated['original'][:, 0] - separated['P'][:, :, 0].sum(axis=1)
+
+
+def residual_levels(separated, bands=RESIDUAL_BANDS_HZ):
+    """Energy the separation leaves behind, relative to the signal's, per band.
+
+    Args:
+        separated: Dictionary from separate_orders for one microphone.
+        bands: (low, high) band edges, Hz.
+
+    Returns:
+        Array of residual-to-original energy ratios, dB, one per band; NaN
+        for a band that reaches the Nyquist frequency.
+    """
+    original = separated['original'][:, 0]
+    residual = separation_residual(separated)
+    levels = []
+    for low, high in bands:
+        if high >= separated['fs'] / 2:
+            levels.append(np.nan)
+            continue
+        sos = butter(4, [low, high], 'bandpass', fs=separated['fs'], output='sos')
+        levels.append(10 * np.log10(np.sum(sosfiltfilt(sos, residual) ** 2)
+                                    / np.sum(sosfiltfilt(sos, original) ** 2)))
+    return np.array(levels)
+
+
 def plot_results(
     separated,
     mic_plot=1,
@@ -556,7 +774,7 @@ def plot_results(
     separated : dict
         Dictionary from separate_hexacopter_acoustics()
     mic_plot : int, optional
-        Microphone index to plot (1-based), default 1
+        Column of the separated result to plot (1-based), default 1
     save_dir : str or None, optional
         Directory for the four PNG files (300 dpi), created if needed;
         None writes nothing.  Default ``demo_plots``.
@@ -624,7 +842,7 @@ def plot_results(
     plt.legend()
     plt.xlabel('Time, s')
     plt.ylabel('Acoustic Pressure, Pa (offset)')
-    plt.title(f'Separated Rotor Components - Microphone {mic_plot}')
+    plt.title('Separated Rotor Components')
     plt.tight_layout()
     
     # RPM Time History
@@ -649,26 +867,93 @@ def plot_results(
     return []
 
 
+def plot_spectrograms(signals, rotor_time, rotor_speed, rotor=SPECTROGRAM_ROTOR, band=SPECTROGRAM_BAND_HZ):
+    """Spectrograms with one rotor's blade-passage harmonics, at its own
+    speed, drawn over each.
+
+    Args:
+        signals: List of (title, time (s), pressure (Pa), fs (Hz)).
+        rotor_time: Rotor-speed times, s.
+        rotor_speed: Rotor speeds, rad/s, shape (n, n_rotors).
+        rotor: Rotor whose harmonics are drawn, 1-based.
+        band: Frequency range shown, Hz.
+
+    Returns:
+        The figure.
+    """
+    # The harmonics drawn are averaged over the spectrogram's window.
+    step = np.median(np.diff(rotor_time))
+    width = max(1, int(round(SPECTROGRAM_WINDOW_S / step)))
+    shaft_hz = uniform_filter1d(rotor_speed[:, rotor - 1], width, mode='nearest') / (2 * np.pi)
+    harmonics = range(int(np.ceil(band[0] / (NO_BLADE * shaft_hz.max()))),
+                      int(np.floor(band[1] / (NO_BLADE * shaft_hz.min()))) + 1)
+    fig, axes = plt.subplots(len(signals), 1, figsize=(12, 4.5 * len(signals)), sharey=True, squeeze=False)
+    for ax, (title, time_, pressure, fs) in zip(axes[:, 0], signals):
+        window = int(SPECTROGRAM_WINDOW_S * fs)
+        f, t, power = spectrogram(pressure, fs, nperseg=window, noverlap=window - int(0.05 * fs), nfft=int(fs))
+        inside = (f >= band[0]) & (f <= band[1])
+        level = 10 * np.log10(power[inside] / P_REF ** 2)
+        mesh = ax.pcolormesh(time_[0] + t, f[inside], level, shading='auto', cmap='viridis',
+                             vmin=np.percentile(level, 5), vmax=np.percentile(level, 99.5))
+        for k in harmonics:
+            ax.plot(rotor_time, k * NO_BLADE * shaft_hz, 'w--', linewidth=0.8, alpha=0.8)
+        ax.set_xlim(time_[0], time_[-1])
+        ax.set_ylim(*band)
+        ax.set_title(f"{title}; dashed: R{rotor} blade-passage harmonics at its own speed")
+        ax.set_xlabel('Time, s')
+        ax.set_ylabel('Frequency, Hz')
+        fig.colorbar(mesh, ax=ax, label=PSD_LABEL)
+    fig.tight_layout()
+    return fig
+
+
+def plot_residual_spectrum(separated, title, band=(50, 1000)):
+    """Power spectrum of the signal and of what the separation leaves behind.
+
+    Args:
+        separated: Dictionary from separate_orders for one microphone.
+        title: Figure title.
+        band: Frequency range shown, Hz.
+
+    Returns:
+        The figure.
+    """
+    fig, ax = plt.subplots(figsize=(12, 5))
+    for signal, label in ((separated['original'][:, 0], 'Signal'),
+                          (separation_residual(separated), 'Residual after separation')):
+        f, psd_db, _, _ = psd_welch(signal, separated['fs'], window_time=1.0, passband=band)
+        ax.plot(f, psd_db, linewidth=1.0, label=label)
+    ax.grid(True, which='both', alpha=0.3)
+    ax.legend()
+    ax.set_title(title)
+    ax.set_xlabel('Frequency, Hz')
+    ax.set_ylabel(PSD_LABEL)
+    fig.tight_layout()
+    return fig
+
+
+
 def main(argv=None):
     """Run the separation with the settings at the top of this file, or the
-    command line's, and plot one microphone's results."""
+    command line's, print the residual energy and plot the results."""
     parser = argparse.ArgumentParser(
-        description='Separate the rotor harmonics of the bundled hexacopter record with the '
-                    'Vold-Kalman filter and plot one microphone\'s original, separated and '
-                    'residual signals and the rotor speeds.')
+        description='De-Dopplerize one microphone of the bundled hexacopter flyover and separate its rotor '
+                    'harmonics with the Vold-Kalman filter; plot the original, separated and residual '
+                    'signals, the rotor speeds, the spectrograms and the residual spectrum.')
     parser.add_argument('--mat-file', default=MAT_FILE,
-                        help='MATLAB record (.mat) with acoustics and aircraft structs (default: the '
+                        help='MATLAB record (.mat) with acoustics, aircraft and info structs (default: the '
                              'bundled example_data/F100_20_P#1[FA1FZC-3.h5].mat beside this script)')
-    parser.add_argument('--mic-range', type=int, default=MIC_RANGE,
-                        help=f'number of microphones to separate, the first N (default {MIC_RANGE})')
-    parser.add_argument('--mic', type=int, default=PLOT_MIC,
-                        help=f'microphone to plot, 1-based (default {PLOT_MIC})')
+    parser.add_argument('--mic', '--mic-range', dest='mic', type=int, default=MIC,
+                        help=f'microphone to separate, 1-based (default {MIC}, beneath the flight path)')
+    parser.add_argument('--doppler', choices=DOPPLER_MODES, default=DOPPLER,
+                        help="'dedopplerize' resamples the signal onto emission time; 'track' filters the "
+                             "signal as recorded at the speeds the microphone hears; 'none' filters it as "
+                             f"recorded at the rotors' speeds (default {DOPPLER})")
+    parser.add_argument('--receiver', type=float, nargs=3, default=None, metavar=('X', 'Y', 'Z'),
+                        help='microphone position, m, in the aircraft position\'s frame, in place of the '
+                             'file\'s (default: the file\'s)')
     parser.add_argument('--jobs', type=int, default=VKF_N_JOBS,
                         help='worker processes for the segments (default: the CPU count)')
-    parser.add_argument('--receiver', type=float, nargs=3, default=VKF_DOPPLER_RECEIVER,
-                        metavar=('X', 'Y', 'Z'),
-                        help='microphone position, m, in the aircraft position\'s frame: filter at '
-                             'the Doppler-shifted speeds it hears (default: none, the rotors\' own speeds)')
     # Figures go to demo_plots/ in the current directory, as hexa_*.png.
     add_output_options(parser, 'demo_plots', directory=True)
     args = parser.parse_args(argv)
@@ -683,34 +968,45 @@ def main(argv=None):
     print("Using Vold-Kalman Filter")
     print("="*70)
 
-    separated = separate_hexacopter_acoustics(
-        args.mat_file,
-        mic_range=args.mic_range,
-        orders=VKF_ORDERS,
-        p=VKF_P,
-        min_bw=VKF_MIN_BW,
-        max_bw=VKF_MAX_BW,
-        bw_percent=VKF_BW_PERCENT,
-        solver=VKF_SOLVER,
-        use_coupling=VKF_USE_COUPLING,
-        n_jobs=args.jobs,
-        downsample_factor=DOWNSAMPLE_FACTOR,
-        highpass_cutoff=HIGHPASS_CUTOFF_HZ,
-        receiver=None if args.receiver is None else tuple(args.receiver),
-        sound_speed=SOUND_SPEED_M_S,
-    )
+    data = load_hexacopter_data(args.mat_file)
+    receiver = None if args.receiver is None else tuple(args.receiver)
+    prepare = functools.partial(prepare_signal, data, args.mic, receiver=receiver, sound_speed=SOUND_SPEED_M_S,
+                                downsample_factor=DOWNSAMPLE_FACTOR, highpass_cutoff=HIGHPASS_CUTOFF_HZ)
+    try:
+        to, xo, rpmo, fs = prepare(doppler=args.doppler)
+    except ValueError as error:
+        print(f"Error: {error}")
+        return 1
+    if 'mic_type' in data and data['mic_type'][args.mic - 1] == 'pole':
+        print(f"Note: microphone {args.mic} is an elevated pole microphone; its spectrum carries "
+              "ground-reflection interference.")
+    separated = separate_orders(to, xo[:, np.newaxis], rpmo, fs, orders=VKF_ORDERS, p=VKF_P,
+                                min_bw=VKF_MIN_BW, max_bw=VKF_MAX_BW, bw_percent=VKF_BW_PERCENT,
+                                solver=VKF_SOLVER, use_coupling=VKF_USE_COUPLING, n_jobs=args.jobs,
+                                bandwidth=VKF_BANDWIDTH_HZ)
 
     print("\n" + "="*70)
     print("Processing complete!")
     print("="*70)
+    print(f"\nEnergy left after the separation, relative to the signal, microphone {args.mic} ({args.doppler}):")
+    for (low, high), level in zip(RESIDUAL_BANDS_HZ, residual_levels(separated)):
+        print(f"{f'{low}-{high} Hz':>14s}  {level:6.1f} dB")
 
-    plot_results(
-        separated,
-        mic_plot=args.mic,
-        save_dir=args.output_dir,
-        show_plots=args.plot or PLOT_INTERACTIVE,
-        zoom_time_window=ZOOM_TIME_WINDOW,
-    )
+    show = args.plot or PLOT_INTERACTIVE
+    plot_results(separated, mic_plot=1, save_dir=args.output_dir, show_plots=False,
+                 zoom_time_window=ZOOM_TIME_WINDOW)
+    figures = {'hexa_residual_spectrum': plot_residual_spectrum(separated, TITLES[args.doppler])}
+    rotor_speed = data['aircraft_rpm']
+    if microphone_position(data, args.mic, receiver) is not None and rotor_speed.shape[1] >= SPECTROGRAM_ROTOR:
+        signals = []
+        for mode in ('none', 'dedopplerize'):
+            if mode == args.doppler:
+                t, x, f = separated['T'], separated['original'][:, 0], fs
+            else:
+                t, x, _, f = prepare(doppler=mode)
+            signals.append((TITLES[mode], t, x, f))
+        figures['hexa_spectrograms'] = plot_spectrograms(signals, data['aircraft_time'], rotor_speed)
+    save_all_or_show(figures, args.output_dir, show, dpi=300)
     return 0
 
 

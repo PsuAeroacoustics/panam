@@ -102,7 +102,7 @@ options, each example does what it did before it had options.
 | `board_field_plot.py` | Map the sound field around a ground-plane microphone plate | No |
 | `depropagation_tutorial.py` | Tutorial: depropagate a synthetic flyover, map recovered minus true directivity, build a toy database | No |
 | `AS350_289108_demo.py` | Example: depropagate one AS350 run and compare it with its reference sphere | Yes: AS350 demo data |
-| `hexacopter_vkf_example.py` | Example: separate rotor harmonics with the Vold-Kalman filter | No (bundled `.mat`) |
+| `hexacopter_vkf_example.py` | Example: de-Dopplerize one microphone of a hexacopter flyover and separate its rotor harmonics with the Vold-Kalman filter | No (bundled `.mat`) |
 | `vold_kalman_filter.py` | Run as a script: Vold-Kalman filter examples on synthetic signals | No |
 | `as350_flip_check.py` | Diagnostic: check the AS350 demo's lateral sign against its reference | Yes: AS350 demo data |
 
