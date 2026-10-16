@@ -1,4 +1,4 @@
-"""Band-level and layered atmospheric absorption (panam_acoustics.atmosphere) and the
+"""Band-level and layered atmospheric absorption (panam.acoustics.atmosphere) and the
 options that use them: absorption_band_method on the filter-bank depropagation, the
 EAA and the NORAH2 import, and absorption_profile on the depropagation and build_sphere."""
 
@@ -7,8 +7,8 @@ import inspect
 import numpy as np
 import pytest
 
-import flight_acoustics as fa
-from panam_acoustics.atmosphere import (ARP5534_COEFFICIENTS, Atmosphere, arp5534_band_attenuation,
+from panam import flight_acoustics as fa
+from panam.acoustics.atmosphere import (ARP5534_COEFFICIENTS, Atmosphere, arp5534_band_attenuation,
                                         band_absorption_db, exact_midband_frequency,
                                         layered_attenuation_db)
 
@@ -271,7 +271,7 @@ def test_a_profile_needs_absorption_and_is_checked():
 # --- build_sphere -------------------------------------------------------------------------
 
 def test_build_sphere_passes_the_profile_through(tmp_path):
-    import noise_abatement_2017 as na
+    from panam import noise_abatement_2017 as na
     from test_noise_abatement_2017 import _archive
     _archive(tmp_path)
     test = na.NoiseAbatementTest('AS350B3', root=str(tmp_path))
@@ -322,7 +322,7 @@ def test_norah2_levels_take_the_band_method():
 
 def test_numpy_warnings_are_suppressed_locally():
     """AGENTS.md: np.errstate, never np.seterr, which changes the process-wide state."""
-    import flight_acoustics
+    from panam import flight_acoustics
     assert 'np.seterr' not in inspect.getsource(flight_acoustics)
     before = np.geterr()
     spectrum = np.full((1, 3, 2), -np.inf)

@@ -1,9 +1,9 @@
 import numpy as np
 import pytest
-from flight_acoustics import ega
+from panam.flight_acoustics import ega
 
 
-from flight_acoustics import spherical_reflection_coefficient
+from panam.flight_acoustics import spherical_reflection_coefficient
 
 # Three geometries (hs, hr, d2 in ft) and three grounds (kPa s/m^2).
 GEOMETRIES = [(10.0, 5.0, 100.0), (5.0, 4.0, 1000.0), (300.0, 4.0, 150.0)]

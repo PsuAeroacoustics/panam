@@ -1,7 +1,7 @@
 import numpy as np
 import openpyxl
 
-import flight_acoustics as fa
+from panam import flight_acoustics as fa
 
 
 def _write_reflist_vehicle(directory, rows):

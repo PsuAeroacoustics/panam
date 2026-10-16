@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-import flight_acoustics as fa
+from panam import flight_acoustics as fa
 from sphere_helpers import VEHICLE_CFG, minimal_hemisphere
 from netCDF4 import Dataset
 
@@ -186,7 +186,7 @@ def test_missing_bands_are_written_as_the_aam_sentinel(tmp_path):
 def test_database_carries_the_root_vehicle_fields_niceops_reads(tmp_path):
     """The shipped .nod files all carry these; NICEOPS cross-checks tip speed
     against them and prefers them for --export_aam."""
-    import flight_acoustics as fa_mod
+    from panam import flight_acoustics as fa_mod
 
     sphere_dir = tmp_path / 'spheres'
     sphere_dir.mkdir()
@@ -299,7 +299,7 @@ def test_empty_directions_leave_a_usable_eaa(tmp_path):
     NaN EAA put 886 NaN cells into a 120x120 footprint. So the level is left
     alone, including -inf, and only EAA is given a value.
     """
-    import flight_acoustics as fa_mod
+    from panam import flight_acoustics as fa_mod
 
     sphere_dir = tmp_path / 'spheres'
     sphere_dir.mkdir()

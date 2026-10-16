@@ -3,14 +3,14 @@ microphones, and keeps a gradient a fixed radius smears."""
 import numpy as np
 import pytest
 
-from flight_acoustics import adaptive_idw_weights, depropagate_hemisphere, geodist, shepIDW
+from panam.flight_acoustics import adaptive_idw_weights, depropagate_hemisphere, geodist, shepIDW
 
 
 def _lines(rng=None, n_mics=11, height=400.0, stride_ft=8.0):
     """A flyover's samples: a level pass at `height` over microphones across the track,
     through hemigen, kept within the build's 2,000 ft and above 2 deg -- each microphone a
     line on the sphere from fore to aft, the lines densest at the rim."""
-    from flight_acoustics import hemigen
+    from panam.flight_acoustics import hemigen
     x = np.arange(-2000.0, 2000.0, stride_ft)
     time = x / 169.0
     source = np.column_stack((x, np.zeros_like(x), np.full_like(x, height)))

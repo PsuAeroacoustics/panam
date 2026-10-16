@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-import flight_acoustics as fa
+from panam import flight_acoustics as fa
 
 
 def test_constant_level_over_one_second_is_that_level():

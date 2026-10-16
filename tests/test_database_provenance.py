@@ -22,8 +22,8 @@ import numpy as np
 import pytest
 from netCDF4 import Dataset
 
-import flight_acoustics as fa
-from panam_acoustics.atmosphere import Atmosphere
+from panam import flight_acoustics as fa
+from panam.acoustics.atmosphere import Atmosphere
 
 
 SPHERE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),

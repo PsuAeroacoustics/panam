@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-import ground_plane as gp
+from panam import ground_plane as gp
 
 C = 1125.0  # ft/s
 BANDS = np.array([50.0, 200.0, 1000.0, 4000.0, 10000.0])
@@ -580,7 +580,7 @@ def test_pair_band_histories_align_and_resample_the_board(monkeypatch):
     # The board's channel is resampled to the pole's rate and both are framed
     # from 100.25 s, the later start: board - pole is the factor of 2 (6.02 dB)
     # in every band and frame, which a misaligned frame would break under the envelope.
-    import noise_abatement_2017 as na
+    from panam import noise_abatement_2017 as na
     monkeypatch.setattr(na, '_read_signal', _pair_channels())
     out = gp.pair_band_histories(_PairTest(), '289001', 50, 34, _pass_track(), C)
     assert out['time'][0] == pytest.approx(100.25 + 0.25, abs=1e-9)        # the first frame's center
@@ -606,7 +606,7 @@ def test_pair_band_histories_align_and_resample_the_board(monkeypatch):
 def test_measured_board_transfer_gates_quiet_frames(monkeypatch):
     # T_board = board - pole + G_pole where both channels are 10 dB over their
     # floor, NaN in the quiet lead-in and tail.
-    import noise_abatement_2017 as na
+    from panam import noise_abatement_2017 as na
     monkeypatch.setattr(na, '_read_signal', _pair_channels())
     monkeypatch.setattr(na, 'load_track', lambda path: _pass_track())
     air = gp.fa.Atmosphere(temperature=288.15, pressure=101.325, relative_humidity=50.0)

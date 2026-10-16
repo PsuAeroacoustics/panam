@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import scipy.signal as sig
 
-from panam_acoustics.time_weighting import (
+from panam.acoustics.time_weighting import (
     apply_frequency_weighting, frequency_weighting_sos, leq, time_weighted_level,
     time_weighted_square)
 

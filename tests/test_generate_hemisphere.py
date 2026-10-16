@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-import ground_plane as gp
-from flight_acoustics import Atmosphere, depropagate_hemisphere
+from panam import ground_plane as gp
+from panam.flight_acoustics import Atmosphere, depropagate_hemisphere
 
 
 P_REF = 2.0e-5

@@ -5,8 +5,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
-import ground_plane
-import hexacopter_vkf_example as hexa
+from panam import ground_plane
+from examples import hexacopter_vkf_example as hexa
 from flyover_record import SOUND_SPEED, flyover_record, write_flyover_mat
 
 FS = 2048
@@ -169,7 +169,7 @@ def test_the_loader_reads_the_microphone_positions_and_types(tmp_path):
     assert list(data['mic_type']) == ['ground', 'pole']
 
 
-def test_the_bundled_record_is_found_beside_the_script():
+def test_the_bundled_record_is_found_from_any_directory():
     """MAT_FILE was relative to the current directory: the script ran only from the repository root."""
     import os
     assert os.path.isabs(hexa.MAT_FILE) and os.path.isfile(hexa.MAT_FILE)

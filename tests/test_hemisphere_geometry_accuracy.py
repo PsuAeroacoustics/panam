@@ -4,7 +4,7 @@ its inverse, the ART <-> UMAPR conversions, and the Shepard weights."""
 import numpy as np
 import pytest
 
-import flight_acoustics as fa
+from panam import flight_acoustics as fa
 
 
 def _directions(n=400, seed=0):

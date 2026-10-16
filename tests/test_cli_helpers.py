@@ -2,7 +2,7 @@ import argparse
 
 import pytest
 
-import cli
+from panam import cli
 
 
 @pytest.mark.parametrize('text', ['1:2', '"1:2"', "'1:2'", ' 1:2 '])

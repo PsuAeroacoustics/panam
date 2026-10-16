@@ -6,8 +6,8 @@ import os
 import numpy as np
 import pytest
 
-import flight_acoustics as fa
-import provenance
+from panam import flight_acoustics as fa
+from panam import provenance
 from sphere_helpers import VEHICLE_CFG, minimal_hemisphere
 
 

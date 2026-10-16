@@ -3,12 +3,12 @@
 import numpy as np
 import pytest
 
-import flight_acoustics as fa
-import refracted_rays as rr
-import synthesis as sy
-import synthetic_flyover as sf
-from panam_acoustics import filters as pa_filters
-from panam_acoustics.atmosphere import Atmosphere, band_absorption_db
+from panam import flight_acoustics as fa
+from panam import refracted_rays as rr
+from panam import synthesis as sy
+from panam import synthetic_flyover as sf
+from panam.acoustics import filters as pa_filters
+from panam.acoustics.atmosphere import Atmosphere, band_absorption_db
 
 C = 1125.0                      # ft/s
 FS = 4000.0                     # Hz

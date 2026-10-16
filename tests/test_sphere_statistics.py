@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 from netCDF4 import Dataset
 
-import flight_acoustics as fa
-import sphere_statistics as ss
+from panam import flight_acoustics as fa
+from panam import sphere_statistics as ss
 from sphere_helpers import write_raw_sphere
 
 PHI = np.array([-90.0, 0.0, 90.0])

@@ -7,7 +7,7 @@ import numpy as np
 import openpyxl
 import pytest
 
-import flight_acoustics as fa
+from panam import flight_acoustics as fa
 from sphere_helpers import minimal_hemisphere
 
 REPO = Path(__file__).resolve().parents[1]
@@ -27,7 +27,7 @@ def test_plot_projection_needs_three_directions():
 
 def test_plot_projection_reports_a_bad_cutoff_without_a_traceback(tmp_path):
     from test_cli_scripts import run_here
-    result = run_here('plot_projection.py', EXAMPLE, '-c', '0', '-o', 'out.png', cwd=tmp_path)
+    result = run_here('tools/plot_projection.py', EXAMPLE, '-c', '0', '-o', 'out.png', cwd=tmp_path)
     assert result.returncode == 2
     assert 'between 0 and 90' in result.stderr and 'Traceback' not in result.stderr
 

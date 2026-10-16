@@ -15,9 +15,9 @@ import numpy as np
 import pytest
 from netCDF4 import Dataset
 
-import flight_acoustics as fa
-import noise_abatement_2017 as na
-import build_empirical_database as script
+from panam import flight_acoustics as fa
+from panam import noise_abatement_2017 as na
+from tools import build_empirical_database as script
 from sphere_helpers import stepped_sphere_directory
 
 

@@ -12,8 +12,8 @@ about 10 GB.
 import numpy as np
 import pytest
 
-import vold_kalman_filter as vk
-from vold_kalman_filter import _compute_weighting_factor, vold_kalman_filter
+from panam import vold_kalman_filter as vk
+from panam.vold_kalman_filter import _compute_weighting_factor, vold_kalman_filter
 
 FS = 1000.0
 N = 4000

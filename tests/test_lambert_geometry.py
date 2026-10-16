@@ -10,7 +10,7 @@ the field and the spheres read mirrored against the footprints.
 import numpy as np
 import pytest
 
-import flight_acoustics as fa
+from panam import flight_acoustics as fa
 
 
 CARDINALS = [

@@ -10,9 +10,10 @@ import numpy as np
 import pytest
 from netCDF4 import Dataset
 
-import flight_acoustics as fa
-import noise_abatement_2017 as na
-from panam_acoustics.atmosphere import Atmosphere
+from panam import flight_acoustics as fa
+from panam import noise_abatement_2017 as na
+from panam.acoustics.atmosphere import Atmosphere
+from tools import noise_abatement_2017 as na_cli
 
 from test_database_provenance import FREQUENCY, PHI, THETA, VEHICLE_CFG, _write_sphere
 
@@ -346,7 +347,7 @@ def test_the_cli_builds_along_wind_carried_rays(tmp_path):
     levels = {}
     for rays in ('straight', 'wind'):
         manifest = tmp_path / (rays + '.csv')
-        assert na.main(common + [str(tmp_path / rays), '--ray-model', rays, '--manifest', str(manifest)]) == 0
+        assert na_cli.main(common + [str(tmp_path / rays), '--ray-model', rays, '--manifest', str(manifest)]) == 0
         with open(manifest, newline='') as handle:
             row = next(csv.DictReader(handle))
         levels[rays] = fa.mask_missing_levels(fa.load_nc_sphere(row['output'])[0])
@@ -370,4 +371,4 @@ def test_wind_carried_rays_need_a_wind(tmp_path):
     with pytest.raises(ValueError, match="'wind'"):
         na.build_sphere(test, '289108', str(tmp_path / 'x.nc'), board_correction='flat', ray_model='bent')
     with pytest.raises(SystemExit):
-        na.main(['AS350B3', str(tmp_path / 'out'), '--root', str(tmp_path), '--ray-model', 'wind'])
+        na_cli.main(['AS350B3', str(tmp_path / 'out'), '--root', str(tmp_path), '--ray-model', 'wind'])

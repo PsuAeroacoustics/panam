@@ -10,10 +10,10 @@ import numpy as np
 import pytest
 from netCDF4 import Dataset
 
-import flight_acoustics as fa
-import local_paths
-import nod_database
-from panam_acoustics.atmosphere import Atmosphere
+from panam import flight_acoustics as fa
+from panam import local_paths
+from panam import nod_database
+from panam.acoustics.atmosphere import Atmosphere
 
 REPO = Path(__file__).resolve().parents[1]
 _NORAH2 = local_paths.data_path('norah2', required=False)
@@ -637,7 +637,7 @@ def test_read_vehicle_rotor_data(tmp_path):
 
 def _run(*args, cwd):
     env = dict(os.environ, MPLBACKEND='Agg', PYTHONPATH=str(REPO))
-    return subprocess.run([sys.executable, str(REPO / 'norah2_to_nod.py'), *args], cwd=cwd, env=env,
+    return subprocess.run([sys.executable, str(REPO / 'tools/norah2_to_nod.py'), *args], cwd=cwd, env=env,
                           capture_output=True, text=True, timeout=600)
 
 
@@ -702,8 +702,8 @@ def test_converts_a_shipped_set(tmp_path):
 def test_absorption_band_method_reaches_the_levels_and_the_eaa(tmp_path):
     """--absorption-band-method arp5534: each band moves from POLDIST to the sphere radius
     by the ARP 5534 band attenuation between them, and the EAA uses it too."""
-    import norah2_to_nod
-    from panam_acoustics.atmosphere import band_absorption_db
+    from tools import norah2_to_nod
+    from panam.acoustics.atmosphere import band_absorption_db
     files = three_hems(tmp_path)
     common = ['--tip-speed', '214.88', '--rotor-radius', '5.03', '--weight-kg', '861', '--speed', 'ground-speed']
     assert norah2_to_nod.main([*files, '-o', str(tmp_path / 'center.nod'), *common]) == 0
@@ -723,7 +723,7 @@ def test_absorption_band_method_reaches_the_levels_and_the_eaa(tmp_path):
 def test_synthesized_hover_eaa_takes_the_absorption_band_method(tmp_path):
     """synthesize_hover with absorption_band_method='arp5534': the hover's EAA, like every
     measured group's, is formed with the ARP 5534 band attenuation over 1000 m."""
-    from panam_acoustics.atmosphere import band_absorption_db
+    from panam.acoustics.atmosphere import band_absorption_db
     files = three_hems(tmp_path, nose_boost_db=6.0)
     out = tmp_path / 'arp.nod'
     rows = build(files, out, synthesize_hover=True, absorption_band_method='arp5534')

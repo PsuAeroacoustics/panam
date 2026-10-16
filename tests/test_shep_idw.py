@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-import flight_acoustics as fa
+from panam import flight_acoustics as fa
 
 
 def test_a_bad_sample_only_reaches_its_own_neighborhood():

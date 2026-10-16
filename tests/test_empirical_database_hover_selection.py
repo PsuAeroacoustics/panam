@@ -13,7 +13,7 @@ import warnings
 
 import pytest
 
-import flight_acoustics as fa
+from panam import flight_acoustics as fa
 
 
 SPHERE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),

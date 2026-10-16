@@ -67,13 +67,13 @@ jobs:
       # restored on an exact hash match only (no restore-keys), and any edit to
       # either file compiles from scratch.
       - name: Pin the Numba sources' timestamps
-        run: touch -t 202001010000 ground_plane.py axisymmetric_bem.py
+        run: touch -t 202001010000 panam/ground_plane.py panam/axisymmetric_bem.py
 
       - name: Restore the Numba cache
         uses: actions/cache@v4
         with:
           path: ${{ env.NUMBA_CACHE_DIR }}
-          key: numba-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('ground_plane.py', 'axisymmetric_bem.py', 'requirements.txt') }}
+          key: numba-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('panam/ground_plane.py', 'panam/axisymmetric_bem.py', 'requirements.txt') }}
 
       - name: Run tests
         run: |

@@ -19,8 +19,8 @@ import pytest
 from scipy.integrate import quad
 from scipy.special import j0, spherical_jn, spherical_yn, eval_legendre
 
-import axisymmetric_bem as ab
-import ground_plane as gp
+from panam import axisymmetric_bem as ab
+from panam import ground_plane as gp
 
 C = 1125.0
 

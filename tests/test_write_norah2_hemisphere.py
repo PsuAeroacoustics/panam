@@ -5,9 +5,9 @@ import re
 import numpy as np
 import pytest
 
-import flight_acoustics as fa
-import local_paths
-from panam_acoustics.atmosphere import Atmosphere, band_absorption_db
+from panam import flight_acoustics as fa
+from panam import local_paths
+from panam.acoustics.atmosphere import Atmosphere, band_absorption_db
 
 _NORAH2 = local_paths.data_path('norah2', required=False)
 NORAH2_HEMISPHERES = os.path.join(_NORAH2, 'Hemispheres') if _NORAH2 else ''

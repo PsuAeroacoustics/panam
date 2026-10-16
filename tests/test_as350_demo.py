@@ -3,9 +3,9 @@
 import numpy as np
 import pytest
 
-import AS350_289108_demo as demo
-import flight_acoustics as fa
-import noise_abatement_2017 as na
+from panam import flight_acoustics as fa
+from panam import noise_abatement_2017 as na
+from examples import AS350_289108_demo as demo
 
 
 def _write_descent(basepath, rate_fps=15.0, n=2000):

@@ -8,8 +8,8 @@ import numpy as np
 import pytest
 from netCDF4 import Dataset
 
-import flight_acoustics as fa
-import nod_database as nd
+from panam import flight_acoustics as fa
+from panam import nod_database as nd
 from sphere_helpers import minimal_hemisphere, write_sphere_directory
 
 # sphere_helpers.VEHICLE_CFG: 2250 kg, 5.334 m, 230.7 m/s, 1.070 kg/m^3.

@@ -7,7 +7,7 @@ A36-2 tone factors) and chosen so failures localize the broken step.
 import numpy as np
 import pytest
 
-import flight_acoustics as fa
+from panam import flight_acoustics as fa
 
 FLAT = 70.0 * np.ones(24)
 K1000 = 13          # index of the 1000 Hz band

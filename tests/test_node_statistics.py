@@ -3,8 +3,8 @@
 import numpy as np
 import pytest
 
-import flight_acoustics as fa
-import sphere_statistics as ss
+from panam import flight_acoustics as fa
+from panam import sphere_statistics as ss
 from sphere_helpers import tone_flyover
 
 

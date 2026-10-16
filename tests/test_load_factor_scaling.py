@@ -17,7 +17,7 @@ import pytest
 
 from netCDF4 import Dataset
 
-from flight_acoustics import add_sphere_group
+from panam.flight_acoustics import add_sphere_group
 
 
 N_PHI, N_THETA = 4, 3

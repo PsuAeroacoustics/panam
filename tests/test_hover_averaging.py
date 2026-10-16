@@ -10,7 +10,7 @@ Two properties are pinned here:
 
 import numpy as np
 
-from flight_acoustics import average_fore_and_aft
+from panam.flight_acoustics import average_fore_and_aft
 
 
 def test_energy_average_of_a_pair():

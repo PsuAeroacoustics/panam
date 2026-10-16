@@ -16,9 +16,9 @@ import os
 import numpy as np
 import pytest
 
-import flight_acoustics as fa
+from panam import flight_acoustics as fa
 import sphere_helpers
-import synthetic_flyover
+from panam import synthetic_flyover
 
 GOLDEN = os.path.join(os.path.dirname(__file__), 'data', 'golden_results.npz')
 REGENERATE = bool(os.environ.get('PANAM_REGENERATE_GOLDEN'))

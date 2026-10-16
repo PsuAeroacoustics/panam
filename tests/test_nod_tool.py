@@ -4,9 +4,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
-import flight_acoustics as fa
-import nod_database as nd
-import nod_tool
+from panam import flight_acoustics as fa
+from panam import nod_database as nd
+from tools import nod_tool
 from sphere_helpers import minimal_hemisphere, write_sphere_directory
 
 

@@ -1,7 +1,7 @@
 import numpy as np
 
-import board_field_plot as bfp
-import ground_plane as gp
+from panam import ground_plane as gp
+from tools import board_field_plot as bfp
 
 
 def test_plot_passes_the_ground_and_the_plate_geometry(monkeypatch, tmp_path):

@@ -9,10 +9,10 @@ import subprocess
 import numpy as np
 from netCDF4 import Dataset
 
-import flight_acoustics as fa
-import provenance
+from panam import flight_acoustics as fa
+from panam import provenance
 import sphere_helpers
-from panam_acoustics.atmosphere import Atmosphere
+from panam.acoustics.atmosphere import Atmosphere
 from test_norah2_import import VEHICLE, three_hems
 
 
@@ -72,6 +72,14 @@ def test_paths_callables_and_objects_are_reduced():
     assert settings['atmosphere']['type'] == 'Atmosphere'
     assert settings['atmosphere']['temperature'] == 293.15
 
+
+
+def test_a_panam_callable_is_named_without_the_package_prefix():
+    """The settings hash of a build with a ray model is the one it had when the
+    modules were imported by name, before they moved into the panam package."""
+    from panam import refracted_rays
+    assert provenance.canonical_settings(refracted_rays.straight_ray_model(1125.0)) == \
+        'refracted_rays.straight_ray_model.<locals>.model: straight'
 
 def test_non_finite_numbers_are_written_as_strict_json():
     assert provenance.settings_json({'x': np.inf}) == '{"x":"inf"}'
@@ -165,7 +173,7 @@ def test_the_norah2_database_records_its_build(tmp_path):
 
 
 def test_an_averaged_sphere_keeps_its_levels_out_of_the_settings(tmp_path):
-    import sphere_statistics as ss
+    from panam import sphere_statistics as ss
     hemisphere = sphere_helpers.minimal_hemisphere()
     spheres = sphere_helpers.write_sphere_directory(tmp_path / 'spheres',
                                                     [(hemisphere, 60.0, 0.0), (hemisphere, 60.0, 0.0)])

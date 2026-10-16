@@ -12,8 +12,8 @@ import numpy as np
 import pytest
 from netCDF4 import Dataset
 
-import flight_acoustics as fa
-import build_empirical_database as script
+from panam import flight_acoustics as fa
+from tools import build_empirical_database as script
 from sphere_helpers import minimal_hemisphere, write_sphere_directory
 
 

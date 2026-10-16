@@ -13,8 +13,9 @@ import os
 import numpy as np
 import pytest
 
-import local_paths
-import noise_abatement_2017 as na
+from panam import local_paths
+from panam import noise_abatement_2017 as na
+from tools import noise_abatement_2017 as na_cli
 
 
 RATE = 50.0
@@ -307,7 +308,7 @@ def test_a_checked_build_records_the_lowest_height(tmp_path):
 def test_the_dry_pass_reports_without_building(tmp_path, capsys):
     _archive_with_track(tmp_path, -40.0)
     out = tmp_path / 'checks.csv'
-    assert na.main(['AS350B3', '--check-tracks', '--root', str(tmp_path), '--manifest', str(out)]) == 0
+    assert na_cli.main(['AS350B3', '--check-tracks', '--root', str(tmp_path), '--manifest', str(out)]) == 0
     printed = capsys.readouterr().out
     assert '289108 L1 refused: the aircraft goes 40 ft below' in printed
     assert 'AS350B3: 1 runs checked, 1 refused' in printed
