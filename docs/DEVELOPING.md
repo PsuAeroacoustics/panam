@@ -35,29 +35,29 @@ built from a directory of spheres:
    track. `noise_abatement_2017.load_run_channels` reads the 2017 test's
    netCDF channels; `panam.acoustics.signal_io` reads netCDF, HDF5 and UFF
    recordings in general.
-2. **Spectra.** `flight_acoustics.depropagate_hemisphere` cuts each channel
+2. **Spectra.** `depropagation.depropagate_hemisphere` cuts each channel
    into frames and forms one-third-octave band power from Hann-windowed PSDs
-   (`third_octave_method='fft'`, optionally `tone_aware_band_power`) or from
+   (`third_octave_method='fft'`, optionally `spectra.tone_aware_band_power`) or from
    `panam.acoustics.filters.third_octave_filter_bank` (`'filter_bank'`).
-3. **Depropagation.** In the same call: emission geometry from `hemigen`
+3. **Depropagation.** In the same call: emission geometry from `geometry.hemigen`
    (or a ray model from `refracted_rays`), the ambient gate, the receiver
    response (`receiver_response_db`, the ground-plate model), spherical
    spreading and atmospheric absorption back to `r_ref`.
 4. **Gridding.** Samples are interpolated in energy onto an azimuth/elevation
-   grid by `adaptive_idw_weights` (with `interpolation=`) or the fixed-radius
+   grid by `gridding.adaptive_idw_weights` (with `interpolation=`) or the fixed-radius
    `shepIDW_weights`. The result is a hemisphere dict in UMAPR angles.
-5. **Sphere file.** `write_aam_hemisphere_netcdf` resamples the hemisphere
+5. **Sphere file.** `sphere_io.write_aam_hemisphere_netcdf` resamples the hemisphere
    onto the AAM (phi, theta) grid and writes the sphere netCDF;
-   `write_norah2_hemisphere` writes the NORAH2 `.hem` form.
-6. **Database.** `build_empirical_database` reads a directory of spheres and
+   `norah2.write_norah2_hemisphere` writes the NORAH2 `.hem` form.
+6. **Database.** `database.build_empirical_database` reads a directory of spheres and
    its `vehicle.cfg` and writes the NICEOPS `.nod` database through
-   `add_sphere_group`. `build_database_from_norah2` does the same from NORAH2
+   `add_sphere_group`. `norah2.build_database_from_norah2` does the same from NORAH2
    hemispheres.
 
 `noise_abatement_2017.build_sphere` drives steps 1 to 5 for one run of the
 2017 test; `build_all` loops over an aircraft's runs. The plotting and
-projection functions (`nc_lambert_ea`, `project_sphere`, `fried_egg_plot`)
-read the sphere files back.
+projection functions (`lambert_plots.nc_lambert_ea`, `projection.project_sphere`,
+`projection.fried_egg_plot`) read the sphere files back.
 
 ### Module map
 
@@ -65,7 +65,21 @@ The library's modules, in `panam/`:
 
 | Module | Owns |
 | --- | --- |
-| `flight_acoustics.py` | Spectra and bands, metrics (SEL, PNL/EPNL, MIL-STD-1474E), emission geometry (`hemigen`, `dedopplerize`), `depropagate_hemisphere`, gridding, sphere and NORAH2 I/O, the database writers, ground projection, Lambert plots, `ega` and the reflection coefficient, array geometry helpers |
+| `flight_acoustics.py` | Every name the library had when it was this one module, re-imported from the topic modules below (private names included), so `fa.<name>` keeps working. It defines nothing, and new functions are not added to it |
+| `spectra.py` | Spectra and levels: `psd`, `psd_welch`, `third_octave_band_levels` and `third_octave_band_edges`, `tone_aware_band_power`, `spectrogram`, `dBAw`, `power_to_db`, `highpass` and `lowpass`, `P_REF` |
+| `metrics.py` | Noise metrics: PNL, PNLT and EPNL, `sound_exposure_level`, MIL-STD-1474E nondetectability and its table |
+| `geometry.py` | Emission geometry (`hemigen`, `dedopplerize`) and the angle frames (`art2umapr`, `norah2umapr`, `lambert_ea`, `geodist`) |
+| `absorption.py` | Atmospheric absorption along a path and over a band (`path_absorption_db`), and `atmosorb` |
+| `gridding.py` | `adaptive_idw_weights` and `ADAPTIVE_INTERPOLATION`, the fixed-radius `shepIDW_weights`, and `interpolate_hemisphere_power` |
+| `depropagation.py` | `depropagate_hemisphere`, with its ambient gate and range caps |
+| `sphere_io.py` | AAM sphere files: `write_aam_hemisphere_netcdf`, `load_nc_sphere`, `read_run_metadata`, `mask_missing_levels`, the AAM constants, `AZIMUTH_REFERENCES` |
+| `database.py` | The NICEOPS database: `build_empirical_database`, `add_sphere_group`, hover synthesis and sphere completion, `read_vehicle_data`, `extract_SPL`, `DATABASE_FORMAT_VERSION` |
+| `norah2.py` | NORAH2 `.hem` files (`write_norah2_hemisphere`, `load_norah2_hemisphere`, `write_norah2_triangulation`) and `build_database_from_norah2` |
+| `lambert_plots.py` | Lambert equal-area maps: `plot_lambert_ea`, `nc_lambert_ea`, `lambert_ea_points` |
+| `projection.py` | Ground footprints: `project_sphere`, `plot_projection`, `fried_egg_plot` |
+| `array_design.py` | Microphone arrays: `linear_array_plan`, the pass, hover and takeoff coverage, `geodetic2array`, `write_kml` |
+| `tracks.py` | NASA track files: `load_NASA_track`, `filter_track` |
+| `ground_effect.py` | `spherical_reflection_coefficient` and the excess ground attenuation `ega` |
 | `noise_abatement_2017.py` | The 2017 Noise Abatement build: dataset layout, tracks and the track check, steady windows, atmosphere per run, plate tables, `build_sphere`, `build_all`; its command line is `tools/noise_abatement_2017.py` |
 | `ground_plane.py` | Ground impedance models, pole microphones, co-located pole and board pairs, ground-plate models, the exact half-space Green's function, the two-path fit, `emission_times`. Numba-compiled |
 | `axisymmetric_bem.py` | The axisymmetric BEM of the plate on the ground (`scattering`, `table`, `board_level`, `field`, `write_netcdf` for NICEOPS). Numba-compiled |
@@ -82,7 +96,7 @@ The library's modules, in `panam/`:
 | `build_recipe.py` | `load_recipe(path)`: a TOML build recipe of `[spheres]`, `[hover_source]` and `[database]` settings, checked against the build functions' signatures, for `--recipe` and Python |
 | `provenance.py` | `build_provenance(tool, settings)`: the code version, library versions and settings stamped on written spheres and databases |
 | `unit_conversion.py`, `default_units.py` | Aerospace unit conversions (third-party, BSD-style license in the file headers) |
-| `data/` | `mil_std_1474e_table_c1_full.csv`, the MIL-STD-1474E Table C-1 (`flight_acoustics.MIL_STD_1474E_TABLE_C1_FILE`) that `load_mil_std_1474e_table_c1` reads |
+| `data/` | `mil_std_1474e_table_c1_full.csv`, the MIL-STD-1474E Table C-1 (`metrics.MIL_STD_1474E_TABLE_C1_FILE`) that `load_mil_std_1474e_table_c1` reads |
 
 The tools, in `tools/`: `noise_abatement_2017.py` (the main pipeline),
 `build_empirical_database.py`, `norah2_to_nod.py`, `sphere_to_norah2.py`,
@@ -96,14 +110,16 @@ and the plotting scripts `nc_lambert_ea.py`, `plot_projection.py`,
 
 ### Where new code goes
 
-Put new code in the module of `panam/` that owns the topic. When no module
-does, add a new module rather than growing `flight_acoustics.py`, which is
-already over 6,000 lines. A tool or an example holds only its command line and
-its presentation; a function that another script, a test or a user could call
-belongs in `panam/`. Receiver and ground models go in `ground_plane.py` or
-`axisymmetric_bem.py`; anything specific to one flight test goes in that
-test's module, as `panam/noise_abatement_2017.py` is for 2017; recording formats go
-in `panam/acoustics/signal_io.py`. A new model's equation goes in
+Put new code in the module of `panam/` that owns the topic, or in a new module
+when none does. Library modules import from the topic modules, not from
+`flight_acoustics`: `tests/test_module_layout.py` checks every module but the
+older ones it lists. Tools, examples and tests may use either. A tool or an
+example holds only its command line and its presentation; a function that
+another script, a test or a user could call belongs in `panam/`. Receiver and
+ground models go in `ground_plane.py` or `axisymmetric_bem.py`; anything
+specific to one flight test goes in that test's module, as
+`panam/noise_abatement_2017.py` is for 2017; recording formats go in
+`panam/acoustics/signal_io.py`. A new model's equation goes in
 `docs/THEORY.md` in the same commit, with a row in its appendix table
 ([Where each model lives](THEORY.md#appendix-where-each-model-lives)).
 
@@ -123,7 +139,7 @@ obvious (`radius_ft`, `speed_knots`). The common systems are:
 - `atmosorb(freq, temp, humid, pstat)` takes deg C, % RH and mbar and returns
   dB/m; `panam.acoustics.atmosphere.Atmosphere` takes K, kPa and % RH.
 - Flow resistance is in kPa s/m^2. The reference pressure is
-  `flight_acoustics.P_REF` (20 uPa).
+  `spectra.P_REF` (20 uPa).
 
 ### Levels, energy and missing values
 
@@ -166,7 +182,7 @@ these states are written to a sphere file and a database is in
 Plotting functions are decorated with
 `panam.acoustics.plotting.acoustic_plot_style`, which applies the
 `fivethirtyeight` style and a few rc settings only while the function runs.
-Importing `flight_acoustics` leaves Matplotlib's global settings unchanged;
+Importing PANAM's modules leaves Matplotlib's global settings unchanged;
 never change the global style or `rcParams`. Return `(fig, ax, ...)` rather
 than showing the figure. `tests/conftest.py` sets the `Agg` backend for tests.
 
@@ -255,7 +271,7 @@ The `.nod` database is a contract with NICEOPS
 ([file_formats.md](file_formats.md#the-niceops-database-nod); the version rule is in
 [DATABASE_FORMAT_VERSION](file_formats.md#database_format_version) and the tests in
 [How the contract is tested](file_formats.md#how-the-contract-is-tested)). A change that NICEOPS must know about
-bumps `flight_acoustics.DATABASE_FORMAT_VERSION` and needs a matching NICEOPS
+bumps `database.DATABASE_FORMAT_VERSION` and needs a matching NICEOPS
 change. Three tests hold the contract: `tests/test_niceops_loads_databases.py`
 runs NICEOPS's self-test on PANAM-built databases,
 `tests/test_database_provenance.py` pins names and attributes, and

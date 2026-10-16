@@ -33,10 +33,18 @@ Instructions for AI coding tools working on PANAM. Human developers: see
 
 Library modules, in `panam/`:
 
-- `flight_acoustics.py`: spectra and bands, metrics, emission geometry,
-  `depropagate_hemisphere`, gridding, sphere and NORAH2 I/O, database writers
-  (`build_empirical_database`, `build_database_from_norah2`), projection, plots,
-  `ega`. Over 6,000 lines: add a new module rather than growing it.
+- `flight_acoustics.py`: re-exports every name it had before it was split into
+  the topic modules below, so `fa.<name>` keeps working. Add nothing to it, and
+  import the topic modules, not it, in library code (`tests/test_module_layout.py`
+  lists the older modules that still use it).
+- Topic modules: `spectra.py` (PSDs, bands, spectrograms, `dBAw`), `metrics.py`
+  (PNL/EPNL, SEL, MIL-STD-1474E), `geometry.py` (`hemigen`, `dedopplerize`,
+  `art2umapr`, Lambert angles), `absorption.py`, `gridding.py` (IDW weights,
+  `interpolate_hemisphere_power`), `depropagation.py`
+  (`depropagate_hemisphere`), `sphere_io.py` (sphere netCDF, run metadata),
+  `database.py` (`build_empirical_database`, `add_sphere_group`), `norah2.py`
+  (`.hem` files, `build_database_from_norah2`), `lambert_plots.py`,
+  `projection.py`, `array_design.py`, `tracks.py`, `ground_effect.py` (`ega`).
 - `noise_abatement_2017.py`: the 2017 flight-test build (`build_sphere`,
   `build_all`, track check, plate tables); its CLI is
   `tools/noise_abatement_2017.py`.
@@ -114,6 +122,8 @@ examples tables list them.
 - Never regenerate `tests/data/python_acoustics_reference.npz` from PANAM.
 - Shared fixtures: `tests/sphere_helpers.py`. Tests use the `Agg` backend.
   `tests/conftest.py` validates every database built through `fa.build_...`.
+  A monkeypatch must target the module that makes the call (`depropagation.hemigen`),
+  not `fa`.
 - Skips: `@pytest.mark.data` (external datasets), NICEOPS executables not
   configured, example data missing. CI (`.github/workflows/tests.yml`: Ubuntu
   with Python 3.11 and 3.14, macOS with 3.14; coverage and `--durations=20`

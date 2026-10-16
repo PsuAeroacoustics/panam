@@ -19,7 +19,7 @@ How the files are made is in [`database_build.md`](database_build.md) and
 
 ## AAM sphere netCDF (`.nc`)
 
-`flight_acoustics.write_aam_hemisphere_netcdf` writes one flight condition per file, in
+`sphere_io.write_aam_hemisphere_netcdf` writes one flight condition per file, in
 `NETCDF3_CLASSIC`, following the shipped AAM/RNM spheres. AAM 3.1 reads the variables by
 position, not by name, so they are declared in the order of `AAM_VARIABLE_ORDER`. Each
 scalar also has a singleton dimension of its own name, declared in the same order.
@@ -220,7 +220,7 @@ constants.
 
 ### DATABASE_FORMAT_VERSION
 
-`database_version` is `flight_acoustics.DATABASE_FORMAT_VERSION`:
+`database_version` is `database.DATABASE_FORMAT_VERSION`:
 
 - 0, or absent: written before the version existed. Hover spheres in those files may have
   broken directivity.
@@ -299,7 +299,7 @@ adding them left `DATABASE_FORMAT_VERSION` at 1. A file written before them has 
 
 | attribute | content |
 | --- | --- |
-| `panam_tool` | the writer: `noise_abatement_2017.build_sphere`, `sphere_statistics.write_averaged_sphere`, `flight_acoustics.write_aam_hemisphere_netcdf` (called directly), `flight_acoustics.build_empirical_database` or `flight_acoustics.build_database_from_norah2` |
+| `panam_tool` | the writer: `noise_abatement_2017.build_sphere`, `sphere_statistics.write_averaged_sphere`, `flight_acoustics.write_aam_hemisphere_netcdf` (called directly), `flight_acoustics.build_empirical_database` or `flight_acoustics.build_database_from_norah2`. These are fixed names: the last three stayed `flight_acoustics.<name>` when the functions moved to `sphere_io`, `database` and `norah2` |
 | `panam_version` | `git describe --always --dirty` of the PANAM source directory; `unknown` without git |
 | `panam_created_utc` | when the file was written, UTC, ISO 8601 to the second, e.g. `2026-10-11T14:03:22Z` |
 | `panam_python`, `panam_numpy`, `panam_scipy`, `panam_netcdf4`, `panam_numba` | library versions; `not installed` when absent |

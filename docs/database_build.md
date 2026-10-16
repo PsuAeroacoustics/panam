@@ -517,8 +517,8 @@ frequencies is never built for every flight run.
 
 The code is in `panam/build_recipe.py` (`load_recipe`), `panam/noise_abatement_2017.py` (`build_all`,
 `build_sphere`, `profile_ray_models`, `check_tracks`, `check_track`, `steady_window`,
-`frame_bearing_deg`, `ground_microphone_positions`, `read_winds`, `select_from_manifest`) and `panam/flight_acoustics.py` (`build_empirical_database`,
-`write_aam_hemisphere_netcdf`, `read_vehicle_data`). The tests are
+`frame_bearing_deg`, `ground_microphone_positions`, `read_winds`, `select_from_manifest`), `panam/database.py` (`build_empirical_database`,
+`read_vehicle_data`) and `panam/sphere_io.py` (`write_aam_hemisphere_netcdf`). The tests are
 `tests/test_noise_abatement_2017.py`, `tests/test_track_check.py`,
 `tests/test_run_metadata.py`, `tests/test_azimuth_reference.py`,
 `tests/test_build_empirical_database_cli.py` and `tests/test_build_recipe.py`.

@@ -1372,39 +1372,39 @@ These are in PANAM but not used to build the databases.
 
 ## Appendix: Where each model lives
 
-Functions are in `panam/flight_acoustics.py` unless another module is named: a module name alone is a
-module of `panam/`, and a script is named by its path. Tests are in `tests/`.
+A function is named with its module, a module of `panam/`, and the names after it in a row are in the
+same module until another is named; a script is named by its path. Tests are in `tests/`.
 
 | Section | Functions | Tests |
 | --- | --- | --- |
-| §2.1 Short-time spectra | `spectrogram`, `frame_length`, `psd`, `psd_welch`, `overall_SPL`, `level_history` | `test_acoustics.py`, `test_generate_hemisphere.py` |
-| §2.2 Bands | `third_octave_band_edges`, `third_octave_band_levels`, `tone_aware_band_power` (`return_parts`), `hann_power`, `depropagate_hemisphere` (`decompose_tonal`), `noise_abatement_2017.build_sphere` (`tone_split`), `panam.acoustics.filters.third_octave_filter_bank` | `test_third_octave_band_edges.py`, `test_third_octave_band_levels.py`, `test_band_selection.py`, `test_tone_aware_band_power.py`, `test_generate_hemisphere.py`, `test_noise_abatement_2017.py`, `test_third_octave_filter_bank.py` |
-| §2.3 A-weighting | `dBAw` | `test_acoustics.py` |
-| §3.1–3.2 Geometry | `hemigen`, `art2umapr`; `noise_abatement_2017.local_east_north_ft`, `east_north_to_frame`, `frame_bearing_deg` | `test_lambert_geometry.py`, `test_hemisphere_geometry_accuracy.py`, `test_azimuth_reference.py`, `test_track_check.py` |
-| §3.3 Doppler | `depropagate_hemisphere` (`remove_doppler`, `air_relative_doppler`) | `test_generate_hemisphere.py`, `test_tone_aware_band_power.py`, `test_refracted_rays.py` |
+| §2.1 Short-time spectra | `spectra.spectrogram`, `frame_length`, `psd`, `psd_welch`, `overall_SPL`, `level_history` | `test_acoustics.py`, `test_generate_hemisphere.py` |
+| §2.2 Bands | `spectra.third_octave_band_edges`, `third_octave_band_levels`, `tone_aware_band_power` (`return_parts`), `hann_power`, `depropagation.depropagate_hemisphere` (`decompose_tonal`), `noise_abatement_2017.build_sphere` (`tone_split`), `panam.acoustics.filters.third_octave_filter_bank` | `test_third_octave_band_edges.py`, `test_third_octave_band_levels.py`, `test_band_selection.py`, `test_tone_aware_band_power.py`, `test_generate_hemisphere.py`, `test_noise_abatement_2017.py`, `test_third_octave_filter_bank.py` |
+| §2.3 A-weighting | `spectra.dBAw` | `test_acoustics.py` |
+| §3.1–3.2 Geometry | `geometry.hemigen`, `art2umapr`; `noise_abatement_2017.local_east_north_ft`, `east_north_to_frame`, `frame_bearing_deg` | `test_lambert_geometry.py`, `test_hemisphere_geometry_accuracy.py`, `test_azimuth_reference.py`, `test_track_check.py` |
+| §3.3 Doppler | `depropagation.depropagate_hemisphere` (`remove_doppler`, `air_relative_doppler`) | `test_generate_hemisphere.py`, `test_tone_aware_band_power.py`, `test_refracted_rays.py` |
 | §3.4 Steady segments | `noise_abatement_2017.steady_window`, `flight_condition` | `test_noise_abatement_2017.py` |
 | §4.1 Impedance | `ground_plane.surface_admittance` | `test_ground_validation.py` |
-| §4.2 Reflection coefficient | `spherical_reflection_coefficient` | `test_reflection_coefficient.py` |
-| §4.3 `ega()` | `ega` | `test_ega.py` |
+| §4.2 Reflection coefficient | `ground_effect.spherical_reflection_coefficient` | `test_reflection_coefficient.py` |
+| §4.3 `ega()` | `ground_effect.ega` | `test_ega.py` |
 | §4.4 Pole microphones | `ground_plane.pole_level`, `turbulence_coherence`, `free_field_microphone_response`, `pole_incidence`, `certification_axis` | `test_ground_plane.py`, `test_ground_validation.py` |
 | §4.5 Plate BEM | `axisymmetric_bem.scattering`, `table`, `board_level`, `write_netcdf`; `ground_plane.exact_half_space_green`, `image_integrals`, `ImageIntegralTable`, `sub_band_factors`, `table_frames`; `noise_abatement_2017.plate_table`, `plate_response` | `test_axisymmetric_bem.py`, `test_ground_validation.py` |
 | §4.6 Site ground | `noise_abatement_2017.SITE_GROUND` | (none) |
-| §5.1–5.2 Depropagation | `depropagate_hemisphere`; `noise_abatement_2017.build_sphere` | `test_ambient_gating.py`, `test_generate_hemisphere.py`, `test_golden_results.py`, `test_synthetic_flyover.py` |
+| §5.1–5.2 Depropagation | `depropagation.depropagate_hemisphere`; `noise_abatement_2017.build_sphere` | `test_ambient_gating.py`, `test_generate_hemisphere.py`, `test_golden_results.py`, `test_synthetic_flyover.py` |
 | §5.3 Rays | `refracted_rays.external_ray_model`, `straight_ray_model`, `uniform_wind_ray_model`; `noise_abatement_2017.wind_in_frame_ft_s` (`build_sphere(ray_model='wind')`) | `test_refracted_rays.py`, `test_run_metadata.py` |
-| §5.4 Atmosphere | `panam.acoustics.iso_9613_1_1993`, `panam.acoustics.atmosphere.Atmosphere`, `atmosorb`; `noise_abatement_2017.run_atmosphere`, `air_density_kg_m3` | `test_acoustics.py`, `test_python_acoustics_equivalence.py`, `test_run_metadata.py`, `test_noise_abatement_2017.py` |
-| §5.4 Band and layered absorption | `panam.acoustics.atmosphere.band_absorption_db`, `arp5534_band_attenuation`, `exact_midband_frequency`, `layered_attenuation_db`, `check_absorption_profile`; `depropagate_hemisphere` (`absorption_band_method`, `absorption_profile`), `noise_abatement_2017.build_sphere`, `spla_and_eaa_from_spectrum`, `norah2_levels_at_radius` | `test_band_absorption.py`, `test_spla_and_eaa.py`, `test_norah2_import.py` |
-| §5.5 Forward synthesis | `synthesis.synthesize_band_histories`, `_bin_band_absorption_db`, `doppler_shift_band_power`, `measured_band_histories`, `leave_mics_out`, `residual_statistics`; `interpolate_hemisphere_power` | `test_synthesis.py` |
-| §6.1 Fixed radius | `shepIDW`, `shepIDW_weights`, `shepIDW_apply`, `geodist` | `test_shep_idw.py`, `test_no_data.py`, `test_hemisphere_geometry_accuracy.py` |
-| §6.2 Adaptive radius | `adaptive_idw_weights`, `ADAPTIVE_INTERPOLATION` | `test_adaptive_interpolation.py`, `test_hemisphere_geometry_accuracy.py` |
-| §6.3 Output grids | `write_aam_hemisphere_netcdf`, `_sample_hemisphere_levels`, `interpolate_hemisphere_power`, `mask_missing_levels`, `lambert_ea`, `lambert_lon` | `test_write_aam_hemisphere_netcdf.py`, `test_hemisphere_sampling.py`, `test_no_data.py`, `test_lambert_geometry.py` |
-| §6.4 Node statistics | `sphere_statistics.node_statistics`, `idw_weight_matrix`, `node_statistics_variables`; `depropagate_hemisphere` (`return_statistics`), `noise_abatement_2017.build_sphere` (`node_statistics`) | `test_node_statistics.py`, `test_noise_abatement_2017.py` |
-| §7.1–7.2 Condition, EAA | `build_empirical_database`, `read_vehicle_data`, `add_sphere_group`, `extract_SPL`, `spla_and_eaa_from_spectrum`, `_finite_sphere_levels`, `_measured_bins`; repeat runs: `_group_repeat_conditions`, `_extract_condition_SPL`, `_merged_run_metadata` | `test_spla_and_eaa.py`, `test_database_provenance.py`, `test_vehicle_data.py`, `test_merge_repeats.py` |
-| §7.3 Load factor | `add_sphere_group` | `test_load_factor_scaling.py`, `test_write_aam_hemisphere_netcdf.py` |
-| §7.4 Hover | `average_fore_and_aft`, `_fore_aft_measured`, `_synthesized_hover_sphere`, `_hover_source_index`, `_hover_flight_path_angles` | `test_hover_averaging.py`, `test_sphere_completion_integration.py`, `test_empirical_database_hover_selection.py`, `test_database_provenance.py`, `test_norah2_import.py` |
-| §7.5 Completion | `mirror_phi_to_upper_surface`, `_complete_sphere_with_coverage` | `test_mirror_phi.py`, `test_sphere_completion_integration.py` |
-| §8 NORAH2 | `build_database_from_norah2`, `norah2_levels_at_radius`, `norah2_speed_knots`, `humid_air_density`, `fill_norah2_empty_cells`, `_norah2_rotor_speed_fraction`, `write_norah2_hemisphere`, `write_norah2_levels`, `write_norah2_triangulation`, `norah2umapr` | `test_norah2_import.py`, `test_write_norah2_hemisphere.py` |
+| §5.4 Atmosphere | `panam.acoustics.iso_9613_1_1993`, `panam.acoustics.atmosphere.Atmosphere`, `absorption.atmosorb`; `noise_abatement_2017.run_atmosphere`, `air_density_kg_m3` | `test_acoustics.py`, `test_python_acoustics_equivalence.py`, `test_run_metadata.py`, `test_noise_abatement_2017.py` |
+| §5.4 Band and layered absorption | `panam.acoustics.atmosphere.band_absorption_db`, `arp5534_band_attenuation`, `exact_midband_frequency`, `layered_attenuation_db`, `check_absorption_profile`; `depropagation.depropagate_hemisphere` (`absorption_band_method`, `absorption_profile`), `noise_abatement_2017.build_sphere`, `database.spla_and_eaa_from_spectrum`, `norah2.norah2_levels_at_radius` | `test_band_absorption.py`, `test_spla_and_eaa.py`, `test_norah2_import.py` |
+| §5.5 Forward synthesis | `synthesis.synthesize_band_histories`, `_bin_band_absorption_db`, `doppler_shift_band_power`, `measured_band_histories`, `leave_mics_out`, `residual_statistics`; `gridding.interpolate_hemisphere_power` | `test_synthesis.py` |
+| §6.1 Fixed radius | `gridding.shepIDW`, `shepIDW_weights`, `shepIDW_apply`, `geometry.geodist` | `test_shep_idw.py`, `test_no_data.py`, `test_hemisphere_geometry_accuracy.py` |
+| §6.2 Adaptive radius | `gridding.adaptive_idw_weights`, `ADAPTIVE_INTERPOLATION` | `test_adaptive_interpolation.py`, `test_hemisphere_geometry_accuracy.py` |
+| §6.3 Output grids | `sphere_io.write_aam_hemisphere_netcdf`, `gridding._sample_hemisphere_levels`, `interpolate_hemisphere_power`, `sphere_io.mask_missing_levels`, `geometry.lambert_ea`, `lambert_lon` | `test_write_aam_hemisphere_netcdf.py`, `test_hemisphere_sampling.py`, `test_no_data.py`, `test_lambert_geometry.py` |
+| §6.4 Node statistics | `sphere_statistics.node_statistics`, `idw_weight_matrix`, `node_statistics_variables`; `depropagation.depropagate_hemisphere` (`return_statistics`), `noise_abatement_2017.build_sphere` (`node_statistics`) | `test_node_statistics.py`, `test_noise_abatement_2017.py` |
+| §7.1–7.2 Condition, EAA | `database.build_empirical_database`, `read_vehicle_data`, `add_sphere_group`, `extract_SPL`, `spla_and_eaa_from_spectrum`, `_finite_sphere_levels`, `_measured_bins`; repeat runs: `_group_repeat_conditions`, `_extract_condition_SPL`, `_merged_run_metadata` | `test_spla_and_eaa.py`, `test_database_provenance.py`, `test_vehicle_data.py`, `test_merge_repeats.py` |
+| §7.3 Load factor | `database.add_sphere_group` | `test_load_factor_scaling.py`, `test_write_aam_hemisphere_netcdf.py` |
+| §7.4 Hover | `database.average_fore_and_aft`, `_fore_aft_measured`, `_synthesized_hover_sphere`, `_hover_source_index`, `_hover_flight_path_angles` | `test_hover_averaging.py`, `test_sphere_completion_integration.py`, `test_empirical_database_hover_selection.py`, `test_database_provenance.py`, `test_norah2_import.py` |
+| §7.5 Completion | `database.mirror_phi_to_upper_surface`, `_complete_sphere_with_coverage` | `test_mirror_phi.py`, `test_sphere_completion_integration.py` |
+| §8 NORAH2 | `norah2.build_database_from_norah2`, `norah2_levels_at_radius`, `norah2_speed_knots`, `humid_air_density`, `fill_norah2_empty_cells`, `_norah2_rotor_speed_fraction`, `write_norah2_hemisphere`, `write_norah2_levels`, `write_norah2_triangulation`, `geometry.norah2umapr` | `test_norah2_import.py`, `test_write_norah2_hemisphere.py` |
 | §8 Sphere to NORAH2 | `tools/sphere_to_norah2.py`: `sphere_to_norah2`, `sphere_levels_on_norah2_grid` | `test_sphere_to_norah2.py`, `test_cli_scripts.py` (smoke) |
-| §9 Metrics | `sound_exposure_level`, `ten_db_down_interval`, `noys`, `perceived_noise_level`, `tone_correction`, `effective_perceived_noise_level`, `mil_std_1474e_nondetectability_distance` | `test_sound_exposure_level.py`, `test_pnl_epnl.py`, `test_mil_std_nondetectability.py` |
+| §9 Metrics | `metrics.sound_exposure_level`, `ten_db_down_interval`, `noys`, `perceived_noise_level`, `tone_correction`, `effective_perceived_noise_level`, `mil_std_1474e_nondetectability_distance` | `test_sound_exposure_level.py`, `test_pnl_epnl.py`, `test_mil_std_nondetectability.py` |
 | §9 Time-weighted levels | `panam.acoustics.time_weighting.frequency_weighting_sos`, `apply_frequency_weighting`, `time_weighted_square`, `time_weighted_level`, `leq` | `test_time_weighting.py` |
 | §9 Impulsiveness | `panam.acoustics.impulsiveness.crest_factor`, `kurtosis`, `pulse_peak_to_rms`, `bvi_harmonic_ratio`, `frame_signal` | `test_impulsiveness.py` |
 | §9 Loudness, sharpness | `panam.acoustics.psychoacoustics.loudness_zwicker`, `loudness_level`, `sharpness_din`, `iso_532_1_levels` | `test_psychoacoustics.py` |
@@ -1412,10 +1412,10 @@ module of `panam/`, and a script is named by its path. Tests are in `tests/`.
 | §10 Order tracks, clock offsets | `order_tracking.doppler_factor`, `observed_order_track`, `ridge_track`, `estimate_clock_offset`, `order_track_offset`; `examples/hexacopter_vkf_example.py`: `heard_rotor_speed` | `test_order_tracking.py`, `test_hexacopter_vkf_example.py` |
 | §10 Ground-board models, two-path fit | `ground_plane.board_*`, `disc_bem_scattered`, `raised_plate_scattering`, `fit_two_path`, `height_from_path_difference` | `test_ground_plane.py`, `test_ground_validation.py`, `test_axisymmetric_bem.py` |
 | §10 Ground impedance inversion | `ground_plane.fit_ground_impedance` | `test_ground_impedance_fit.py` |
-| §10 Array planning | `linear_array_plan` (through the `tools/array_planner.py design` CLI); `array_coverage`, `hover_array_coverage`, `takeoff_array_coverage` (through `tools/array_planner.py coverage`, `hover` and `takeoff`) | `test_array_coverage.py` (the coverage functions on known geometry), `test_array_planner.py` (the CLI's spacing, options and case files), `test_cli_scripts.py` (smoke) |
-| §10 Footprint, fried egg | `project_sphere`, `project_directory`, `fried_egg_plot`, `is_noisy` | `test_projection.py`, `test_no_data.py`, `test_cli_scripts.py` (smoke) |
-| §10 De-Dopplerization | `dedopplerize`; `examples/hexacopter_vkf_example.py`: `dedopplerize_record` | `test_acoustics.py`, `test_hexacopter_vkf_example.py` |
-| §10 Repeat-run averaging, comparison | `sphere_statistics.average_spheres`, `write_averaged_sphere`, `compare_spheres`, `cell_solid_angles`, `plot_sphere_difference`; in a database build, `build_empirical_database(merge_repeats=True)` (`_group_repeat_conditions`, `_extract_condition_SPL`) | `test_sphere_statistics.py`, `test_merge_repeats.py`, `test_cli_scripts.py` (smoke) |
+| §10 Array planning | `array_design.linear_array_plan` (through the `tools/array_planner.py design` CLI); `array_coverage`, `hover_array_coverage`, `takeoff_array_coverage` (through `tools/array_planner.py coverage`, `hover` and `takeoff`) | `test_array_coverage.py` (the coverage functions on known geometry), `test_array_planner.py` (the CLI's spacing, options and case files), `test_cli_scripts.py` (smoke) |
+| §10 Footprint, fried egg | `projection.project_sphere`, `project_directory`, `fried_egg_plot`, `is_noisy` | `test_projection.py`, `test_no_data.py`, `test_cli_scripts.py` (smoke) |
+| §10 De-Dopplerization | `geometry.dedopplerize`; `examples/hexacopter_vkf_example.py`: `dedopplerize_record` | `test_acoustics.py`, `test_hexacopter_vkf_example.py` |
+| §10 Repeat-run averaging, comparison | `sphere_statistics.average_spheres`, `write_averaged_sphere`, `compare_spheres`, `cell_solid_angles`, `plot_sphere_difference`; in a database build, `database.build_empirical_database(merge_repeats=True)` (`_group_repeat_conditions`, `_extract_condition_SPL`) | `test_sphere_statistics.py`, `test_merge_repeats.py`, `test_cli_scripts.py` (smoke) |
 
 ## References
 
