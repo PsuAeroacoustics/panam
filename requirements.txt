@@ -1,7 +1,8 @@
-# PANAM itself: the panam package in editable mode, so that `import panam`
-# works from any directory.  Install from the repository root.
--e .
-# Runtime dependencies (Python 3.11 or newer).
+# Runtime dependencies (Python 3.11 or newer).  PANAM itself is installed
+# separately, with `pip install -e .` from the repository root: pip reads a
+# path in a requirements file against the current directory, not the file's,
+# so this file lists packages only, and another project can install it with
+# `-r path/to/panam/requirements.txt` from its own directory.
 numpy
 h5py
 openpyxl

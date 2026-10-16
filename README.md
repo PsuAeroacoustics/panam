@@ -14,11 +14,12 @@ on macOS).
 python3 -m venv .venv
 source .venv/bin/activate          # Windows PowerShell: .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+pip install -e .
 ```
 
-Run it from the repository root. `requirements.txt` covers every import,
-includes pytest, and installs PANAM itself in editable mode (its `-e .` line),
-so `import panam` works from any directory and picks up edits to the checkout
+Run them from the repository root. `requirements.txt` covers every import and
+includes pytest. `pip install -e .` installs PANAM itself in editable mode, so
+`import panam` works from any directory and picks up edits to the checkout
 without reinstalling. `pyproject.toml` records the project's metadata and the
 same dependency list. The optional
 `scikits.umfpack` package is used by `vold_kalman_filter`'s sparse fallback solve

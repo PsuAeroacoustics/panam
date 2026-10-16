@@ -1,8 +1,7 @@
 # Project metadata and packaging for PANAM.
 #
 # The library is the package panam/, installed in editable (development) mode
-# by the `-e .` line of requirements.txt, so `pip install -r requirements.txt`
-# from the repository root installs the dependencies and makes `import panam`
+# by `pip install -e .` from the repository root, which makes `import panam`
 # work from any directory.  Only panam/ is installed: the command-line tools in
 # tools/ and the examples in examples/ are run as scripts from the checkout.
 # The dependencies mirror requirements.txt; keep the two lists in step.  The
