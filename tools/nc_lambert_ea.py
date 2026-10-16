@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 import argparse
 
-from panam import flight_acoustics
 from panam.cli import colon_pair, save_or_show
+from panam.lambert_plots import nc_lambert_ea
 
 parser = argparse.ArgumentParser(
     description="Plot a sphere file's overall or A-weighted levels on a Lambert equal-area projection.")
@@ -26,7 +26,7 @@ parser.add_argument(
 parser.add_argument("infile", help="AAM sphere file (.nc), e.g. example_data/AS350B3108.nc")
 
 args = parser.parse_args()
-fig, ax, cs = flight_acoustics.nc_lambert_ea(
+fig, ax, cs = nc_lambert_ea(
     args.infile,
     args.frequency,
     args.weight,

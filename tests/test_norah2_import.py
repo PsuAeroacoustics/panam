@@ -13,6 +13,7 @@ from netCDF4 import Dataset
 from panam import flight_acoustics as fa
 from panam import local_paths
 from panam import nod_database
+from panam import norah2
 from panam.acoustics.atmosphere import Atmosphere
 
 REPO = Path(__file__).resolve().parents[1]
@@ -463,7 +464,7 @@ def test_a_failed_write_leaves_the_existing_output_alone(tmp_path, monkeypatch):
 
     def fail(*args, **kwargs):
         raise OSError('disk full')
-    monkeypatch.setattr(fa, 'add_sphere_group', fail)
+    monkeypatch.setattr(norah2, 'add_sphere_group', fail)
     with pytest.raises(OSError, match='disk full'):
         build(files, out)
     assert out.read_text() == 'existing'
@@ -569,7 +570,7 @@ def test_synthesized_hover_refuses_a_theta_grid_not_symmetric_about_90(tmp_path,
         hemisphere['theta_deg'] = np.asarray(hemisphere['theta_deg'], dtype=float) * 170.0 / 180.0
         return hemisphere
 
-    monkeypatch.setattr(fa, 'load_norah2_hemisphere', squeezed)
+    monkeypatch.setattr(norah2, 'load_norah2_hemisphere', squeezed)
     build(files, tmp_path / 'plain.nod')
     with pytest.raises(ValueError, match='X_0.hem: THETAOBSAC is not symmetric about 90 deg'):
         build(files, tmp_path / 'x.nod', synthesize_hover=True)

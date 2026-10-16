@@ -5,7 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from panam.cli import add_output_options, colon_pair, save_or_show
-from panam.flight_acoustics import atmosorb
+from panam.absorption import atmosorb
 
 
 def main():

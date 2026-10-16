@@ -24,9 +24,13 @@ import numpy as np
 import scipy.sparse as sparse
 from netCDF4 import Dataset
 
-from panam import flight_acoustics as fa
 from panam import provenance
 from panam.acoustics.plotting import acoustic_plot_style
+from panam.geometry import art2umapr
+from panam.sphere_io import (AAM_DEFAULT_PHI_DEG, AAM_DEFAULT_THETA_DEG, band_index, missing_level_sentinel,
+                             write_aam_hemisphere_netcdf, _azimuth_reference_of, _doppler_shift_removed_of,
+                             _read_scalar)
+from panam.lambert_plots import plot_lambert_ea
 
 #: How a sphere file's -999 (or >1e34) cell is read: left out, or zero power.
 MISSING_MEANINGS = ('no_data', 'no_energy')
@@ -39,14 +43,14 @@ def _read_handle(handle, name, missing):
     variables = handle.variables
     with np.errstate(invalid='ignore'):
         levels = read(variables['AMPLITUDE'])
-        sentinel = fa.missing_level_sentinel(levels)
+        sentinel = missing_level_sentinel(levels)
     levels[sentinel] = np.nan if missing == 'no_data' else -np.inf
 
     def scalar(variable_name, default):
-        return fa._read_scalar(handle, variable_name, default)
+        return _read_scalar(handle, variable_name, default)
 
-    doppler = fa._doppler_shift_removed_of(handle, name)
-    reference = fa._azimuth_reference_of(handle, name)
+    doppler = _doppler_shift_removed_of(handle, name)
+    reference = _azimuth_reference_of(handle, name)
     weight = sum(scalar(n, 0.0) for n in ('EMPTY_WEIGHT', 'FUEL_WEIGHT', 'LOAD_WEIGHT'))
     return dict(
         name=name,
@@ -229,7 +233,7 @@ def write_averaged_sphere(filename, average, title=None, overwrite=True):
         title: the file's title (default names the source count).
         overwrite: if False, refuse an existing file.
     """
-    fa.write_aam_hemisphere_netcdf(
+    write_aam_hemisphere_netcdf(
         filename, None,
         art_levels=(average['frequency_hz'], average['levels_db']),
         phi_deg=average['phi_deg'], theta_deg=average['theta_deg'],
@@ -364,10 +368,10 @@ def node_statistics_variables(hemisphere, phi_deg=None, theta_deg=None, field='b
     if 'statistics' not in hemisphere:
         raise ValueError('the hemisphere has no statistics; build it with return_statistics=True')
     stats = hemisphere['statistics']['third_octave'][field]
-    phi = np.asarray(fa.AAM_DEFAULT_PHI_DEG if phi_deg is None else phi_deg, dtype=float).ravel()
-    theta = np.asarray(fa.AAM_DEFAULT_THETA_DEG if theta_deg is None else theta_deg, dtype=float).ravel()
+    phi = np.asarray(AAM_DEFAULT_PHI_DEG if phi_deg is None else phi_deg, dtype=float).ravel()
+    theta = np.asarray(AAM_DEFAULT_THETA_DEG if theta_deg is None else theta_deg, dtype=float).ravel()
     TH, PH = np.meshgrid(theta, phi)
-    azi, elv = fa.art2umapr(np.radians(PH), np.radians(TH))
+    azi, elv = art2umapr(np.radians(PH), np.radians(TH))
     azi, elv = np.degrees(azi), np.degrees(elv)
     azi_grid = np.asarray(hemisphere['azi_grid_deg'], dtype=float)
     elv_grid = np.asarray(hemisphere['elv_grid_deg'], dtype=float)
@@ -443,7 +447,7 @@ def compare_spheres(a, b, bands=None, missing='no_data'):
     else:
         index = []
         for band in np.atleast_1d(np.asarray(bands, dtype=float)):
-            match = fa.band_index(frequency, band)
+            match = band_index(frequency, band)
             if match is None:
                 raise ValueError('no {} Hz band in the spheres'.format(band))
             index.append(match)
@@ -513,7 +517,7 @@ def plot_sphere_difference(result, band=None, level_range=None, grid_convention=
         field = result['overall_difference_db']
         label = 'Overall level difference B - A, dB'
     else:
-        match = fa.band_index(result['frequency_hz'], band)
+        match = band_index(result['frequency_hz'], band)
         if match is None:
             raise ValueError('no {} Hz band in the comparison'.format(band))
         field = result['difference_db'][:, :, match]
@@ -525,7 +529,7 @@ def plot_sphere_difference(result, band=None, level_range=None, grid_convention=
         largest = max(np.ceil(largest), 1.0)
         level_range = (-largest, largest)
     theta, phi = np.meshgrid(result['theta_deg'], result['phi_deg'])
-    azi, elv = fa.art2umapr(np.radians(phi), np.radians(theta))
-    fig, _, _ = fa.plot_lambert_ea(azi, elv, field, level_range, grid_convention=grid_convention,
+    azi, elv = art2umapr(np.radians(phi), np.radians(theta))
+    fig, _, _ = plot_lambert_ea(azi, elv, field, level_range, grid_convention=grid_convention,
                                    cmap='RdBu_r', colorbar_label=label)
     return fig

@@ -48,8 +48,10 @@ def _rules(path):
 
 
 def test_every_build_in_the_tests_is_validated():
-    assert fa.build_empirical_database.__wrapped__ is not None
-    assert fa.build_database_from_norah2.__wrapped__ is not None
+    from panam import database, norah2      # here: the tests below use `database` for a loaded .nod
+    for build in (fa.build_empirical_database, database.build_empirical_database,
+                  fa.build_database_from_norah2, norah2.build_database_from_norah2):
+        assert build.__wrapped__ is not None
 
 
 def test_a_fixed_load_factor_database_reads_back_as_written(shared):

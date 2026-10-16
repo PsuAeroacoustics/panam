@@ -26,9 +26,13 @@ from dataclasses import dataclass, field
 import numpy as np
 from netCDF4 import Dataset
 
-from panam import flight_acoustics as fa
 from panam import provenance
 from panam.acoustics.plotting import acoustic_plot_style
+from panam.spectra import power_to_db
+from panam.geometry import art2umapr
+from panam.sphere_io import AZIMUTH_REFERENCES, band_index, KNOT_MPS
+from panam.database import DATABASE_FORMAT_VERSION, SPEED_REFERENCES
+from panam.lambert_plots import plot_lambert_ea
 
 #: The condition variables every group must carry (R2), each with one value.
 CONDITION_VARIABLES = ('radius', 'rotor_scale', 'advance_ratio', 'flight_path_angle',
@@ -241,7 +245,7 @@ def load_nod(path, weight_coefficient=None):
             dba, eaa = array('dBA', False), array('EAA', False)
             conditions.append(NodCondition(
                 name=name,
-                speed_kt=advance_ratio * tip_speed / fa.KNOT_MPS,
+                speed_kt=advance_ratio * tip_speed / KNOT_MPS,
                 advance_ratio=advance_ratio,
                 flight_path_angle_deg=_scalar(group, 'flight_path_angle'),
                 thrust_coefficient=thrust_coefficient,
@@ -301,11 +305,11 @@ def validate_nod(path):
             violate('R1', None, 'same_grid is false')
         version = root.get('database_version')
         if version is not None and (not float(version).is_integer()
-                                    or not 0 <= version <= fa.DATABASE_FORMAT_VERSION):
+                                    or not 0 <= version <= DATABASE_FORMAT_VERSION):
             violate('C1', None, f'database_version {version} is not an integer from 0 to '
-                                f'{fa.DATABASE_FORMAT_VERSION}')
-        for attribute, allowed in (('speed_reference', fa.SPEED_REFERENCES),
-                                   ('azimuth_reference', fa.AZIMUTH_REFERENCES)):
+                                f'{DATABASE_FORMAT_VERSION}')
+        for attribute, allowed in (('speed_reference', SPEED_REFERENCES),
+                                   ('azimuth_reference', AZIMUTH_REFERENCES)):
             if attribute in attributes and attributes[attribute] not in allowed:
                 violate('C2', None, f'{attribute} {attributes[attribute]!r} is not one of {allowed}')
         shared = bool(root.get('shared_grid_and_frequency', False))
@@ -593,7 +597,7 @@ def _differ(a, b):
 
 
 def _energy_db(levels, axis=None):
-    return fa.power_to_db(np.sum(10.0 ** (levels / 10.0), axis=axis))
+    return power_to_db(np.sum(10.0 ** (levels / 10.0), axis=axis))
 
 
 def _max_abs_difference(a, b):
@@ -865,7 +869,7 @@ def plot_condition(condition, quantity='dBA', band_hz=None, level_range=None, gr
             raise ValueError(f'{condition.name} has no band levels')
         if band_hz is None:
             raise ValueError('quantity band needs a band center')
-        band = fa.band_index(condition.frequency_hz, band_hz)
+        band = band_index(condition.frequency_hz, band_hz)
         if band is None:
             raise ValueError(f'{condition.name} has no {band_hz:g} Hz band')
     levels = None
@@ -902,8 +906,8 @@ def plot_condition(condition, quantity='dBA', band_hz=None, level_range=None, gr
         raise ValueError(f'{condition.name} has no finite {quantity} to map in the lower hemisphere')
     phi = _channel_grid(condition, condition.phi_deg)[rows]
     theta = _channel_grid(condition, condition.theta_deg)[rows]
-    azi, elv = fa.art2umapr(np.radians(phi), np.radians(theta))
-    fig, _, _ = fa.plot_lambert_ea(azi, elv, field, level_range, grid_convention=grid_convention,
+    azi, elv = art2umapr(np.radians(phi), np.radians(theta))
+    fig, _, _ = plot_lambert_ea(azi, elv, field, level_range, grid_convention=grid_convention,
                                    levels=levels, cmap=cmap, colorbar_label=label)
     return fig
 

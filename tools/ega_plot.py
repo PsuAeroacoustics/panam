@@ -10,7 +10,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from panam.cli import add_output_options, colon_pair, colon_pair_or_single, save_or_show
-from panam.flight_acoustics import ega, nice_levels
+from panam.ground_effect import ega
+from panam.lambert_plots import nice_levels
 
 
 def get_ground_resistance(ground_type):

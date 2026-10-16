@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 from netCDF4 import Dataset
 
+from panam import depropagation
 from panam import flight_acoustics as fa
 from panam import noise_abatement_2017 as na
 
@@ -59,20 +60,20 @@ def test_depropagation_flips_the_nose_with_the_geometry(monkeypatch):
     def capture(time, source, velocity, observers, speed_of_sound, nose=None):
         seen.update(velocity=velocity, nose=nose)
         raise RuntimeError('captured')
-    monkeypatch.setattr(fa, 'hemigen', capture)
+    monkeypatch.setattr(depropagation, 'hemigen', capture)
     time = np.linspace(0.0, 1.0, 4)
     position = np.zeros((4, 3))
     velocity = np.tile([100.0, 3.0, 0.0], (4, 1))
     nose = np.tile([0.9, 0.3, 0.0], (4, 1))
     with pytest.raises(RuntimeError, match='captured'):
-        fa.depropagate_hemisphere(np.zeros((1, 3)), np.zeros((1, 10)), np.arange(10.0), time, position,
-                                  velocity, track_nose=nose, flip_y_for_geometry=True)
+        depropagation.depropagate_hemisphere(np.zeros((1, 3)), np.zeros((1, 10)), np.arange(10.0), time,
+                                             position, velocity, track_nose=nose, flip_y_for_geometry=True)
     np.testing.assert_array_equal(seen['nose'][:, 1], -nose[:, 1])
     np.testing.assert_array_equal(seen['velocity'][:, 1], -velocity[:, 1])
     monkeypatch.undo()
     with pytest.raises(ValueError, match='track_nose must be shape'):
-        fa.depropagate_hemisphere(np.zeros((1, 3)), np.zeros((1, 10)), np.arange(10.0), time, position,
-                                  velocity, track_nose=nose[:3])
+        depropagation.depropagate_hemisphere(np.zeros((1, 3)), np.zeros((1, 10)), np.arange(10.0), time,
+                                             position, velocity, track_nose=nose[:3])
 
 
 # --- the sphere build ---------------------------------------------------------------------
