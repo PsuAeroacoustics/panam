@@ -11,7 +11,7 @@ import os
 import numpy as np
 import pytest
 
-from flight_acoustics import (Atmosphere, _complete_sphere, average_fore_and_aft,
+from panam.flight_acoustics import (Atmosphere, _complete_sphere, average_fore_and_aft,
                               extract_SPL, spla_and_eaa_from_spectrum)
 
 

@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-import local_paths
+from panam import local_paths
 
 
 @pytest.fixture(autouse=True)
@@ -41,3 +41,9 @@ def test_missing_name_raises_or_returns_none(config):
 def test_no_config_file_at_all(tmp_path, monkeypatch):
     monkeypatch.setattr(local_paths, 'CONFIG_FILE', str(tmp_path / 'absent.toml'))
     assert local_paths.data_path('norah2', required=False) is None
+
+
+def test_config_file_is_at_the_repository_root():
+    """local_paths.toml stays beside local_paths.example.toml, not inside the panam package."""
+    assert os.path.basename(local_paths.CONFIG_FILE) == 'local_paths.toml'
+    assert os.path.isfile(os.path.join(os.path.dirname(local_paths.CONFIG_FILE), 'local_paths.example.toml'))

@@ -12,23 +12,49 @@ def _requirements():
     return [line for line in lines if line]
 
 
-def test_pyproject_dependencies_mirror_requirements():
-    project = tomllib.loads((REPO / 'pyproject.toml').read_text())['project']
-    runtime = [name for name in _requirements() if name != 'pytest']
-    assert project['dependencies'] == runtime
+def _pyproject():
+    return tomllib.loads((REPO / 'pyproject.toml').read_text())
+
+
+def _workflow():
+    return (REPO / '.github' / 'workflows' / 'tests.yml').read_text()
+
+
+def test_requirements_install_panam_and_mirror_the_pyproject_dependencies():
+    requirements = _requirements()
+    assert '-e .' in requirements
+    project = _pyproject()['project']
+    assert project['dependencies'] == [name for name in requirements if name not in ('pytest', '-e .')]
     assert 'pytest' in project['optional-dependencies']['test']
 
 
-def test_pyproject_builds_nothing_and_leaves_pytest_to_pytest_ini():
-    pyproject = tomllib.loads((REPO / 'pyproject.toml').read_text())
+def test_pyproject_installs_only_the_panam_package_and_leaves_pytest_to_pytest_ini():
+    pyproject = _pyproject()
     assert pyproject['project']['requires-python'] == '>=3.11'
-    assert 'build-system' not in pyproject and 'scripts' not in pyproject['project']
-    assert 'pytest' not in pyproject.get('tool', {})
+    assert pyproject['tool']['setuptools']['packages']['find']['include'] == ['panam', 'panam.*']
+    assert 'scripts' not in pyproject['project']
+    assert 'pytest' not in pyproject['tool']
     assert (REPO / 'pytest.ini').is_file()
 
 
+def test_the_package_data_is_inside_the_package():
+    for pattern in _pyproject()['tool']['setuptools']['package-data']['panam']:
+        assert list((REPO / 'panam').glob(pattern)), pattern
+
+
 def test_ci_tests_the_supported_pythons_on_linux_and_macos():
-    workflow = (REPO / '.github' / 'workflows' / 'tests.yml').read_text()
+    workflow = _workflow()
     assert re.search(r'python-version: \["3\.11", "3\.14"\]', workflow)
     assert 'macos-latest' in workflow
     assert '--cov' in workflow and '--durations=20' in workflow and 'NUMBA_CACHE_DIR' in workflow
+
+
+def test_ci_pins_and_hashes_every_numba_cached_source():
+    """The cache step names the modules with Numba-cached functions by path; a moved
+    file or a new one left out would leave the cache keyed on the wrong sources."""
+    cached = sorted(str(path.relative_to(REPO)) for path in (REPO / 'panam').rglob('*.py')
+                    if re.search(r'@(numba\.)?njit\([^)]*cache=True', path.read_text()))
+    workflow = _workflow()
+    touched = re.search(r'touch -t \d+ (.+)', workflow).group(1).split()
+    hashed = re.findall(r"'([^']+\.py)'", re.search(r'hashFiles\(([^)]*)\)', workflow).group(1))
+    assert cached and sorted(touched) == sorted(hashed) == cached

@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-import flight_acoustics as fa
+from panam import flight_acoustics as fa
 
 
 def test_load_nc_signal_time_matches_the_samples(tmp_path):
@@ -87,7 +87,7 @@ def test_load_uff_signal_skips_header_and_units_sets(tmp_path):
 
 @pytest.mark.parametrize('second_time', [np.arange(4) / 500, np.arange(4) / 1000 + .01])
 def test_uff_rejects_channel_time_grid_mismatch(monkeypatch, second_time):
-    from panam_acoustics import signal_io
+    from panam.acoustics import signal_io
     class FakeUFF:
         def __init__(self, filename):
             pass
@@ -101,7 +101,7 @@ def test_uff_rejects_channel_time_grid_mismatch(monkeypatch, second_time):
 
 @pytest.mark.parametrize('time', [[0], [0, 0, 0], [0, .001, .003], [0, np.nan]])
 def test_uff_rejects_invalid_time_grid(monkeypatch, time):
-    from panam_acoustics import signal_io
+    from panam.acoustics import signal_io
     class FakeUFF:
         def __init__(self, filename):
             pass
@@ -128,7 +128,7 @@ def test_hdf5_context_closes_on_normal_and_exceptional_exit(tmp_path):
 
 def test_hdf5_selection_error_closes_file(tmp_path, monkeypatch):
     import h5py
-    from panam_acoustics import signal_io
+    from panam.acoustics import signal_io
     path = tmp_path / 'signal.h5'
     with h5py.File(path, 'w') as handle:
         handle.create_group('Table1')

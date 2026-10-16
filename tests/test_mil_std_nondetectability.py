@@ -1,17 +1,11 @@
-from pathlib import Path
-
 import numpy as np
 import pytest
 
-import flight_acoustics as fa
-
-
-def _table_path():
-    return Path(__file__).resolve().parents[1] / 'mil_std_1474e_table_c1_full.csv'
+from panam import flight_acoustics as fa
 
 
 def test_mil_std_loader_parses_table_c1_csv():
-    table = fa.load_mil_std_1474e_table_c1(_table_path())
+    table = fa.load_mil_std_1474e_table_c1(fa.MIL_STD_1474E_TABLE_C1_FILE)
 
     assert table['band_freq_hz'].size > 0
     assert table['distance_columns_m'].size > 0
@@ -23,7 +17,7 @@ def test_mil_std_loader_parses_table_c1_csv():
 
 
 def _table():
-    return fa.load_mil_std_1474e_table_c1(_table_path())
+    return fa.load_mil_std_1474e_table_c1(fa.MIL_STD_1474E_TABLE_C1_FILE)
 
 
 def _quiet(band_freq):

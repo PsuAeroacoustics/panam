@@ -9,11 +9,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-import build_empirical_database as database_cli
-import build_recipe
-import flight_acoustics as fa
-import noise_abatement_2017 as na
-import nod_database
+from panam import build_recipe
+from panam import flight_acoustics as fa
+from panam import nod_database
+from panam import noise_abatement_2017 as na
+from tools import build_empirical_database as database_cli
+from tools import noise_abatement_2017 as na_cli
 from sphere_helpers import stepped_sphere_directory
 
 REPO = Path(__file__).resolve().parents[1]
@@ -110,7 +111,7 @@ def test_unknown_or_refused_keys_are_refused(tmp_path, text, match):
 def test_a_refused_recipe_stops_the_command_line(tmp_path, capsys):
     recipe = _write(tmp_path / 'bad.toml', '[spheres]\nband_snr_gate = 10.0\n')
     with pytest.raises(SystemExit):
-        na.main(['B407', str(tmp_path / 'out'), '--recipe', str(recipe)])
+        na_cli.main(['B407', str(tmp_path / 'out'), '--recipe', str(recipe)])
     assert 'band_snr_gate_db' in capsys.readouterr().err
 
 
@@ -186,7 +187,7 @@ def test_explicit_options_override_the_recipe_and_the_recipe_overrides_defaults(
         ''')
     # --band-snr-gate-db 10 equals the default, and still overrides the recipe's 12.
     # --no-track-check sets what the recipe sets.  --rmax is not in the recipe.
-    assert na.main(['B407', str(tmp_path / 'out'), '--recipe', str(recipe), '--band-snr-gate-db', '10',
+    assert na_cli.main(['B407', str(tmp_path / 'out'), '--recipe', str(recipe), '--band-snr-gate-db', '10',
                     '--rmax', '20']) == 0
     options = calls.pop()
     assert options['band_snr_gate_db'] == 10.0
@@ -198,10 +199,10 @@ def test_explicit_options_override_the_recipe_and_the_recipe_overrides_defaults(
     assert options['remove_doppler'] is False
     assert options['min_elevation_deg'] == 10.0          # the command line's default
     # A flag that maps to another keyword overrides it too.
-    assert na.main(['B407', str(tmp_path / 'out'), '--recipe', str(recipe), '--interpolation', 'aspect=5']) == 0
+    assert na_cli.main(['B407', str(tmp_path / 'out'), '--recipe', str(recipe), '--interpolation', 'aspect=5']) == 0
     assert calls.pop()['interpolation'] == dict(aspect=5.0)
     # --hover-source puts [hover_source] over [spheres].
-    assert na.main(['B407', str(tmp_path / 'hover'), '--recipe', str(recipe), '--hover-source',
+    assert na_cli.main(['B407', str(tmp_path / 'hover'), '--recipe', str(recipe), '--hover-source',
                     '--runs', '285101']) == 0
     options = calls.pop()
     assert options['remove_doppler'] is True and options['point_stride'] == 1
@@ -211,7 +212,7 @@ def test_explicit_options_override_the_recipe_and_the_recipe_overrides_defaults(
 def test_tone_split_in_a_recipe_sets_tone_aware_as_the_flag_does(tmp_path, monkeypatch):
     calls = _captured_build_all(monkeypatch)
     recipe = _write(tmp_path / 'r.toml', '[spheres]\ntone_split = true\n')
-    assert na.main(['B407', str(tmp_path / 'out'), '--recipe', str(recipe)]) == 0
+    assert na_cli.main(['B407', str(tmp_path / 'out'), '--recipe', str(recipe)]) == 0
     options = calls.pop()
     assert options['tone_split'] is True and options['tone_aware'] is True
     assert build_recipe.load_recipe(recipe).sphere_options() == dict(tone_split=True, tone_aware=True)
@@ -234,13 +235,13 @@ def test_tone_split_in_a_recipe_sets_tone_aware_as_the_flag_does(tmp_path, monke
 def test_a_key_the_recipe_omits_takes_the_functions_default_on_the_command_line(tmp_path, monkeypatch):
     calls = _captured_build_all(monkeypatch)
     recipe = _write(tmp_path / 'r.toml', '[spheres]\nrmax = 20.0\n')
-    assert na.main(['B407', str(tmp_path / 'out')]) == 0
+    assert na_cli.main(['B407', str(tmp_path / 'out')]) == 0
     assert calls.pop()['point_stride'] == 10              # the command line's default
-    assert na.main(['B407', str(tmp_path / 'out'), '--recipe', str(recipe)]) == 0
+    assert na_cli.main(['B407', str(tmp_path / 'out'), '--recipe', str(recipe)]) == 0
     options = calls.pop()
     assert options['point_stride'] == 1                   # build_all's, as from Python
     assert options['rmax'] == 20.0
-    assert na.main(['B407', str(tmp_path / 'out'), '--recipe', str(recipe), '--point-stride', '10']) == 0
+    assert na_cli.main(['B407', str(tmp_path / 'out'), '--recipe', str(recipe), '--point-stride', '10']) == 0
     assert calls.pop()['point_stride'] == 10
 
 
@@ -248,7 +249,7 @@ def test_hover_source_needs_runs(tmp_path, monkeypatch, capsys):
     calls = _captured_build_all(monkeypatch)
     recipe = _write(tmp_path / 'r.toml', '[hover_source]\nremove_doppler = true\n')
     with pytest.raises(SystemExit):
-        na.main(['B407', str(tmp_path / 'out'), '--recipe', str(recipe), '--hover-source'])
+        na_cli.main(['B407', str(tmp_path / 'out'), '--recipe', str(recipe), '--hover-source'])
     assert '--hover-source needs --runs' in capsys.readouterr().err
     assert calls == []
 
@@ -293,7 +294,7 @@ def test_the_database_command_line_overrides_its_recipe(tmp_path):
 
 
 def test_every_build_keyword_has_an_option_with_the_functions_default():
-    options = na.build_options(na.make_parser().parse_args(['B407', 'out']))
+    options = na_cli.build_options(na_cli.make_parser().parse_args(['B407', 'out']))
     defaults = {name: parameter.default
                 for function in (na.build_all, na.build_sphere)
                 for name, parameter in inspect.signature(function).parameters.items()
@@ -308,7 +309,7 @@ def test_every_build_keyword_has_an_option_with_the_functions_default():
 
 
 def test_the_new_options_reach_their_keywords():
-    options = na.build_options(na.make_parser().parse_args([
+    options = na_cli.build_options(na_cli.make_parser().parse_args([
         'B407', 'out', '--max-response-correction-db', '15', '--r-ref-ft', '50', '--window-time', '1',
         '--window-overlap', '0.75', '--azi-step', '2', '--elv-step', '3', '--rmax', '20',
         '--interpolation', 'kernel=shepard', '--interpolation', 'aspect=5', '--interpolation',
@@ -323,10 +324,10 @@ def test_the_new_options_reach_their_keywords():
                     speed_of_sound_ft_s=1125.0, apply_absorption_deprop=False, absorption_band_method='arp5534',
                     flip_y_for_geometry=True, overwrite=False, sphere_prefix='X', ray_profiles='profiles')
     assert {name: options[name] for name in expected} == expected
-    assert na.build_options(na.make_parser().parse_args(
+    assert na_cli.build_options(na_cli.make_parser().parse_args(
         ['B407', 'out', '--adaptive-interpolation']))['interpolation'] == {}
     with pytest.raises(SystemExit):
-        na.make_parser().parse_args(['B407', 'out', '--interpolation', 'radius=3'])
+        na_cli.make_parser().parse_args(['B407', 'out', '--interpolation', 'radius=3'])
 
 
 def test_profile_ray_models_trace_runs_with_a_profile_and_leave_the_rest_straight(tmp_path, monkeypatch):

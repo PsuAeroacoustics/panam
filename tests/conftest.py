@@ -11,7 +11,7 @@ os.environ['MPLBACKEND'] = 'Agg'
 def _validated(build):
     """``build``, followed by nod_database.validate_nod on the database it wrote
     (``database_filename``, the second argument)."""
-    import nod_database
+    from panam import nod_database
 
     @functools.wraps(build)
     def wrapper(*args, **kwargs):
@@ -31,7 +31,7 @@ def every_built_database_keeps_the_contract():
     """Run validate_nod on every database that build_empirical_database or
     build_database_from_norah2 writes during the tests (called through the
     module, ``fa.build_...``, or by a script run in-process)."""
-    import flight_acoustics as fa
+    from panam import flight_acoustics as fa
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(fa, 'build_empirical_database', _validated(fa.build_empirical_database))
         patch.setattr(fa, 'build_database_from_norah2', _validated(fa.build_database_from_norah2))

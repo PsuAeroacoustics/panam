@@ -6,8 +6,8 @@ import numpy as np
 import pytest
 from scipy.ndimage import binary_erosion
 
-import flight_acoustics as fa
-import synthetic_flyover as sf
+from panam import flight_acoustics as fa
+from panam import synthetic_flyover as sf
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LINE = np.column_stack([np.zeros(7), np.linspace(-600.0, 600.0, 7), np.zeros(7)])

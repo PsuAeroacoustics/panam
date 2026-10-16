@@ -1,3 +1,6 @@
+# PANAM itself: the panam package in editable mode, so that `import panam`
+# works from any directory.  Install from the repository root.
+-e .
 # Runtime dependencies (Python 3.11 or newer).
 numpy
 h5py

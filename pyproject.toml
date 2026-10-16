@@ -1,11 +1,16 @@
-# Project metadata for PANAM.
+# Project metadata and packaging for PANAM.
 #
-# PANAM is a set of modules and scripts run from the repository root, not an
-# installed package, and this file builds nothing: it has no [build-system]
-# table and `pip install .` is not supported.  It records the project's
-# metadata, the supported Python versions and the dependencies, which mirror
-# requirements.txt; keep the two lists in step.  Install with
-# `pip install -r requirements.txt`.  The pytest settings stay in pytest.ini.
+# The library is the package panam/, installed in editable (development) mode
+# by the `-e .` line of requirements.txt, so `pip install -r requirements.txt`
+# from the repository root installs the dependencies and makes `import panam`
+# work from any directory.  Only panam/ is installed: the command-line tools in
+# tools/ and the examples in examples/ are run as scripts from the checkout.
+# The dependencies mirror requirements.txt; keep the two lists in step.  The
+# pytest settings stay in pytest.ini.
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "panam"
@@ -13,7 +18,8 @@ version = "0.1.0"
 description = "Rotorcraft aeroacoustics: flight-test recordings to source noise spheres and NICEOPS databases"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Eric Greenwood" }]
 dependencies = [
     "numpy",
@@ -37,6 +43,12 @@ umfpack = ["scikit-umfpack"]
 
 [project.urls]
 Repository = "https://github.com/PsuAeroacoustics/panam"
+
+[tool.setuptools.packages.find]
+include = ["panam", "panam.*"]
+
+[tool.setuptools.package-data]
+panam = ["data/*.csv", "acoustics/THIRD_PARTY_NOTICES.md"]
 
 [tool.coverage.run]
 # CI reports coverage of the modules and scripts, not of the tests.

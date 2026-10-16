@@ -3,8 +3,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-import panam_acoustics
-from panam_acoustics import filters as pa_filters
+from panam import acoustics
+from panam.acoustics import filters as pa_filters
 
 FIXTURE_PATH = Path(__file__).parent / "data" / "python_acoustics_reference.npz"
 
@@ -65,7 +65,7 @@ def test_atmosphere_attenuation_equivalence(temperature, pressure, rh):
     key = f"att_T{temperature}_P{pressure}_RH{rh}"
     ref = data[key]
 
-    test = panam_acoustics.Atmosphere(
+    test = acoustics.Atmosphere(
         temperature=temperature,
         pressure=pressure,
         relative_humidity=rh,

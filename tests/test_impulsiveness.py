@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from panam_acoustics.impulsiveness import (
+from panam.acoustics.impulsiveness import (
     bvi_harmonic_ratio, crest_factor, frame_signal, kurtosis, pulse_peak_to_rms)
 
 FS = 10000.0

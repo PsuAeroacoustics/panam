@@ -6,8 +6,8 @@ import numpy as np
 import pytest
 from netCDF4 import Dataset
 
-import flight_acoustics as fa
-from panam_acoustics.atmosphere import Atmosphere
+from panam import flight_acoustics as fa
+from panam.acoustics.atmosphere import Atmosphere
 from sphere_helpers import minimal_hemisphere, write_sphere_directory
 
 ATMOSPHERE = Atmosphere(temperature=293.15, pressure=101.325, relative_humidity=20.0)
@@ -76,7 +76,7 @@ def test_the_database_carries_them_for_every_group(tmp_path):
 def test_the_database_eaa_takes_the_absorption_band_method(tmp_path):
     """build_empirical_database(absorption_band_method='arp5534'): every group's EAA is
     formed with the ARP 5534 band attenuation over the 1000 m."""
-    from panam_acoustics.atmosphere import band_absorption_db
+    from panam.acoustics.atmosphere import band_absorption_db
     rng = np.random.default_rng(6)
     hemispheres = []
     for speed, angle in [(40, -6), (60, 0), (80, -3)]:

@@ -5,10 +5,10 @@ import os
 import numpy as np
 import pytest
 
-import flight_acoustics as fa
-from panam_acoustics.atmosphere import Atmosphere
+from panam import flight_acoustics as fa
+from panam.acoustics.atmosphere import Atmosphere
 from sphere_helpers import write_raw_sphere
-from sphere_to_norah2 import sphere_levels_on_norah2_grid, sphere_to_norah2
+from tools.sphere_to_norah2 import sphere_levels_on_norah2_grid, sphere_to_norah2
 
 MEASURED = Atmosphere(temperature=283.15, pressure=97.5, relative_humidity=55.0)
 REFERENCE = Atmosphere(temperature=fa.NORAH2_REFERENCE_TEMPERATURE_K,
@@ -144,7 +144,7 @@ def test_condition_overrides_and_spreading_only(tmp_path):
 
 
 def test_band_method_sets_the_absorption_taken_out(tmp_path):
-    from panam_acoustics.atmosphere import band_absorption_db
+    from panam.acoustics.atmosphere import band_absorption_db
     write_sphere(tmp_path / 'X101.nc')
     center = sphere_to_norah2(str(tmp_path / 'X101.nc'), str(tmp_path / 'center.hem'),
                               measurement_atmosphere=MEASURED, minimum_level_db=-np.inf)

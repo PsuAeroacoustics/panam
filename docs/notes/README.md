@@ -16,3 +16,10 @@ behavior, read [THEORY.md](../THEORY.md), the how-to guides and
 `ground_plane_corrections.md` was moved here from `docs/` on 2026-10-10; a citation of
 `docs/ground_plane_corrections.md` refers to this file. The `.nod` format that
 `database_build.md` used to describe is now in [`../file_formats.md`](../file_formats.md).
+
+The notes name files where they were then. Before 2026-10-16 every module and
+script sat at the repository root: a library module named in a note is now in
+`panam/` (`flight_acoustics.py` is `panam/flight_acoustics.py`,
+`panam_acoustics/` is `panam/acoustics/`), the command-line tools are in
+`tools/` and the examples in `examples/`. `as350_flip_check.py` was removed;
+DEVELOPING.md records its finding.

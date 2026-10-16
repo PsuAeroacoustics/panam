@@ -6,30 +6,38 @@ Instructions for AI coding tools working on PANAM. Human developers: see
 ## Setup and commands
 
 - Python 3.11 or newer. Use the repository's virtual environment:
-  `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`.
-- Run everything from the repository root. Modules are imported by name
-  (`import flight_acoustics as fa`); there is no installed package.
-  `pyproject.toml` is metadata only (no build system, no entry points); its
+  `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`, from
+  the repository root. Its `-e .` line installs the `panam` package in
+  editable mode; `pyproject.toml` (setuptools) installs `panam/` only, and its
   dependencies mirror `requirements.txt`, so change both together.
+- Layout: the library is the package `panam/` (`from panam import
+  flight_acoustics as fa`), the command-line tools are scripts in `tools/`, the
+  examples are scripts in `examples/`. The library never imports from
+  `tools/` or `examples/`; a tool holds its argument parsing and calls into
+  `panam`.
 - Tests: `pytest`, or `pytest -q -m "not data"` to skip the external-data tests.
   One file: `pytest tests/test_ega.py`.
-- `pytest.ini` puts `.` and `tests/` on `sys.path`. Scripts find their own
-  directory. No command needs `PYTHONPATH`.
+- `pytest.ini` puts `.` and `tests/` on `sys.path`, so the tests import `panam`
+  without the install and the scripts as `from tools import nod_tool`. Scripts
+  find `example_data/` from their own location. No command needs `PYTHONPATH`.
 - External data and the NICEOPS executables are found by name through
   `local_paths.data_path(name)`: a CLI argument, then `PANAM_<NAME>`, then the
-  git-ignored `local_paths.toml`. Missing data makes tests skip. Two older
-  lookups remain and are documented, not removed: `as350_flip_check.py` reads
-  `AS350_DEMO_PATH` ahead of `as350_demo`, and `tests/sphere_helpers.executable`
-  tries `local_paths`, then `NICEOPS` / `NICEOPS_RAY_GEOMETRY`, then `PATH`.
+  git-ignored `local_paths.toml` at the repository root. Missing data makes
+  tests skip. One older lookup remains and is documented, not removed:
+  `tests/sphere_helpers.executable` tries `local_paths`, then `NICEOPS` /
+  `NICEOPS_RAY_GEOMETRY`, then `PATH`.
 
 ## Module map (put new code in the module that owns the topic)
+
+Library modules, in `panam/`:
 
 - `flight_acoustics.py`: spectra and bands, metrics, emission geometry,
   `depropagate_hemisphere`, gridding, sphere and NORAH2 I/O, database writers
   (`build_empirical_database`, `build_database_from_norah2`), projection, plots,
   `ega`. Over 6,000 lines: add a new module rather than growing it.
 - `noise_abatement_2017.py`: the 2017 flight-test build (`build_sphere`,
-  `build_all`, track check, plate tables) and its CLI.
+  `build_all`, track check, plate tables); its CLI is
+  `tools/noise_abatement_2017.py`.
 - `ground_plane.py`, `axisymmetric_bem.py`: ground, pole and ground-plate
   receiver models. Numba-compiled; ft and ft/s.
 - `refracted_rays.py`: ray models for depropagation; wraps NICEOPS's
@@ -38,17 +46,17 @@ Instructions for AI coding tools working on PANAM. Human developers: see
 - `order_tracking.py`: Doppler-predicted order tracks at a fixed microphone,
   ridge tracking, clock offsets.
 - `sphere_statistics.py`: energy averaging of repeat-run spheres,
-  band-by-band sphere comparison (CLI `sphere_diff.py`) and per-node sample
+  band-by-band sphere comparison (CLI `tools/sphere_diff.py`) and per-node sample
   statistics (`node_statistics`).
 - `nod_database.py`: reads `.nod` databases: `load_nod`, `validate_nod`,
   `compare_databases`, `to_frame`, and the maps and summaries of
-  `nod_tool.py` (`plot_condition`, `plot_envelope`).
+  `tools/nod_tool.py` (`plot_condition`, `plot_envelope`).
 - `synthetic_flyover.py`: synthetic straight-line passes of a source of known
   directivity (`synthesize_pass`, `source_level_db`); the golden results' input.
 - `synthesis.py`: forward synthesis of microphone band histories from a
   hemisphere (`synthesize_band_histories`) and the leave-microphones-out check
   (`leave_mics_out`).
-- `panam_acoustics/`: `signal_io` (loaders), `filters`, `atmosphere` and
+- `acoustics/` (`panam.acoustics`): `signal_io` (loaders), `filters`, `atmosphere` and
   `iso_9613_1_1993` (ISO 9613-1), `time_weighting` (IEC 61672-1 frequency
   and time weighting, Lmax, Leq), `plotting` (`acoustic_plot_style`),
   `impulsiveness` (BVI crest factor, kurtosis, harmonic ratio),
@@ -57,15 +65,13 @@ Instructions for AI coding tools working on PANAM. Human developers: see
   `save_or_show`, `save_all_or_show`.
 - `provenance.py`: the `panam_*` provenance stamp on written files.
 - `build_recipe.py`: TOML build recipes (`load_recipe`) for `--recipe` on
-  `noise_abatement_2017.py` and `build_empirical_database.py`;
+  `tools/noise_abatement_2017.py` and `tools/build_empirical_database.py`;
   `docs/recipes/release_2017.toml` is the 2017 release.
 - `local_paths.py`: data lookup. `unit_conversion.py`, `default_units.py`:
-  third-party unit conversions.
-- Tools: `noise_abatement_2017.py`, `build_empirical_database.py`,
-  `norah2_to_nod.py`, `sphere_to_norah2.py`, `compare_databases.py`, `array_planner.py`,
-  `sphere_diff.py`, plotting scripts. Examples and
-  diagnostics: `depropagation_tutorial.py`, `AS350_289108_demo.py`,
-  `hexacopter_vkf_example.py`, `as350_flip_check.py`.
+  third-party unit conversions. `data/`: the MIL-STD-1474E table.
+
+Tools are in `tools/` and examples in `examples/`; the README's tools and
+examples tables list them.
 
 ## Conventions
 
@@ -87,8 +93,8 @@ Instructions for AI coding tools working on PANAM. Human developers: see
   in library code.
 - `open_h5_signal` is a context manager; `load_h5_signal` leaves a file open.
 - `sound_exposure_level(..., missing='omit')` integrates around NaN samples.
-- New CLI: argparse with `description=`, units and defaults in every help
-  string, `cli.colon_pair` for ranges, `cli.add_output_options` and
+- New CLI: a script in `tools/` with a `main(argv=None)`; argparse with
+  `description=`, units and defaults in every help string, `cli.colon_pair` for ranges, `cli.add_output_options` and
   `cli.save_or_show` (`-o/--output`, `-p/--plot`) for figures, a
   smoke test in `tests/test_cli_scripts.py` (`run_here`), and a row in the
   README's tools table.
@@ -115,7 +121,7 @@ Instructions for AI coding tools working on PANAM. Human developers: see
   cached as `.npz` in `~/.cache/panam/plate_tables` (15-45 s each to
   compute), keyed on `axisymmetric_bem.PLATE_TABLE_VERSION` and every
   setting. Bump the version in a commit that changes plate-table numbers.
-  `noise_abatement_2017.py --plate-cache list|clear` inspects or empties it.
+  `tools/noise_abatement_2017.py --plate-cache list|clear` inspects or empties it.
 - The 2017 archive and the AS350 demo data are not distributed with PANAM.
   Do not invent a download location.
 - Running an example or a build writes files that `.gitignore` does not cover
@@ -147,8 +153,8 @@ Instructions for AI coding tools working on PANAM. Human developers: see
 
 ## Never do
 
-- Never commit data, results or machine paths: no `local_paths.toml`, no flight-test recordings, spheres or databases, no absolute paths from your machine, no credentials. Never `git add -f` an ignored file (`example_data/*.mat`, `example_data/vehicle.cfg` and `mil_std_1474e_table_c1_full.csv` are tracked on purpose; add no others).
+- Never commit data, results or machine paths: no `local_paths.toml`, no flight-test recordings, spheres or databases, no absolute paths from your machine, no credentials. Never `git add -f` an ignored file (`example_data/*.mat`, `example_data/vehicle.cfg` and `panam/data/mil_std_1474e_table_c1_full.csv` are tracked on purpose; add no others).
 - Never commit flight-test data or results from the private validation repository, or cite its file paths. PANAM is public: restate the fact inline.
-- Never prefix commands with `PYTHONPATH=.`; run from the repository root.
+- Never prefix commands with `PYTHONPATH=.`; install with `requirements.txt` and run from the repository root.
 - Never change behavior or results without a test; never regenerate the golden results to make a refactor pass.
 - Never push to `master`; use a branch and a pull request.

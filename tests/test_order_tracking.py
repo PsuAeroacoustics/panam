@@ -3,8 +3,8 @@ import numpy as np
 import pytest
 import scipy.signal as sig
 
-import order_tracking as ot
-from vold_kalman_filter import vold_kalman_filter
+from panam import order_tracking as ot
+from panam.vold_kalman_filter import vold_kalman_filter
 
 C = 1125.0          # ft/s
 X0, V, H = -1500.0, 150.0, 300.0   # straight level pass: x = X0 + V t at height H, ft and ft/s

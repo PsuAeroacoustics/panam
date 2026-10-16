@@ -16,7 +16,7 @@ Two earlier forms produced bad databases and are guarded against here:
 
 import numpy as np
 
-from flight_acoustics import _complete_sphere, mirror_phi_to_upper_surface
+from panam.flight_acoustics import _complete_sphere, mirror_phi_to_upper_surface
 
 
 PHI_LIST = np.arange(-90.0, 90.1, 10.0)      # 19 azimuths, as in real spheres

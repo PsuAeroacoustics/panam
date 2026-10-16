@@ -5,7 +5,8 @@ import os
 import numpy as np
 import pytest
 
-import noise_abatement_2017 as na
+from panam import noise_abatement_2017 as na
+from tools import noise_abatement_2017 as na_cli
 
 
 def _track(duration=60.0, rate=50.0, speed=80.0, fpa=0.0, roll=0.0,
@@ -270,7 +271,7 @@ def _plate_table_stub(gain_db, calls=None):
 def test_plate_table_checks_the_bands_of_a_table_held_in_memory(monkeypatch, tmp_path):
     """The cache key holds only the band count and ends, so two band sets that
     share them must not share a table."""
-    import axisymmetric_bem as ab
+    from panam import axisymmetric_bem as ab
     calls = []
     monkeypatch.setattr(ab, 'table', _plate_table_stub(0.0, calls))
     monkeypatch.setattr(na, '_PLATE_TABLES', {})
@@ -286,7 +287,7 @@ BANDS = [630.0, 800.0, 1000.0]
 
 
 def test_plate_table_reads_back_from_disk_without_recomputing(monkeypatch, tmp_path):
-    import axisymmetric_bem as ab
+    from panam import axisymmetric_bem as ab
     calls = []
     monkeypatch.setattr(ab, 'table', _plate_table_stub(2.0, calls))
     monkeypatch.setattr(na, '_PLATE_TABLES', {})
@@ -305,7 +306,7 @@ def test_plate_table_reads_back_from_disk_without_recomputing(monkeypatch, tmp_p
 def test_plate_table_recomputes_when_its_key_changes(monkeypatch, tmp_path, change):
     """Each part of the key, changed alone, makes a new table rather than
     reading the cached one, from memory or from disk."""
-    import axisymmetric_bem as ab
+    from panam import axisymmetric_bem as ab
     calls = []
     monkeypatch.setattr(ab, 'table', _plate_table_stub(0.0, calls))
     monkeypatch.setattr(na, '_PLATE_TABLES', {})
@@ -329,7 +330,7 @@ def test_plate_table_recomputes_when_its_key_changes(monkeypatch, tmp_path, chan
 
 
 def test_plate_table_passes_its_options_to_the_bem(monkeypatch, tmp_path):
-    import axisymmetric_bem as ab
+    from panam import axisymmetric_bem as ab
     seen = {}
 
     def table(bands, sound_speed, **options):
@@ -346,7 +347,7 @@ def test_plate_table_ignores_old_and_mismatched_files(monkeypatch, tmp_path):
     whose stored key differs from the one asked for, or that holds a pickled
     object, is recomputed and replaced."""
     import pickle
-    import axisymmetric_bem as ab
+    from panam import axisymmetric_bem as ab
     calls = []
     monkeypatch.setattr(ab, 'table', _plate_table_stub(0.0, calls))
     monkeypatch.setattr(na, '_PLATE_TABLES', {})
@@ -378,7 +379,7 @@ def test_plate_table_ignores_old_and_mismatched_files(monkeypatch, tmp_path):
 def test_plate_table_recomputes_a_truncated_or_empty_file(monkeypatch, tmp_path, damage):
     """A cut-off .npz (BadZipFile) or a 0-byte one (EOFError) at the cache name
     is listed as unreadable, then recomputed and replaced, not a crash."""
-    import axisymmetric_bem as ab
+    from panam import axisymmetric_bem as ab
     calls = []
     monkeypatch.setattr(ab, 'table', _plate_table_stub(0.0, calls))
     monkeypatch.setattr(na, '_PLATE_TABLES', {})
@@ -396,7 +397,7 @@ def test_plate_table_recomputes_a_truncated_or_empty_file(monkeypatch, tmp_path,
 
 
 def test_plate_table_cache_lists_and_clears(monkeypatch, tmp_path):
-    import axisymmetric_bem as ab
+    from panam import axisymmetric_bem as ab
     monkeypatch.setattr(ab, 'table', _plate_table_stub(0.0))
     monkeypatch.setattr(na, '_PLATE_TABLES', {})
     na.plate_table('gdbdfl', 1125.0, BANDS, directory=str(tmp_path))
@@ -475,8 +476,8 @@ def test_the_plate_correction_runs_through_the_sphere_build(monkeypatch, tmp_pat
     gets its own plate, outboard of the track.
     """
     import csv
-    import axisymmetric_bem as ab
-    import flight_acoustics as fa
+    from panam import axisymmetric_bem as ab
+    from panam import flight_acoustics as fa
     _archive(tmp_path)
     monkeypatch.setattr(ab, 'table', _plate_table_stub(3.0))
     monkeypatch.setattr(na, '_PLATE_TABLES', {})
@@ -656,7 +657,7 @@ def test_the_prefetch_pool_is_shut_down_when_the_batch_is_interrupted(monkeypatc
 def test_the_cli_help_states_the_point_stride_defaults(capsys):
     """The CLI builds every 10th track sample, the API every one; the help must say so."""
     with pytest.raises(SystemExit):
-        na.main(['--help'])
+        na_cli.main(['--help'])
     help_text = ' '.join(capsys.readouterr().out.split())
     assert '--point-stride' in help_text
     assert 'default 10' in help_text and 'default to 1' in help_text
@@ -666,10 +667,10 @@ def test_the_cli_help_states_the_point_stride_defaults(capsys):
 def test_the_cli_tone_split_writes_part_spheres_that_sum_to_the_total(tmp_path):
     """--tone-split writes each run's tonal and broadband spheres in directories of their
     own (a database takes every .nc in a directory), and in energy they sum to the total."""
-    import flight_acoustics as fa
+    from panam import flight_acoustics as fa
     _archive(tmp_path)
     out = tmp_path / 'out'
-    assert na.main(['AS350B3', str(out), '--root', str(tmp_path), '--no-prefetch', '--board-correction', 'flat',
+    assert na_cli.main(['AS350B3', str(out), '--root', str(tmp_path), '--no-prefetch', '--board-correction', 'flat',
                     '--tone-split']) == 0
     spheres = list(out.glob('*.nc'))
     assert len(spheres) == 1
@@ -705,8 +706,8 @@ def test_the_cli_node_statistics_adds_variables_and_leaves_the_levels_alone(tmp_
     from netCDF4 import Dataset
     _archive(tmp_path)
     common = ['AS350B3', '--root', str(tmp_path), '--no-prefetch', '--board-correction', 'flat', '--tone-split']
-    assert na.main([common[0], str(tmp_path / 'plain')] + common[1:]) == 0
-    assert na.main([common[0], str(tmp_path / 'stats')] + common[1:] + ['--node-statistics']) == 0
+    assert na_cli.main([common[0], str(tmp_path / 'plain')] + common[1:]) == 0
+    assert na_cli.main([common[0], str(tmp_path / 'stats')] + common[1:] + ['--node-statistics']) == 0
     name = next((tmp_path / 'plain').glob('*.nc')).name
     stem = name[:-3]
     for relative in (name, 'tonal/{}_tonal.nc'.format(stem), 'broadband/{}_broadband.nc'.format(stem)):
@@ -917,7 +918,7 @@ def test_skip_existing_rebuilds_a_run_missing_one_of_its_outputs(tmp_path):
 
 def test_skip_unchanged_rebuilds_only_on_new_settings_or_inputs(monkeypatch, tmp_path):
     from netCDF4 import Dataset
-    import provenance
+    from panam import provenance
     _archive(tmp_path)
     out = tmp_path / 'out'
     arguments = dict(root=str(tmp_path), prefetch=False, board_correction='flat', point_stride=2)
@@ -967,7 +968,7 @@ def test_skip_unchanged_with_no_overwrite_skips_a_default_build(monkeypatch, tmp
 def test_skip_unchanged_rebuilds_a_run_whose_ray_profile_changed(monkeypatch, tmp_path):
     """The atmospheric profile a ray model reads is one of the run's inputs: an edited
     profile under the same name rebuilds the run under skip_unchanged."""
-    import refracted_rays
+    from panam import refracted_rays
     _archive(tmp_path)
     out = tmp_path / 'out'
     profile = tmp_path / 'profiles' / '289108.csv'
@@ -996,7 +997,7 @@ def test_skip_unchanged_rebuilds_a_run_whose_ray_profile_changed(monkeypatch, tm
 
 
 def test_an_external_ray_model_names_its_profile_as_an_input(tmp_path):
-    import refracted_rays
+    from panam import refracted_rays
     profile = tmp_path / '289108.csv'
     model = refracted_rays.external_ray_model('niceops_ray_geometry', str(profile))
     assert model.source_files == (str(profile),)
@@ -1082,7 +1083,7 @@ def test_a_skipped_sphere_without_a_build_record_counts_as_flagged(tmp_path):
     """A sphere written before build records were gives no track flags, so the
     manifest marks them unknown and --skip-flagged leaves the run out."""
     from netCDF4 import Dataset
-    import provenance
+    from panam import provenance
     _archive(tmp_path)
     out = tmp_path / 'out'
     first, _ = na.build_all('AS350B3', str(out), root=str(tmp_path), prefetch=False,
@@ -1113,8 +1114,8 @@ def test_parallel_build_matches_the_serial_one(monkeypatch, tmp_path):
     order.  The plate tables are computed in this process (here by a stub the
     workers do not see), so the workers read them from the cache."""
     import functools
-    import axisymmetric_bem as ab
-    import flight_acoustics as fa
+    from panam import axisymmetric_bem as ab
+    from panam import flight_acoustics as fa
     _archive(tmp_path)
     _add_copied_run(tmp_path)
     # With the real table's signature, so that the cache key is the one the workers compute.
@@ -1157,7 +1158,7 @@ def test_the_cli_log_level_and_log_file(tmp_path, flags, info, debug):
     root = logging.getLogger()
     level, handlers = root.level, list(root.handlers)
     # Run 999999 has no data: its prefetch logs a DEBUG message.
-    assert na.main(['AS350B3', str(tmp_path / 'out'), '--root', str(tmp_path), '--board-correction', 'flat',
+    assert na_cli.main(['AS350B3', str(tmp_path / 'out'), '--root', str(tmp_path), '--board-correction', 'flat',
                     '--runs', '289108', '999999', '--log-file', str(log), *flags]) == 0
     text = log.read_text()
     assert ('INFO [1/2] 289108 -> ' in text) is info

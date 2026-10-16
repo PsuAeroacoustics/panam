@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 from netCDF4 import Dataset
 
-import flight_acoustics as fa
+from panam import flight_acoustics as fa
 from sphere_helpers import executable, minimal_hemisphere, write_sphere_directory
 
 NICEOPS = executable('niceops')

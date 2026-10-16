@@ -9,7 +9,7 @@ elevation positive below the horizon.
 import numpy as np
 import pytest
 
-import flight_acoustics as fa
+from panam import flight_acoustics as fa
 
 
 def test_level_pass_is_overhead_when_the_source_crosses_a_track_microphone():

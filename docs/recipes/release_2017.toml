@@ -1,11 +1,11 @@
 # The 2017 release: the B407 database built for the NICEOPS validation study.
 # docs/database_build.md, "The 2017 release settings", gives each value against PANAM's default.
 #
-#   python noise_abatement_2017.py B407 $OUT/spheres/Be407 --recipe docs/recipes/release_2017.toml \
+#   python tools/noise_abatement_2017.py B407 $OUT/spheres/Be407 --recipe docs/recipes/release_2017.toml \
 #       --manifest $OUT/spheres/Be407/manifest.csv
-#   python noise_abatement_2017.py B407 $OUT/hover_source --recipe docs/recipes/release_2017.toml \
+#   python tools/noise_abatement_2017.py B407 $OUT/hover_source --recipe docs/recipes/release_2017.toml \
 #       --hover-source --runs $HOVER_RUN
-#   python build_empirical_database.py --recipe docs/recipes/release_2017.toml \
+#   python tools/build_empirical_database.py --recipe docs/recipes/release_2017.toml \
 #       $OUT/spheres/Be407 $OUT/Be407_ambient_gated.nod \
 #       --manifest $OUT/spheres/Be407/manifest.csv --hover-source $HOVER_SOURCE_SPHERE
 #

@@ -11,8 +11,8 @@ import numpy as np
 import pytest
 from netCDF4 import Dataset
 
-import flight_acoustics as fa
-import noise_abatement_2017 as na
+from panam import flight_acoustics as fa
+from panam import noise_abatement_2017 as na
 
 from test_database_provenance import _source_directory
 

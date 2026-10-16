@@ -10,7 +10,7 @@ came out about 10 dB high.
 import numpy as np
 import pytest
 
-import unit_conversion as uc
+from panam import unit_conversion as uc
 
 CASES = [
     (uc.len_conv, 'm', 'ft'), (uc.len_conv, 'in', 'm'), (uc.area_conv, 'm**2', 'in**2'),

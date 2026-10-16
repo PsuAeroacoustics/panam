@@ -10,7 +10,7 @@ bands, at about 20 dB below), rounded to 0.01 dB.
 import numpy as np
 import pytest
 
-from panam_acoustics import psychoacoustics as pa
+from panam.acoustics import psychoacoustics as pa
 
 # ISO 532-1:2017 Annex B.2, "Test signal 1": 28 bands, 25 Hz to 12.5 kHz.
 TEST_SIGNAL_1_DB = np.array([-60, -60, 78, 79, 89, 72, 80, 89, 75, 87, 85, 79, 86, 80, 71, 70, 72, 71,
@@ -150,7 +150,7 @@ def test_rejects_bad_input():
 
 def test_iso_532_1_levels_from_a_31_band_spectrum():
     """A PANAM 10 Hz-10 kHz spectrum gives the same loudness as the hand-built 28 bands."""
-    import flight_acoustics as fa
+    from panam import flight_acoustics as fa
     frequency = fa.NORAH2_BAND_CENTERS_HZ
     assert frequency.size == 31
     spectrum = np.concatenate([[50.0, 45.0, 40.0, 35.0], TEST_SIGNAL_1_DB[:-1]])

@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 import scipy.signal as sig
 
-from flight_acoustics import depropagate_hemisphere
-from panam_acoustics.filters import third_octave_filter_bank
+from panam.acoustics.filters import third_octave_filter_bank
+from panam.flight_acoustics import depropagate_hemisphere
 
 FS = 25000.0
 CENTERS = 1000.0 * 2.0 ** (np.arange(-20, 11) / 3.0)      # 10 Hz .. 10 kHz

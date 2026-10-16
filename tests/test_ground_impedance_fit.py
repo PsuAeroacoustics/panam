@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-import ground_plane as gp
+from panam import ground_plane as gp
 
 C = 1120.0                                              # ft/s
 BANDS = np.asarray(gp.fa.PNL_BAND_FREQUENCIES)          # 50 Hz to 10 kHz

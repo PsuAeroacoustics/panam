@@ -5,8 +5,8 @@ import os
 import numpy as np
 import pytest
 
-from flight_acoustics import depropagate_hemisphere
-import refracted_rays as rr
+from panam import refracted_rays as rr
+from panam.flight_acoustics import depropagate_hemisphere
 from sphere_helpers import executable, tone_flyover
 
 SPEED = 1135.0

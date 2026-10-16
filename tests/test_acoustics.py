@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 import matplotlib.pyplot as plt
 
-from flight_acoustics import psd, psd_welch, atmosorb, art2umapr, geodetic2array, array2geodetic, lambert_ea_points
-from flight_acoustics import dBAw, overall_SPL, level_history, dedopplerize
+from panam.flight_acoustics import dBAw, overall_SPL, level_history, dedopplerize
+from panam.flight_acoustics import psd, psd_welch, atmosorb, art2umapr, geodetic2array, array2geodetic, lambert_ea_points
 
 P_REF = 2.0e-5
 
@@ -166,7 +166,7 @@ def test_art2umapr_basic():
 
 def test_umapr_starboard_is_azimuth_90():
     """hemigen in a right-handed, z-up frame: ahead 180, starboard 90, port 270, behind 0."""
-    from flight_acoustics import hemigen
+    from panam.flight_acoustics import hemigen
     # Flying east (+x) at 100 ft; starboard of an eastbound aircraft is south (-y).
     observers = np.array([[1000.0, 0.0, 0.0], [0.0, -1000.0, 0.0], [0.0, 1000.0, 0.0], [-1000.0, 0.0, 0.0]])
     azimuth, _, _, _, _ = hemigen(np.array([0.0]), np.array([[0.0, 0.0, 100.0]]),
@@ -176,7 +176,7 @@ def test_umapr_starboard_is_azimuth_90():
 
 def test_art2umapr_follows_the_aam_manual():
     """AAM v3 sec. 2.4.1: theta 0 at the nose, phi 0 below and positive to starboard."""
-    from flight_acoustics import _umapr2art
+    from panam.flight_acoustics import _umapr2art
     phi = np.radians([90.0, -90.0, 0.0, 0.0, 0.0])
     theta = np.radians([90.0, 90.0, 90.0, 0.0, 180.0])
     azi, elv = art2umapr(phi, theta)
@@ -280,7 +280,7 @@ def test_welch_empty_passband_reports_input_error():
 
 def test_plot_style_is_restored():
     import matplotlib
-    from flight_acoustics import plot_spectrogram
+    from panam.flight_acoustics import plot_spectrogram
     before = {key: matplotlib.rcParams[key] for key in ('axes.facecolor', 'mathtext.fontset', 'figure.autolayout')}
     fig, *_ = plot_spectrogram(np.ones(4096), 1024)
     plt.close(fig)
@@ -297,7 +297,7 @@ matplotlib.use('Agg')
 matplotlib.rcParams['axes.facecolor'] = 'pink'
 matplotlib.rcParams['figure.autolayout'] = False
 matplotlib.rcParams['mathtext.fontset'] = 'cm'
-import flight_acoustics
+from panam import flight_acoustics
 assert matplotlib.rcParams['axes.facecolor'] == 'pink'
 assert matplotlib.rcParams['figure.autolayout'] is False
 assert matplotlib.rcParams['mathtext.fontset'] == 'cm'

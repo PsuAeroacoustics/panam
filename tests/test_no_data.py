@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
-import flight_acoustics as fa
+from panam import flight_acoustics as fa
 from sphere_helpers import minimal_hemisphere, write_raw_sphere, write_sphere_directory
 
 P_REF = 2.0e-5
@@ -158,7 +158,7 @@ def test_a_sphere_with_no_level_below_the_aircraft_is_skipped(tmp_path):
 
 
 def test_the_planner_reads_the_old_no_data_floor_as_missing(tmp_path):
-    import array_planner
+    from tools import array_planner
 
     levels = np.full((4, 7), 62.0)
     levels[0, :] = 10.0 * np.log10(np.finfo(float).tiny)

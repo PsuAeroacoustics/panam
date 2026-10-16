@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-import array_planner
+from tools import array_planner
 
 
 @pytest.mark.parametrize('options, named', [

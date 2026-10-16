@@ -11,7 +11,7 @@ whatever fell in an overlap twice (895 Hz landed in both 800 and 1000 Hz).
 import numpy as np
 import pytest
 
-import flight_acoustics as fa
+from panam import flight_acoustics as fa
 
 
 def test_nominal_centers_tile_without_gaps_or_overlaps():

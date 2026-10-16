@@ -11,8 +11,8 @@ import shutil
 import numpy as np
 from netCDF4 import Dataset
 
-import flight_acoustics as fa
-import local_paths
+from panam import flight_acoustics as fa
+from panam import local_paths
 
 
 def executable(name):

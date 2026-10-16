@@ -8,7 +8,7 @@ absorption correction of hundreds of dB.
 import numpy as np
 import pytest
 
-from flight_acoustics import Atmosphere, depropagate_hemisphere
+from panam.flight_acoustics import Atmosphere, depropagate_hemisphere
 
 
 P_REF = 2.0e-5
@@ -367,7 +367,7 @@ def test_absorption_cap_leaves_capped_bands_missing():
 def test_a_doppler_scaled_band_past_the_selected_range_is_missing():
     """remove_doppler reads each band over [D f_lower, D f_upper]; past the selected
     bins the band used to be integrated over part of its width without a word."""
-    import flight_acoustics as fa
+    from panam import flight_acoustics as fa
     f = np.arange(0.0, 2000.0 + 1e-9, 2.0)
     lower, upper = fa.third_octave_band_edges(np.array([1000.0, 1600.0]))
     dropped = np.zeros((f.size, 3), dtype=bool)

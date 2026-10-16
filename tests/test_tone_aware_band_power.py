@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import scipy.signal
 
-import flight_acoustics as fa
+from panam import flight_acoustics as fa
 
 
 @pytest.mark.parametrize('offset', [0.0, 0.25, 0.5, 1.0, -1.0, 1.5, 2.0, 3.0])

@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-import axisymmetric_bem as ab
-import ground_plane as gp
+from panam import axisymmetric_bem as ab
+from panam import ground_plane as gp
 
 C = 1125.0
 THIN = dict(thickness=0.0003 / 0.3048, edge_thickness=0.0003 / 0.3048, taper_length=0.0)

@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-import flight_acoustics as fa
+from panam import flight_acoustics as fa
 
 
 def _tone_hemisphere(**overrides):
