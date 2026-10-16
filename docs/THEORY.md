@@ -175,7 +175,7 @@ white noise's band power in the tonal part.
 **Filter bank** (`third_octave_method='filter_bank'`; the default is the FFT). Each band is an
 order-3 Butterworth band-pass between $f_c 2^{\mp1/6}$ about the band's given center (nominal or
 exact), so its edges are not the base-10 edges the FFT path uses
-(`panam_acoustics.filters.third_octave_filter_bank`). The record has its mean removed and is
+(`panam.acoustics.filters.third_octave_filter_bank`). The record has its mean removed and is
 reflected at both ends; each band is filtered causally at a rate decimated octave by octave to
 about 12 times its upper edge. Each band's output is then advanced by the filter's group delay at
 $f_c$ (about 0.14 s at 20 Hz), so that low-band energy stays at the emission angle it arrived from.
@@ -394,7 +394,7 @@ puts both instrument types at height 0. A plate is not an ideal pressure-doublin
 raised, and the ground around it is not rigid [26]. Kingan, Go and co-workers model
 ground-board microphones with a boundary element method over impedance ground [27, 28].
 PANAM computes the response with an axisymmetric (body-of-revolution) boundary element method
-[29] of the plate's own profile (`axisymmetric_bem.py`).
+[29] of the plate's own profile (`panam/axisymmetric_bem.py`).
 
 **The Green's function** is the exact one for a point source over a locally reacting plane
 [30, 31] (`ground_plane.exact_half_space_green`):
@@ -460,7 +460,7 @@ The 2017 site ground is `noise_abatement_2017.SITE_GROUND`: variable porosity wi
 $\sigma_e = 200$ kPa·s/m², $\alpha_e = 0$, and no roughness. How it was fitted to the co-located
 pole and plate microphones is recorded in
 [`notes/ground_plane_corrections.md`](notes/ground_plane_corrections.md). Functions in
-`ground_plane.py` called with a flow resistance and no `ground` model use Delany–Bazley at their
+`panam/ground_plane.py` called with a flow resistance and no `ground` model use Delany–Bazley at their
 default `FLOW_RESISTANCE = 100` kPa·s/m², an earlier fit, not the site ground.
 
 ## 5. Depropagation
@@ -564,7 +564,7 @@ it is not a wind profile, and the wind's shear near the ground is not modeled.
 
 ### 5.4 The atmosphere
 
-**Absorption** is the ISO 9613-1 coefficient [33] (`panam_acoustics.iso_9613_1_1993`). With
+**Absorption** is the ISO 9613-1 coefficient [33] (`panam.acoustics.iso_9613_1_1993`). With
 $T_0 = 293.15$ K, $T_{01} = 273.16$ K, $p_{a0} = 101.325$ kPa, temperature $T$, pressure $p_a$ and
 relative humidity $H$ (%):
 
@@ -584,7 +584,7 @@ $$
 with $h_w$ the molar concentration of water vapor (%). By default it is evaluated at single
 frequencies (a bin or a band center). The speed of sound is $c = 343.2\sqrt{T/T_0}$ m/s.
 
-**Band absorption** (`panam_acoustics.atmosphere.band_absorption_db`). Over a path $s$ a
+**Band absorption** (`panam.acoustics.atmosphere.band_absorption_db`). Over a path $s$ a
 one-third octave band loses $\delta_B$, formed from the pure-tone attenuation
 $\delta_t(f) = \alpha(f)\,s$ by one of three methods (`absorption_band_method`):
 
@@ -627,7 +627,7 @@ A depropagated band is corrected by $\delta_B(\ell) - \delta_B(r_\mathrm{ref})$ 
 sphere keeps the band attenuation over its first $r_\mathrm{ref}$; for `'center'` this is
 $\alpha(f_c)(\ell - r_\mathrm{ref})$, as before.
 
-**Layered atmosphere** (`absorption_profile`, `panam_acoustics.atmosphere.layered_attenuation_db`).
+**Layered atmosphere** (`absorption_profile`, `panam.acoustics.atmosphere.layered_attenuation_db`).
 A profile gives $T$, $H$ and $p_a$ at altitudes $z_j$ (ft, in the frame of the track's $z$).
 $\alpha$ is evaluated at each $z_j$, taken linear in $z$ between them and constant beyond them, and
 integrated along the straight path from the microphone at $z_r$ to the source at $z_s$:
@@ -936,7 +936,7 @@ the lower hemisphere onto itself) and the energy-averaged hover with recomputed 
 
 ## 8. NORAH2 and AAM interchange
 
-**NORAH2 import** (`build_database_from_norah2`, `norah2_to_nod.py`). A NORAH2 hemisphere (`.hem`)
+**NORAH2 import** (`build_database_from_norah2`, `tools/norah2_to_nod.py`). A NORAH2 hemisphere (`.hem`)
 [37, 38, 39] gives one-third-octave levels on a 10° grid at the distance POLDIST
 (60 m in the shipped forward-flight files), free field with absorption to that distance in the
 file's own atmosphere (TAMB, RELHUM, PAMB). PANAM refers it to the NICEOPS sphere radius $r$
@@ -1024,7 +1024,7 @@ as −999. This is not the inverse of the import: a sphere exported and imported
 shifted by $(\alpha_\mathrm{meas} - \alpha_\mathrm{ICAO})\,r_\mathrm{ref}$. A sphere built without
 absorption depropagation is written with spreading only, with a warning.
 
-A sphere file already written is converted the same way (`sphere_to_norah2.py`,
+A sphere file already written is converted the same way (`tools/sphere_to_norah2.py`,
 `sphere_to_norah2`, through `write_norah2_levels`). Sphere files and NORAH2 share the ART angles,
 so the levels are interpolated bilinearly in linear power over (PHI, THETA) straight onto the
 NORAH2 grid (`sphere_levels_on_norah2_grid`); on the build's default grid (PHI every 10°, THETA
@@ -1050,7 +1050,7 @@ threshold is never one), $\mathrm{SEL} = 10\lg\left(\sum_k 10^{L_k/10}\Delta t/1
 result is flagged `clipped` when the window touches either end of the record. Unlike NICEOPS,
 PANAM's samples are already in reception time.
 
-**Time-weighted levels** (`panam_acoustics.time_weighting`). A pressure history is weighted in
+**Time-weighted levels** (`panam.acoustics.time_weighting`). A pressure history is weighted in
 frequency, then in time, as IEC 61672-1 [10] defines a sound level meter. The A and C weightings
 are the analog filters of its Annex E, with poles at $f_1 = 20.598997$, $f_2 = 107.65265$,
 $f_3 = 737.86223$ and $f_4 = 12194.217$ Hz:
@@ -1128,8 +1128,8 @@ NaN, and EPNL refuses the history.
 **Aural nondetectability** (`mil_std_1474e_nondetectability_distance`). MIL-STD-1474E Table C-I
 [43] gives, per one-third-octave band, the limit at each nondetectability distance $x_j$
 (5 m to 6 km), measured at a distance $x^\mathrm{m}_j$; a distance is met when no band exceeds its
-limit (§C.5.1.2). PANAM ships the table as `mil_std_1474e_table_c1_full.csv`
-(`load_mil_std_1474e_table_c1`): 24 bands from 50 Hz to 10 kHz, 20 distance columns, measured at
+limit (§C.5.1.2). PANAM ships the table as `panam/data/mil_std_1474e_table_c1_full.csv`
+(`MIL_STD_1474E_TABLE_C1_FILE`, read by `load_mil_std_1474e_table_c1`): 24 bands from 50 Hz to 10 kHz, 20 distance columns, measured at
 2 m for the 5–30 m columns, 10 m for 100–400 m and 30 m for 500–6000 m, with NA where no limit is
 listed. The input spectrum, given at `spectrum_distance_m` $d$ (default 10 m), is first
 interpolated linearly in $\lg f$ onto the table's band centers; a table band up to half a
@@ -1145,7 +1145,7 @@ every column gives 5 m, an upper bound; one over the 6 km column gives 6 km, a l
 wins and flags the result; an NA entry counts as met, so a band over its last listed column is
 bracketed by that column and the next.
 
-**Impulsiveness** (`panam_acoustics.impulsiveness`). Three statistics of a microphone pressure
+**Impulsiveness** (`panam.acoustics.impulsiveness`). Three statistics of a microphone pressure
 history characterize blade-vortex interaction (BVI) noise, each taken over frames of
 `frame_time` seconds (non-overlapping unless `hop_time` is given) after removing each frame's
 mean (`detrend='constant'`, the default) or a fitted line (`'linear'`). The crest factor is
@@ -1177,7 +1177,7 @@ propagation changes it in a way no level correction undoes, since absorption rem
 harmonics that make a pulse sharp and ambient noise pulls the kurtosis toward 3 as range grows.
 They describe the microphone record they are computed on.
 
-**Loudness** (`panam_acoustics.psychoacoustics.loudness_zwicker`) follows the stationary method
+**Loudness** (`panam.acoustics.psychoacoustics.loudness_zwicker`) follows the stationary method
 of ISO 532-1:2017 (Zwicker) [53] from 28 one-third-octave band levels $L_i$, 25 Hz to 12.5 kHz,
 for a free (frontal) or diffuse field. PANAM's spheres and hemispheres stop at 10 kHz;
 `iso_532_1_levels` takes their 25 Hz to 10 kHz bands and sets 12.5 kHz to no energy, so the
@@ -1222,7 +1222,7 @@ A 1 kHz critical-band noise (920–1080 Hz) at 60 dB is 1.00 acum. $S$ is NaN wh
 
 These are in PANAM but not used to build the databases.
 
-- **Vold–Kalman order tracking** (`vold_kalman_filter.py`) [44, 45]. Each order $j$ is a
+- **Vold–Kalman order tracking** (`panam/vold_kalman_filter.py`) [44, 45]. Each order $j$ is a
   slowly varying complex envelope $a_j$ on a known phasor
   $\Theta_j(n) = \exp\left(2\pi i\,\Delta t\sum_{m \le n} f_j(m)\right)$, $n$ the sample
   index. The data equation $x = \sum_j a_j\Theta_j + \nu$ and a structural equation of order $p$,
@@ -1238,7 +1238,7 @@ These are in PANAM but not used to build the databases.
 
   The function returns $y_j = 2a_j$, so $\lvert y_j\rvert$ is the order's amplitude and its
   waveform is $\mathrm{Re}(y_j\Theta_j)$. `use_coupling=False` drops the cross-order terms.
-- **Doppler-predicted order tracks** (`order_tracking.py`). A shaft turning at $f(t)$
+- **Doppler-predicted order tracks** (`panam/order_tracking.py`). A shaft turning at $f(t)$
   revolutions per second emits order $k$ at $k f(t_e)$. A fixed microphone at $\mathbf{x}_m$
   hears it at $t_r = t_e + \lvert\mathbf{x}_m - \mathbf{x}_s(t_e)\rvert/c$, with $t_e(t_r)$ solved
   by fixed-point iteration (`ground_plane.emission_times`), and at the frequency
@@ -1252,7 +1252,7 @@ These are in PANAM but not used to build the databases.
   `observed_order_track`). The track is interpolated linearly, and $\mathbf{v}$ is the central
   difference of its samples, also interpolated linearly. These tracks are the frequencies the
   Vold–Kalman filter needs to follow an order as received rather than as emitted.
-  `hexacopter_vkf_example.py --doppler track` uses them; its default de-Dopplerizes the signal
+  `examples/hexacopter_vkf_example.py --doppler track` uses them; its default de-Dopplerizes the signal
   instead (`dedopplerize`, below).
 - **Clock offsets** (`estimate_clock_offset`, `order_track_offset`). Two records $a$ and $b$
   sampled at $f_s$ are compared at each integer lag $\ell$ by the Pearson correlation
@@ -1264,7 +1264,7 @@ These are in PANAM but not used to build the databases.
   $\tau$ of the recorder shifts the whole received track, $f_\mathrm{obs}(t + \tau)$, so the
   offset between a predicted track and a measured one (`ridge_track`: the largest Hann-windowed
   spectral peak in a band, refined by a parabola through the log power) estimates $\tau$.
-- **Ground-board models** in `ground_plane.py`, from the plate study: Fresnel-zone weighting of a
+- **Ground-board models** in `panam/ground_plane.py`, from the plate study: Fresnel-zone weighting of a
   finite plate (strip [46] and disc [47]), blended in energy [48] or in dB;
   an impedance-discontinuity model after De Jong and Lam and Monazzam [49, 50]; a thin-disc
   BEM [27] (`disc_bem_scattered`); and a 3-D surface-mesh BEM of the raised, tapered plate
@@ -1301,7 +1301,7 @@ These are in PANAM but not used to build the databases.
   between bands and frames. The target is the pole level re free field because that is what
   `pole_level` returns. Forming $\Delta L_{bj}$ from measurements, for example from a co-located
   plate microphone and its modeled transfer function, is left to the caller.
-- **Array planning** (`linear_array_plan`, `array_planner.py`): microphones along a line,
+- **Array planning** (`linear_array_plan`, `tools/array_planner.py`): microphones along a line,
   $y_i = (h/\sin e_t)\tan\theta_i$, with $\theta_i$ equally spaced in
   $[-(90^\circ - e_\min),\ 90^\circ - e_\min]$ (defaults $e_\min = 10^\circ$, $e_t = 90^\circ$),
   so that the outermost microphone is seen from overhead at $\arctan(\sin e_t\tan e_\min)$ below
@@ -1311,7 +1311,7 @@ These are in PANAM but not used to build the databases.
   $+x$) about the origin. A hover at height $h$ above them is seen at elevation $\arctan(h/R)$;
   a takeoff from height $h_0$ climbing at $\gamma$ is at $h_0 + d\tan\gamma$ after ground distance
   $d$, so a microphone at the liftoff point sees it at $\gamma$ behind the vehicle when $h_0 = 0$.
-  The `array_planner.py` subcommands `hover` and `takeoff` plot these directions and write the
+  The `tools/array_planner.py` subcommands `hover` and `takeoff` plot these directions and write the
   microphones to KMZ.
 - **Footprint preview** (`project_sphere`, `plot_projection`): each direction at least $e_c$ below
   the horizon (`elv_cutoff`, no default; `project_directory` and `plot_projection` use 30°)
@@ -1372,12 +1372,13 @@ These are in PANAM but not used to build the databases.
 
 ## Appendix: Where each model lives
 
-Functions are in `flight_acoustics.py` unless another module is named. Tests are in `tests/`.
+Functions are in `panam/flight_acoustics.py` unless another module is named: a module name alone is a
+module of `panam/`, and a script is named by its path. Tests are in `tests/`.
 
 | Section | Functions | Tests |
 | --- | --- | --- |
 | §2.1 Short-time spectra | `spectrogram`, `frame_length`, `psd`, `psd_welch`, `overall_SPL`, `level_history` | `test_acoustics.py`, `test_generate_hemisphere.py` |
-| §2.2 Bands | `third_octave_band_edges`, `third_octave_band_levels`, `tone_aware_band_power` (`return_parts`), `hann_power`, `depropagate_hemisphere` (`decompose_tonal`), `noise_abatement_2017.build_sphere` (`tone_split`), `panam_acoustics.filters.third_octave_filter_bank` | `test_third_octave_band_edges.py`, `test_third_octave_band_levels.py`, `test_band_selection.py`, `test_tone_aware_band_power.py`, `test_generate_hemisphere.py`, `test_noise_abatement_2017.py`, `test_third_octave_filter_bank.py` |
+| §2.2 Bands | `third_octave_band_edges`, `third_octave_band_levels`, `tone_aware_band_power` (`return_parts`), `hann_power`, `depropagate_hemisphere` (`decompose_tonal`), `noise_abatement_2017.build_sphere` (`tone_split`), `panam.acoustics.filters.third_octave_filter_bank` | `test_third_octave_band_edges.py`, `test_third_octave_band_levels.py`, `test_band_selection.py`, `test_tone_aware_band_power.py`, `test_generate_hemisphere.py`, `test_noise_abatement_2017.py`, `test_third_octave_filter_bank.py` |
 | §2.3 A-weighting | `dBAw` | `test_acoustics.py` |
 | §3.1–3.2 Geometry | `hemigen`, `art2umapr`; `noise_abatement_2017.local_east_north_ft`, `east_north_to_frame`, `frame_bearing_deg` | `test_lambert_geometry.py`, `test_hemisphere_geometry_accuracy.py`, `test_azimuth_reference.py`, `test_track_check.py` |
 | §3.3 Doppler | `depropagate_hemisphere` (`remove_doppler`, `air_relative_doppler`) | `test_generate_hemisphere.py`, `test_tone_aware_band_power.py`, `test_refracted_rays.py` |
@@ -1390,8 +1391,8 @@ Functions are in `flight_acoustics.py` unless another module is named. Tests are
 | §4.6 Site ground | `noise_abatement_2017.SITE_GROUND` | (none) |
 | §5.1–5.2 Depropagation | `depropagate_hemisphere`; `noise_abatement_2017.build_sphere` | `test_ambient_gating.py`, `test_generate_hemisphere.py`, `test_golden_results.py`, `test_synthetic_flyover.py` |
 | §5.3 Rays | `refracted_rays.external_ray_model`, `straight_ray_model`, `uniform_wind_ray_model`; `noise_abatement_2017.wind_in_frame_ft_s` (`build_sphere(ray_model='wind')`) | `test_refracted_rays.py`, `test_run_metadata.py` |
-| §5.4 Atmosphere | `panam_acoustics.iso_9613_1_1993`, `panam_acoustics.atmosphere.Atmosphere`, `atmosorb`; `noise_abatement_2017.run_atmosphere`, `air_density_kg_m3` | `test_acoustics.py`, `test_python_acoustics_equivalence.py`, `test_run_metadata.py`, `test_noise_abatement_2017.py` |
-| §5.4 Band and layered absorption | `panam_acoustics.atmosphere.band_absorption_db`, `arp5534_band_attenuation`, `exact_midband_frequency`, `layered_attenuation_db`, `check_absorption_profile`; `depropagate_hemisphere` (`absorption_band_method`, `absorption_profile`), `noise_abatement_2017.build_sphere`, `spla_and_eaa_from_spectrum`, `norah2_levels_at_radius` | `test_band_absorption.py`, `test_spla_and_eaa.py`, `test_norah2_import.py` |
+| §5.4 Atmosphere | `panam.acoustics.iso_9613_1_1993`, `panam.acoustics.atmosphere.Atmosphere`, `atmosorb`; `noise_abatement_2017.run_atmosphere`, `air_density_kg_m3` | `test_acoustics.py`, `test_python_acoustics_equivalence.py`, `test_run_metadata.py`, `test_noise_abatement_2017.py` |
+| §5.4 Band and layered absorption | `panam.acoustics.atmosphere.band_absorption_db`, `arp5534_band_attenuation`, `exact_midband_frequency`, `layered_attenuation_db`, `check_absorption_profile`; `depropagate_hemisphere` (`absorption_band_method`, `absorption_profile`), `noise_abatement_2017.build_sphere`, `spla_and_eaa_from_spectrum`, `norah2_levels_at_radius` | `test_band_absorption.py`, `test_spla_and_eaa.py`, `test_norah2_import.py` |
 | §5.5 Forward synthesis | `synthesis.synthesize_band_histories`, `_bin_band_absorption_db`, `doppler_shift_band_power`, `measured_band_histories`, `leave_mics_out`, `residual_statistics`; `interpolate_hemisphere_power` | `test_synthesis.py` |
 | §6.1 Fixed radius | `shepIDW`, `shepIDW_weights`, `shepIDW_apply`, `geodist` | `test_shep_idw.py`, `test_no_data.py`, `test_hemisphere_geometry_accuracy.py` |
 | §6.2 Adaptive radius | `adaptive_idw_weights`, `ADAPTIVE_INTERPOLATION` | `test_adaptive_interpolation.py`, `test_hemisphere_geometry_accuracy.py` |
@@ -1402,18 +1403,18 @@ Functions are in `flight_acoustics.py` unless another module is named. Tests are
 | §7.4 Hover | `average_fore_and_aft`, `_fore_aft_measured`, `_synthesized_hover_sphere`, `_hover_source_index`, `_hover_flight_path_angles` | `test_hover_averaging.py`, `test_sphere_completion_integration.py`, `test_empirical_database_hover_selection.py`, `test_database_provenance.py`, `test_norah2_import.py` |
 | §7.5 Completion | `mirror_phi_to_upper_surface`, `_complete_sphere_with_coverage` | `test_mirror_phi.py`, `test_sphere_completion_integration.py` |
 | §8 NORAH2 | `build_database_from_norah2`, `norah2_levels_at_radius`, `norah2_speed_knots`, `humid_air_density`, `fill_norah2_empty_cells`, `_norah2_rotor_speed_fraction`, `write_norah2_hemisphere`, `write_norah2_levels`, `write_norah2_triangulation`, `norah2umapr` | `test_norah2_import.py`, `test_write_norah2_hemisphere.py` |
-| §8 Sphere to NORAH2 | `sphere_to_norah2.sphere_to_norah2`, `sphere_levels_on_norah2_grid` (through the `sphere_to_norah2.py` CLI) | `test_sphere_to_norah2.py`, `test_cli_scripts.py` (smoke) |
+| §8 Sphere to NORAH2 | `tools/sphere_to_norah2.py`: `sphere_to_norah2`, `sphere_levels_on_norah2_grid` | `test_sphere_to_norah2.py`, `test_cli_scripts.py` (smoke) |
 | §9 Metrics | `sound_exposure_level`, `ten_db_down_interval`, `noys`, `perceived_noise_level`, `tone_correction`, `effective_perceived_noise_level`, `mil_std_1474e_nondetectability_distance` | `test_sound_exposure_level.py`, `test_pnl_epnl.py`, `test_mil_std_nondetectability.py` |
-| §9 Time-weighted levels | `panam_acoustics.time_weighting.frequency_weighting_sos`, `apply_frequency_weighting`, `time_weighted_square`, `time_weighted_level`, `leq` | `test_time_weighting.py` |
-| §9 Impulsiveness | `panam_acoustics.impulsiveness.crest_factor`, `kurtosis`, `pulse_peak_to_rms`, `bvi_harmonic_ratio`, `frame_signal` | `test_impulsiveness.py` |
-| §9 Loudness, sharpness | `panam_acoustics.psychoacoustics.loudness_zwicker`, `loudness_level`, `sharpness_din`, `iso_532_1_levels` | `test_psychoacoustics.py` |
+| §9 Time-weighted levels | `panam.acoustics.time_weighting.frequency_weighting_sos`, `apply_frequency_weighting`, `time_weighted_square`, `time_weighted_level`, `leq` | `test_time_weighting.py` |
+| §9 Impulsiveness | `panam.acoustics.impulsiveness.crest_factor`, `kurtosis`, `pulse_peak_to_rms`, `bvi_harmonic_ratio`, `frame_signal` | `test_impulsiveness.py` |
+| §9 Loudness, sharpness | `panam.acoustics.psychoacoustics.loudness_zwicker`, `loudness_level`, `sharpness_din`, `iso_532_1_levels` | `test_psychoacoustics.py` |
 | §10 VKF | `vold_kalman_filter.vold_kalman_filter` | `test_vold_kalman_filter.py` |
-| §10 Order tracks, clock offsets | `order_tracking.doppler_factor`, `observed_order_track`, `ridge_track`, `estimate_clock_offset`, `order_track_offset`; `hexacopter_vkf_example.heard_rotor_speed` | `test_order_tracking.py`, `test_hexacopter_vkf_example.py` |
+| §10 Order tracks, clock offsets | `order_tracking.doppler_factor`, `observed_order_track`, `ridge_track`, `estimate_clock_offset`, `order_track_offset`; `examples/hexacopter_vkf_example.py`: `heard_rotor_speed` | `test_order_tracking.py`, `test_hexacopter_vkf_example.py` |
 | §10 Ground-board models, two-path fit | `ground_plane.board_*`, `disc_bem_scattered`, `raised_plate_scattering`, `fit_two_path`, `height_from_path_difference` | `test_ground_plane.py`, `test_ground_validation.py`, `test_axisymmetric_bem.py` |
 | §10 Ground impedance inversion | `ground_plane.fit_ground_impedance` | `test_ground_impedance_fit.py` |
-| §10 Array planning | `linear_array_plan` (through the `array_planner.py design` CLI); `array_coverage`, `hover_array_coverage`, `takeoff_array_coverage` (through `array_planner.py coverage`, `hover` and `takeoff`) | `test_array_coverage.py` (the coverage functions on known geometry), `test_array_planner.py` (the CLI's spacing, options and case files), `test_cli_scripts.py` (smoke) |
+| §10 Array planning | `linear_array_plan` (through the `tools/array_planner.py design` CLI); `array_coverage`, `hover_array_coverage`, `takeoff_array_coverage` (through `tools/array_planner.py coverage`, `hover` and `takeoff`) | `test_array_coverage.py` (the coverage functions on known geometry), `test_array_planner.py` (the CLI's spacing, options and case files), `test_cli_scripts.py` (smoke) |
 | §10 Footprint, fried egg | `project_sphere`, `project_directory`, `fried_egg_plot`, `is_noisy` | `test_projection.py`, `test_no_data.py`, `test_cli_scripts.py` (smoke) |
-| §10 De-Dopplerization | `dedopplerize`; `hexacopter_vkf_example.dedopplerize_record` | `test_acoustics.py`, `test_hexacopter_vkf_example.py` |
+| §10 De-Dopplerization | `dedopplerize`; `examples/hexacopter_vkf_example.py`: `dedopplerize_record` | `test_acoustics.py`, `test_hexacopter_vkf_example.py` |
 | §10 Repeat-run averaging, comparison | `sphere_statistics.average_spheres`, `write_averaged_sphere`, `compare_spheres`, `cell_solid_angles`, `plot_sphere_difference`; in a database build, `build_empirical_database(merge_repeats=True)` (`_group_repeat_conditions`, `_extract_condition_SPL`) | `test_sphere_statistics.py`, `test_merge_repeats.py`, `test_cli_scripts.py` (smoke) |
 
 ## References

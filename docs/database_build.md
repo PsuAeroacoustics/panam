@@ -15,7 +15,7 @@ outside the checkout, so that no sphere or database lands in the repository.
 
 ### 1. Point PANAM at the data
 
-`noise_abatement_2017.py` reads the archive from `--root`. Without it, the script uses the
+`tools/noise_abatement_2017.py` reads the archive from `--root`. Without it, the script uses the
 `noise_abatement_2017` entry of `local_paths.toml`, or the variable
 `PANAM_NOISE_ABATEMENT_2017`. Under the root, each aircraft has its own directory:
 
@@ -41,7 +41,7 @@ overrides it).
 ### 2. Check the tracks
 
 ```sh
-python noise_abatement_2017.py B407 --check-tracks --hovers --manifest ~/panam_out/b407_tracks.csv
+python tools/noise_abatement_2017.py B407 --check-tracks --hovers --manifest ~/panam_out/b407_tracks.csv
 ```
 
 This step reads only the tracks. It runs the [track sanity check](#track-sanity-check) over
@@ -52,7 +52,7 @@ writes the table.
 ### 3. Build the spheres
 
 ```sh
-python noise_abatement_2017.py B407 ~/panam_out/spheres/Be407 --manifest ~/panam_out/spheres/Be407/manifest.csv
+python tools/noise_abatement_2017.py B407 ~/panam_out/spheres/Be407 --manifest ~/panam_out/spheres/Be407/manifest.csv
 ```
 
 This builds one sphere per steady, non-maneuvering flight run (`is_steady_flight_card`). A
@@ -83,7 +83,7 @@ The main options:
 | `--jobs N` | 1 | build N runs at once in worker processes; the output is the same as with 1 |
 | `-v`, `-q`, `--log-file FILE` | INFO, stderr | log DEBUG too, or only WARNING (`-qq` ERROR); also append the log to FILE |
 
-`python noise_abatement_2017.py -h` lists the depropagation settings, among them
+`python tools/noise_abatement_2017.py -h` lists the depropagation settings, among them
 `--band-snr-gate-db`, `--max-absorption-correction-db`, `--min-elevation-deg`,
 `--max-propagation-range-ft`, `--point-stride`, `--board-correction` and
 `--third-octave-method`. Every keyword of `build_sphere` that has a command-line form has an
@@ -139,14 +139,14 @@ coefficient.
 ### 5. Build the database
 
 ```sh
-python build_empirical_database.py ~/panam_out/spheres/Be407 ~/panam_out/Be407.nod
+python tools/build_empirical_database.py ~/panam_out/spheres/Be407 ~/panam_out/Be407.nod
 ```
 
 By default the script takes every `.nc` file in the directory. To build from exactly the
 spheres a build wrote, pass its manifest; `--exclude` then leaves out named spheres:
 
 ```sh
-python build_empirical_database.py ~/panam_out/spheres/Be407 ~/panam_out/Be407.nod \
+python tools/build_empirical_database.py ~/panam_out/spheres/Be407 ~/panam_out/Be407.nod \
     --manifest ~/panam_out/spheres/Be407/manifest.csv --exclude Be407285236.nc
 ```
 
@@ -164,7 +164,7 @@ condition's `source_sphere` names every run, and `panam_inputs` lists each merge
 `merged_spheres`.
 
 Every other option of `build_empirical_database` that takes a plain value has a flag, and
-each flag defaults to the function's default (`python build_empirical_database.py -h` lists
+each flag defaults to the function's default (`python tools/build_empirical_database.py -h` lists
 them with their units):
 
 - load factors of 0.7, 1.1, 1.5, 1.9 and 2.3 g (`--load-factors`, or `--fixed-load-factor`
@@ -410,11 +410,11 @@ values. A recipe is a TOML file of settings that `build_recipe.load_recipe` read
 (see [build recipes](#build-recipes)). Three commands build the release database from it:
 
 ```sh
-python noise_abatement_2017.py B407 $OUT/spheres/Be407 --recipe docs/recipes/release_2017.toml \
+python tools/noise_abatement_2017.py B407 $OUT/spheres/Be407 --recipe docs/recipes/release_2017.toml \
     --manifest $OUT/spheres/Be407/manifest.csv
-python noise_abatement_2017.py B407 $OUT/hover_source --recipe docs/recipes/release_2017.toml \
+python tools/noise_abatement_2017.py B407 $OUT/hover_source --recipe docs/recipes/release_2017.toml \
     --hover-source --runs $HOVER_RUN
-python build_empirical_database.py $OUT/spheres/Be407 $OUT/Be407_ambient_gated.nod \
+python tools/build_empirical_database.py $OUT/spheres/Be407 $OUT/Be407_ambient_gated.nod \
     --recipe docs/recipes/release_2017.toml --manifest $OUT/spheres/Be407/manifest.csv \
     --hover-source $HOVER_SOURCE_SPHERE
 ```
@@ -447,9 +447,9 @@ Two [`local_paths`](../local_paths.example.toml) entries give the recipe's input
 The same build from Python:
 
 ```python
-import build_recipe
-import flight_acoustics as fa
-import noise_abatement_2017 as na
+from panam import build_recipe
+from panam import flight_acoustics as fa
+from panam import noise_abatement_2017 as na
 
 recipe = build_recipe.load_recipe('docs/recipes/release_2017.toml')
 na.build_all('B407', f'{OUT}/spheres/Be407', manifest_path=f'{OUT}/spheres/Be407/manifest.csv',
@@ -471,7 +471,7 @@ A recipe has up to three sections, each optional:
 - `[spheres]`: keywords of `build_all` and `build_sphere`, with the subtable
   `[spheres.interpolation]` for the adaptive gridding's settings;
 - `[hover_source]`: the same keywords, over `[spheres]` for the hover source rebuild
-  (`noise_abatement_2017.py --hover-source`);
+  (`tools/noise_abatement_2017.py --hover-source`);
 - `[database]`: keywords of `build_empirical_database`.
 
 `load_recipe` checks every key against the signatures of those functions and refuses an
@@ -515,9 +515,9 @@ frequencies is never built for every flight run.
 
 ## Code and tests
 
-The code is in `build_recipe.py` (`load_recipe`), `noise_abatement_2017.py` (`build_all`,
+The code is in `panam/build_recipe.py` (`load_recipe`), `panam/noise_abatement_2017.py` (`build_all`,
 `build_sphere`, `profile_ray_models`, `check_tracks`, `check_track`, `steady_window`,
-`frame_bearing_deg`, `ground_microphone_positions`, `read_winds`, `select_from_manifest`) and `flight_acoustics.py` (`build_empirical_database`,
+`frame_bearing_deg`, `ground_microphone_positions`, `read_winds`, `select_from_manifest`) and `panam/flight_acoustics.py` (`build_empirical_database`,
 `write_aam_hemisphere_netcdf`, `read_vehicle_data`). The tests are
 `tests/test_noise_abatement_2017.py`, `tests/test_track_check.py`,
 `tests/test_run_metadata.py`, `tests/test_azimuth_reference.py`,

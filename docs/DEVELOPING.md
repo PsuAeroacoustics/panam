@@ -7,14 +7,24 @@ contracts are in [file_formats.md](file_formats.md). AI coding tools read
 
 ## Architecture
 
-PANAM is a set of modules at the repository root, not an installed package.
-Scripts and tests import them by name (`import flight_acoustics as fa`), so
-everything runs from the repository root. `pyproject.toml` records the
-project's metadata, `requires-python` and its dependencies, which mirror
+The repository has three kinds of code, in three directories:
+
+- `panam/`, the library: a package of modules imported by name,
+  `from panam import flight_acoustics as fa`. Importing `panam` itself loads
+  none of them.
+- `tools/`, the command-line tools, one script per tool. The library never
+  imports from `tools/` ([Where new code goes](#where-new-code-goes)).
+- `examples/`, tutorials and worked examples: scripts that show the library
+  calls for one task.
+
+`tools/` and `examples/` carry an `__init__.py` only so that the tests can
+import the scripts (`from tools import nod_tool`); they are run as scripts,
+`python tools/nod_tool.py`. `pyproject.toml` builds the `panam` package with
+setuptools and installs nothing else; its dependencies mirror
 `requirements.txt` (`tests/test_project_metadata.py` checks that the two
-lists agree). It has no `[build-system]` table, no entry points and builds
-nothing; `pip install .` is not supported. Its only tool setting is the
-coverage report's `omit`; pytest reads `pytest.ini`.
+lists agree), whose `-e .` line installs `panam` in editable mode
+([Environment and caches](#environment-and-caches)). It has no entry points. Its tool settings are the
+package list and the coverage report's `omit`; pytest reads `pytest.ini`.
 
 ### Data flow
 
@@ -23,12 +33,12 @@ built from a directory of spheres:
 
 1. **Recordings.** Pressure time series per microphone, with the aircraft's
    track. `noise_abatement_2017.load_run_channels` reads the 2017 test's
-   netCDF channels; `panam_acoustics.signal_io` reads netCDF, HDF5 and UFF
+   netCDF channels; `panam.acoustics.signal_io` reads netCDF, HDF5 and UFF
    recordings in general.
 2. **Spectra.** `flight_acoustics.depropagate_hemisphere` cuts each channel
    into frames and forms one-third-octave band power from Hann-windowed PSDs
    (`third_octave_method='fft'`, optionally `tone_aware_band_power`) or from
-   `panam_acoustics.filters.third_octave_filter_bank` (`'filter_bank'`).
+   `panam.acoustics.filters.third_octave_filter_bank` (`'filter_bank'`).
 3. **Depropagation.** In the same call: emission geometry from `hemigen`
    (or a ray model from `refracted_rays`), the ambient gate, the receiver
    response (`receiver_response_db`, the ground-plate model), spherical
@@ -51,43 +61,49 @@ read the sphere files back.
 
 ### Module map
 
+The library's modules, in `panam/`:
+
 | Module | Owns |
 | --- | --- |
 | `flight_acoustics.py` | Spectra and bands, metrics (SEL, PNL/EPNL, MIL-STD-1474E), emission geometry (`hemigen`, `dedopplerize`), `depropagate_hemisphere`, gridding, sphere and NORAH2 I/O, the database writers, ground projection, Lambert plots, `ega` and the reflection coefficient, array geometry helpers |
-| `noise_abatement_2017.py` | The 2017 Noise Abatement build: dataset layout, tracks and the track check, steady windows, atmosphere per run, plate tables, `build_sphere`, `build_all`, and its CLI |
+| `noise_abatement_2017.py` | The 2017 Noise Abatement build: dataset layout, tracks and the track check, steady windows, atmosphere per run, plate tables, `build_sphere`, `build_all`; its command line is `tools/noise_abatement_2017.py` |
 | `ground_plane.py` | Ground impedance models, pole microphones, co-located pole and board pairs, ground-plate models, the exact half-space Green's function, the two-path fit, `emission_times`. Numba-compiled |
 | `axisymmetric_bem.py` | The axisymmetric BEM of the plate on the ground (`scattering`, `table`, `board_level`, `field`, `write_netcdf` for NICEOPS). Numba-compiled |
 | `refracted_rays.py` | The ray-model interface for depropagation: `straight_ray_model`, `uniform_wind_ray_model`, and `external_ray_model`, which runs NICEOPS's `niceops_ray_geometry` |
 | `vold_kalman_filter.py` | The multi-shaft Vold-Kalman order-tracking filter |
 | `sphere_statistics.py` | Energy averaging of repeat-run spheres (`average_spheres`, `write_averaged_sphere`) and band-by-band sphere comparison (`compare_spheres`, `plot_sphere_difference`), and the per-node sample statistics of a depropagated sphere (`node_statistics`, `node_statistics_variables`) |
-| `nod_database.py` | Reading NICEOPS databases: `load_nod`, `validate_nod` (the rules of [file_formats.md](file_formats.md#checking-a-database)), `compare_databases`, `to_frame` (needs pandas), and the inspection behind `nod_tool.py`: `summarize_condition`, `select_condition`, `plot_condition` (Lambert map of dBA, EAA, a band or coverage), `plot_envelope` |
+| `nod_database.py` | Reading NICEOPS databases: `load_nod`, `validate_nod` (the rules of [file_formats.md](file_formats.md#checking-a-database)), `compare_databases`, `to_frame` (needs pandas), and the inspection behind `tools/nod_tool.py`: `summarize_condition`, `select_condition`, `plot_condition` (Lambert map of dBA, EAA, a band or coverage), `plot_envelope` |
 | `synthetic_flyover.py` | Synthetic recordings of a straight, level pass of a source of known directivity (`synthesize_pass`), its true level at the reference radius (`source_level_db`), and the recovered-minus-true Lambert map (`plot_level_difference`). The golden results and the depropagation tutorial use it |
 | `synthesis.py` | Forward synthesis of microphone band-level histories from a hemisphere (`synthesize_band_histories`, the inverse of `depropagate_hemisphere`), the Doppler band shift (`doppler_shift_band_power`), measured band histories (`measured_band_histories`), and the leave-microphones-out check of the gridding settings (`leave_mics_out`, `residual_statistics`) |
 | `order_tracking.py` | Order tracks as a fixed microphone hears them (propagation delay and Doppler shift along a track), ridge tracking, and clock offsets by cross-correlation |
-| `panam_acoustics/` | `signal_io` (recording loaders), `filters` (Butterworth helpers, the one-third-octave filter bank), `atmosphere` and `iso_9613_1_1993` (ISO 9613-1 absorption), `time_weighting` (IEC 61672-1 A/C/Z and F/S/I weighting, Lmax, Leq), `plotting` (`acoustic_plot_style`), `impulsiveness` (BVI crest factor, kurtosis, pulse peak-to-RMS and harmonic ratio), `psychoacoustics` (ISO 532-1 stationary loudness, DIN 45692 sharpness). See its `THIRD_PARTY_NOTICES.md` for the parts derived from python-acoustics |
+| `acoustics/` (`panam.acoustics`) | `signal_io` (recording loaders), `filters` (Butterworth helpers, the one-third-octave filter bank), `atmosphere` and `iso_9613_1_1993` (ISO 9613-1 absorption), `time_weighting` (IEC 61672-1 A/C/Z and F/S/I weighting, Lmax, Leq), `plotting` (`acoustic_plot_style`), `impulsiveness` (BVI crest factor, kurtosis, pulse peak-to-RMS and harmonic ratio), `psychoacoustics` (ISO 532-1 stationary loudness, DIN 45692 sharpness). See its `THIRD_PARTY_NOTICES.md` for the parts derived from python-acoustics |
 | `cli.py` | Argument types and figure output shared by the scripts: `colon_pair`, `colon_pair_or_single`, `add_output_options`, `save_or_show`, `save_all_or_show` |
 | `local_paths.py` | `data_path(name)`: where this machine keeps external data and the NICEOPS executables |
 | `build_recipe.py` | `load_recipe(path)`: a TOML build recipe of `[spheres]`, `[hover_source]` and `[database]` settings, checked against the build functions' signatures, for `--recipe` and Python |
 | `provenance.py` | `build_provenance(tool, settings)`: the code version, library versions and settings stamped on written spheres and databases |
 | `unit_conversion.py`, `default_units.py` | Aerospace unit conversions (third-party, BSD-style license in the file headers) |
+| `data/` | `mil_std_1474e_table_c1_full.csv`, the MIL-STD-1474E Table C-1 (`flight_acoustics.MIL_STD_1474E_TABLE_C1_FILE`) that `load_mil_std_1474e_table_c1` reads |
 
-Scripts with a command line: `noise_abatement_2017.py` (the main pipeline),
-`build_empirical_database.py`, `norah2_to_nod.py`, `sphere_to_norah2.py`, `compare_databases.py`, `nod_tool.py`, `array_planner.py`,
-`sphere_diff.py`, and the
-plotting scripts `nc_lambert_ea.py`, `plot_projection.py`, `fried_egg_plot.py`,
-`spectrogram_plot.py`, `atmomap.py`, `ega_plot.py` and `board_field_plot.py`.
-`depropagation_tutorial.py`, `AS350_289108_demo.py`, `hexacopter_vkf_example.py`,
-`as350_flip_check.py` and the `__main__` block of `vold_kalman_filter.py` are examples and diagnostics,
-not tools. Every script takes `-h`.
+The tools, in `tools/`: `noise_abatement_2017.py` (the main pipeline),
+`build_empirical_database.py`, `norah2_to_nod.py`, `sphere_to_norah2.py`,
+`compare_databases.py`, `nod_tool.py`, `array_planner.py`, `sphere_diff.py`,
+and the plotting scripts `nc_lambert_ea.py`, `plot_projection.py`,
+`fried_egg_plot.py`, `spectrogram_plot.py`, `atmomap.py`, `ega_plot.py` and
+`board_field_plot.py`. The examples, in `examples/`:
+`depropagation_tutorial.py`, `AS350_289108_demo.py`,
+`hexacopter_vkf_example.py` and `vkf_synthetic_signals.py`. Every script takes
+`-h`.
 
 ### Where new code goes
 
-Put new code in the module that owns the topic. When no module does, add a new
-module rather than growing `flight_acoustics.py`, which is already over 6,000
-lines. Receiver and ground models go in `ground_plane.py` or
+Put new code in the module of `panam/` that owns the topic. When no module
+does, add a new module rather than growing `flight_acoustics.py`, which is
+already over 6,000 lines. A tool or an example holds only its command line and
+its presentation; a function that another script, a test or a user could call
+belongs in `panam/`. Receiver and ground models go in `ground_plane.py` or
 `axisymmetric_bem.py`; anything specific to one flight test goes in that
-test's module, as `noise_abatement_2017.py` is for 2017; recording formats go
-in `panam_acoustics/signal_io.py`. A new model's equation goes in
+test's module, as `panam/noise_abatement_2017.py` is for 2017; recording formats go
+in `panam/acoustics/signal_io.py`. A new model's equation goes in
 `docs/THEORY.md` in the same commit, with a row in its appendix table
 ([Where each model lives](THEORY.md#appendix-where-each-model-lives)).
 
@@ -105,7 +121,7 @@ obvious (`radius_ft`, `speed_knots`). The common systems are:
 - Sphere netCDF files carry `RADIUS` in ft and `SPEED` in knots.
 - NICEOPS databases and the plate tables for NICEOPS are metric.
 - `atmosorb(freq, temp, humid, pstat)` takes deg C, % RH and mbar and returns
-  dB/m; `panam_acoustics.atmosphere.Atmosphere` takes K, kPa and % RH.
+  dB/m; `panam.acoustics.atmosphere.Atmosphere` takes K, kPa and % RH.
 - Flow resistance is in kPa s/m^2. The reference pressure is
   `flight_acoustics.P_REF` (20 uPa).
 
@@ -141,12 +157,14 @@ these states are written to a sphere file and a database is in
   [database_build.md](database_build.md).
 - Before 2026-09-24, `art2umapr` put phi = +90 to port, and
   `flip_y_for_geometry=True` compensated for it. Both are history: the flag
-  now defaults to False, and `as350_flip_check.py` records the check.
+  now defaults to False. A check of the AS350 demo against its reference
+  sphere in angle space found that, with the sign corrected, the residuals
+  favor no flip.
 
 ### Plots
 
 Plotting functions are decorated with
-`panam_acoustics.plotting.acoustic_plot_style`, which applies the
+`panam.acoustics.plotting.acoustic_plot_style`, which applies the
 `fivethirtyeight` style and a few rc settings only while the function runs.
 Importing `flight_acoustics` leaves Matplotlib's global settings unchanged;
 never change the global style or `rcParams`. Return `(fig, ax, ...)` rather
@@ -159,7 +177,7 @@ than showing the figure. `tests/conftest.py` sets the `Agg` backend for tests.
   the caller must close its `.file`.
 - `load_UFF_signal` reads only type-58 sets, and its channels must share one
   uniformly spaced time grid.
-- The loaders live in `panam_acoustics.signal_io` and are re-exported by
+- The loaders live in `panam.acoustics.signal_io` and are re-exported by
   `flight_acoustics`.
 
 ### Sound exposure level
@@ -174,6 +192,10 @@ of the selected interval. `-inf` means zero energy.
 
 ### A command-line script
 
+- Put it in `tools/` (an example goes in `examples/`); reusable code goes in
+  `panam/` ([Where new code goes](#where-new-code-goes)). Import the library
+  as `from panam import ...`, and call it through the module
+  (`na.build_all(...)`) so that a test can replace a library function.
 - Use `argparse` with a `description=`, and give every option a help string
   that states its units and default.
 - Use `cli.colon_pair` (or `colon_pair_or_single`) for `low:high` ranges.
@@ -191,18 +213,19 @@ of the selected interval. `-inf` means zero energy.
   (`AS350_289108_demo.py --outdir`). `atmomap.py`, `ega_plot.py` and
   `board_field_plot.py` predate the convention and always write a default
   file; `--plot` also opens it.
-- Find files that ship with PANAM (`example_data/`) relative to the script,
-  `os.path.join(os.path.dirname(os.path.abspath(__file__)), ...)`, so the
-  script runs from any directory. Outputs default to `demo_plots/` in the
+- Find files that ship with PANAM (`example_data/`) from the script's own
+  location, `os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+  'example_data', ...)`, so the script runs from any directory. Outputs default to `demo_plots/` in the
   current directory, which the smoke tests rely on.
 - Give the script a `main(argv=None)` so a test can call it with arguments,
   and keep `-h` from running anything.
 - Find external data with `local_paths.data_path(name, args.something)`, so
   that a command-line path overrides `PANAM_<NAME>` and `local_paths.toml`.
-- Add a smoke test to `tests/test_cli_scripts.py`. `run_here` runs the script
-  as `__main__` in the test process, which is fast; `_run` starts a fresh
-  interpreter, for checks that need one.
-- Add the script to the README's tools table.
+- Add a smoke test to `tests/test_cli_scripts.py`. `run_here('tools/<name>.py', ...)`
+  runs the script as `__main__` in the test process, which is fast; `_run`
+  starts a fresh interpreter, for checks that need one. A test that calls the
+  script's functions imports it, `from tools import <name>`.
+- Add the script to the README's tools (or examples) table.
 
 ### A vehicle or aircraft
 
@@ -213,9 +236,9 @@ format, including the optional `[Option]` section, is in
 minimal example (AS350-like rotors); `tests/sphere_helpers.VEHICLE_CFG` reads it.
 
 For another aircraft of the 2017 test, the dataset directory name is the
-`noise_abatement_2017.py` argument. Add it to `AIRCRAFT_SPHERE_PREFIX` only
+`tools/noise_abatement_2017.py` argument. Add it to `AIRCRAFT_SPHERE_PREFIX` only
 if its spheres need a legacy file prefix. Then build the spheres, write the
-`vehicle.cfg`, run `build_empirical_database.py`, and load the database in
+`vehicle.cfg`, run `tools/build_empirical_database.py`, and load the database in
 NICEOPS ([database_build.md](database_build.md)).
 
 ### A model
@@ -248,8 +271,9 @@ pytest -m "not data"      # skip the tests that read external datasets
 pytest tests/test_ega.py  # one file
 ```
 
-`pytest.ini` puts the repository root and `tests/` on `sys.path`, so neither
-`PYTHONPATH=.` nor an install is needed. There are about 750 tests;
+`pytest.ini` puts the repository root and `tests/` on `sys.path`, so the tests
+import `panam`, `tools` and `examples` from the checkout without
+`PYTHONPATH=.` and without the install. There are about 750 tests;
 `pytest -m "not data"` takes a few minutes on a laptop.
 
 ### What skips, and why
@@ -296,7 +320,7 @@ PANAM_REGENERATE_GOLDEN=1 python -m pytest tests/test_golden_results.py
 ```
 
 `tests/data/python_acoustics_reference.npz` pins the Butterworth helpers in
-`panam_acoustics.filters` against python-acoustics' output. Do not regenerate
+`panam.acoustics.filters` against python-acoustics' output. Do not regenerate
 it from PANAM.
 
 ### Continuous integration
@@ -314,7 +338,8 @@ not enforced: no threshold fails the job. `--durations=20` lists the slowest
 tests, which is where to look when CI slows down. The workflow sets
 `NUMBA_CACHE_DIR` to `.numba_cache/` (ignored by version control) and keeps it
 between runs with `actions/cache`, keyed on the OS, the Python version and the
-contents of `ground_plane.py`, `axisymmetric_bem.py` and `requirements.txt`.
+contents of `panam/ground_plane.py`, `panam/axisymmetric_bem.py` and
+`requirements.txt` (`tests/test_project_metadata.py` checks that these paths exist).
 Numba treats a cached function as stale when its source file's modification
 time or size changes, and a fresh checkout always changes the time, so the
 workflow first sets both files to a fixed time. The cache is restored only on
@@ -332,9 +357,12 @@ build, the database writers or the NORAH2 import.
 ## Environment and caches
 
 - Python 3.11 or newer (`local_paths.py` uses `tomllib`). Install with
-  `pip install -r requirements.txt` in a virtual environment at the
-  repository root.
-- `local_paths.toml` holds this machine's data paths and is git-ignored.
+  `pip install -r requirements.txt` in a virtual environment, from the
+  repository root; it installs `panam` in editable mode, so `import panam`
+  works from any directory and edits to the checkout take effect without
+  reinstalling. A plain `pip install .` copies the package into `site-packages`, where it no longer
+  finds the checkout's `local_paths.toml`; use the editable install.
+- `local_paths.toml`, at the repository root, holds this machine's data paths and is git-ignored.
   `local_paths.example.toml` lists the names; `PANAM_<NAME>` overrides a
   file entry, and a command-line argument overrides both.
 - `ground_plane.py` and `axisymmetric_bem.py` are compiled with Numba
@@ -352,7 +380,7 @@ build, the database writers or the NORAH2 import.
   recomputed and replaced; `.pkl` files from the older cache are ignored.
   Bump `PLATE_TABLE_VERSION` in any commit that changes the numbers
   `axisymmetric_bem.table` returns for the same arguments (the comment above
-  it lists what counts). `noise_abatement_2017.py --plate-cache list` lists the
+  it lists what counts). `tools/noise_abatement_2017.py --plate-cache list` lists the
   cached tables and whether each is current; `--plate-cache clear` deletes them.
 - A 2017 build reads the archive from wherever `local_paths` points; on a
   cloud drive, `build_all` prefetches each run's files in threads.
@@ -399,7 +427,7 @@ The code contract:
   credentials. Data file types (`*.csv`, `*.mat`, `*.kmz`, `*.pdf`) are
   git-ignored; do not force-add them. The bundled example
   (`example_data/*.mat`) and the MIL-STD-1474E table
-  (`mil_std_1474e_table_c1_full.csv`) are the deliberate exceptions; adding
+  (`panam/data/mil_std_1474e_table_c1_full.csv`) are the deliberate exceptions; adding
   another needs the maintainer's agreement. Results from the private companion
   validation repository stay there: restate a needed fact in the text instead
   of citing that repository's files.

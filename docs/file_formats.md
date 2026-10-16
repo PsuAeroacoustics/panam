@@ -70,7 +70,7 @@ The file also carries these text attributes, each '' when unknown:
 | `wind_reference_direction` | `ground track` (flights) or `heading` (hovers, whose ground track is drift) |
 | `air_density_source` | `ground stations`, `caller` (an `atmosphere` passed in), or `none` |
 
-**Averaged spheres.** `sphere_statistics.write_averaged_sphere` (`sphere_diff.py average`)
+**Averaged spheres.** `sphere_statistics.write_averaged_sphere` (`tools/sphere_diff.py average`)
 writes an energy average of repeat runs in the same layout, with the runs' mean `SPEED`,
 `FLIGHT_PATH_ANGLE` and weight (as `EMPTY_WEIGHT`). It adds two optional variables after
 everything else. AAM and NICEOPS do not read them, and a reader may ignore them.
@@ -282,9 +282,9 @@ angle and thrust coefficient. It reports the root variables and attributes that 
 conditions in only one file, and for each matched condition the group scalars that differ
 (`radius_m`, `rotor_scale_m`, `doppler_shift_removed`, `condition_origin`), the per-band
 difference of the energy summed over the cells finite in both, the largest level differences, and the
-coverage gained and lost. `compare_databases.py` prints the same report.
+coverage gained and lost. `tools/compare_databases.py` prints the same report.
 
-`nod_tool.py` inspects one database: `list` prints a row per condition (its coverage
+`tools/nod_tool.py` inspects one database: `list` prints a row per condition (its coverage
 fraction is of the lower hemisphere, `|phi| <= 90`, the part a measurement can cover),
 `plot` maps the lower hemisphere of a condition's `dBA`, `EAA`, one band of `amplitude`
 or `coverage` on a Lambert projection,
@@ -364,7 +364,7 @@ only up to the gridded hemisphere.
 any value above 1e34, which older PANAM output used.
 
 **Averaging spheres.** `sphere_statistics.read_sphere` (used by `average_spheres`,
-`compare_spheres` and `sphere_diff.py`) reads the same three conventions differently: by
+`compare_spheres` and `tools/sphere_diff.py`) reads the same three conventions differently: by
 default (`missing='no_data'`) a -999 or >1e34 cell is NaN, no data, so the run is left out of
 that cell's average; with `missing='no_energy'` it is -inf, a run with zero power, as
 `mask_missing_levels` reads it. NaN on disk is always no data.
@@ -380,7 +380,7 @@ Without spectra, a channel is 1 only if every band is measured; the variable's
 ## vehicle.cfg
 
 `build_empirical_database` (through `read_vehicle_data`) and `fried_egg_plot` read
-`vehicle.cfg` from the sphere directory. `norah2_to_nod.py --vehicle` also accepts one
+`vehicle.cfg` from the sphere directory. `tools/norah2_to_nod.py --vehicle` also accepts one
 (`read_vehicle_rotor_data`). It is an INI file read by Python's `ConfigParser`. Units:
 
 - radius in m, tip speed in m/s;
@@ -410,11 +410,11 @@ drag = 0.82
 
 `ConfigParser` does not strip inline comments, so keep values bare. Comments go on lines of
 their own. A database build needs every key above. It forms the weight coefficient as
-weight × 9.80665 / (density π radius² tip speed²). `norah2_to_nod.py` needs only
+weight × 9.80665 / (density π radius² tip speed²). `tools/norah2_to_nod.py` needs only
 `[Main Rotor]` radius and tip speed, `[Vehicle]` weight and `[Atmosphere]` density.
 
 **Optional `[Option]` section.** It names a per-run reference list for the fried-egg plots;
-`fried_egg_plot.py -n` (over advance ratio and rotor angle of attack) needs it:
+`tools/fried_egg_plot.py -n` (over advance ratio and rotor angle of attack) needs it:
 
 ```ini
 [Option]
