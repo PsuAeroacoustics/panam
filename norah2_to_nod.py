@@ -1,9 +1,9 @@
-"""Build a NICE-OPS sphere database from NORAH2 (HELENA, ECAC Doc 32) .hem hemispheres.
+"""Build a NICEOPS sphere database from NORAH2 (HELENA, ECAC Doc 32) .hem hemispheres.
 
 Usage:  python norah2_to_nod.py HEM [HEM ...] -o DATABASE.nod
             --vehicle VEHICLE.json --speed {ias-to-tas,ground-speed}
 
-A .hem carries no rotor or weight, so the vehicle is required: a NICE-OPS
+A .hem carries no rotor or weight, so the vehicle is required: a NICEOPS
 vehicle JSON or a panam vehicle.cfg (--vehicle), or all of --tip-speed,
 --rotor-radius and --weight-kg.  What ACSPEED holds must be stated (--speed):
 the format labels it indicated airspeed, NORAH2 looks it up as ground speed,
@@ -25,7 +25,7 @@ SPEED_CHOICES = {'ias-to-tas': 'ias_to_tas', 'ground-speed': 'ground_speed'}
 def parse_arguments(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('hem_files', nargs='+', help='.hem hemispheres, one per flight condition')
-    parser.add_argument('-o', '--output', required=True, help='output NICE-OPS database (.nod)')
+    parser.add_argument('-o', '--output', required=True, help='output NICEOPS database (.nod)')
     parser.add_argument('--speed', required=True, choices=sorted(SPEED_CHOICES),
                         help='what ACSPEED is: ias-to-tas reads it as indicated airspeed and '
                              'converts it to true airspeed (an air-referenced database); '
@@ -36,7 +36,7 @@ def parse_arguments(argv=None):
                              "file's measurement atmosphere (Tm, Pm, RHm)")
     vehicle = parser.add_argument_group('vehicle (required: --vehicle, or all three of '
                                         '--tip-speed, --rotor-radius, --weight-kg)')
-    vehicle.add_argument('--vehicle', help='NICE-OPS vehicle JSON or panam vehicle.cfg')
+    vehicle.add_argument('--vehicle', help='NICEOPS vehicle JSON or panam vehicle.cfg')
     vehicle.add_argument('--tip-speed', type=float, help='main rotor tip speed, m/s')
     vehicle.add_argument('--rotor-radius', type=float, help='main rotor radius, m')
     vehicle.add_argument('--weight-kg', type=float, help='vehicle mass, kg')
@@ -60,12 +60,12 @@ def parse_arguments(argv=None):
                              "the other way from the hemispheres' (NORAH2's bracketed types)")
     parser.add_argument('--fill-empty', action='store_true',
                         help="fill each NOVALUE cell from its nearest filled direction, as NORAH2's "
-                             'own predictor does (coverage stays 0); without it NICE-OPS reads them '
+                             'own predictor does (coverage stays 0); without it NICEOPS reads them '
                              'as unmeasured')
     parser.add_argument('--synthesize-hover', action='store_true',
                         help='add a hover (advance ratio 0, at -12, 0 and +12 deg) averaged fore to '
                              'aft in energy from the slowest file within 2 deg of level flight, as '
-                             'build_empirical_database makes one (default: off, so NICE-OPS clamps '
+                             'build_empirical_database makes one (default: off, so NICEOPS clamps '
                              'states slower than the slowest file)')
     parser.add_argument('--scale-tip-speed-by-rmomega', action='store_true',
                         help="form each file's advance ratio with the tip speed times RmOmega / 100 "

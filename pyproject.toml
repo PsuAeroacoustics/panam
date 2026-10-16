@@ -10,7 +10,7 @@
 [project]
 name = "panam"
 version = "0.1.0"
-description = "Rotorcraft aeroacoustics: flight-test recordings to source noise spheres and NICE-OPS databases"
+description = "Rotorcraft aeroacoustics: flight-test recordings to source noise spheres and NICEOPS databases"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }

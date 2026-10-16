@@ -1,10 +1,10 @@
-# Importing NORAH2 hemispheres into a NICE-OPS database
+# Importing NORAH2 hemispheres into a NICEOPS database
 
 `flight_acoustics.build_database_from_norah2` and the script `norah2_to_nod.py` turn a set of
-NORAH2 (HELENA, ECAC Doc 32) `.hem` hemispheres into a NICE-OPS `.nod` database, with one
+NORAH2 (HELENA, ECAC Doc 32) `.hem` hemispheres into a NICEOPS `.nod` database, with one
 condition per file. PANAM already writes `.hem` files (`write_norah2_hemisphere`, and
 `sphere_to_norah2.py` from a sphere file already written) and reads them
-(`load_norah2_hemisphere`). The importer is the path from them to NICE-OPS. The
+(`load_norah2_hemisphere`). The importer is the path from them to NICEOPS. The
 equations it applies are in [THEORY §8](THEORY.md#8-norah2-and-aam-interchange). The
 database it writes is described in [`file_formats.md`](file_formats.md).
 
@@ -16,10 +16,10 @@ python norah2_to_nod.py Hemispheres/R44_*.hem -o ~/panam_out/R44_norah2.nod \
 Write the database outside the checkout (here `~/panam_out`), so that it is never committed.
 A `.hem` carries no rotor or weight, so you must supply the vehicle in one of two ways:
 
-- a NICE-OPS vehicle JSON or a PANAM `vehicle.cfg` (`--vehicle`);
+- a NICEOPS vehicle JSON or a PANAM `vehicle.cfg` (`--vehicle`);
 - all three of `--tip-speed` (m/s), `--rotor-radius` (m) and `--weight-kg`.
 
-`--speed` is required too; see below. Use the same vehicle file in NICE-OPS. NICE-OPS
+`--speed` is required too; see below. Use the same vehicle file in NICEOPS. NICEOPS
 compares tip speed, radius, weight and C_T with the database's and refuses a mismatch over
 2 percent.
 
@@ -60,7 +60,7 @@ bands from 10 Hz to 10 kHz. The constants that matter here:
 | Tm, RHm, Pm | measurement atmosphere at 10 m, deg C, %, Pa | Pm 89.9-102.4 kPa |
 | RmOmega, PITCH, ROLL, TW, CW, HW | rotor speed, attitude, winds | |
 
-The angles are the AAM/ART ones, which NICE-OPS also uses: theta is 0 at the nose, and phi
+The angles are the AAM/ART ones, which NICEOPS also uses: theta is 0 at the nose, and phi
 is 0 straight down and positive to starboard (`test_norah2_and_art_angles_agree`). So no
 angle conversion is needed.
 
@@ -73,9 +73,9 @@ across unconverted, so none is left to a default.
 
 A `.hem` level at POLDIST includes the absorption from the center out to POLDIST, in the
 file's reference atmosphere (FREEFIELD = 2). NORAH2 itself takes that absorption back out
-before propagating (`SPLrRef` in its manual, section 5.4.2). A NICE-OPS sphere keeps the
+before propagating (`SPLrRef` in its manual, section 5.4.2). A NICEOPS sphere keeps the
 absorption over its own first radius (30.48 m, as PANAM's databases do) and is otherwise
-lossless, and NICE-OPS adds absorption from the surface outward. So each band is moved from
+lossless, and NICEOPS adds absorption from the surface outward. So each band is moved from
 POLDIST to the sphere radius with spherical spreading and with the ISO 9613-1 absorption
 between the two radii taken back out (THEORY §8). The absorption is evaluated at the band's
 center in the file's own TAMB/RELHUM/PAMB, not in assumed ICAO constants. At r = 30.48 m
@@ -122,7 +122,7 @@ The importer therefore will not guess, and `speed_mapping` (`--speed`) is requir
 Instrument and position error are not modeled, nor is compressibility (0.1 % at 150 kt), so
 IAS is taken as equivalent airspeed. The density is the station's, at 10 m. A flight 150 m
 higher sees about 1.5 % less, which is 0.75 % in speed. GAMM is kept as stored under either
-mapping, though under `ias_to_tas` NICE-OPS reads the path angle against the air too. The two
+mapping, though under `ias_to_tas` NICEOPS reads the path angle against the air too. The two
 angles' tangents differ by the factor V_ground / V_air. The shipped files' total winds (TW)
 are a median 5 kt and at most 18 kt. A 10 kt headwind at 60 kt turns a -6 deg ground path
 angle into about -5.1 deg against the air.
@@ -132,14 +132,14 @@ factor is 1.00-1.07. At the R44 site it is 1.054, about +4 kt at 80 kt. A 10 kt 
 80 kt changes the advance ratio by 0.023, which moves LA per cell by about a decibel, and by
 several in some cells.
 
-An air-referenced database needs the wind at the aircraft in NICE-OPS (`--atmosphere` with
-wind columns, or `--wind`). Without it, NICE-OPS refuses the run unless told
+An air-referenced database needs the wind at the aircraft in NICEOPS (`--atmosphere` with
+wind columns, or `--wind`). Without it, NICEOPS refuses the run unless told
 `--speed_reference ground`.
 
 ### 3. Ground: FREEFIELD = 0 tables
 
 NORAH2's hover tables are written with FREEFIELD = 0: the ground reflection is in the
-levels. NICE-OPS applies its own ground model (on by default), so a FREEFIELD = 0 table read
+levels. NICEOPS applies its own ground model (on by default), so a FREEFIELD = 0 table read
 as free field would count the ground twice. Such files are refused unless
 `accept_ground_included` (`--accept-ground-included`) is given. With it, they are converted
 as free field, with a warning, and the root records `norah2_ground_included_accepted = 1`.
@@ -164,7 +164,7 @@ property of how the set is used, so it is off by default, and it is recorded at 
 ### 5. Hover
 
 NORAH2 has no two-axis hover hemisphere: its hover tables have one axis and are refused
-(above). Without a hover, NICE-OPS clamps every state slower than the slowest file to that
+(above). Without a hover, NICEOPS clamps every state slower than the slowest file to that
 file. For the R44 set that is 36 kt, so a slow approach spends part of its states clamped
 on advance ratio.
 
@@ -199,7 +199,7 @@ ratio with the tip speed its rotor ran at (THEORY §8):
     mu = 0.514444 V / (V_tip RmOmega / 100)
 
 The thrust coefficient stays C_W at the nominal tip speed, and so does the root's
-`main_rotor_tip_speed_meters_per_sec`. NICE-OPS forms the trajectory's C_T with its vehicle
+`main_rotor_tip_speed_meters_per_sec`. NICEOPS forms the trajectory's C_T with its vehicle
 file's tip speed, and its load-factor scaling would otherwise read the lower rotor speed as
 extra thrust. A file without RmOmega, or with one outside 50-130 %, is refused. In the NORAH2
 V2.0.74 public package that refuses files in four sets:
@@ -216,12 +216,12 @@ The hover is at advance ratio 0 either way.
 
 In the R44 set, RmOmega is 97.5-100 %, so the option raises the advance ratios by up to
 2.6 %. The option is off by default, because it moves files within the condition hull:
-NICE-OPS forms the trajectory's advance ratio with the nominal tip speed, so a file flown at
+NICEOPS forms the trajectory's advance ratio with the nominal tip speed, so a file flown at
 a lower rotor speed is then found at the advance ratio it flew rather than at its airspeed.
 
 ## Missing cells
 
-NOVALUE cells are written as missing (-inf), with coverage 0. NICE-OPS reads that as
+NOVALUE cells are written as missing (-inf), with coverage 0. NICEOPS reads that as
 unmeasured, as it reads PANAM's gated cells: such a cell drops out of a blend where its
 neighbors have data, and is silence where none do. A direction with no band left gets dBA
 -inf and EAA 0 (`_finite_sphere_levels`).
@@ -243,7 +243,7 @@ is what the choice is worth, not a verdict on which is right.
 ## What the database carries
 
 The importer follows `build_empirical_database` and shares its root writer. Each condition is
-written once, at load factor 1, with `fixed_load_factor` set, so NICE-OPS scales the level by
+written once, at load factor 1, with `fixed_load_factor` set, so NICEOPS scales the level by
 20 lg(C_T / C_T,ref) itself. C_T is formed from the vehicle's weight, rotor radius and tip
 speed, with the vehicle file's density (`thrust_air_density`, default 1.225 kg/m³;
 THEORY §7.1).
@@ -265,7 +265,7 @@ THEORY §7.1).
 removes the Doppler shift, and its predictor applies none. So its spheres are taken to keep
 the shift the microphones received, as PANAM's do. EASA does not state it.
 
-NICE-OPS reads `azimuth_reference` to choose the sphere's nose (`--nose`). `track` keeps the
+NICEOPS reads `azimuth_reference` to choose the sphere's nose (`--nose`). `track` keeps the
 nose on the velocity, as these hemispheres were filed.
 
 ## What it refuses
@@ -291,23 +291,23 @@ partial database nor a damaged earlier one.
   THETAOBSAC grid that is not symmetric about 90 deg;
 - an existing output, from the command line without `--overwrite` (the function's
   `overwrite` defaults to True);
-- two files at one flight condition (NICE-OPS takes one sphere per condition);
-- two or more conditions that do not vary in both speed and path angle. NICE-OPS refuses
-  such a database at load, two spheres as well as more (checked with NICE-OPS build
+- two files at one flight condition (NICEOPS takes one sphere per condition);
+- two or more conditions that do not vary in both speed and path angle. NICEOPS refuses
+  such a database at load, two spheres as well as more (checked with NICEOPS build
   6bbd6bb: two level-flight spheres stop the run).
 
-Two cases convert with a warning instead, because NICE-OPS loads them but takes the nearest
+Two cases convert with a warning instead, because NICEOPS loads them but takes the nearest
 condition rather than interpolating:
 
 - one or two conditions (fewer than a triangle needs);
 - three or more that lie on one line in (speed, path angle), for example 60 kt / -6 deg,
-  80 kt / -3 deg, 100 kt / 0 deg. NICE-OPS's triangulation of them has no simplex (it logs
+  80 kt / -3 deg, 100 kt / 0 deg. NICEOPS's triangulation of them has no simplex (it logs
   "0 simplices"), and every query falls back to the nearest condition.
 
 ## Not done
 
 - **No hover by default.** Without `synthesize_hover` the importer writes only what the
-  files hold, and NICE-OPS clamps below the slowest hemisphere (R44: 36 kt).
+  files hold, and NICEOPS clamps below the slowest hemisphere (R44: 36 kt).
 - **Rotor speed changes only the advance ratio.** With `scale_tip_speed_by_rmomega`, the
   thrust coefficient stays at the nominal tip speed, and the levels are not adjusted for
   rotor speed.
@@ -325,5 +325,5 @@ condition rather than interpolating:
 (its source, the energy average, its coverage before a fill, the fallback and the duplicate),
 the RmOmega scaling and its refusals, every refusal and warning above, and the command line. With the NORAH2 package configured as `norah2` in
 `local_paths`, it also converts the shipped R44 set (`-m data`). The list of checks, the
-mutants they catch, and a smoke test through NICE-OPS are kept in
+mutants they catch, and a smoke test through NICEOPS are kept in
 [`notes/norah2_import_checks.md`](notes/norah2_import_checks.md).

@@ -1482,7 +1482,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     ``remove_doppler`` files band power at the emitted frequency, not the received one
     (:func:`flight_acoustics.depropagate_hemisphere`), and sets the sphere's
     DOPPLER_SHIFT_REMOVED.  For a sphere a hover is synthesized from
-    (``build_empirical_database(hover_source=)``), never for one NICE-OPS reads as flight.
+    (``build_empirical_database(hover_source=)``), never for one NICEOPS reads as flight.
 
     ``nose_from_heading`` orients the sphere by the tracked heading instead of the velocity:
     for a hover, whose velocity is a few tenths of a knot of drift in any direction.  The
@@ -1562,7 +1562,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     behind the gridded node nearest it (:func:`sphere_statistics.node_statistics_variables`):
     ``N_SAMPLES`` and ``AMPLITUDE_STD`` (dB, the weighted standard deviation of the sample
     levels about the node's energy mean), into every sphere this call writes, the tonal and
-    broadband parts each with their own.  AAM and NICE-OPS do not read them.
+    broadband parts each with their own.  AAM and NICEOPS do not read them.
 
     ``atmosphere``, if not given, is the ground stations' at the time of the run
     (:func:`run_atmosphere`).  A run whose day has no usable station record (AS350B3 day 292,
@@ -2220,7 +2220,7 @@ def build_all(aircraft, output_directory, *, root=None, runs=None,
     wind from ``winds``), or None to build that run along straight lines; a mapping
     of run id to ray model works too.  The manifest's ``rays`` column says which.
 
-    ``ray_profiles``, if given, is a directory of per-run NICE-OPS ``--atmosphere`` CSV
+    ``ray_profiles``, if given, is a directory of per-run NICEOPS ``--atmosphere`` CSV
     files (heights in ft) named by run id, ``<run>.csv``: :func:`profile_ray_models` turns
     it into ``ray_models``.  A run with a profile is depropagated along refracted rays
     through it, and a run without one along straight lines.  Give ``ray_models`` or
@@ -2392,12 +2392,12 @@ def build_all(aircraft, output_directory, *, root=None, runs=None,
 def profile_ray_models(test, directory, executable=None):
     """``build_all``'s ``ray_models`` from a directory of per-run atmospheric profiles.
 
-    ``directory`` holds NICE-OPS ``--atmosphere`` CSV files (heights in ft, above the
+    ``directory`` holds NICEOPS ``--atmosphere`` CSV files (heights in ft, above the
     ground boards) named by run id, ``<run>.csv``.  The returned callable gives, for a
     run with a profile, :func:`refracted_rays.external_ray_model` through it: stratified
     refraction, flush plate receivers, and the run's own :func:`frame_bearing_deg` to place
     the profile's winds.  For a run without one it gives None, straight lines.
-    ``executable`` is NICE-OPS's ``niceops_ray_geometry`` (default: the
+    ``executable`` is NICEOPS's ``niceops_ray_geometry`` (default: the
     ``niceops_ray_geometry`` entry of :mod:`local_paths`), looked up only when a run has a
     profile.  The callable pickles, so that ``build_all(jobs=N)`` can send it to its
     worker processes: it carries the dataset's aircraft and root, and a worker opens
@@ -2724,7 +2724,7 @@ def make_parser():
                              "carried by each run's wind from --winds (required), uniform over the path; "
                              'a run with no wind there fails')
     parser.add_argument('--ray-profiles', default=None, metavar='DIRECTORY',
-                        help="refracted rays through each run's NICE-OPS atmosphere CSV, <run>.csv in "
+                        help="refracted rays through each run's NICEOPS atmosphere CSV, <run>.csv in "
                              'this directory (heights in ft), traced by niceops_ray_geometry from '
                              'local_paths; straight lines for a run without one (default: none)')
     parser.add_argument('--air-relative-doppler', action='store_true',
@@ -2857,7 +2857,7 @@ def make_parser():
                         help='reproduce the uncorrected legacy behavior')
     parser.add_argument('--remove-doppler', action='store_true',
                         help='file band power at the emitted frequency, for a hover source sphere; '
-                             'never for spheres NICE-OPS reads as flight (default off)')
+                             'never for spheres NICEOPS reads as flight (default off)')
     parser.add_argument('--tone-aware', action='store_true',
                         help='file each tone whole in the band of its own frequency instead of summing '
                              'whole FFT bins (FFT method only; default off)')

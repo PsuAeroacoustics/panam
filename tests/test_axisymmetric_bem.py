@@ -68,7 +68,7 @@ def test_converges_with_the_generator_mesh():
 
 
 def test_netcdf_export_round_trips(tmp_path):
-    # The NICE-OPS --plate_table format: meters, the ground named, P_d and P_r
+    # The NICEOPS --plate_table format: meters, the ground named, P_d and P_r
     # laid out band x sub x elevation x azimuth.
     from netCDF4 import Dataset
     ground = dict(model='variable_porosity', sigma_e=200.0, alpha_e=0.0)

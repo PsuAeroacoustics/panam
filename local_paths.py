@@ -22,16 +22,16 @@ Known names:
 ``norah2``
     The EASA NORAH2 distribution (the directory holding ``Hemispheres/``).
 ``niceops``
-    The NICE-OPS executable (a file, e.g. ``.../NICEOPS/build/niceops``), which
+    The NICEOPS executable (a file, e.g. ``.../NICEOPS/build/niceops``), which
     the tests use to load the databases PANAM writes.
 ``niceops_ray_geometry``
-    NICE-OPS's ray-geometry executable, for
+    NICEOPS's ray-geometry executable, for
     :func:`refracted_rays.external_ray_model`, ``ray_profiles`` builds and their tests.
 ``b407_legacy_spheres``
     The B407 spheres of the 2017 legacy ``Sphere_Database``, whose grids the 2017 release
     recipe (``docs/recipes/release_2017.toml``) takes.
 ``b407_ray_profiles``
-    Per-run NICE-OPS atmosphere CSVs (``<run>.csv``, heights in ft) for the B407 runs, the
+    Per-run NICEOPS atmosphere CSVs (``<run>.csv``, heights in ft) for the B407 runs, the
     2017 release recipe's ``ray_profiles``.  PANAM does not build them.
 
 A build recipe (:mod:`build_recipe`) names these entries in its paths as ``${name}``.

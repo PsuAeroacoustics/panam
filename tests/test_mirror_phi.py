@@ -87,7 +87,7 @@ def test_theta_is_preserved_across_the_mirror():
 
 
 def test_completed_sphere_rows_are_sorted_by_phi():
-    """NICE-OPS reads the gridded spectra as sorted by phi; they carry no angles
+    """NICEOPS reads the gridded spectra as sorted by phi; they carry no angles
     of their own, so completion order (lower half, then the mirrored upper
     surface) put every spectrum in the wrong direction."""
     n_theta = THETA_LIST.size

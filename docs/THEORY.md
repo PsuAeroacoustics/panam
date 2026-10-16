@@ -14,9 +14,9 @@ Related documents: [`../README.md`](../README.md) (installation and tools),
 recorded in [`notes/ground_plane_corrections.md`](notes/ground_plane_corrections.md), a dated
 research log.
 
-PANAM's main product is the database of noise spheres that the NICE-OPS footprint model reads.
-The NICE-OPS theory document covers what happens to a sphere after that: blending, propagation to
-the ground and the metrics. Several of PANAM's models are the reference NICE-OPS's ports are pinned
+PANAM's main product is the database of noise spheres that the NICEOPS footprint model reads.
+The NICEOPS theory document covers what happens to a sphere after that: blending, propagation to
+the ground and the metrics. Several of PANAM's models are the reference NICEOPS's ports are pinned
 to (ISO 9613-1, the ground effect, A-weighting, EPNL).
 
 References are numbered in order of first citation and listed at the end. The appendix
@@ -229,7 +229,7 @@ $$
 
 with $\Psi = \operatorname{atan2}(v_y, v_x)$ the track direction, or the inertial heading for a
 hover and under `azimuth_reference='heading'`. This "UMAPR" convention puts 180° ahead, 90° to
-starboard and 0° aft. There is no tip-path-plane tilt. In steady flight NICE-OPS's sphere frame
+starboard and 0° aft. There is no tip-path-plane tilt. In steady flight NICEOPS's sphere frame
 coincides with it, because its tip-path-plane normal is the load-factor direction, which is
 vertical when the aircraft does not accelerate.
 
@@ -259,7 +259,7 @@ $[f_l, f_u]$ over $[D f_l, D f_u]$ of the received spectrum (with `tone_aware` a
 are located and filed whole at $f_\mathrm{peak}/D$); a band whose scaled edges leave the analyzed range is missing for that
 sample. Only frequencies are rescaled: no convective amplification factor $D^n$ is applied to the
 levels. A sphere built this way is meant as the source of a synthesized hover (§7.4), not as a
-flight sphere, since NICE-OPS applies no shift. With a uniform wind $\mathbf{W}$ (§5.3),
+flight sphere, since NICEOPS applies no shift. With a uniform wind $\mathbf{W}$ (§5.3),
 `air_relative_doppler=True` takes the factor in the moving air instead,
 $D = 1/\left(1 - \mathbf{v}\cdot\hat{\mathbf{n}}/(c + \mathbf{W}\cdot\hat{\mathbf{n}})\right)$,
 with $\hat{\mathbf{n}}$ the wavefront normal the sound leaves along: the source's and the
@@ -352,7 +352,7 @@ where $\eta_C = \pi(2^{1/6} + 2^{-1/6}) = 6.325159$ and $\mu_C = \pi(2^{1/6} - 2
 They come from averaging $\cos(2\pi f'\tau + \arg Q)$ uniformly in $f'$ over the band
 $[f2^{-1/6}, f2^{1/6}]$. $C_\mathrm{turb}$ is Chessell's turbulent decoherence, with $c_t$
 (`cturb`, default 0) in rad·s per square root of the length unit (typically 0–16×10⁻⁴ rad·s/√m).
-NICE-OPS's ground model is ported from this function and pinned to it at $10^{-9}$ dB.
+NICEOPS's ground model is ported from this function and pinned to it at $10^{-9}$ dB.
 
 ### 4.4 Pole microphones
 
@@ -447,7 +447,7 @@ $$
 elevations (40 geometrically spaced from 0.05° to 10°, 40 evenly from 11° to 90°) and 36 azimuths
 (every 10°), and interpolated bilinearly. `noise_abatement_2017.plate_table` computes a table at
 the run's sound speed rounded to a 0.5% step in $\ln c$ and caches it in memory and on disk. The
-tables can be written for NICE-OPS's `--plate_table` (`axisymmetric_bem.write_netcdf`). Checks: a
+tables can be written for NICEOPS's `--plate_table` (`axisymmetric_bem.write_netcdf`). Checks: a
 rigid sphere against its exact series [32] to $2.7\times10^{-4}$, a thin plate on rigid
 ground within 1% of pressure doubling, and agreement with the 3-D surface-mesh BEM of §10.
 
@@ -522,10 +522,10 @@ range still apply to the straight-line distance.
 
 ### 5.3 Refracted rays
 
-PANAM does not trace rays itself. `refracted_rays.external_ray_model` calls NICE-OPS's
+PANAM does not trace rays itself. `refracted_rays.external_ray_model` calls NICEOPS's
 `niceops_ray_geometry` through the run's measured atmosphere, and takes from it the launch angle,
 the travel time, the ray-tube spreading range, the arc length, and the geometry the plate sees at
-the ray's arrival. The ray physics is in the NICE-OPS theory document. A sample is then filed at
+the ray's arrival. The ray physics is in the NICEOPS theory document. A sample is then filed at
 its launch angle rather than the straight-line elevation, at the straight line's azimuth. The
 absorption coefficient stays uniform along the ray. `refracted_rays.straight_ray_model` gives the
 straight-line answer in the same form. Without a ray model (`ray_model=None`, the default) the
@@ -845,7 +845,7 @@ in §6.3.
 ## 7. The database
 
 `build_empirical_database` collects a directory of sphere files and its `vehicle.cfg`
-([`file_formats.md`](file_formats.md)) into a NICE-OPS database.
+([`file_formats.md`](file_formats.md)) into a NICEOPS database.
 
 ### 7.1 Flight condition
 
@@ -862,7 +862,7 @@ file's nominal values. The run's own thrust coefficient, from its weight and air
 air-referenced advance ratio, when a wind was given, are recorded as metadata but do not label the
 sphere.
 
-NICE-OPS takes one sphere per condition, so `build_empirical_database` refuses two spheres at one
+NICEOPS takes one sphere per condition, so `build_empirical_database` refuses two spheres at one
 speed and flight path angle (to 1e-9 kt and deg). With `merge_repeats=True` it energy-averages
 them instead, cell by cell over the runs that cover each cell (§10, repeat-run averaging), into
 one condition at their mean speed before forming dBA and EAA; a cell no run covers becomes no
@@ -873,7 +873,7 @@ directions differ.
 
 ### 7.2 Excess atmospheric attenuation
 
-A NICE-OPS broadband run carries the A-weighted level to the ground with one attenuation
+A NICEOPS broadband run carries the A-weighted level to the ground with one attenuation
 coefficient per direction, the EAA. PANAM computes it from the sphere's band levels $L_i$
 (`spla_and_eaa_from_spectrum`):
 
@@ -886,7 +886,7 @@ with $d_E$ the `distance` argument (default 1000 m) and $\alpha$ in the build at
 (`atmosphere`, default 293.15 K, 101.325 kPa and 20% RH), recorded in the file. With
 `absorption_band_method` other than `'center'`, $\alpha(f_i)\,d_E$ is replaced by the band
 attenuation $\delta_B$ over $d_E$ (§5.4, flat band levels for `'integrated'`); the method is
-recorded only in the provenance settings (`panam_settings`). NICE-OPS consumes
+recorded only in the provenance settings (`panam_settings`). NICEOPS consumes
 it as $\mathrm{EAA}\,(r - R_s)/1000$ m, so $d_E$ must stay 1000 m. Where the gate emptied a
 direction, SPLA is $-\infty$ and EAA would be NaN; with `clamp_empty_directions=True` (the default)
 EAA is set to 0 there and dBA stays $-\infty$ (`_finite_sphere_levels`).
@@ -898,7 +898,7 @@ $C_{T,\mathrm{ref}} = C_W$, and the reader applies $20\lg(C_T/C_{T,\mathrm{ref}}
 Otherwise each condition is stored at a ladder of load factors $n_z$ (default five, evenly from
 0.7 to 2.3), with $\mathrm{dBA} \leftarrow \mathrm{dBA} + 20\lg n_z$ for $n_z > 0$; the band
 spectrum is not scaled. A load factor of 0 is stored unscaled, as a floor entry at $C_T = 0$. The
-law is the same in both forms, but a ladder holds it exactly only at its rungs and NICE-OPS is
+law is the same in both forms, but a ladder holds it exactly only at its rungs and NICEOPS is
 linear in $C_T$ between them (−0.3 dB at 4 g between rungs at 3 g and 5 g). A ladder whose rungs
 below 1 g are only 0 and 1 leaves a level below 1 g at its 1 g value, as the fixed form does; a
 ladder with rungs between 0 and 1 g scales them. The 2017 release's ladders are in
@@ -939,7 +939,7 @@ the lower hemisphere onto itself) and the energy-averaged hover with recomputed 
 **NORAH2 import** (`build_database_from_norah2`, `norah2_to_nod.py`). A NORAH2 hemisphere (`.hem`)
 [37, 38, 39] gives one-third-octave levels on a 10° grid at the distance POLDIST
 (60 m in the shipped forward-flight files), free field with absorption to that distance in the
-file's own atmosphere (TAMB, RELHUM, PAMB). PANAM refers it to the NICE-OPS sphere radius $r$
+file's own atmosphere (TAMB, RELHUM, PAMB). PANAM refers it to the NICEOPS sphere radius $r$
 (`radius_m`, `--radius`, default 30.48 m = 100 ft; `norah2_levels_at_radius`):
 
 $$
@@ -951,7 +951,7 @@ band centers in the file's atmosphere. For $r > \mathrm{POLDIST}$ the same expre
 absorption between the two. NORAH2 itself applies SAE ARP 5534's band correction [40]; with
 `absorption_band_method='arp5534'` (`--absorption-band-method arp5534`) the absorption term
 becomes $\delta_B(\mathrm{POLDIST}) - \delta_B(r)$ (§5.4), and the EAA uses the same method.
-The default, `'center'`, keeps the band-center coefficient. The angle conventions agree with NICE-OPS's (`norah2umapr`),
+The default, `'center'`, keeps the band-center coefficient. The angle conventions agree with NICEOPS's (`norah2umapr`),
 so no rotation is needed.
 
 NORAH2's speed field (ACSPEED) is labeled indicated airspeed but used as ground speed, so the
@@ -1001,7 +1001,7 @@ $$
 $$
 
   with $V_\mathrm{tip}$ the nominal tip speed. $C_W$ and the root's tip speed stay nominal,
-  because NICE-OPS forms the trajectory's $C_T$ with its vehicle file's nominal tip speed. A
+  because NICEOPS forms the trajectory's $C_T$ with its vehicle file's nominal tip speed. A
   file without RmOmega, or with one outside 50–130%, is refused.
 
 **Export.** Spheres can be written in the AAM netCDF format [11], in the variable order AAM 3.1
@@ -1047,7 +1047,7 @@ rpm idle, −2 dB full rpm idle).
 last sample within 10 dB of the maximum, dips included; unlike the EPNL limits, a sample below the
 threshold is never one), $\mathrm{SEL} = 10\lg\left(\sum_k 10^{L_k/10}\Delta t/1\ \mathrm{s}\right)$
 [41]. A $-\infty$ sample is zero energy; a NaN sample is refused unless `missing='omit'`. The
-result is flagged `clipped` when the window touches either end of the record. Unlike NICE-OPS,
+result is flagged `clipped` when the window touches either end of the record. Unlike NICEOPS,
 PANAM's samples are already in reception time.
 
 **Time-weighted levels** (`panam_acoustics.time_weighting`). A pressure history is weighted in
@@ -1105,7 +1105,7 @@ each moved one sample outward when that sample is closer, and every sample betwe
 dips included, which gives the longest duration when there are several peaks. The result is
 flagged `clipped` when $k_1$ or $k_2$ is a record end. The defaults are $\Delta t = 0.5$ s,
 `bandshare_adjustment=True`, `masked=False` and `normalization='regulatory'`. Where readings of
-the regulation differ, PANAM puts 500 Hz in the middle range of Table A36-2. NICE-OPS's EPNL is
+the regulation differ, PANAM puts 500 Hz in the middle range of Table A36-2. NICEOPS's EPNL is
 ported from this implementation.
 
 **Band sharing.** When the tone correction $C$ at PNLTM is below the mean $\bar C$ of the five
@@ -1122,7 +1122,7 @@ The regulation's tone correction is defined for finite band levels. A band of $-
 energy) would make the step-7 background infinite or undefined, so it enters steps 1–7 at its
 noy threshold SPL(d) of Table A36-3 and carries no tone itself; PNL is unchanged, since the band
 has no noys either way. With `masked=True` every band below SPL(d) is treated so, as in
-NICE-OPS's `below_noy_floor` masking. A NaN band is a missing level: noys, PNL, $C$ and PNLT are
+NICEOPS's `below_noy_floor` masking. A NaN band is a missing level: noys, PNL, $C$ and PNLT are
 NaN, and EPNL refuses the history.
 
 **Aural nondetectability** (`mil_std_1474e_nondetectability_distance`). MIL-STD-1474E Table C-I

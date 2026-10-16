@@ -4,7 +4,7 @@ This page describes the files PANAM writes and reads at its boundaries:
 
 - the AAM source sphere (`.nc`), which `build_sphere` writes and `build_empirical_database`
   reads;
-- the NICE-OPS database (`.nod`), which `build_empirical_database` and
+- the NICEOPS database (`.nod`), which `build_empirical_database` and
   `build_database_from_norah2` write;
 - `vehicle.cfg`, which the user writes (`example_data/vehicle.cfg` is an example).
 
@@ -73,7 +73,7 @@ The file also carries these text attributes, each '' when unknown:
 **Averaged spheres.** `sphere_statistics.write_averaged_sphere` (`sphere_diff.py average`)
 writes an energy average of repeat runs in the same layout, with the runs' mean `SPEED`,
 `FLIGHT_PATH_ANGLE` and weight (as `EMPTY_WEIGHT`). It adds two optional variables after
-everything else. AAM and NICE-OPS do not read them, and a reader may ignore them.
+everything else. AAM and NICEOPS do not read them, and a reader may ignore them.
 
 | variable | type, dimensions | `unit` | content |
 | --- | --- | --- | --- |
@@ -89,7 +89,7 @@ its `extra_variables` argument and levels already on the ART grid through `art_l
 
 **Node statistics.** `noise_abatement_2017.build_sphere(node_statistics=True)` (CLI
 `--node-statistics`; default off) adds two optional variables after everything else, in the
-total sphere and in each tonal and broadband part sphere. AAM and NICE-OPS do not read them,
+total sphere and in each tonal and broadband part sphere. AAM and NICEOPS do not read them,
 and a reader may ignore them.
 
 | variable | type, dimensions | `unit` | content |
@@ -104,10 +104,10 @@ The definitions are in [THEORY §6.4](THEORY.md#64-node-statistics).
 **Missing values.** A missing band is stored as -999 (`AAM_MISSING_LEVEL`); see
 [how a bin's state travels](#how-a-bins-state-travels).
 
-## The NICE-OPS database (`.nod`)
+## The NICEOPS database (`.nod`)
 
 `build_empirical_database` writes a netCDF-4 file with one group per flight condition and
-load factor. `build_database_from_norah2` writes the same layout. Items NICE-OPS requires
+load factor. `build_database_from_norah2` writes the same layout. Items NICEOPS requires
 are marked R; the rest are optional to a reader.
 
 ### Root
@@ -168,7 +168,7 @@ The groups are named `sphere0`, `sphere1`, and so on.
 | `DOPPLER_SHIFT_REMOVED` | i4 scalar | | 0: received frequencies; 1: emitted. The same in every group |
 | `coverage` | i1 (`PHI`, `THETA`, `frequency`) with spectra, else (`channels`) | | 1 measured, 0 not (below) |
 
-The variables carry no units attributes. NICE-OPS refuses a database whose `radius` ×
+The variables carry no units attributes. NICEOPS refuses a database whose `radius` ×
 `rotor_scale` differs between groups. Angles are ART angles: `phi` covers [-180, 180) once
 the upper surface is mirrored in, and `theta` covers [0, 180]. In a database without
 spectra (`store_spectrum=False`), the groups have no `frequency` or `amplitude` variable and
@@ -177,15 +177,15 @@ no `PHI`, `THETA` or `frequency` dimension.
 **Channel order.** The channels are the row-major flatten of the (`PHI`, `THETA`) grid of
 `amplitude`. Channel r·n_theta + j holds the direction of `amplitude[r, j, :]`, and the rows
 are sorted by `phi` (`_complete_sphere_with_coverage`). When the channels form such a grid,
-NICE-OPS maps each channel's (`phi`, `theta`) to its grid cell. Otherwise it reads
+NICEOPS maps each channel's (`phi`, `theta`) to its grid cell. Otherwise it reads
 `amplitude` as gridded over the sorted unique angles.
 
 **Coverage.** 1 marks a measured cell, 0 any other; the rules are in
 [how a bin's state travels](#how-a-bins-state-travels).
 
 **Per-run metadata.** `build_empirical_database` writes the metadata of each group's source
-run as group attributes, not variables, so they add nothing to the time NICE-OPS takes to
-open the file; NICE-OPS reads none of them. The numeric attributes are f8, NaN when unknown,
+run as group attributes, not variables, so they add nothing to the time NICEOPS takes to
+open the file; NICEOPS reads none of them. The numeric attributes are f8, NaN when unknown,
 and each has its units in a text attribute `<name>_units`:
 
 | attribute | units | content |
@@ -228,12 +228,12 @@ constants.
   EAA recomputed from the averaged spectrum.
 
 Adding names leaves the version at 1. Bump it when the on-disk meaning of existing data
-changes, together with a matching change in NICE-OPS.
+changes, together with a matching change in NICEOPS.
 
 ### Checking a database
 
 `nod_database.validate_nod(path)` returns one violation per broken rule, with the group it
-is in. The R rules are what NICE-OPS requires. The C rules are the rest of this contract,
+is in. The R rules are what NICEOPS requires. The C rules are the rest of this contract,
 which the writers keep; a reader may rely on them.
 
 1. **R1.** The root has `same_grid`, and it is true.
@@ -440,9 +440,9 @@ row, then one row per run:
 
 ## How the contract is tested
 
-- `tests/test_niceops_loads_databases.py` runs NICE-OPS's self-test on PANAM-built
+- `tests/test_niceops_loads_databases.py` runs NICEOPS's self-test on PANAM-built
   databases, with the default load factors, `load_factors=None` and
-  `store_spectrum=False`. It also checks that NICE-OPS's AAM export of a stored condition
+  `store_spectrum=False`. It also checks that NICEOPS's AAM export of a stored condition
   is the source sphere. It skips when the `niceops` executable is not configured.
 - `tests/test_database_provenance.py` pins the root attributes, the group variables, their
   types and dimensions, and the coverage of gated and fore/aft-averaged cells. It also

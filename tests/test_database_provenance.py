@@ -1,6 +1,6 @@
 """What build_empirical_database records about how a database was built.
 
-NICE-OPS reads four things that panam now writes: the root attributes
+NICEOPS reads four things that panam now writes: the root attributes
 speed_reference and build_temperature_K / build_pressure_kPa /
 build_relative_humidity_percent, and per condition group DOPPLER_SHIFT_REMOVED
 and coverage.  These tests pin their names, types and shapes, that a mixed
@@ -65,7 +65,7 @@ ADDED_ROOT_ATTRIBUTES = {'speed_reference', 'build_temperature_K', 'build_pressu
                          'build_relative_humidity_percent', 'azimuth_reference'}
 ADDED_GROUP_VARIABLES = {'DOPPLER_SHIFT_REMOVED', 'coverage'}
 # The per-run metadata are group attributes, never variables: a variable per group is a
-# dataset NICE-OPS's nc_open has to open (0.23 s more per load on a 1432-group database).
+# dataset NICEOPS's nc_open has to open (0.23 s more per load on a 1432-group database).
 ADDED_GROUP_ATTRIBUTES = ({name for name, _ in fa.GROUP_RUN_METADATA_NUMBERS}
                           | {name + '_units' for name, _ in fa.GROUP_RUN_METADATA_NUMBERS}
                           | set(fa.GROUP_RUN_METADATA_TEXT))

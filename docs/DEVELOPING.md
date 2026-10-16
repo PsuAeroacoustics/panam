@@ -40,7 +40,7 @@ built from a directory of spheres:
    onto the AAM (phi, theta) grid and writes the sphere netCDF;
    `write_norah2_hemisphere` writes the NORAH2 `.hem` form.
 6. **Database.** `build_empirical_database` reads a directory of spheres and
-   its `vehicle.cfg` and writes the NICE-OPS `.nod` database through
+   its `vehicle.cfg` and writes the NICEOPS `.nod` database through
    `add_sphere_group`. `build_database_from_norah2` does the same from NORAH2
    hemispheres.
 
@@ -56,17 +56,17 @@ read the sphere files back.
 | `flight_acoustics.py` | Spectra and bands, metrics (SEL, PNL/EPNL, MIL-STD-1474E), emission geometry (`hemigen`, `dedopplerize`), `depropagate_hemisphere`, gridding, sphere and NORAH2 I/O, the database writers, ground projection, Lambert plots, `ega` and the reflection coefficient, array geometry helpers |
 | `noise_abatement_2017.py` | The 2017 Noise Abatement build: dataset layout, tracks and the track check, steady windows, atmosphere per run, plate tables, `build_sphere`, `build_all`, and its CLI |
 | `ground_plane.py` | Ground impedance models, pole microphones, co-located pole and board pairs, ground-plate models, the exact half-space Green's function, the two-path fit, `emission_times`. Numba-compiled |
-| `axisymmetric_bem.py` | The axisymmetric BEM of the plate on the ground (`scattering`, `table`, `board_level`, `field`, `write_netcdf` for NICE-OPS). Numba-compiled |
-| `refracted_rays.py` | The ray-model interface for depropagation: `straight_ray_model`, `uniform_wind_ray_model`, and `external_ray_model`, which runs NICE-OPS's `niceops_ray_geometry` |
+| `axisymmetric_bem.py` | The axisymmetric BEM of the plate on the ground (`scattering`, `table`, `board_level`, `field`, `write_netcdf` for NICEOPS). Numba-compiled |
+| `refracted_rays.py` | The ray-model interface for depropagation: `straight_ray_model`, `uniform_wind_ray_model`, and `external_ray_model`, which runs NICEOPS's `niceops_ray_geometry` |
 | `vold_kalman_filter.py` | The multi-shaft Vold-Kalman order-tracking filter |
 | `sphere_statistics.py` | Energy averaging of repeat-run spheres (`average_spheres`, `write_averaged_sphere`) and band-by-band sphere comparison (`compare_spheres`, `plot_sphere_difference`), and the per-node sample statistics of a depropagated sphere (`node_statistics`, `node_statistics_variables`) |
-| `nod_database.py` | Reading NICE-OPS databases: `load_nod`, `validate_nod` (the rules of [file_formats.md](file_formats.md#checking-a-database)), `compare_databases`, `to_frame` (needs pandas), and the inspection behind `nod_tool.py`: `summarize_condition`, `select_condition`, `plot_condition` (Lambert map of dBA, EAA, a band or coverage), `plot_envelope` |
+| `nod_database.py` | Reading NICEOPS databases: `load_nod`, `validate_nod` (the rules of [file_formats.md](file_formats.md#checking-a-database)), `compare_databases`, `to_frame` (needs pandas), and the inspection behind `nod_tool.py`: `summarize_condition`, `select_condition`, `plot_condition` (Lambert map of dBA, EAA, a band or coverage), `plot_envelope` |
 | `synthetic_flyover.py` | Synthetic recordings of a straight, level pass of a source of known directivity (`synthesize_pass`), its true level at the reference radius (`source_level_db`), and the recovered-minus-true Lambert map (`plot_level_difference`). The golden results and the depropagation tutorial use it |
 | `synthesis.py` | Forward synthesis of microphone band-level histories from a hemisphere (`synthesize_band_histories`, the inverse of `depropagate_hemisphere`), the Doppler band shift (`doppler_shift_band_power`), measured band histories (`measured_band_histories`), and the leave-microphones-out check of the gridding settings (`leave_mics_out`, `residual_statistics`) |
 | `order_tracking.py` | Order tracks as a fixed microphone hears them (propagation delay and Doppler shift along a track), ridge tracking, and clock offsets by cross-correlation |
 | `panam_acoustics/` | `signal_io` (recording loaders), `filters` (Butterworth helpers, the one-third-octave filter bank), `atmosphere` and `iso_9613_1_1993` (ISO 9613-1 absorption), `time_weighting` (IEC 61672-1 A/C/Z and F/S/I weighting, Lmax, Leq), `plotting` (`acoustic_plot_style`), `impulsiveness` (BVI crest factor, kurtosis, pulse peak-to-RMS and harmonic ratio), `psychoacoustics` (ISO 532-1 stationary loudness, DIN 45692 sharpness). See its `THIRD_PARTY_NOTICES.md` for the parts derived from python-acoustics |
 | `cli.py` | Argument types and figure output shared by the scripts: `colon_pair`, `colon_pair_or_single`, `add_output_options`, `save_or_show`, `save_all_or_show` |
-| `local_paths.py` | `data_path(name)`: where this machine keeps external data and the NICE-OPS executables |
+| `local_paths.py` | `data_path(name)`: where this machine keeps external data and the NICEOPS executables |
 | `build_recipe.py` | `load_recipe(path)`: a TOML build recipe of `[spheres]`, `[hover_source]` and `[database]` settings, checked against the build functions' signatures, for `--recipe` and Python |
 | `provenance.py` | `build_provenance(tool, settings)`: the code version, library versions and settings stamped on written spheres and databases |
 | `unit_conversion.py`, `default_units.py` | Aerospace unit conversions (third-party, BSD-style license in the file headers) |
@@ -103,7 +103,7 @@ obvious (`radius_ft`, `speed_knots`). The common systems are:
   `depropagate_hemisphere` works in its `length_units` (default `'ft'`), with
   `speed_of_sound` in those units per second.
 - Sphere netCDF files carry `RADIUS` in ft and `SPEED` in knots.
-- NICE-OPS databases and the plate tables for NICE-OPS are metric.
+- NICEOPS databases and the plate tables for NICEOPS are metric.
 - `atmosorb(freq, temp, humid, pstat)` takes deg C, % RH and mbar and returns
   dB/m; `panam_acoustics.atmosphere.Atmosphere` takes K, kPa and % RH.
 - Flow resistance is in kPa s/m^2. The reference pressure is
@@ -216,7 +216,7 @@ For another aircraft of the 2017 test, the dataset directory name is the
 `noise_abatement_2017.py` argument. Add it to `AIRCRAFT_SPHERE_PREFIX` only
 if its spheres need a legacy file prefix. Then build the spheres, write the
 `vehicle.cfg`, run `build_empirical_database.py`, and load the database in
-NICE-OPS ([database_build.md](database_build.md)).
+NICEOPS ([database_build.md](database_build.md)).
 
 ### A model
 
@@ -228,13 +228,13 @@ changes results, regenerate the golden results (below) in the same commit.
 
 ### A change to the `.nod` format
 
-The `.nod` database is a contract with NICE-OPS
-([file_formats.md](file_formats.md#the-nice-ops-database-nod); the version rule is in
+The `.nod` database is a contract with NICEOPS
+([file_formats.md](file_formats.md#the-niceops-database-nod); the version rule is in
 [DATABASE_FORMAT_VERSION](file_formats.md#database_format_version) and the tests in
-[How the contract is tested](file_formats.md#how-the-contract-is-tested)). A change that NICE-OPS must know about
-bumps `flight_acoustics.DATABASE_FORMAT_VERSION` and needs a matching NICE-OPS
+[How the contract is tested](file_formats.md#how-the-contract-is-tested)). A change that NICEOPS must know about
+bumps `flight_acoustics.DATABASE_FORMAT_VERSION` and needs a matching NICEOPS
 change. Three tests hold the contract: `tests/test_niceops_loads_databases.py`
-runs NICE-OPS's self-test on PANAM-built databases,
+runs NICEOPS's self-test on PANAM-built databases,
 `tests/test_database_provenance.py` pins names and attributes, and
 `tests/test_golden_results.py` pins built values.
 
@@ -259,7 +259,7 @@ Tests that need something this machine may not have skip instead of failing:
 - `@pytest.mark.data`: reads an external dataset found through `local_paths`
   (the NORAH2 package, the 2017 archive). These can take minutes on a cold
   cloud drive. Deselect them with `-m "not data"`.
-- `skipif` on `sphere_helpers.executable(...)`: the NICE-OPS executables
+- `skipif` on `sphere_helpers.executable(...)`: the NICEOPS executables
   `niceops` and `niceops_ray_geometry`. `executable` looks in `local_paths`
   (`PANAM_NICEOPS`, `local_paths.toml`), then in the unprefixed environment
   variable (`NICEOPS`, `NICEOPS_RAY_GEOMETRY`), then on `PATH`.
@@ -325,7 +325,7 @@ only the bytecode, not its constants, module globals or the jitted functions
 it calls, so a stale cache could survive an edit of the same size.) To run the same command locally, install
 `pytest-cov` (`pip install pytest-cov`); it is not in `requirements.txt`.
 
-CI has no external data and no NICE-OPS executables, so the data and NICE-OPS
+CI has no external data and no NICEOPS executables, so the data and NICEOPS
 tests skip there; run them locally before merging a change that touches the
 build, the database writers or the NORAH2 import.
 
@@ -374,9 +374,9 @@ The code contract:
 - **The cache.** `plate_table` caches tables in `~/.cache/panam/plate_tables`
   (see above). Bump `axisymmetric_bem.PLATE_TABLE_VERSION` after changing the
   plate model, and the cached tables are recomputed.
-- **NICE-OPS.** `axisymmetric_bem.write_netcdf` exports a plate table for
-  NICE-OPS's `--plate_table` option: band x sub-frequency x elevation x
-  azimuth, metric, with the ground it was computed on, which NICE-OPS checks
+- **NICEOPS.** `axisymmetric_bem.write_netcdf` exports a plate table for
+  NICEOPS's `--plate_table` option: band x sub-frequency x elevation x
+  azimuth, metric, with the ground it was computed on, which NICEOPS checks
   against its own ground model.
 
 ## Workflow

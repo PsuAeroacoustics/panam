@@ -10,7 +10,7 @@ The script runs PANAM's pipeline end to end without flight-test data:
 3. map the recovered overall level minus the true one on a Lambert
    equal-area projection;
 4. write the hemisphere as a sphere file beside example_data/vehicle.cfg and
-   build a toy NICE-OPS database from it (build_empirical_database).
+   build a toy NICEOPS database from it (build_empirical_database).
 
 Everything is written to the output directory (default demo_plots/, which is
 git-ignored): tutorial_difference.png, tutorial_spheres/ and tutorial.nod.

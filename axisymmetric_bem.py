@@ -607,15 +607,15 @@ def board_level(bands, source_height, ground_distance, sound_speed, table, sub_b
 
 
 def write_netcdf(path, table, description=''):
-    """Write a :func:`table` for NICE-OPS's ground-plane receiver (--plate_table).
+    """Write a :func:`table` for NICEOPS's ground-plane receiver (--plate_table).
 
     Dimensions band x sub x elevation x azimuth; P_d and P_r as real and
-    imaginary parts.  Lengths in meters and the sound speed in m/s (NICE-OPS
+    imaginary parts.  Lengths in meters and the sound speed in m/s (NICEOPS
     is metric inside).  Azimuth is that of the horizontal propagation
     direction, degrees from +x toward +y, in the plate's frame, where the
     microphone is offset along +y; elevation is the source's, above the ground.
     The ground the table was computed on is recorded, because P_d and P_r
-    depend on it: NICE-OPS checks it against its own.
+    depend on it: NICEOPS checks it against its own.
     """
     from netCDF4 import Dataset
     ft = 0.3048

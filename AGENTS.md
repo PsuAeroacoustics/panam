@@ -15,7 +15,7 @@ Instructions for AI coding tools working on PANAM. Human developers: see
   One file: `pytest tests/test_ega.py`.
 - `pytest.ini` puts `.` and `tests/` on `sys.path`. Scripts find their own
   directory. No command needs `PYTHONPATH`.
-- External data and the NICE-OPS executables are found by name through
+- External data and the NICEOPS executables are found by name through
   `local_paths.data_path(name)`: a CLI argument, then `PANAM_<NAME>`, then the
   git-ignored `local_paths.toml`. Missing data makes tests skip. Two older
   lookups remain and are documented, not removed: `as350_flip_check.py` reads
@@ -32,7 +32,7 @@ Instructions for AI coding tools working on PANAM. Human developers: see
   `build_all`, track check, plate tables) and its CLI.
 - `ground_plane.py`, `axisymmetric_bem.py`: ground, pole and ground-plate
   receiver models. Numba-compiled; ft and ft/s.
-- `refracted_rays.py`: ray models for depropagation; wraps NICE-OPS's
+- `refracted_rays.py`: ray models for depropagation; wraps NICEOPS's
   `niceops_ray_geometry`.
 - `vold_kalman_filter.py`: Vold-Kalman order tracking.
 - `order_tracking.py`: Doppler-predicted order tracks at a fixed microphone,
@@ -71,7 +71,7 @@ Instructions for AI coding tools working on PANAM. Human developers: see
 
 - State the units of every argument and return value in the docstring.
   2017 build and ground models: ft, ft/s. Sphere files: `RADIUS` ft, `SPEED`
-  kt. NICE-OPS databases: metric. Flow resistance: kPa s/m^2.
+  kt. NICEOPS databases: metric. Flow resistance: kPa s/m^2.
 - Average, interpolate and sum levels in energy, not dB.
 - `-inf` = measured, no energy. `NaN` = no data. Sphere files write `-999`
   for both; `.nod` uses `coverage` 0. `mask_missing_levels` maps `NaN`,
@@ -93,8 +93,8 @@ Instructions for AI coding tools working on PANAM. Human developers: see
   smoke test in `tests/test_cli_scripts.py` (`run_here`), and a row in the
   README's tools table.
 - File contracts (sphere netCDF, `.nod`, `vehicle.cfg`): `docs/file_formats.md`.
-  A `.nod` change that NICE-OPS must know about bumps
-  `DATABASE_FORMAT_VERSION` and needs a matching NICE-OPS change.
+  A `.nod` change that NICEOPS must know about bumps
+  `DATABASE_FORMAT_VERSION` and needs a matching NICEOPS change.
 
 ## Tests and results
 
@@ -106,7 +106,7 @@ Instructions for AI coding tools working on PANAM. Human developers: see
 - Never regenerate `tests/data/python_acoustics_reference.npz` from PANAM.
 - Shared fixtures: `tests/sphere_helpers.py`. Tests use the `Agg` backend.
   `tests/conftest.py` validates every database built through `fa.build_...`.
-- Skips: `@pytest.mark.data` (external datasets), NICE-OPS executables not
+- Skips: `@pytest.mark.data` (external datasets), NICEOPS executables not
   configured, example data missing. CI (`.github/workflows/tests.yml`: Ubuntu
   with Python 3.11 and 3.14, macOS with 3.14; coverage and `--durations=20`
   reported, no threshold) has no data, so those skip there: run them locally when you

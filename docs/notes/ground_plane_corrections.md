@@ -12,8 +12,8 @@
 
 Status at the end of the log: implemented (2026-09-26). The corrections are in
 `ground_plane.py` and `axisymmetric_bem.py`, the 2017 sphere builds divide out
-the plate's response by default ("In the sphere builds"), and NICE-OPS reads
-the exported plate table ("In NICE-OPS").
+the plate's response by default ("In the sphere builds"), and NICEOPS reads
+the exported plate table ("In NICEOPS").
 
 ## Why this matters
 
@@ -33,7 +33,7 @@ softer ground, so the boundary seen by the microphone is **mixed impedance**:
   traveled over, and interacted with, that soft ground, and the plate edge
   diffracts.
 
-Evidence that this is not negligible here: comparing NICE-OPS against the 2017
+Evidence that this is not negligible here: comparing NICEOPS against the 2017
 NASA approach measurements, the prediction is +4.8 dB high (median) below 5 deg
 elevation above the microphone, and +2.9 dB high at 5-10 deg, but within about
 1 dB above 10 deg (6,118 mic-runs, standard 10 dB-down SEL). Mikkelsen &
@@ -43,8 +43,8 @@ at the low angles. A ground-plane microphone that reads low at grazing
 incidence, corrected by a flat -6 dB, makes a free-field prediction look high
 at exactly those angles.
 
-NICE-OPS's own ground model (`--ground_effect`: Chien-Soroka reflection over a
-uniform Delany-Bazley ground) cannot represent this. (It since can: NICE-OPS's
+NICEOPS's own ground model (`--ground_effect`: Chien-Soroka reflection over a
+uniform Delany-Bazley ground) cannot represent this. (It since can: NICEOPS's
 `--plate_table` reads the axisymmetric BEM tables written below.) It assumes a single
 impedance everywhere, and its flush-receiver case gave a -3 to -4 dB offset
 against the data, which says the ground-plane receiver is being mis-modeled
@@ -183,7 +183,7 @@ What is solid:
 
 - **The flat pressure-doubling correction is badly wrong at low elevation.**
   The ground plane reads 10.6, 6.6, 3.7 and 2.0 dB below +6 at 0-2, 2-5, 5-10
-  and 10-20 deg. This has the sign and shape of the NICE-OPS excess against
+  and 10-20 deg. This has the sign and shape of the NICEOPS excess against
   the 2017 approach data (+4.8 dB below 5 deg, +2.9 at 5-10).
 - **The all-band medians in the table are misleading at grazing. Read the
   per-band figure instead** (`ground_plane_measured.png`, `ground_plane_model_errors.png`).
@@ -828,22 +828,22 @@ Not independently validated, and why:
   Australia 2026, Blandeau et al.) would be a further check. Their numbers
   were not accessible.
 
-### In NICE-OPS (2026-09-25)
+### In NICEOPS (2026-09-25)
 
-The ground models and the plate are now in NICE-OPS as well, on its spectral
+The ground models and the plate are now in NICEOPS as well, on its spectral
 path with `--ground_effect`:
 
 - **Ground impedance, turbulence and roughness.** `--impedance_model`
   (`delany_bazley`, `miki`, `variable_porosity`, `delany_bazley_layer`),
   `--turbulence_model harmonoise --gamma_t`, and `--roughness`. They are the
   formulas of `surface_admittance`, `turbulence_coherence` and the Ament
-  factor. NICE-OPS's tests check them against 15 `pole_level` cases to
+  factor. NICEOPS's tests check them against 15 `pole_level` cases to
   1e-6 dB.
 - **The plate.** `axisymmetric_bem.write_netcdf` exports a `table()` as
   netCDF: band x sub x elevation x azimuth, in meters, with the ground named.
-  NICE-OPS reads it with `--plate_table` and applies |P_d + Q P_r|^2,
+  NICEOPS reads it with `--plate_table` and applies |P_d + Q P_r|^2,
   band-averaged, with Q from its own ground model, and refuses a table built
-  for a different ground. NICE-OPS ships two tables at the databases' 31
+  for a different ground. NICEOPS ships two tables at the databases' 31
   bands (10 Hz-10 kHz): Delany-Bazley 225 and variable porosity σe 200.
   - The exact form matches `board_level` to 1e-6 dB.
   - The run path takes Q as quadratic in log f through each band's edges and
@@ -928,7 +928,7 @@ plate model, per band and per frame:
 | Model | Mixed boundary | Grazing | Edge diffraction (ripple) | Cost per evaluation |
 |---|---|---|---|---|
 | Flat -6 dB (current) | no | no | no | none |
-| Chien-Soroka over uniform ground (NICE-OPS now) | no | yes (soft only) | no | ~31 Faddeeva calls |
+| Chien-Soroka over uniform ground (NICEOPS now) | no | yes (soft only) | no | ~31 Faddeeva calls |
 | Fresnel-zone weighting | yes | partly, via zone growth | no | closed form |
 | De Jong semi-empirical diffraction | yes | yes | yes | one Fresnel integral per band and edge |
 | Rasmussen impedance-jump integral | yes | yes | yes | numerical quadrature |
@@ -1024,7 +1024,7 @@ Only worth it if atmospheric refraction joins the problem.
    - Replace `ground_board_scale=0.5` with the band- and angle-dependent
      correction when building spheres (it changes the high-frequency and
      low-elevation content of every sphere).
-   - Offer it in NICE-OPS as a receiver transfer function, tabulated over band,
+   - Offer it in NICEOPS as a receiver transfer function, tabulated over band,
      elevation and, if grazing needs it, range, so a prediction can be made
      "as a ground-plane microphone would measure it".
    - A table lookup is far cheaper than the Chien-Soroka evaluation that

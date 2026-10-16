@@ -44,8 +44,8 @@ Each of these mutants fails at least one test:
 Every aircraft set in the public package converts under both mappings. The R22 set converts
 once its one-axis hover table is left out.
 
-**Smoke test through NICE-OPS** (pinned binary 6bbd6bb). The R44 set, converted with
-`--speed ground-speed` and the NICE-OPS vehicle file for the R44 used in the companion
+**Smoke test through NICEOPS** (pinned binary 6bbd6bb). The R44 set, converted with
+`--speed ground-speed` and the NICEOPS vehicle file for the R44 used in the companion
 validation study, was run on the 14 R44 approach runs of 2017 at their array microphones.
 The runs used `--humidity 50 --no-ground_effect`, against that study's measured SEL per run
 and microphone, corrected for the ground board with the flat pressure-doubling factor. This
@@ -67,9 +67,9 @@ average. That is what the choice is worth, not a verdict on which is right.
 ## Hazard sizes
 
 These were measured on 2026-10-04 in an evaluation in the companion validation repository,
-with NICE-OPS build 6bbd6bb, and were moved here from `norah2_import.md` on 2026-10-10.
+with NICEOPS build 6bbd6bb, and were moved here from `norah2_import.md` on 2026-10-10.
 
-- **Absorption to POLDIST left in.** On B407 spheres exported by NICE-OPS at 80 kt and
+- **Absorption to POLDIST left in.** On B407 spheres exported by NICEOPS at 80 kt and
   -6 deg, reading a `.hem` as lossless is worth a median 0.33 dB of LA (p5 0.22, p95 0.48,
   max 0.77). Per band it is 0.37 dB at 1 kHz, 1.32 at 4 kHz and 5.94 at 10 kHz.
 - **Speed.** Between B407 spheres 10 kt apart (the size of a 10 kt speed error at 80 kt),

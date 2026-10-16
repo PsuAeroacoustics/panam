@@ -8,7 +8,7 @@ sub-1g trajectories interpolate instead of clamping at the edge.  It carries the
 
 Evaluating 20*log10(0) there would write -inf into dBA, and a zero barycentric
 weight against -inf yields NaN -- which poisons every interpolation that touches
-such a sphere.  That is not hypothetical: it made NICE-OPS's self test fail on
+such a sphere.  That is not hypothetical: it made NICEOPS's self test fail on
 all 1,726,272 samples of a database built with the maneuver load factors.
 """
 

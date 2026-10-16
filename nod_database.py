@@ -1,4 +1,4 @@
-"""Read, check and compare NICE-OPS databases (``.nod``).
+"""Read, check and compare NICEOPS databases (``.nod``).
 
 The writers are :func:`flight_acoustics.build_empirical_database` and
 :func:`flight_acoustics.build_database_from_norah2`; the file contract is
@@ -190,7 +190,7 @@ def _group_names(database):
 
 
 def load_nod(path, weight_coefficient=None):
-    """Read every condition group of a NICE-OPS database.
+    """Read every condition group of a NICEOPS database.
 
     Args:
         path: the ``.nod`` file.
@@ -272,9 +272,9 @@ class Violation(namedtuple('Violation', ['rule', 'group', 'message'])):
 
 
 def validate_nod(path):
-    """Check a NICE-OPS database against ``docs/file_formats.md``.
+    """Check a NICEOPS database against ``docs/file_formats.md``.
 
-    The R rules are what NICE-OPS requires; the C rules are the rest of the
+    The R rules are what NICEOPS requires; the C rules are the rest of the
     contract the writers keep (both listed in
     ``docs/file_formats.md#checking-a-database``).
 
@@ -601,7 +601,7 @@ def _max_abs_difference(a, b):
     return float(np.max(np.abs(b[both] - a[both]))) if both.any() else np.nan
 
 
-#: NodCondition fields that change how NICE-OPS reads a group's levels;
+#: NodCondition fields that change how NICEOPS reads a group's levels;
 #: :func:`compare_databases` reports each one that differs.
 CONDITION_SCALARS = ('radius_m', 'rotor_scale_m', 'doppler_shift_removed', 'condition_origin')
 
@@ -653,7 +653,7 @@ IDENTITY_ATTRIBUTES = provenance.IDENTITY_ATTRIBUTES
 
 
 def compare_databases(a, b):
-    """Compare two NICE-OPS databases.
+    """Compare two NICEOPS databases.
 
     Conditions are matched by :attr:`NodCondition.key` (advance ratio, flight
     path angle, thrust coefficient), not by group name, so a reordered database

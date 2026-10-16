@@ -38,7 +38,7 @@ crosswind) may add
 
 :func:`straight_ray_model` gives the straight-line answer in this form,
 :func:`uniform_wind_ray_model` the straight rays of uniform air carried by a uniform
-wind, and :func:`external_ray_model` runs NICE-OPS's ``niceops_ray_geometry`` on a
+wind, and :func:`external_ray_model` runs NICEOPS's ``niceops_ray_geometry`` on a
 profile file.  Any other ray tracer can be wrapped the same way.
 """
 import csv
@@ -120,9 +120,9 @@ def uniform_wind_ray_model(speed_of_sound, wind):
 
 def external_ray_model(executable, atmosphere_path, *, frame_bearing_deg=90.0, refraction='stratified',
                        receiver='plate', receiver_heights=None, length_units='ft', threads=0, cwd=None):
-    """A ray model that runs NICE-OPS's ``niceops_ray_geometry`` through a profile.
+    """A ray model that runs NICEOPS's ``niceops_ray_geometry`` through a profile.
 
-    ``atmosphere_path`` is a NICE-OPS ``--atmosphere`` CSV (heights in
+    ``atmosphere_path`` is a NICEOPS ``--atmosphere`` CSV (heights in
     ``length_units``); ``frame_bearing_deg`` the compass bearing of the frame's +x
     axis, which places the profile's winds.  ``refraction`` is ``'stratified'``
     (the profile's own layers) or ``'linear'``.  ``receiver`` sets which

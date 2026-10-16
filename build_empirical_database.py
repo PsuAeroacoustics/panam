@@ -1,4 +1,4 @@
-"""Build a NICE-OPS sphere database from a directory of AAM sphere files.
+"""Build a NICEOPS sphere database from a directory of AAM sphere files.
 
 Usage:  python build_empirical_database.py SPHERE_DIRECTORY DATABASE_FILE [options]
 
@@ -54,7 +54,7 @@ def make_parser():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0], epilog=EPILOG,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('sphere_directory', help='directory of .nc spheres and vehicle.cfg')
-    parser.add_argument('database_file', help='output NICE-OPS database (.nc/.nod)')
+    parser.add_argument('database_file', help='output NICEOPS database (.nc/.nod)')
     parser.add_argument('--recipe', default=None, metavar='FILE.toml',
                         help="take the settings of this recipe's [database] section; options given "
                              'here override it (default: none)')
@@ -73,7 +73,7 @@ def make_parser():
                                 '(e.g. "Be407285236.nc" or "*_hover*.nc"); repeat for each one')
     selection.add_argument('--merge-repeats', action='store_true',
                            help='energy-average spheres at the same speed and flight path angle into one '
-                                'condition (default: refuse them, since NICE-OPS takes one sphere per '
+                                'condition (default: refuse them, since NICEOPS takes one sphere per '
                                 'condition)')
     selection.add_argument('--merge-speed-tolerance', type=float, default=0.0, metavar='KT',
                            help='with --merge-repeats: also merge spheres at one flight path angle whose '
@@ -84,7 +84,7 @@ def make_parser():
                       help='load factors to write each condition at, g, comma-separated '
                            '(default 0.7,1.1,1.5,1.9,2.3)')
     load.add_argument('--fixed-load-factor', action='store_true',
-                      help='write each condition once, at 1 g, and let NICE-OPS scale it '
+                      help='write each condition once, at 1 g, and let NICEOPS scale it '
                            '(load_factors=None)')
 
     parser.add_argument('--extended-fpa', type=cli.colon_pair, default=None, metavar='LO:HI',
