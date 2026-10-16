@@ -394,7 +394,8 @@ def test_always_writing_plot_scripts_take_plot(tmp_path):
 def test_example_scripts_take_help_without_running(tmp_path):
     """hexacopter_vkf_example.py, vold_kalman_filter.py and as350_flip_check.py
     had no options and ran as soon as they started, -h included."""
-    expected = {'hexacopter_vkf_example.py': ['--mat-file', '--output-dir', '--plot'],
+    expected = {'hexacopter_vkf_example.py': ['--mat-file', '--mic', '--doppler', '--receiver', '--output-dir',
+                                              '--plot'],
                 'vold_kalman_filter.py': ['--output-dir', '--plot'],
                 'as350_flip_check.py': ['--basepath'],
                 'AS350_289108_demo.py': ['--output-dir', '--outdir', '--plot', '--show', '--basepath']}
@@ -403,6 +404,21 @@ def test_example_scripts_take_help_without_running(tmp_path):
         assert result.returncode == 0, (script, result.stderr)
         assert all(option in result.stdout for option in options), (script, result.stdout)
     assert not list(tmp_path.iterdir())
+
+
+def test_hexacopter_example_de_dopplerizes_a_record_with_a_track(tmp_path):
+    from flyover_record import write_flyover_mat
+    write_flyover_mat(tmp_path / 'pass.mat', fs=65536, duration=2.0)
+    result = run_here('hexacopter_vkf_example.py', '--mat-file', 'pass.mat', '--mic', '1', '--jobs', '1',
+                      '-o', 'out', cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert 'microphone 1 (dedopplerize)' in result.stdout and 'pole microphone' not in result.stdout
+    names = sorted(path.name for path in (tmp_path / 'out').iterdir())
+    assert names == ['hexa_original_separated.png', 'hexa_original_separated_zoom.png',
+                     'hexa_residual_spectrum.png', 'hexa_rotor_components.png', 'hexa_rpm_time_history.png',
+                     'hexa_spectrograms.png']
+    result = run_here('hexacopter_vkf_example.py', '--mat-file', 'pass.mat', '--mic', '3', cwd=tmp_path)
+    assert result.returncode == 1
 
 
 def test_as350_flip_check_finds_the_demo_data(monkeypatch, tmp_path):

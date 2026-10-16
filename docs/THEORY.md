@@ -1252,7 +1252,8 @@ These are in PANAM but not used to build the databases.
   `observed_order_track`). The track is interpolated linearly, and $\mathbf{v}$ is the central
   difference of its samples, also interpolated linearly. These tracks are the frequencies the
   Vold–Kalman filter needs to follow an order as received rather than as emitted.
-  `hexacopter_vkf_example.py` uses them when given a microphone position.
+  `hexacopter_vkf_example.py --doppler track` uses them; its default de-Dopplerizes the signal
+  instead (`dedopplerize`, below).
 - **Clock offsets** (`estimate_clock_offset`, `order_track_offset`). Two records $a$ and $b$
   sampled at $f_s$ are compared at each integer lag $\ell$ by the Pearson correlation
   $\rho(\ell)$ over the samples they share, NaN samples left out. The lag of the largest $\rho$
@@ -1412,7 +1413,7 @@ Functions are in `flight_acoustics.py` unless another module is named. Tests are
 | §10 Ground impedance inversion | `ground_plane.fit_ground_impedance` | `test_ground_impedance_fit.py` |
 | §10 Array planning | `linear_array_plan` (through the `array_planner.py design` CLI); `array_coverage`, `hover_array_coverage`, `takeoff_array_coverage` (through `array_planner.py coverage`, `hover` and `takeoff`) | `test_array_coverage.py` (the coverage functions on known geometry), `test_array_planner.py` (the CLI's spacing, options and case files), `test_cli_scripts.py` (smoke) |
 | §10 Footprint, fried egg | `project_sphere`, `project_directory`, `fried_egg_plot`, `is_noisy` | `test_projection.py`, `test_no_data.py`, `test_cli_scripts.py` (smoke) |
-| §10 De-Dopplerization | `dedopplerize` | `test_acoustics.py` |
+| §10 De-Dopplerization | `dedopplerize`; `hexacopter_vkf_example.dedopplerize_record` | `test_acoustics.py`, `test_hexacopter_vkf_example.py` |
 | §10 Repeat-run averaging, comparison | `sphere_statistics.average_spheres`, `write_averaged_sphere`, `compare_spheres`, `cell_solid_angles`, `plot_sphere_difference`; in a database build, `build_empirical_database(merge_repeats=True)` (`_group_repeat_conditions`, `_extract_condition_SPL`) | `test_sphere_statistics.py`, `test_merge_repeats.py`, `test_cli_scripts.py` (smoke) |
 
 ## References
