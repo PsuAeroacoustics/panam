@@ -20,12 +20,20 @@ def _workflow():
     return (REPO / '.github' / 'workflows' / 'tests.yml').read_text()
 
 
-def test_requirements_install_panam_and_mirror_the_pyproject_dependencies():
-    requirements = _requirements()
-    assert '-e .' in requirements
+def test_pyproject_dependencies_mirror_requirements():
     project = _pyproject()['project']
-    assert project['dependencies'] == [name for name in requirements if name not in ('pytest', '-e .')]
+    assert project['dependencies'] == [name for name in _requirements() if name != 'pytest']
     assert 'pytest' in project['optional-dependencies']['test']
+
+
+def test_requirements_name_packages_only():
+    """A `-e .` there installed the current directory, so a project installing PANAM's
+    dependencies with `-r path/to/panam/requirements.txt` from its own root failed."""
+    assert all(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', line) for line in _requirements())
+
+
+def test_ci_installs_panam_in_editable_mode():
+    assert 'pip install -e .' in _workflow()
 
 
 def test_pyproject_installs_only_the_panam_package_and_leaves_pytest_to_pytest_ini():

@@ -6,10 +6,12 @@ Instructions for AI coding tools working on PANAM. Human developers: see
 ## Setup and commands
 
 - Python 3.11 or newer. Use the repository's virtual environment:
-  `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`, from
-  the repository root. Its `-e .` line installs the `panam` package in
+  `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt && .venv/bin/pip install -e .`,
+  from the repository root. `pip install -e .` installs the `panam` package in
   editable mode; `pyproject.toml` (setuptools) installs `panam/` only, and its
-  dependencies mirror `requirements.txt`, so change both together.
+  dependencies mirror `requirements.txt`, so change both together. Keep
+  `requirements.txt` to package names: pip reads a path there against the
+  current directory, which breaks a project that installs it with `-r`.
 - Layout: the library is the package `panam/` (`from panam import
   flight_acoustics as fa`), the command-line tools are scripts in `tools/`, the
   examples are scripts in `examples/`. The library never imports from

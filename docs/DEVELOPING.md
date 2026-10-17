@@ -22,7 +22,7 @@ import the scripts (`from tools import nod_tool`); they are run as scripts,
 `python tools/nod_tool.py`. `pyproject.toml` builds the `panam` package with
 setuptools and installs nothing else; its dependencies mirror
 `requirements.txt` (`tests/test_project_metadata.py` checks that the two
-lists agree), whose `-e .` line installs `panam` in editable mode
+lists agree), and `pip install -e .` installs `panam` in editable mode
 ([Environment and caches](#environment-and-caches)). It has no entry points. Its tool settings are the
 package list and the coverage report's `omit`; pytest reads `pytest.ini`.
 
@@ -357,10 +357,14 @@ build, the database writers or the NORAH2 import.
 ## Environment and caches
 
 - Python 3.11 or newer (`local_paths.py` uses `tomllib`). Install with
-  `pip install -r requirements.txt` in a virtual environment, from the
-  repository root; it installs `panam` in editable mode, so `import panam`
-  works from any directory and edits to the checkout take effect without
-  reinstalling. A plain `pip install .` copies the package into `site-packages`, where it no longer
+  `pip install -r requirements.txt` and then `pip install -e .` in a virtual
+  environment, from the repository root. The second installs `panam` in
+  editable mode, so `import panam` works from any directory and edits to the
+  checkout take effect without reinstalling. `requirements.txt` lists
+  packages only: pip reads a path in a requirements file against the current
+  directory, so a `-e .` there would make another project that installs
+  PANAM's dependencies with `-r` try to install itself. A plain
+  `pip install .` copies the package into `site-packages`, where it no longer
   finds the checkout's `local_paths.toml`; use the editable install.
 - `local_paths.toml`, at the repository root, holds this machine's data paths and is git-ignored.
   `local_paths.example.toml` lists the names; `PANAM_<NAME>` overrides a
