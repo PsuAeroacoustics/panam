@@ -1094,9 +1094,10 @@ non-overlapping blocks (`period`, default 1 s), each from `overall_SPL`, and
 `sound_exposure_level`'s `lmax` is the maximum of the samples passed in; neither is a
 time-weighted level.
 
-**EPNL** (`effective_perceived_noise_level`) follows 14 CFR 36, Appendix A, §A36.4 [42],
-identical to ICAO Annex 16 [44]. Its input is a history of 24 one-third-octave band levels,
-50 Hz to 10 kHz in ascending order (`PNL_BAND_FREQUENCIES`), so a 31-band sphere spectrum has to be
+**EPNL** (`effective_perceived_noise_level`) follows 14 CFR 36, Appendix A, §A36.4 [42], harmonized
+with ICAO Annex 16, Vol. I, Appendix 2 [44] but not identical to it. Its input is a history of 24
+one-third-octave band levels, 50 Hz to 10 kHz in ascending order (`PNL_BAND_FREQUENCIES`), so a
+31-band sphere spectrum has to be
 cut to those bands first. It uses noy values $N$ from Table A36-3;
 $\mathrm{PNL} = 40 + \frac{10}{\lg 2}\lg(0.85N_\max + 0.15\sum N)$; the ten-step tone correction
 with Table A36-2; the band-sharing check of §A36.4.4.2; and the duration correction
@@ -1114,12 +1115,13 @@ ported from this implementation.
 **Band sharing.** When the tone correction $C$ at PNLTM is below the mean $\bar C$ of the five
 records centered there (§A36.4.4.2), or of those that exist when PNLTM is within two samples of a
 record end (this truncation is not flagged), the adjustment $\Delta_B = \bar C - C(k_M)$ is added to
-the EPNL as a separate term, as ICAO Annex 16 Vol. I, Appendix 2 and FAA AC 36-4 apply it:
-$\mathrm{EPNL} = \mathrm{PNLTM} + D_E + \Delta_B$, with PNLTM, the 10 dB-down limits and $D_E$ all
-from the unadjusted PNLT history. Read literally, 14 CFR 36 raises PNLTM and takes $D_E$ from it,
-so the adjustment cancels in $\mathrm{PNLTM} + D_E$ and acts only by narrowing the duration, which
-lowers the EPNL. `effective_perceived_noise_level` returns `pnltm` (adjusted),
-`pnltm_unadjusted` and `delta_b`.
+the EPNL as a separate term: $\mathrm{EPNL} = \mathrm{PNLTM} + D_E + \Delta_B$, with PNLTM, the
+10 dB-down limits and $D_E$ all from the unadjusted PNLT history. This departs from Annex 16
+[44, App. 2, §4.4.2–4.6.3], which adds $\Delta_B$ to PNLTM and uses the adjusted PNLTM for the
+10 dB-down points and for EPNL. Read literally, 14 CFR 36 raises PNLTM and takes $D_E$ from it, so
+the adjustment cancels in $\mathrm{PNLTM} + D_E$ and acts only by narrowing the duration, which
+lowers the EPNL. `effective_perceived_noise_level` returns `pnltm` (adjusted), `pnltm_unadjusted`
+and `delta_b`.
 
 The regulation's tone correction is defined for finite band levels. A band of $-\infty$ (zero
 energy) would make the step-7 background infinite or undefined, so it enters steps 1–7 at its
