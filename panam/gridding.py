@@ -1,11 +1,17 @@
 """Gridding: inverse-distance weights on the sphere, and hemisphere levels at any direction.
 
-:func:`adaptive_idw_weights` chooses each node's radius from the microphones
-around it; :func:`shepIDW_weights` uses a fixed radius (``docs/THEORY.md``
-section 6).  Levels are interpolated in energy.  Angles are in degrees.
+:func:`interpolate_hemisphere_power` samples a gridded UMAPR hemisphere at any
+direction, bilinearly in energy over the measured cells; :func:`_sample_hemisphere_levels`
+is the sphere and NORAH2 writers' front end to it (``docs/THEORY.md`` section 6.3).
+
+Scattered samples onto grid nodes: :func:`adaptive_idw_weights` chooses each node's
+radius from the microphones around it; :func:`shepIDW`, :func:`shepIDW_weights` and
+:func:`shepIDW_apply` use a fixed radius (sections 6.1-6.2).  Levels are interpolated
+in energy.  Angles are in degrees.
 """
 
 import numpy as np
+import scipy.sparse as sparse
 from scipy.interpolate import RegularGridInterpolator
 
 
@@ -39,12 +45,12 @@ def interpolate_hemisphere_power(levels_db, elv_grid_deg, azi_grid_deg, azi_q_de
     if levels_db.ndim != 3 or levels_db.shape[1] != elv_grid_deg.size or levels_db.shape[2] != azi_axis.size:
         raise ValueError('Spectrum grid shape does not match elv_grid_deg/azi_grid_deg')
 
-    # Ensure azimuth periodicity is represented in the interpolation grid.
-    # We need the seam column at (azi0 + 360 deg) with values matching azi0,
-    # otherwise points near 360 deg can fall out-of-bounds and become missing.
     if np.any(np.diff(azi_axis) <= 0.0) or np.any(np.diff(elv_grid_deg) <= 0.0):
         raise ValueError('azi_grid_deg and elv_grid_deg must be strictly increasing')
 
+    # Ensure azimuth periodicity is represented in the interpolation grid.
+    # We need the seam column at (azi0 + 360 deg) with values matching azi0,
+    # otherwise points near 360 deg can fall out-of-bounds and become missing.
     azi0 = float(azi_axis[0])
     azi_end = azi0 + 360.0
     if np.isclose(azi_axis[-1], azi_end, rtol=0.0, atol=1e-6):
@@ -107,19 +113,20 @@ def _interpolate_measured_power(axes, power, measured, points):
 
 
 def _sample_hemisphere_levels(hemisphere, mode, azi_q_deg, elv_q_deg, minimum_level_db):
-    """Band levels of a :func:`depropagate_hemisphere` result at arbitrary directions.
+    """Band levels of a :func:`depropagation.depropagate_hemisphere` result at arbitrary directions.
 
-    The shared core of the sphere exporters: pick the spectrum ``mode`` selects,
-    then interpolate each band over the UMAPR azimuth/elevation grid in linear
-    power over the measured cells only.  Directions off the grid or mostly
-    among unmeasured (NaN) cells, and levels below ``minimum_level_db``, come
-    back as -inf; each writer turns that into its own missing-value convention.
+    The shared core of the sphere exporters (:func:`sphere_io.write_aam_hemisphere_netcdf`,
+    :func:`norah2.write_norah2_hemisphere`): pick the spectrum ``mode`` selects, then
+    interpolate each band over the UMAPR azimuth/elevation grid in linear power over the
+    measured cells only.  Directions off the grid or mostly among unmeasured (NaN) cells,
+    and levels below ``minimum_level_db``, come back as -inf; each writer turns that into
+    its own missing-value convention.
 
     Args:
-        hemisphere: Output dict from :func:`depropagate_hemisphere`.
+        hemisphere: Output dict from :func:`depropagation.depropagate_hemisphere`.
         mode: 'auto', 'third_octave', or 'narrowband'. 'auto' prefers third-octave.
         azi_q_deg, elv_q_deg: UMAPR query directions (degrees), any matching shape.
-        minimum_level_db: see :func:`write_aam_hemisphere_netcdf`.
+        minimum_level_db: see :func:`sphere_io.write_aam_hemisphere_netcdf`.
 
     Returns:
         (frequency_hz, levels_db) with levels_db shaped ``azi_q_deg.shape + (Nf,)``.
@@ -146,15 +153,14 @@ def _sample_hemisphere_levels(hemisphere, mode, azi_q_deg, elv_q_deg, minimum_le
         else:
             selected_mode = 'none'
 
+    eps = np.finfo(float).tiny
     if selected_mode == 'third_octave':
         if 'third_octave' not in hemisphere:
             raise ValueError('mode=third_octave but hemisphere does not include third_octave data')
-        band_centers_hz = np.asarray(hemisphere['third_octave']['band_centers_hz'], dtype=float)
-        band_levels_db_umapr = np.asarray(hemisphere['third_octave']['bands_db'], dtype=float)
-        if band_levels_db_umapr.ndim != 3:
+        frequency_hz = np.asarray(hemisphere['third_octave']['band_centers_hz'], dtype=float)
+        levels_db_umapr = np.asarray(hemisphere['third_octave']['bands_db'], dtype=float)
+        if levels_db_umapr.ndim != 3:
             raise ValueError('hemisphere[\'third_octave\'][\'bands_db\'] must be (Nf, Nelv, Nazi)')
-        frequency_hz = band_centers_hz
-        levels_db_umapr = band_levels_db_umapr
     elif selected_mode == 'narrowband':
         if 'narrowband' not in hemisphere:
             raise ValueError('mode=narrowband but hemisphere does not include narrowband data')
@@ -169,13 +175,12 @@ def _sample_hemisphere_levels(hemisphere, mode, azi_q_deg, elv_q_deg, minimum_le
         df = float(np.median(np.diff(frequency_hz)))
         psd_lin = np.power(10.0, psd_db_umapr / 10.0)
         band_power = psd_lin * df
-        eps = np.finfo(float).tiny
         levels_db_umapr = 10.0 * np.log10(np.maximum(band_power, eps))
     else:
-        raise ValueError('hemisphere must include third_octave or narrowband data; run depropagate_hemisphere with third_octave=True and/or narrowband=True')
+        raise ValueError('hemisphere must include third_octave or narrowband data; run '
+                         'depropagate_hemisphere with third_octave=True and/or narrowband=True')
 
     Pq, _ = interpolate_hemisphere_power(levels_db_umapr, elv_grid_deg, azi_grid_deg, azi_q_deg, elv_q_deg)
-    eps = np.finfo(float).tiny
     levels_db = np.full_like(Pq, -np.inf)
     pos = Pq > 0.0
     levels_db[pos] = 10.0 * np.log10(np.maximum(Pq[pos], eps))
@@ -184,6 +189,8 @@ def _sample_hemisphere_levels(hemisphere, mode, azi_q_deg, elv_q_deg, minimum_le
 
     return frequency_hz, levels_db
 
+
+# Scattered samples to grid nodes: inverse-distance weights.
 
 #: Defaults for depropagate_hemisphere(interpolation={...}); see adaptive_idw_weights.
 #: resolution_factor 0.5 takes half the window's arc, the sample being its center.  On a
@@ -255,8 +262,6 @@ def adaptive_idw_weights(ielv, iazi, felv, fazi, mic, resolution_deg, *, k=8, mi
         (weights, radius_deg, gap): a scipy.sparse CSR matrix (nodes x samples) whose rows sum
         to one (empty for gaps), each node's radius (NaN for gaps), and the gap mask.
     """
-    import scipy.sparse as sparse
-
     ielv = np.asarray(ielv, dtype=float).ravel()
     iazi = np.asarray(iazi, dtype=float).ravel()
     felv = np.asarray(felv, dtype=float).ravel()

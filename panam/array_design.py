@@ -4,6 +4,14 @@
 functions give the directions each microphone samples during a pass, a hover
 or a takeoff (``docs/THEORY.md`` section 10).  :func:`geodetic2array` and
 :func:`array2geodetic` convert between latitude/longitude and the array frame.
+
+Lengths and speeds may be in any consistent unit; the defaults (``speed_of_sound`` 1135 ft/s) assume ft and
+ft/s.  The coverage functions return UMAPR azimuth and elevation in deg, from :func:`geometry.hemigen`, and
+the propagation distance in the length unit of the input; :func:`array_coverage_plot` and
+:func:`hover_array_coverage_plot` draw them with :func:`lambert_plots.lambert_ea_points`.  Geodetic
+coordinates are latitude and longitude in deg and height in m, the array heading is in deg clockwise from
+north, and local array coordinates default to ft.  :func:`write_kml` writes microphone positions to a KMZ
+file.
 """
 
 import numpy as np
@@ -63,7 +71,7 @@ def array_coverage(ymics, altitude, xmin=-1000.0, xmax=1000.0, speed=100.0, rate
     velocity = np.zeros_like(source)
     velocity[:, 0] = speed
 
-    azimuth, elevation, r, t_observer, mach_r = hemigen(time, source, velocity, observers, speed_of_sound)
+    azimuth, elevation, r, _, _ = hemigen(time, source, velocity, observers, speed_of_sound)
     return azimuth, elevation, r
 
 
@@ -118,7 +126,7 @@ def hover_array_coverage(radial_positions, mic_azimuths, altitudes, headings, sp
     velocity[:, 0] = np.cos(heading_rad)
     velocity[:, 1] = np.sin(heading_rad)
 
-    azimuth, elevation, r, t_observer, mach_r = hemigen(time, source, velocity, observers, speed_of_sound)
+    azimuth, elevation, r, _, _ = hemigen(time, source, velocity, observers, speed_of_sound)
     return azimuth, elevation, r
 
 
@@ -130,7 +138,7 @@ def takeoff_array_coverage(
         initial_altitude=0.0,
         flight_path_angle=8.0,
         heading=0.0,
-    source_origin_xy=(0.0, 0.0),
+        source_origin_xy=(0.0, 0.0),
         speed_of_sound=1135.0,
 ):
     """
@@ -186,8 +194,32 @@ def takeoff_array_coverage(
     velocity[:, 2] = np.tan(fpa_rad)
 
     time = np.arange(ground_distances.size, dtype=float)
-    azimuth, elevation, r, t_observer, mach_r = hemigen(time, source, velocity, observers, speed_of_sound)
+    azimuth, elevation, r, _, _ = hemigen(time, source, velocity, observers, speed_of_sound)
     return azimuth, elevation, r
+
+
+def array_coverage_plot(ymics, altitude, xmin=-1000.0, xmax=1000.0, speed=100.0, rate=0.1,
+                        speed_of_sound=1135.):
+    """
+    Plots the spherical coverage for an overflight of a linear microphone array
+    Args:
+        ymics: sideline distances of observers (at X=0 where +X is direction the vehicle is traveling)
+        altitude: altitude of the vehicle
+        xmin: optional, start distance of vehicle trajectory (default -1000)
+        xmax: optional, end distance of vehicle trajectory (default 1000)
+        speed: optional, default 100
+        rate: optional, sampling period of emission time points, default 0.1
+        speed_of_sound: optional, speed of sound, default 1135
+
+    Returns: tuple (fig, ax, cs)
+    WHERE
+    fig is a matplotlib handle to the figure
+    ax is a matplotlib handle to the plot axis
+    cs is a matplotlib handle to the data points
+    """
+    azimuth, elevation, _ = array_coverage(ymics, altitude, xmin, xmax, speed, rate, speed_of_sound)
+    fig, ax, cs = lambert_ea_points(np.radians(azimuth), np.radians(elevation))
+    return fig, ax, cs
 
 
 def hover_array_coverage_plot(radial_positions, mic_azimuths, altitudes, headings, speed_of_sound=1135.0):
@@ -209,29 +241,6 @@ def hover_array_coverage_plot(radial_positions, mic_azimuths, altitudes, heading
     """
     azimuth, elevation, _ = hover_array_coverage(radial_positions, mic_azimuths, altitudes,
                                                  headings, speed_of_sound)
-    fig, ax, cs = lambert_ea_points(np.radians(azimuth), np.radians(elevation))
-    return fig, ax, cs
-
-
-def array_coverage_plot(ymics, altitude, xmin=-1000.0, xmax=1000.0, speed=100.0, rate=0.1, speed_of_sound=1135.):
-    """
-    Plots the spherical coverage for an overflight of a linear microphone array
-    Args:
-        ymics: sideline distances of observers (at X=0 where +X is direction the vehicle is traveling)
-        altitude: altitude of the vehicle
-        xmin: optional, start distance of vehicle trajectory (default -1000)
-        xmax: optional, end distance of vehicle trajectory (default 1000)
-        speed: optional, default 100
-        rate: optional, sampling period of emission time points, default 0.1
-        speed_of_sound: optional, speed of sound, default 1135
-
-    Returns: tuple (fig, ax, cs)
-    WHERE
-    fig is a matplotlib handle to the figure
-    ax is a matplotlib handle to the plot axis
-    cs is a matplotlib handle to the data points
-    """
-    azimuth, elevation, _ = array_coverage(ymics, altitude, xmin, xmax, speed, rate, speed_of_sound)
     fig, ax, cs = lambert_ea_points(np.radians(azimuth), np.radians(elevation))
     return fig, ax, cs
 
@@ -281,9 +290,9 @@ def array2geodetic(local, reference, heading, units='ft'):
     """
     Convert local coordinate array to geodetic coordinates (latitude, longitude, height).
 
-    This function transforms an array of points from a local coordinate system to geodetic 
-    coordinates (WGS84) by first rotating the local coordinates based on a heading angle 
-    to align with East-North-Up (ENU) convention, then converting to geodetic coordinates 
+    This function transforms an array of points from a local coordinate system to geodetic
+    coordinates (WGS84) by first rotating the local coordinates based on a heading angle
+    to align with East-North-Up (ENU) convention, then converting to geodetic coordinates
     relative to a reference point.
 
     Parameters
@@ -295,7 +304,7 @@ def array2geodetic(local, reference, heading, units='ft'):
         - y: perpendicular to the heading (positive left)
         - z: vertical position (positive up)
     reference : array-like
-        Reference point in geodetic coordinates [latitude, longitude, height] in degrees 
+        Reference point in geodetic coordinates [latitude, longitude, height] in degrees
         and meters respectively, used as the origin for the ENU coordinate system.
     heading : float
         Heading angle in degrees (typically 0-360), measured clockwise from North.

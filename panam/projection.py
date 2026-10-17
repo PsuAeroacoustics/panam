@@ -3,7 +3,9 @@
 :func:`project_sphere` carries a sphere's levels along straight rays to the
 ground (spreading and absorption, no ground effect); :func:`plot_projection`
 contours one footprint and :func:`fried_egg_plot` contours a directory of
-them over flight condition.  Altitudes are in m.
+them over flight condition.  :func:`project_directory` computes the per-run data behind it (each run's
+maximum and mean ground level with its flight condition); :func:`is_noisy` and :func:`data_filter` mark and
+cull the loudest runs.  Altitudes are in m.
 """
 
 import os
@@ -43,8 +45,8 @@ def project_sphere(filename, altitude, elv_cutoff, infreqs=None,
     if not 0.0 < elv_cutoff < 90.0:
         raise ValueError(f'elv_cutoff must be between 0 and 90 deg below the horizon, not {elv_cutoff}')
     distance = 1000  # reference distance for EAA
-    azi, elv, phi, theta, radius, SPLO, SPLA, EAA, speed, flight_path_angle, _, _ = extract_SPL(filename, infreqs, distance,
-                                                                                          atmosphere)
+    azi, elv, _, _, radius, _, SPLA, EAA, speed, flight_path_angle, *_ = extract_SPL(
+        filename, infreqs, distance, atmosphere)
     # A direction with no energy (every band missing) has SPLA = -inf and an EAA
     # of -inf - -inf = NaN; give it EAA = 0, as the database does, so its ground
     # level is -inf (no energy) rather than NaN.
@@ -53,7 +55,6 @@ def project_sphere(filename, altitude, elv_cutoff, infreqs=None,
     included_angles = elv >= np.radians(elv_cutoff)
     azi = azi[included_angles]
     elv = elv[included_angles]
-    SPLO = SPLO[included_angles]
     SPLA = SPLA[included_angles]
     EAA = EAA[included_angles]
     slant_range = altitude / np.sin(elv)
@@ -70,9 +71,90 @@ def project_sphere(filename, altitude, elv_cutoff, infreqs=None,
     return x, y, LA, speed, flight_path_angle
 
 
+@acoustic_plot_style
+def plot_projection(filename, altitude=500, cutoff=30, infreqs=None, units='m'):
+    """
+    Generate a contour plot of sound pressure levels projected onto a ground plane.
+
+    This function computes the acoustic footprint of an aircraft at a specified altitude
+    by projecting sound pressure levels onto a horizontal plane and creating a contour plot.
+
+    Args:
+        filename (str): Path to the file containing netCDF formatted acoustic sphere data
+        altitude (float, optional): Aircraft altitude in meters. Defaults to 500.
+        cutoff (float, optional): Elevation cutoff (deg below the horizon, strictly
+            between 0 and 90): only directions at least this far below the horizon are
+            projected.  Defaults to 30.
+        infreqs (array-like, optional): Input frequencies for analysis. Defaults to None.
+        units (str, optional): Units for plot axes ('m' for meters, 'ft' for feet, etc.).
+            Defaults to 'm'.
+
+    Returns:
+        tuple: A tuple containing:
+            - fig (matplotlib.figure.Figure): The figure object
+            - ax (matplotlib.axes.Axes): The axes object
+            - cs (matplotlib.contour.QuadContourSet): The contour set object
+
+    Notes:
+        - The function uses triangulation and linear interpolation to create smooth contours
+        - Sound pressure levels are displayed in dBA (A-weighted decibels)
+        - The plot uses a YlOrRd colormap on round contour levels that cover the data
+          (see :func:`nice_levels`)
+        - Coordinate system: cross-track (x-axis) and along-track (y-axis) directions
+    """
+    x, y, LA, _, _ = project_sphere(filename, altitude, cutoff, infreqs)
+    if x.size < 3:
+        raise ValueError(f'{filename}: {x.size} directions at least {cutoff} deg below the horizon; '
+                         'a footprint needs 3 (lower the cutoff)')
+    if not np.any(np.isfinite(LA)):
+        raise ValueError(f'{filename}: no direction at least {cutoff} deg below the horizon has a level')
+    fig, ax = subplots(facecolor='white')
+    xi = np.linspace(np.min(x), np.max(x), 100)
+    yi = np.linspace(np.min(y), np.max(y), 100)
+    # Directions with no level (no energy) stay in the triangulation as NaN,
+    # so the triangles touching them are left blank instead of interpolated
+    # across, and they do not set the color scale.
+    LA = np.where(np.isfinite(LA), LA, np.nan)
+    triangles = tri.Triangulation(x, y)
+    interpolator = tri.LinearTriInterpolator(triangles, LA)
+    xim, yim = np.meshgrid(xi, yi)
+    li = interpolator(xim, yim)
+    # Round levels with the ends snapped outward, so neither the loudest spot nor the
+    # quietest is left blank (contourf fills only between the first and last level).
+    levels = nice_levels(np.nanmin(LA), np.nanmax(LA))
+    color_map = get_ylorrd_cmap(max(len(levels), 2))
+    xi = unit_conversion.len_conv(xi, from_units='m', to_units=units)
+    yi = unit_conversion.len_conv(yi, from_units='m', to_units=units)
+    cs = ax.contourf(xi, yi, li, levels=levels, cmap=color_map)
+    ax.axis('equal')
+    ax.set_xlabel('Cross Track Direction, ' + units)
+    ax.set_ylabel('Flight Track Direction, ' + units)
+    cb = colorbar(cs, ticks=colorbar_ticks(levels))
+    cb.set_label('Sound Pressure Level, dBA')
+    return fig, ax, cs
+
+
 def project_directory(directory_name, altitude=500, cutoff=30, input_frequencies=None, fpa_climb_cutoff=5,
                       atmosphere=Atmosphere(temperature=293.15, pressure=101.325,
                                             relative_humidity=20.0), duration_correction=None):
+    """Project every ``*.nc`` sphere in ``directory_name`` and reduce each run to its ground levels.
+
+    Each sphere is projected with :func:`project_sphere`, and each run with a flight-path angle at most
+    ``fpa_climb_cutoff`` deg is reduced to its maximum and mean ground level (dBA) over the directions that
+    reach the ground with a level; runs that climb more steeply are left out.  A run with no such direction
+    is skipped with a warning.  ``altitude`` is
+    in m and ``cutoff`` in deg below the horizon.  ``duration_correction`` is a reference speed (kt) that adds
+    10 lg(reference / speed) dB to both levels; None (the default) adds nothing.
+
+    Returns:
+        (speeds, flight_path_angles, Lmax, Lmean, advance_ratios, weight_coefficients,
+        hover_tip_mach_numbers, alphas, runs, number_of_main_rotor_blades, number_of_tail_rotor_blades,
+        nondimensional_flat_plate_drag, main_rotor_tip_speed): speeds in kt, flight-path angles in deg,
+        levels in dBA, run numbers (the file name's last three digits, None when it has none), and the
+        condition entries of :func:`database.read_vehicle_data` (angles of attack in deg, tip speed in
+        m/s).  When ``vehicle.cfg`` has an ``[Option]`` section, the speeds are the reference list's
+        airspeeds.
+    """
     # Get list of full paths to netCDF files in directory
     local_glob = os.path.expanduser(directory_name) + '/*.nc'
     absolute_glob = os.path.abspath(local_glob)
@@ -108,31 +190,63 @@ def project_directory(directory_name, altitude=500, cutoff=30, input_frequencies
         Lmax = Lmax + 10 * np.log10(duration_correction / speeds)
         Lmean = Lmean + 10 * np.log10(duration_correction / speeds)
     runs = np.array(runs)
-    # Get nondimensional condition information
-    (main_rotor_radius, main_rotor_area, main_rotor_tip_speed, number_of_main_rotor_blades,
-     tail_rotor_radius, tail_rotor_area, tail_rotor_tip_speed, number_of_tail_rotor_blades,
+    # Get nondimensional condition information.  The rotor radii and areas and the
+    # tail-rotor tip speed (entries 0, 1, 4, 5 and 6) are not returned.
+    (_, _, main_rotor_tip_speed, number_of_main_rotor_blades,
+     _, _, _, number_of_tail_rotor_blades,
      advance_ratios, weight_coefficients, hover_tip_mach_numbers, alphas, nondimensional_flat_plate_drag,
      speeds) = read_vehicle_data(directory_name, runs, speeds, flight_path_angles)
 
-    return (speeds, flight_path_angles, Lmax, Lmean, advance_ratios, weight_coefficients, hover_tip_mach_numbers,
-            alphas, runs, number_of_main_rotor_blades, number_of_tail_rotor_blades,
+    return (speeds, flight_path_angles, Lmax, Lmean, advance_ratios, weight_coefficients,
+            hover_tip_mach_numbers, alphas, runs, number_of_main_rotor_blades, number_of_tail_rotor_blades,
             nondimensional_flat_plate_drag, main_rotor_tip_speed)
 
 
+def is_noisy(level, threshold=0.65):
+    """True where ``level`` lies above ``threshold`` of the way from its minimum to its maximum.
+
+    ``threshold`` is a fraction (0 to 1); ``level`` may be in any unit (dBA in :func:`fried_egg_plot`).
+    """
+    cutoff = (np.max(level) - np.min(level)) * threshold + np.min(level)
+    noisy = level > cutoff
+    return noisy
+
+
+def data_filter(levels, flight_path_angles, threshold=0.65, cull_noisy_fpa=-1.0):
+    """Mask (True = keep) dropping the runs that :func:`is_noisy` marks and that fly above ``cull_noisy_fpa``.
+
+    ``flight_path_angles`` and ``cull_noisy_fpa`` are in deg; ``levels`` and ``threshold`` are as for
+    :func:`is_noisy`.
+    """
+    cull_index = np.logical_and(is_noisy(levels, threshold), flight_path_angles > cull_noisy_fpa)
+    mask = np.logical_not(cull_index)
+    return mask
+
+
 @acoustic_plot_style
-def fried_egg_plot(directory_name, metric='mean', dimensionless=False, altitude=500, cutoff=30, input_frequencies=None,
-                   fpa_climb_cutoff=5, atmosphere=Atmosphere(temperature=293.15, pressure=101.325,
-                                                             relative_humidity=20.0),
+def fried_egg_plot(directory_name, metric='mean', dimensionless=False, altitude=500, cutoff=30,
+                   input_frequencies=None, fpa_climb_cutoff=5,
+                   atmosphere=Atmosphere(temperature=293.15, pressure=101.325, relative_humidity=20.0),
                    climb_rates=False, duration_correction=None, threshold=0.65, cull_noisy_fpa=None,
                    suppress_classification=False):
-    (speeds, flight_path_angles, Lmax, Lmean, advance_ratios, weight_coefficients, hover_tip_mach_numbers, alphas,
-     runs, number_of_blades, number_of_tail_rotor_blades,
-     effective_flat_plate_drags, tip_speeds) = project_directory(directory_name,
-                                                                 altitude,
-                                                                 cutoff,
-                                                                 input_frequencies,
-                                                                 fpa_climb_cutoff,
-                                                                 atmosphere, duration_correction)
+    """Contour a directory's ground levels over flight condition.
+
+    Contours the mean (``metric='mean'``) or else the maximum ground level (dBA) of
+    :func:`project_directory` over speed (kt) and flight-path angle (deg), over speed and climb rate (fpm)
+    with ``climb_rates``, or over advance ratio and angle of attack (deg) with ``dimensionless``.  Runs that
+    :func:`is_noisy` marks by ``threshold`` are drawn red and the rest black, unless
+    ``suppress_classification`` or ``threshold`` is None.  With ``cull_noisy_fpa`` (deg) and ``threshold``
+    set, :func:`data_filter` first drops the noisy runs that fly above it.
+    The other arguments are as for :func:`project_directory`.
+
+    Returns:
+        (fig, ax, cs): the figure, its axes and the contour set.
+    """
+    # The weight coefficients, hover tip Mach numbers and the entries after alphas (run numbers, blade
+    # counts, flat-plate drag, tip speed) are not used here.
+    (speeds, flight_path_angles, Lmax, Lmean, advance_ratios, _, _, alphas,
+     *_) = project_directory(directory_name, altitude, cutoff, input_frequencies, fpa_climb_cutoff,
+                             atmosphere, duration_correction)
     samples = 1000
     if dimensionless:
         if advance_ratios is None or alphas is None:
@@ -204,78 +318,3 @@ def fried_egg_plot(directory_name, metric='mean', dimensionless=False, altitude=
             ax.set_xlabel('Speed, knots')
             ax.set_ylabel('Flight Path Angle, °')
     return fig, ax, cs
-
-
-@acoustic_plot_style
-def plot_projection(filename, altitude=500, cutoff=30, infreqs=None, units='m'):
-    """
-    Generate a contour plot of sound pressure levels projected onto a ground plane.
-
-    This function computes the acoustic footprint of an aircraft at a specified altitude
-    by projecting sound pressure levels onto a horizontal plane and creating a contour plot.
-
-    Args:
-        filename (str): Path to the file containing netCDF formatted acoustic sphere data
-        altitude (float, optional): Aircraft altitude in meters. Defaults to 500.
-        cutoff (float, optional): Elevation cutoff (deg below the horizon, strictly
-            between 0 and 90): only directions at least this far below the horizon are
-            projected.  Defaults to 30.
-        infreqs (array-like, optional): Input frequencies for analysis. Defaults to None.
-        units (str, optional): Units for plot axes ('m' for meters, 'ft' for feet, etc.). 
-            Defaults to 'm'.
-
-    Returns:
-        tuple: A tuple containing:
-            - fig (matplotlib.figure.Figure): The figure object
-            - ax (matplotlib.axes.Axes): The axes object
-            - cs (matplotlib.contour.QuadContourSet): The contour set object
-
-    Notes:
-        - The function uses triangulation and linear interpolation to create smooth contours
-        - Sound pressure levels are displayed in dBA (A-weighted decibels)
-        - The plot uses a YlOrRd colormap on round contour levels that cover the data
-          (see :func:`nice_levels`)
-        - Coordinate system: cross-track (x-axis) and along-track (y-axis) directions
-    """
-    x, y, LA, speed, flight_path_angle = project_sphere(filename, altitude, cutoff, infreqs)
-    if x.size < 3:
-        raise ValueError(f'{filename}: {x.size} directions at least {cutoff} deg below the horizon; '
-                         'a footprint needs 3 (lower the cutoff)')
-    if not np.any(np.isfinite(LA)):
-        raise ValueError(f'{filename}: no direction at least {cutoff} deg below the horizon has a level')
-    fig, ax = subplots(facecolor='white')
-    xi = np.linspace(np.min(x), np.max(x), 100)
-    yi = np.linspace(np.min(y), np.max(y), 100)
-    # Directions with no level (no energy) stay in the triangulation as NaN,
-    # so the triangles touching them are left blank instead of interpolated
-    # across, and they do not set the color scale.
-    LA = np.where(np.isfinite(LA), LA, np.nan)
-    triangles = tri.Triangulation(x, y)
-    interpolator = tri.LinearTriInterpolator(triangles, LA)
-    xim, yim = np.meshgrid(xi, yi)
-    li = interpolator(xim, yim)
-    # Round levels with the ends snapped outward, so neither the loudest spot nor the
-    # quietest is left blank (contourf fills only between the first and last level).
-    levels = nice_levels(np.nanmin(LA), np.nanmax(LA))
-    color_map = get_ylorrd_cmap(max(len(levels), 2))
-    xi = unit_conversion.len_conv(xi, from_units='m', to_units=units)
-    yi = unit_conversion.len_conv(yi, from_units='m', to_units=units)
-    cs = ax.contourf(xi, yi, li, levels=levels, cmap=color_map)
-    ax.axis('equal')
-    ax.set_xlabel('Cross Track Direction, ' + units)
-    ax.set_ylabel('Flight Track Direction, ' + units)
-    cb = colorbar(cs, ticks=colorbar_ticks(levels))
-    cb.set_label('Sound Pressure Level, dBA')
-    return fig, ax, cs
-
-
-def data_filter(levels, flight_path_angles, threshold=0.65, cull_noisy_fpa=-1.0):
-    cull_index = np.logical_and(is_noisy(levels, threshold), flight_path_angles > cull_noisy_fpa)
-    mask = np.logical_not(cull_index)
-    return mask
-
-
-def is_noisy(level, threshold=0.65):
-    cutoff = (np.max(level) - np.min(level)) * threshold + np.min(level)
-    noisy = level > cutoff
-    return noisy

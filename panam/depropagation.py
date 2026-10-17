@@ -3,7 +3,14 @@
 :func:`depropagate_hemisphere` frames each channel, forms band power, gates it
 against the ambient, divides out the receiver response, undoes spherical
 spreading and atmospheric absorption back to ``r_ref`` and grids the samples
-(``docs/THEORY.md`` section 5).  Lengths are in its ``length_units``.
+(``docs/THEORY.md`` section 5).
+
+Its steps that forward synthesis (:mod:`synthesis`) repeats are public:
+:func:`ambient_from_frames` and :func:`gate_ambient` (the ambient reference and
+gate), :func:`range_cap_mask` (the elevation and range limits), and
+:func:`ray_azimuth_deg` and :func:`air_relative_doppler_factor` (a wind ray
+model's azimuth and Doppler factor).  Lengths are in :func:`depropagate_hemisphere`'s
+``length_units``.
 """
 
 import warnings
@@ -15,7 +22,7 @@ from panam import unit_conversion
 from panam.acoustics import filters as pa_filters
 from panam.acoustics.atmosphere import Atmosphere, band_absorption_db, check_absorption_profile
 from panam.spectra import (BASE2_BAND_CENTERS, dBAw, frame_length, P_REF, power_to_db, spectrogram,
-                           third_octave_band_edges, _band_integrals, _bands_missing, _bands_within,
+                           third_octave_band_edges, _band_integrals, _bands_within,
                            _tone_aware_bands, _within_quarter_band)
 from panam.geometry import finite_difference_velocity, hemigen
 from panam.absorption import path_absorption_db, _check_band_method
@@ -24,6 +31,24 @@ from panam.gridding import adaptive_idw_weights, ADAPTIVE_INTERPOLATION, shepIDW
 
 _AIR_RELATIVE_DOPPLER_RAYS = ('air_relative_doppler needs a ray model that returns emission_direction '
                              'and doppler_speed (refracted_rays.uniform_wind_ray_model)')
+
+
+def _close_seam(grid):
+    """Copy the azimuth-0 column onto the 360 deg column of ``grid`` (..., Nelv, Nazi), in place.
+
+    Returns ``grid``."""
+    if grid.shape[-1] > 1:
+        grid[..., -1] = grid[..., 0]
+    return grid
+
+
+def _flip_y(points):
+    """A copy of ``points`` (..., 3) with y negated, or None for None."""
+    if points is None:
+        return None
+    flipped = points.copy()
+    flipped[..., 1] *= -1.0
+    return flipped
 
 
 def ambient_from_frames(power, frames, ambient_time_range=None, ambient_percentile=None, power_db=None):
@@ -85,6 +110,23 @@ def air_relative_doppler_factor(velocity, emitted, doppler_speed):
     return 1.0 / (1.0 - np.sum(velocity * emitted, axis=-1) / doppler_speed)
 
 
+def _bands_missing(dropped, f, lower, upper, doppler):
+    """(Nbands, Npts) True where a band, its edges scaled by each column's
+    ``doppler``, spans a ``dropped`` bin or reaches more than half a bin past
+    the bins ``f`` holds (the most an unscaled band within the selected range
+    can, since the bins stop within a bin of either end of it)."""
+    df = f[1] - f[0]
+    edge0, edge1 = f[0] - 0.5 * df, f[-1] + 0.5 * df
+    lower, upper = np.asarray(lower, dtype=float), np.asarray(upper, dtype=float)
+    out = ((lower[:, None] * doppler[None, :] < edge0 - 0.5 * df)
+           | (upper[:, None] * doppler[None, :] > edge1 + 0.5 * df))
+    if dropped.any():
+        count = np.zeros((dropped.shape[0] + 1, dropped.shape[1]), dtype=np.int32)
+        np.cumsum(dropped, axis=0, dtype=np.int32, out=count[1:])
+        out |= _band_integrals(count, edge0, df, lower, upper, doppler) > 0.0
+    return out
+
+
 def depropagate_hemisphere(
         mic_locations,
         pressure,
@@ -136,6 +178,12 @@ def depropagate_hemisphere(
         return_statistics=False,
 ):
     """Generate an acoustic hemisphere from microphone time series and vehicle tracking data.
+
+    This is the "normal" processing flow used by the demo scripts: use the vehicle kinematics
+    to compute emission-time geometry (azimuth/elevation/range) via :func:`hemigen`, sample
+    the measured PSD at the corresponding observer times, depropagate to a reference radius,
+    then interpolate onto a regular azimuth/elevation grid using :func:`gridding.shepIDW_weights`
+    and :func:`gridding.shepIDW_apply`.
 
     Emission points whose elevation angle falls below ``min_elevation_deg``
     are excluded before gridding. Low-elevation points correspond to long
@@ -270,11 +318,6 @@ def depropagate_hemisphere(
     and counted in ``out['interpolation']['gaps']``.  Without it the fixed
     ``rmax`` gridding is unchanged.
 
-    This is the "normal" processing flow used by the demo scripts: use the vehicle kinematics
-    to compute emission-time geometry (azimuth/elevation/range) via :func:`hemigen`, sample
-    the measured PSD at the corresponding observer times, depropagate to a reference radius,
-    then interpolate onto a regular azimuth/elevation grid using :func:`shepIDW`.
-
     Notes on conventions
     --------------------
     - Inputs must be in a *consistent* local Cartesian frame.
@@ -286,10 +329,10 @@ def depropagate_hemisphere(
       azimuth/elevation grid and compare residuals against the reference and against
       the reference read backwards in azimuth; take whichever fits. Judging it from the
       rendered plate cannot separate a geometry sign error from a plotting one -- that
-      is how the pre-2026-08-19 label/projection mismatch (see :func:`lambert_lon`)
+      is how the pre-2026-08-19 label/projection mismatch (see :func:`geometry.lambert_lon`)
       stayed hidden. Such a check on the AS350 demo data once concluded the data
       needed the flip, but that was compensating for
-      :func:`art2umapr` putting ART phi = +90 to port; with the AAM manual's sign
+      :func:`geometry.art2umapr` putting ART phi = +90 to port; with the AAM manual's sign
       (phi > 0 starboard) the same residuals favor no flip. A right-handed, z-up
       frame needs no flip.
 
@@ -323,19 +366,24 @@ def depropagate_hemisphere(
         apply_absorption_deprop: if True, undo atmospheric absorption between range r and r_ref.
         atmosphere: Atmosphere instance used when apply_absorption_deprop is True.
         flip_y_for_geometry: if True, apply Y -> -Y to track_position/track_velocity/mic_locations.
+        return_scattered: if True, also return the ungridded samples under 'scattered'.
         third_octave: if True, also compute third-octave band level hemispheres.
         third_octave_fmin: minimum band center (Hz) when third_octave=True.
             Bands are also limited to those ``freq_range`` covers from edge to
             edge (:func:`third_octave_band_edges`); a band only partly inside
             it is left out, not summed over the part inside.
-        tone_aware: if True, form third-octave band power with :func:`tone_aware_band_power`:
+        third_octave_band_centers_hz: optional explicit band centers (Hz) in place of the base-2
+            series; non-finite values are dropped, duplicates merged, centers below
+            third_octave_fmin dropped (compared exactly, not within a quarter band), and a band
+            freq_range does not cover edge to edge left out with a warning.
+        tone_aware: if True, form third-octave band power with :func:`spectra.tone_aware_band_power`:
             tones are located to a fraction of a bin, removed with the Hann window's own shape,
             and filed whole in the band of their own frequency, instead of summing whole FFT
             bins between band edges, which hands a tone near an edge to the wrong band (+5 to
             +19 dB in the B407's 31.5 and 63 Hz bands).  Combines with remove_doppler.  FFT
             method, Hann window.
         decompose_tonal: if True, also return the tonal and broadband parts of the third-octave
-            bands (``tone_aware_band_power(..., return_parts=True)``), each depropagated and
+            bands (``spectra.tone_aware_band_power(..., return_parts=True)``), each depropagated and
             gridded with the same weights as the total, under 'tonal_db' and 'broadband_db' in
             'third_octave' (and in the scattered 'third_octave' when return_scattered=True).
             The two sum to 'bands_db' in energy.  Needs third_octave=True and tone_aware=True
@@ -371,6 +419,9 @@ def depropagate_hemisphere(
             taken at the band center unless ``absorption_band_method`` says
             otherwise.  OASPL, A-weighted and narrowband output are FFT-based
             either way.
+        narrowband: if True, also grid the PSD (dB re 20 uPa^2/Hz at r_ref) per frequency bin;
+            needs every microphone at one sample rate.
+        narrowband_stride: keep every n-th frequency bin of the narrowband output (>= 1).
         absorption_band_method: how the filter-bank bands' absorption is formed
             (:func:`panam.acoustics.atmosphere.band_absorption_db`): 'center'
             (default, alpha at the band center, as before), 'arp5534' (SAE ARP
@@ -407,10 +458,13 @@ def depropagate_hemisphere(
             'azi_grid_deg', 'elv_grid_deg',
             'oaspl_db' (2D grid, unweighted),
             'spl_a_db' (2D grid, A-weighted overall level in dBA),
+            'metadata' (dict of the settings used),
             and optionally:
-                        - when return_scattered=True: 'scattered' (dict of scattered az/el/power samples)
-                            If third_octave/narrowband are enabled, the corresponding scattered data are
-                            also included under 'scattered'.
+            - when return_scattered=True: 'scattered' (dict of scattered az/el/power samples);
+              if third_octave/narrowband are enabled, the corresponding scattered data are
+              also included under 'scattered'
+            - when interpolation is given: 'interpolation' (the settings, mode, per-node
+              radius_deg, and the gaps and relaxed node counts)
             - when third_octave=True: 'third_octave' (band centers + band grids, dB re 20 uPa
               at r_ref; with decompose_tonal=True also 'tonal_db' and 'broadband_db')
             - when narrowband=True: 'narrowband' (frequency + PSD grids)
@@ -521,31 +575,19 @@ def depropagate_hemisphere(
         return float(t[0]) + dt * np.arange(p.size, dtype=float)
 
     # Optional geometry convention fix
+    mic_geom, pos_geom, vel_geom, nose_geom = mic_locations, track_position, track_velocity, track_nose
     if flip_y_for_geometry:
-        mic_geom = mic_locations.copy()
-        mic_geom[:, 1] *= -1.0
-        pos_geom = track_position.copy()
-        pos_geom[:, 1] *= -1.0
-        vel_geom = track_velocity.copy()
-        vel_geom[:, 1] *= -1.0
-        nose_geom = None
-        if track_nose is not None:
-            nose_geom = track_nose.copy()
-            nose_geom[:, 1] *= -1.0
-    else:
-        mic_geom = mic_locations
-        pos_geom = track_position
-        vel_geom = track_velocity
-        nose_geom = track_nose
+        mic_geom, pos_geom, vel_geom, nose_geom = (_flip_y(points) for points in
+                                                   (mic_geom, pos_geom, vel_geom, nose_geom))
 
     # Emission-time geometry
     az_deg, el_deg, r_geom, t_obs, _ = hemigen(track_time, pos_geom, vel_geom, mic_geom, speed_of_sound,
                                                nose=nose_geom)
     doppler_geom = None
     if remove_doppler:
-        toward = np.asarray(mic_geom, dtype=float)[None, :, :] - np.asarray(pos_geom, dtype=float)[:, None, :]
+        toward = mic_geom[None, :, :] - pos_geom[:, None, :]
         toward = toward / np.linalg.norm(toward, axis=2, keepdims=True)
-        mach_toward = np.sum(np.asarray(vel_geom, dtype=float)[:, None, :] * toward, axis=2) / float(speed_of_sound)
+        mach_toward = np.sum(vel_geom[:, None, :] * toward, axis=2) / float(speed_of_sound)
         doppler_geom = 1.0 / (1.0 - mach_toward)
 
     # Subsample emission-time points
@@ -559,7 +601,7 @@ def depropagate_hemisphere(
     # the receiver's source offset are kept alongside.
     spread_geom = path_geom = ray_offset = ray_valid = None
     if ray_model is not None:
-        rays = ray_model(np.asarray(track_position, dtype=float)[tidx], np.asarray(mic_locations, dtype=float))
+        rays = ray_model(track_position[tidx], mic_locations)
         shape = (tidx.size, nmics)
         for key in ('depression_deg', 'travel_time', 'spreading_range', 'path_length', 'valid'):
             if np.shape(rays[key]) != shape:
@@ -569,7 +611,7 @@ def depropagate_hemisphere(
         el_deg = np.array(el_deg, dtype=float)
         t_obs = np.array(t_obs, dtype=float)
         el_deg[tidx] = rays['depression_deg']
-        t_obs[tidx] = np.asarray(track_time, dtype=float)[tidx][:, None] + rays['travel_time']
+        t_obs[tidx] = track_time[tidx][:, None] + rays['travel_time']
         spread_geom = np.full(r_geom.shape, np.nan)
         path_geom = np.full(r_geom.shape, np.nan)
         spread_geom[tidx] = rays['spreading_range']
@@ -586,14 +628,14 @@ def depropagate_hemisphere(
                 raise ValueError('ray_model emission_direction must be shaped {}'.format(shape + (3,)))
             if flip_y_for_geometry:
                 emitted[..., 1] *= -1.0
-            toward = np.asarray(mic_geom, dtype=float)[None, :, :] - np.asarray(pos_geom, dtype=float)[tidx][:, None, :]
+            toward = mic_geom[None, :, :] - pos_geom[tidx][:, None, :]
             az_deg = np.array(az_deg, dtype=float)
             az_deg[tidx] = ray_azimuth_deg(az_deg[tidx], emitted, toward)
             ray_valid &= np.all(np.isfinite(emitted), axis=-1)
         if air_relative_doppler:
             if 'emission_direction' not in rays or 'doppler_speed' not in rays:
                 raise ValueError(_AIR_RELATIVE_DOPPLER_RAYS)
-            doppler_geom[tidx] = air_relative_doppler_factor(np.asarray(vel_geom, dtype=float)[tidx][:, None, :],
+            doppler_geom[tidx] = air_relative_doppler_factor(vel_geom[tidx][:, None, :],
                                                              emitted, np.asarray(rays['doppler_speed'], dtype=float))
 
     # Regular hemisphere grid (degrees) with seam closure at 360
@@ -601,8 +643,8 @@ def depropagate_hemisphere(
     elv_grid_deg = np.arange(0.0, 90.0 + 1e-9, float(elv_step))
     AZI_GRID, ELV_GRID = np.meshgrid(azi_grid_deg, elv_grid_deg)
 
-    # Frequency selection based on the first mic's sampling
-    # (rounding matches the demo scripts' convention)
+    # The first microphone's sample rate, which narrowband=True requires of every
+    # microphone (rounded as the demo scripts round it)
     t0_vec = _time_vec_for_mic(0)
     fs0 = float(np.round(1.0 / (t0_vec[1] - t0_vec[0])))
     fmin, fmax = float(freq_range[0]), float(freq_range[1])
@@ -612,6 +654,14 @@ def depropagate_hemisphere(
     if narrowband_stride < 1:
         raise ValueError('narrowband_stride must be >= 1')
 
+    # Adaptive interpolation settings
+    interp_settings = None
+    if interpolation is not None:
+        unknown = set(interpolation) - set(ADAPTIVE_INTERPOLATION)
+        if unknown:
+            raise ValueError('unknown interpolation settings: {}'.format(sorted(unknown)))
+        interp_settings = dict(ADAPTIVE_INTERPOLATION, **interpolation)
+
     # Accumulate scattered samples
     fazi_list = []
     felv_list = []
@@ -619,12 +669,6 @@ def depropagate_hemisphere(
     fres_list = []
     frange_list = []
     fheight_list = []
-    interp_settings = None
-    if interpolation is not None:
-        unknown = set(interpolation) - set(ADAPTIVE_INTERPOLATION)
-        if unknown:
-            raise ValueError('unknown interpolation settings: {}'.format(sorted(unknown)))
-        interp_settings = dict(ADAPTIVE_INTERPOLATION, **interpolation)
     oaspl_power_list = []
     spl_a_power_list = []
     if third_octave:
@@ -784,6 +828,8 @@ def depropagate_hemisphere(
         path_v = path_geom[tidx, im][valid] if path_geom is not None else r_v
         az_v = az_sub[valid]
         el_v = el_sub[valid]
+        source_v = pos_geom[tidx][valid]
+        mic_z = mic_geom[im][2]
 
         # Interpolate the PSD at tobs_v in linear power (relative to
         # pref^2/Hz).  Until 2026-09-24 this interpolated in dB, which between
@@ -839,7 +885,7 @@ def depropagate_hemisphere(
         response_bins = response_bands = None
         if receiver_response_db is not None:
             offset = (ray_offset[:, im][valid] if ray_offset is not None
-                      else pos_geom[tidx][valid] - mic_geom[im])
+                      else source_v - mic_geom[im])
             gain_db = np.asarray(receiver_response_db(im, response_centers, offset), dtype=float)
             if gain_db.shape != (response_centers.size, tobs_v.size) or not np.all(np.isfinite(gain_db)):
                 raise ValueError('receiver_response_db must return finite values shaped (bands, points)')
@@ -859,10 +905,10 @@ def depropagate_hemisphere(
             response_bins = inverse[band_of_bin]
             response_bands = inverse
 
-        source_z_v = pos_geom[tidx][valid][:, 2]
+        source_z_v = source_v[:, 2]
         delta_bins = None
         if absorption_profile is not None:
-            delta_bins = _absorption_delta(f_sel, 'center', path_v, source_z_v, mic_geom[im][2])
+            delta_bins = _absorption_delta(f_sel, 'center', path_v, source_z_v, mic_z)
         psd_v_lin = _depropagate(psd_v_lin, amb_lin, spread_v, alpha_db_per_m, response_bins, path_v,
                                  delta_bins)
 
@@ -881,13 +927,13 @@ def depropagate_hemisphere(
         felv_list.append(el_v)
         fmic_list.append(np.full(az_v.size, im))
         frange_list.append(r_v)
-        fheight_list.append(pos_geom[tidx][valid][:, 2] - mic_geom[im][2])
+        fheight_list.append(source_z_v - mic_z)
         if interpolation is not None:
             # The arc one analysis window smears over: the source's motion across
             # the line of sight in window_time, and its own size, over the range.
-            line = pos_geom[tidx][valid] - mic_geom[im]
+            line = source_v - mic_geom[im]
             unit_line = line / np.linalg.norm(line, axis=1)[:, None]
-            v = np.asarray(vel_geom, dtype=float)[tidx][valid]
+            v = vel_geom[tidx][valid]
             across = np.linalg.norm(v - np.sum(v * unit_line, axis=1)[:, None] * unit_line, axis=1)
             extent = float(interp_settings['source_extent'])
             fres_list.append(np.degrees(np.hypot(across * float(window_time), extent) / r_v))
@@ -908,7 +954,7 @@ def depropagate_hemisphere(
             delta_bands = None
             if absorption_profile is not None or absorption_band_method != 'center':
                 delta_bands = _absorption_delta(band_centers, absorption_band_method, path_v, source_z_v,
-                                                mic_geom[im][2])
+                                                mic_z)
             band_v = _depropagate(band_v, amb_band, spread_v, alpha_band, response_bands, path_v, delta_bands)
             for ib in range(band_centers.size):
                 band_power_lists[ib].append(band_v[ib, :])
@@ -972,9 +1018,9 @@ def depropagate_hemisphere(
             np.concatenate(fres_list), k=interp_settings['k'], min_mics=interp_settings['min_mics'],
             kappa=interp_settings['kappa'], resolution_factor=interp_settings['resolution_factor'],
             max_radius_deg=interp_settings['max_radius_deg'],
-            relax_min_mics=interp_settings.get('relax_min_mics', True), return_relaxed=True,
-            kernel=interp_settings.get('kernel', 'shepard'), aspect=interp_settings.get('aspect', 1.0),
-            shepard_floor=interp_settings.get('shepard_floor', 0.0))
+            relax_min_mics=interp_settings['relax_min_mics'], return_relaxed=True,
+            kernel=interp_settings['kernel'], aspect=interp_settings['aspect'],
+            shepard_floor=interp_settings['shepard_floor'])
         node_gap = node_gap.reshape(ELV_GRID.shape)
         node_relaxed = node_relaxed.reshape(ELV_GRID.shape)
 
@@ -990,11 +1036,13 @@ def depropagate_hemisphere(
                 with np.errstate(invalid='ignore', divide='ignore'):
                     g = np.where(reweight, np.where(kept > 0.0, g / kept, np.nan), g)
             return np.where(node_gap, np.nan, g.reshape(ELV_GRID.shape))
+
+        def count_nodes(flags):
+            # Nodes flagged, the seam column (a copy of column 0) not counted twice
+            return int(flags[:, :-1].sum()) if flags.shape[1] > 1 else int(flags.sum())
         interpolation_info = dict(interp_settings, mode='adaptive',
                                   radius_deg=node_radius.reshape(ELV_GRID.shape),
-                                  gaps=int(node_gap[:, :-1].sum()) if node_gap.shape[1] > 1 else int(node_gap.sum()),
-                                  relaxed=int(node_relaxed[:, :-1].sum()) if node_relaxed.shape[1] > 1
-                                  else int(node_relaxed.sum()))
+                                  gaps=count_nodes(node_gap), relaxed=count_nodes(node_relaxed))
     else:
         # Every field is sampled at the same points, so the weights are shared
         idw_weights = shepIDW_weights(ELV_GRID, AZI_GRID, felv_pts, fazi_pts, rmax=float(rmax))
@@ -1005,12 +1053,13 @@ def depropagate_hemisphere(
     grid_statistics = None
     if return_statistics:
         import scipy.sparse as sparse
-        from panam import sphere_statistics     # here: only return_statistics needs it (no cycle)
+        from panam import sphere_statistics  # here: only return_statistics needs it, and it loads netCDF4
         if interp_settings is not None:
             # A gap node is NaN whatever its weights: it has no samples.
             node_weights = sparse.diags((~node_gap.ravel()).astype(float)) @ weights
         else:
-            node_weights = sphere_statistics.idw_weight_matrix(idw_weights[1], fazi_pts.size)
+            _, idw_neighbors = idw_weights
+            node_weights = sphere_statistics.idw_weight_matrix(idw_neighbors, fazi_pts.size)
         mic_pts = np.concatenate(fmic_list)
 
         def grid_statistics(power_pts):
@@ -1020,20 +1069,12 @@ def depropagate_hemisphere(
             stats = sphere_statistics.node_statistics(node_weights, power_pts, mic_pts)
             shape = power_pts.shape[:-1] + ELV_GRID.shape
             stats = {key: value.reshape(shape) for key, value in stats.items()}
-            if ELV_GRID.shape[1] > 1:
-                for value in stats.values():
-                    value[..., -1] = value[..., 0]
+            for value in stats.values():
+                _close_seam(value)
             return stats
 
-    P_oaspl_grid = grid_power(P_oaspl_pts)
-    oaspl_db = power_to_db(P_oaspl_grid)
-    if oaspl_db.shape[1] > 1:
-        oaspl_db[:, -1] = oaspl_db[:, 0]
-
-    P_spl_a_grid = grid_power(P_spl_a_pts)
-    spl_a_db = power_to_db(P_spl_a_grid)
-    if spl_a_db.shape[1] > 1:
-        spl_a_db[:, -1] = spl_a_db[:, 0]
+    oaspl_db = _close_seam(power_to_db(grid_power(P_oaspl_pts)))
+    spl_a_db = _close_seam(power_to_db(grid_power(P_spl_a_pts)))
 
     out = {
         'azi_grid_deg': azi_grid_deg,
@@ -1112,9 +1153,7 @@ def depropagate_hemisphere(
                     continue
                 if P_band_pts.size != fazi_pts.size:
                     raise ValueError('Internal error: third-octave sample count does not match scattered angle count')
-                P_band_grid = grid_power(P_band_pts)
-                band_grids_db[ib, :, :] = power_to_db(P_band_grid)
-                band_grids_db[ib, :, -1] = band_grids_db[ib, :, 0]
+                band_grids_db[ib, :, :] = _close_seam(power_to_db(grid_power(P_band_pts)))
             out['third_octave'][key] = band_grids_db
             band_power_pts = (np.vstack(band_rows) if band_centers.size > 0
                               else np.empty((0, fazi_pts.size), dtype=float))
@@ -1137,9 +1176,7 @@ def depropagate_hemisphere(
         f_nb = f_sel_master[::narrowband_stride]
         psd_grid_db = np.full((f_nb.size, ELV_GRID.shape[0], ELV_GRID.shape[1]), -np.inf, dtype=float)
         for i_f, fi in enumerate(range(0, f_sel_master.size, narrowband_stride)):
-            P_f_grid = grid_power(psd_power_pts[fi, :])
-            psd_grid_db[i_f, :, :] = power_to_db(P_f_grid)
-            psd_grid_db[i_f, :, -1] = psd_grid_db[i_f, :, 0]
+            psd_grid_db[i_f, :, :] = _close_seam(power_to_db(grid_power(psd_power_pts[fi, :])))
 
         out['narrowband'] = {
             'frequency_hz': f_nb,

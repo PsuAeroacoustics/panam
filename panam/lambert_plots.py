@@ -4,6 +4,11 @@
 :func:`nc_lambert_ea` maps a sphere file, and :func:`lambert_ea_points` draws
 points on the same axes.  ``grid_convention`` labels the grid in UMAPR or ART
 angles.
+
+:func:`nice_levels`, :func:`colorbar_ticks` and :func:`get_ylorrd_cmap` choose the round dB contour levels,
+colorbar ticks and yellow-orange-red colormap for these maps and for the footprint and ground-effect plots.
+Importing the module loads neither pyplot nor netCDF4: the plots import pyplot when called, and
+:func:`nc_lambert_ea` imports :func:`database.extract_SPL` when called.
 """
 
 import matplotlib
@@ -208,9 +213,25 @@ def colorbar_ticks(levels, max_ticks=11):
     return levels[:: int(np.ceil(levels.size / max_ticks))]
 
 
+def get_ylorrd_cmap(num_levels=9):
+    """
+    Return a YlOrRd colormap with approximately `num_levels` discrete levels.
+    Uses palettable when an exact discrete palette exists (3..9),
+    otherwise falls back to Matplotlib's continuous 'YlOrRd'.
+    """
+    try:
+        import palettable.colorbrewer.sequential as cbseq
+        attr = f"YlOrRd_{int(num_levels)}"
+        if hasattr(cbseq, attr):
+            return getattr(cbseq, attr).mpl_colormap
+    except Exception:
+        pass
+    return matplotlib.colormaps['YlOrRd']
+
+
 @acoustic_plot_style
-def plot_lambert_ea(azi,elv,SPL,SPL_range=None,weight=None,grid_convention='umapr',
-                    levels=None,level_step=None,cmap=None,colorbar_label=None):
+def plot_lambert_ea(azi, elv, SPL, SPL_range=None, weight=None, grid_convention='umapr',
+                    levels=None, level_step=None, cmap=None, colorbar_label=None):
     """
     Generate a Lambert equal-area azimuthal projection contour plot of sound pressure levels.
 
@@ -290,7 +311,7 @@ def plot_lambert_ea(azi,elv,SPL,SPL_range=None,weight=None,grid_convention='umap
 
 def nc_lambert_ea(filename, input_frequencies=None, weight=None, SPL_range=None, grid_convention='umapr'):
     """
-    Generate a Lambert equal-area azimuthal projection contour plot of sound pressure levels 
+    Generate a Lambert equal-area azimuthal projection contour plot of sound pressure levels
     on a netCDF formatted acoustic sphere.
 
     This function creates a polar plot of acoustic data using Lambert equal-area projection,
@@ -323,7 +344,7 @@ def nc_lambert_ea(filename, input_frequencies=None, weight=None, SPL_range=None,
 
     """
     from panam.database import extract_SPL     # here: keeps netCDF4 out of the plotting module's import
-    azi, elv, phi, theta, radius, SPLO, SPLA, EAA, speed, flight_path_angle, _, _ = extract_SPL(filename, input_frequencies)
+    azi, elv, _, _, _, SPLO, SPLA, *_ = extract_SPL(filename, input_frequencies)
     if weight == 'A':
         SPL = SPLA
     else:
@@ -340,12 +361,11 @@ def nc_lambert_ea(filename, input_frequencies=None, weight=None, SPL_range=None,
 
 
 @acoustic_plot_style
-def lambert_ea_points(azimuth, elevation, markers=None, colors=None, sizes=None, alpha=1.0, grid_convention='umapr'):
+def lambert_ea_points(azimuth, elevation, markers=None, colors=None, sizes=None, alpha=1.0,
+                      grid_convention='umapr'):
     """
-    Plot levels on an acoustic sphere using the Lambert equal-area azimuthal projection.
-
-    This function creates a polar plot using Lambert equal-area projection to visualize
-    acoustic directivity patterns on a hemisphere.
+    Mark directions (for example the directions a microphone array samples) on a Lambert equal-area map of
+    the lower hemisphere.
 
     Parameters
     ----------
@@ -447,19 +467,3 @@ def lambert_ea_points(azimuth, elevation, markers=None, colors=None, sizes=None,
     _configure_lambert_axes(ax)
     _draw_lambert_grid(ax, grid_convention=grid_convention)
     return fig, ax, cs
-
-
-def get_ylorrd_cmap(num_levels=9):
-    """
-    Return a YlOrRd colormap with approximately `num_levels` discrete levels.
-    Uses palettable when an exact discrete palette exists (3..9),
-    otherwise falls back to Matplotlib's continuous 'YlOrRd'.
-    """
-    try:
-        import palettable.colorbrewer.sequential as cbseq
-        attr = f"YlOrRd_{int(num_levels)}"
-        if hasattr(cbseq, attr):
-            return getattr(cbseq, attr).mpl_colormap
-    except Exception:
-        pass
-    return matplotlib.colormaps['YlOrRd']

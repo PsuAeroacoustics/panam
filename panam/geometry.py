@@ -6,8 +6,11 @@ microphone and :func:`dedopplerize` resamples a pressure onto emission time
 files, ``.nod``, NORAH2) has phi 0 below, positive to starboard, and theta 0 at
 the nose; UMAPR (hemisphere dicts) has azimuth 180 ahead, 90 starboard, and
 elevation positive below the horizon.  :func:`art2umapr` and :func:`norah2umapr`
-convert; :func:`lambert_ea` projects onto the Lambert equal-area plane.
-Lengths are in the caller's units, speeds in those units per second.
+convert; :func:`lambert_ea` and :func:`lambert_lon` place directions on the Lambert
+equal-area page, and :func:`geodist` is the great-circle arc between two directions.
+:func:`finite_difference_velocity` differentiates a sampled track.
+Lengths are in the caller's units, speeds in those units per second.  hemigen and
+geodist work in degrees; the frame conversions and the Lambert functions in radians.
 """
 
 import numpy as np
@@ -106,7 +109,8 @@ def hemigen(time, source, velocity, observers, speed_of_sound, nose=None):
     else:
         nose = np.asarray(nose, dtype=float)
         if nose.ndim != 2 or nose.shape[0] != np.size(time) or nose.shape[1] not in (2, 3):
-            raise ValueError('nose must be shaped (Nt, 2) or (Nt, 3) to match time, not {}'.format(nose.shape))
+            raise ValueError('nose must be shaped (Nt, 2) or (Nt, 3) to match time, not {}'
+                             .format(nose.shape))
         if not np.all(np.isfinite(nose[:, :2])) or np.any(np.hypot(nose[:, 0], nose[:, 1]) == 0.0):
             raise ValueError('nose must give a finite, nonzero horizontal direction at every time')
         heading = np.degrees(np.arctan2(nose[:, 1, None], nose[:, 0, None]))
@@ -119,30 +123,6 @@ def finite_difference_velocity(time, position):
     differences of ``position`` (Nt, 3) over ``time`` (Nt,) s (one-sided at the
     ends), as ``depropagate_hemisphere`` takes it when none is given."""
     return np.gradient(position, axis=0) / np.gradient(time)[:, None]
-
-
-def norah2umapr(phi, theta):
-    """Convert NORAH2 (azimuth phi, polar theta) directions to UMAPR (azimuth, elevation).
-
-    NORAH2 defines emission angles in the body axes (x forward, y starboard,
-    z down) as x = cos(theta), y = sin(theta) sin(phi), z = sin(theta) cos(phi).
-    This is the same convention as ART (see :func:`art2umapr`), so the two
-    agree direction for direction.
-
-    Args:
-        phi: NORAH2 azimuth angles (radians), positive to starboard.
-        theta: NORAH2 polar angles (radians), 0 at the nose.
-
-    Returns: tuple (azimuth, elevation) angles (radians)
-    """
-    phi = np.asarray(phi, dtype=float)
-    theta = np.asarray(theta, dtype=float)
-    forward = np.cos(theta)
-    starboard = np.sin(theta) * np.sin(phi)
-    down = np.sin(theta) * np.cos(phi)
-    elv = np.arctan2(down, np.hypot(forward, starboard))
-    azi = np.mod(np.arctan2(starboard, -forward), 2.0 * np.pi)
-    return azi, elv
 
 
 def art2umapr(phi, theta):
@@ -169,6 +149,43 @@ def art2umapr(phi, theta):
     elv = -np.arctan2(z, np.sqrt(np.square(x) + np.square(y)))
     azi = np.arctan2(x, -y)
     azi[azi < 0.0] = azi[azi < 0.0] + 2.0 * np.pi
+    return azi, elv
+
+
+def _umapr2art(azimuth, elevation):
+    """Inverse of :func:`art2umapr`: UMAPR (azimuth, elevation) to ART (phi, theta), radians."""
+    azimuth = np.asarray(azimuth, dtype=float)
+    elevation = np.asarray(elevation, dtype=float)
+    cos_elevation = np.cos(elevation)
+    x = cos_elevation * np.sin(azimuth)
+    y = -cos_elevation * np.cos(azimuth)
+    z = -np.sin(elevation)
+    theta = np.arccos(np.clip(y, -1.0, 1.0))
+    phi = np.arctan2(x, -z)
+    return phi, theta
+
+
+def norah2umapr(phi, theta):
+    """Convert NORAH2 (azimuth phi, polar theta) directions to UMAPR (azimuth, elevation).
+
+    NORAH2 defines emission angles in the body axes (x forward, y starboard,
+    z down) as x = cos(theta), y = sin(theta) sin(phi), z = sin(theta) cos(phi).
+    This is the same convention as ART (see :func:`art2umapr`), so the two
+    agree direction for direction.
+
+    Args:
+        phi: NORAH2 azimuth angles (radians), positive to starboard.
+        theta: NORAH2 polar angles (radians), 0 at the nose.
+
+    Returns: tuple (azimuth, elevation) angles (radians)
+    """
+    phi = np.asarray(phi, dtype=float)
+    theta = np.asarray(theta, dtype=float)
+    forward = np.cos(theta)
+    starboard = np.sin(theta) * np.sin(phi)
+    down = np.sin(theta) * np.cos(phi)
+    elv = np.arctan2(down, np.hypot(forward, starboard))
+    azi = np.mod(np.arctan2(starboard, -forward), 2.0 * np.pi)
     return azi, elv
 
 
@@ -200,8 +217,8 @@ def lambert_lon(azimuth):
         azimuth   0 (behind)    -> bottom
 
     i.e. azimuth increases counter-clockwise on the page, as
-    :func:`lambert_ea_points` documents. Route every azimuth through here
-    rather than open-coding the shift: before 2026-08-19 the data used
+    :func:`panam.lambert_plots.lambert_ea_points` documents. Route every azimuth
+    through here rather than open-coding the shift: before 2026-08-19 the data used
     ``lon = azimuth - pi`` (which mirrors the lateral axis, putting
     starboard on the LEFT) while the meridian labels printed
     ``360 - meridian``, so the rim numbers disagreed with the field.
@@ -210,27 +227,17 @@ def lambert_lon(azimuth):
 
 
 def _lambert_xy_to_umapr(x, y):
+    """Inverse of ``lambert_ea(elevation, lambert_lon(azimuth))``: page (x, y) to UMAPR
+    (azimuth, elevation), radians."""
     azimuth = np.mod(np.pi / 2.0 - np.arctan2(-y, x), 2.0 * np.pi)
     q = np.sqrt(np.square(x) + np.square(y))
     elevation = np.pi / 2.0 - 2.0 * np.arcsin(np.clip(q / 2.0, 0.0, 1.0))
     return azimuth, elevation
 
 
-def _umapr2art(azimuth, elevation):
-    azimuth = np.asarray(azimuth, dtype=float)
-    elevation = np.asarray(elevation, dtype=float)
-    cos_elevation = np.cos(elevation)
-    x = cos_elevation * np.sin(azimuth)
-    y = -cos_elevation * np.cos(azimuth)
-    z = -np.sin(elevation)
-    theta = np.arccos(np.clip(y, -1.0, 1.0))
-    phi = np.arctan2(x, -z)
-    return phi, theta
-
-
 def geodist(elv1, azi1, elv2, azi2):
     """
-    Compute geodesic arc length (degrees) on a sphere 
+    Compute geodesic arc length (degrees) on a sphere
 
     Args:
         elv1, azi1, elv2, azi2: Scalars or array-like angles in degrees.

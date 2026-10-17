@@ -1,4 +1,4 @@
-"""Writers write a file in full or not at all (flight_acoustics._atomic_output)."""
+"""Writers write a file in full or not at all (sphere_io._atomic_output)."""
 
 import glob
 import os

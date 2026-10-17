@@ -4,7 +4,11 @@
 theta) grid and writes the sphere netCDF; :func:`load_nc_sphere` reads one back.
 The file contract, with ``RADIUS`` in ft and ``SPEED`` in knots, is
 ``docs/file_formats.md``.  :func:`mask_missing_levels` maps the on-disk missing
-markers (NaN, -999, >1e34) to -inf.
+markers (NaN, -999, >1e34) to -inf.  :func:`read_run_metadata` reads a sphere's
+per-run metadata back; :func:`band_index` finds a band center on a frequency axis.
+:func:`_atomic_output`, used by the sphere writer, both database writers and the ``.hem``
+writers (not :func:`norah2.write_norah2_triangulation`), writes a file in full or not at
+all.
 """
 
 import contextlib
@@ -43,7 +47,7 @@ def load_nc_sphere(filename):
 
     Every array is a plain float array.  netCDF4 returns masked arrays, and
     their masked cells came through arithmetic as masked scalars that
-    :func:`safe_log10` cannot test (409 RuntimeWarnings reducing one synthetic
+    :func:`spectra.safe_log10` cannot test (409 RuntimeWarnings reducing one synthetic
     flyby sphere), while other results came out right only because a mask
     happened to propagate.  Anything netCDF4 masks (a _FillValue, missing_value or
     valid-range hit) is NaN instead, which :func:`mask_missing_levels` reads
@@ -64,11 +68,6 @@ def load_nc_sphere(filename):
             speed = read(file_handle.variables['SPEED'])
             flight_path_angle = read(file_handle.variables['FLIGHT_PATH_ANGLE'])
     return amplitude, phi, theta, frequency, radius, speed, flight_path_angle
-
-
-#: Legacy AAM spheres blank-pad the ``unit`` attribute of every scalar variable
-#: to this width (a Fortran CHARACTER(20) field written verbatim).
-AAM_SCALAR_UNIT_WIDTH = 20
 
 
 #: What a sphere's azimuth is measured from (azimuth 180 along it): ``'track'``, the
@@ -137,7 +136,7 @@ def read_run_metadata(filename):
     with Dataset(filename, mode='r') as handle:
         for name, _, key in RUN_METADATA_VARIABLES:
             if name in handle.variables:
-                value = np.ma.filled(np.ma.asarray(handle.variables[name][...], dtype=float), np.nan)
+                value = _filled(handle.variables[name])
                 out[key] = float(np.ravel(value)[0])
         for name in RUN_METADATA_ATTRIBUTES:
             if name in handle.ncattrs():
@@ -178,11 +177,16 @@ def _doppler_shift_removed_of(handle, name):
     """:func:`_read_doppler_shift_removed` of an open sphere ``handle``; ``name`` labels errors."""
     if 'DOPPLER_SHIFT_REMOVED' not in handle.variables:
         return None
-    raw = np.ma.filled(np.ma.asarray(handle.variables['DOPPLER_SHIFT_REMOVED'][...], dtype=float), np.nan)
-    flag = np.asarray(raw, dtype=float).ravel()
+    raw = _filled(handle.variables['DOPPLER_SHIFT_REMOVED'])
+    flag = raw.ravel()
     if flag.size != 1 or flag[0] not in (0.0, 1.0):
         raise ValueError('{}: DOPPLER_SHIFT_REMOVED must be 0 or 1, found {}'.format(name, raw))
     return int(flag[0])
+
+
+def _filled(variable):
+    """All of a netCDF variable's values as a float array, NaN where masked."""
+    return np.ma.filled(np.ma.asarray(variable[...], dtype=float), np.nan)
 
 
 def _read_scalar(handle, name, *default):
@@ -194,8 +198,7 @@ def _read_scalar(handle, name, *default):
     if default and name not in handle.variables:
         return default[0]
     with np.errstate(invalid='ignore'):
-        return float(np.ravel(np.ma.filled(np.ma.asarray(handle.variables[name][...], dtype=float),
-                                           np.nan))[0])
+        return float(np.ravel(_filled(handle.variables[name]))[0])
 
 
 #: Level written into AMPLITUDE where a band carries no usable data.  The AAM
@@ -204,16 +207,6 @@ def _read_scalar(handle, name, *default):
 #: NaN -- and older panam output used a large positive sentinel, so
 #: :func:`mask_missing_levels` accepts all three on read.
 AAM_MISSING_LEVEL = -999.0
-
-
-#: The order AAM's own spheres declare their dimensions and variables in.  AAM 3.1.0 reads
-#: them by position, not by name: a sphere declaring PHI, THETA, FREQUENCY and AMPLITUDE
-#: first is refused ("RMNETCDF2 ... Variable ID mismatch!!"), as panam's were until the
-#: 2026-10-05 cross-code run found it.  Anything else a sphere carries comes after AMPLITUDE,
-#: which AAM accepts.
-AAM_VARIABLE_ORDER = ('BB', 'NB', 'PT', 'DOPPLER_SHIFT_REMOVED', 'EMPTY_WEIGHT', 'FUEL_WEIGHT',
-                      'LOAD_WEIGHT', 'RADIUS', 'FLIGHT_PATH_ANGLE', 'PYLON_ANGLE', 'SPEED', 'XYZ',
-                      'PHI', 'THETA', 'FREQUENCY', 'AMPLITUDE')
 
 
 #: Anything at or below this reads as masked.  Loose enough to survive the
@@ -241,13 +234,6 @@ def mask_missing_levels(amplitude):
     return amplitude
 
 
-def band_index(frequency_hz, band_hz):
-    """Index of the first band center in ``frequency_hz`` (Hz) within 0.1 % of
-    ``band_hz`` (Hz), or None when there is none."""
-    match = np.flatnonzero(np.isclose(frequency_hz, band_hz, rtol=1e-3, atol=0.0))
-    return int(match[0]) if match.size else None
-
-
 def missing_level_sentinel(levels_db):
     """True where a sphere level on disk is a missing-level sentinel: -999 or below, or > 1e34.
 
@@ -255,6 +241,13 @@ def missing_level_sentinel(levels_db):
     sentinel and gives False.
     """
     return (levels_db <= AAM_MISSING_THRESHOLD) | (levels_db > AAM_LEGACY_MISSING_THRESHOLD)
+
+
+def band_index(frequency_hz, band_hz):
+    """Index of the first band center in ``frequency_hz`` (Hz) within 0.1 % of
+    ``band_hz`` (Hz), or None when there is none."""
+    match = np.flatnonzero(np.isclose(frequency_hz, band_hz, rtol=1e-3, atol=0.0))
+    return int(match[0]) if match.size else None
 
 
 @contextlib.contextmanager
@@ -287,10 +280,29 @@ def _atomic_output(path):
         raise
 
 
-#: The ART grid :func:`write_aam_hemisphere_netcdf` writes when given none, deg.
+#: Legacy AAM spheres blank-pad the ``unit`` attribute of every scalar variable
+#: to this width (a Fortran CHARACTER(20) field written verbatim).
+AAM_SCALAR_UNIT_WIDTH = 20
+
+
+#: The order AAM's own spheres declare their dimensions and variables in.  AAM 3.1.0 reads
+#: them by position, not by name: a sphere declaring PHI, THETA, FREQUENCY and AMPLITUDE
+#: first is refused ("RMNETCDF2 ... Variable ID mismatch!!"), as panam's were until the
+#: 2026-10-05 cross-code run found it.  Anything else a sphere carries comes after AMPLITUDE,
+#: which AAM accepts.
+AAM_VARIABLE_ORDER = ('BB', 'NB', 'PT', 'DOPPLER_SHIFT_REMOVED', 'EMPTY_WEIGHT', 'FUEL_WEIGHT',
+                      'LOAD_WEIGHT', 'RADIUS', 'FLIGHT_PATH_ANGLE', 'PYLON_ANGLE', 'SPEED', 'XYZ',
+                      'PHI', 'THETA', 'FREQUENCY', 'AMPLITUDE')
+
+
+#: The ART phi grid :func:`write_aam_hemisphere_netcdf` writes when given none: -90..90 deg
+#: (lateral) in 10 deg steps, a common AAM/RNM range, as in the example sphere; step sizes
+#: vary by dataset.
 AAM_DEFAULT_PHI_DEG = np.arange(-90.0, 90.0 + 1e-9, 10.0)
 
 
+#: The ART theta grid :func:`write_aam_hemisphere_netcdf` writes when given none: 0..180 deg in
+#: 5 deg steps (longitudinal).
 AAM_DEFAULT_THETA_DEG = np.arange(0.0, 180.0 + 1e-9, 5.0)
 
 
@@ -304,17 +316,17 @@ def write_aam_hemisphere_netcdf(
         speed_knots: float = 0.0,
         flight_path_angle_deg: float = 0.0,
         radius_ft: Optional[float] = None,
-    title: Optional[str] = None,
-    BB: float = 1.0,
-    NB: float = 0.0,
-    PT: float = 0.0,
-    doppler_shift_removed: float = 0.0,
-    empty_weight_lb: Optional[float] = None,
-    fuel_weight_lb: Optional[float] = None,
-    load_weight_lb: Optional[float] = None,
-    pylon_angle_deg: float = 90.0,
-    masttilt_deg: float = 0.0,
-    xyz_ft=(0.0, 0.0, 0.0),
+        title: Optional[str] = None,
+        BB: float = 1.0,
+        NB: float = 0.0,
+        PT: float = 0.0,
+        doppler_shift_removed: float = 0.0,
+        empty_weight_lb: Optional[float] = None,
+        fuel_weight_lb: Optional[float] = None,
+        load_weight_lb: Optional[float] = None,
+        pylon_angle_deg: float = 90.0,
+        masttilt_deg: float = 0.0,
+        xyz_ft=(0.0, 0.0, 0.0),
         minimum_level_db: float = -100.0,
         overwrite: bool = True,
         azimuth_reference: Optional[str] = None,
@@ -332,7 +344,7 @@ def write_aam_hemisphere_netcdf(
     - ``AMPLITUDE`` (dB), shape (Nphi, Ntheta, Nfreq)
     - ``RADIUS`` (ft), ``SPEED`` (knots), ``FLIGHT_PATH_ANGLE`` (deg)
 
-    The input ``hemisphere`` must be the dict returned by :func:`depropagate_hemisphere`
+    The input ``hemisphere`` must be the dict returned by :func:`depropagation.depropagate_hemisphere`
     with either ``third_octave=True`` or ``narrowband=True`` enabled.
 
     Notes
@@ -344,7 +356,7 @@ def write_aam_hemisphere_netcdf(
 
     Args:
         filename: Path to the output netCDF file.
-        hemisphere: Output dict from :func:`depropagate_hemisphere`.
+        hemisphere: Output dict from :func:`depropagation.depropagate_hemisphere`.
         mode: 'auto', 'third_octave', or 'narrowband'. 'auto' prefers third-octave.
         phi_deg: Optional 1D ART phi grid (degrees). Default: -90..90 in 10 degree steps.
         theta_deg: Optional 1D ART theta grid (degrees). Default: 0..180 in 5 degree steps.
@@ -404,6 +416,7 @@ def write_aam_hemisphere_netcdf(
         settings = {key: value for key, value in locals().items()
                     if key not in ('hemisphere', 'run_metadata', 'provenance', 'filename',
                                    'art_levels', 'extra_variables')}
+        # A fixed panam_tool value (docs/file_formats.md): it kept its name when the function moved here.
         provenance = _provenance.build_provenance('flight_acoustics.write_aam_hemisphere_netcdf',
                                                   settings, inputs={'filename': _provenance.path_name(filename)})
 
@@ -455,12 +468,7 @@ def write_aam_hemisphere_netcdf(
     else:
         meta = hemisphere.get('metadata', {}) if isinstance(hemisphere.get('metadata', {}), dict) else {}
 
-    # Default ART grids.
-    # A common AAM/RNM convention (and the included example sphere) uses:
-    #   PHI:   -90..90   (lateral)
-    #   THETA: 0..180    (longitudinal)
-    # The step sizes can vary by dataset; pass phi_deg/theta_deg explicitly if you
-    # need an exact grid.
+    # Default ART grids; pass phi_deg/theta_deg for an exact grid.
     if phi_deg is None:
         phi_deg = AAM_DEFAULT_PHI_DEG
     if theta_deg is None:

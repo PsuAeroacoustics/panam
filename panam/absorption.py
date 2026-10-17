@@ -1,9 +1,10 @@
-"""Atmospheric absorption along a path and over a band.
+"""Atmospheric absorption along a path and over a band (``docs/THEORY.md`` section 5.4).
 
-:func:`atmosorb` is the ISO 9613-1 coefficient in dB/m (deg C, % RH, mbar);
-:func:`path_absorption_db` and :func:`_band_attenuation_db` apply the band
-absorption methods of :func:`panam.acoustics.atmosphere.band_absorption_db`
-(``docs/THEORY.md`` section 5.4).
+:func:`_band_attenuation_db` is one band's attenuation over a distance, and
+:func:`path_absorption_db` each path's in a uniform Atmosphere or a layered
+``absorption_profile``; :func:`metadata_atmosphere` recovers the Atmosphere a hemisphere
+records.  Atmospheres are in K, kPa and % RH.  :func:`atmosorb` is the legacy ISO 9613-1
+coefficient in dB/m from deg C, % RH and mbar.
 """
 
 import numpy as np

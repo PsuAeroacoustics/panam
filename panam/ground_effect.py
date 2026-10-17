@@ -3,7 +3,8 @@
 :func:`spherical_reflection_coefficient` is the spherical-wave reflection
 coefficient and :func:`ega` the excess ground attenuation, with the Chessell
 form of the boundary loss (``docs/THEORY.md`` section 4).  Flow resistance is in
-kPa s/m^2, lengths in m.
+kPa s/m^2.  Lengths and the sound speed are in any one consistent unit (ft and ft/s in the
+2017 build, or m and m/s); the value of :func:`ega`'s ``cturb`` depends on the length unit.
 """
 
 import numpy as np
@@ -72,15 +73,13 @@ def spherical_reflection_coefficient(cos_grazing, image_range, f, a, flores,
 #: with eta = pi (2^1/6 + 2^-1/6) (the band's arithmetic center) and mu = pi (2^1/6 - 2^-1/6)
 #: (its width).  They are not a spreading or a reflection coefficient.
 CHESSELL_MU = 0.727477
-
-
 CHESSELL_ETA = 6.325159
 
 
 def ega(hs, hr, d2, f, a, flores, pt=True, cturb=0.0, boundary_loss_correction=True):
     """
     Calculate excess ground attenuation for a non-directional point source.
-    
+
     Based on procedures in:
     - Chien and Soroka, "Sound Propagation Along an Impedance Plane",
       J. Sound. Vib., 43(1), 9-20, 1975 (corrected 1980)
@@ -88,14 +87,14 @@ def ega(hs, hr, d2, f, a, flores, pt=True, cturb=0.0, boundary_loss_correction=T
       Appl. Acoust., 3, 105-116, 1970.
     - Chessell, "Propagation of noise along an impedance boundary",
       JASA 62(4), 825-834, 1977
-    - Daigle, G.A., T.F.W. Embelton, and J.E. Piercy. 1979. "Some Comments on 
-      the Literature of Propagation Near Boundaries of Finite Acoustical 
+    - Daigle, G.A., T.F.W. Embelton, and J.E. Piercy. 1979. "Some Comments on
+      the Literature of Propagation Near Boundaries of Finite Acoustical
       Impedance," J. Acoust. Soc. Am. 66(3), 918-919.
     - Stusnick, Plotkin, Sutherland, "Short-Range Acoustic Propagation Model",
       Wyle Research Report WR 85-19, July 1985.
-    
+
     Assumes level terrain, no wind, straight acoustic rays.
-    
+
     Args:
         hs: Source height (ft or m, must match other length units)
         hr: Receiver height (ft or m)
@@ -118,16 +117,16 @@ def ega(hs, hr, d2, f, a, flores, pt=True, cturb=0.0, boundary_loss_correction=T
                f·sqrt(range), so its value depends on the length unit.
                Typical: 0 to 16e-4 rad·s·m^-0.5, i.e. 0 to 8.8e-4 rad·s·ft^-0.5.
                Used by the broadband mode only (pt=False).
-         boundary_loss_correction: When True (default), includes the boundary-loss factor
-             correction to the plane-wave reflection coefficient (Chessell), which is
-             most relevant at grazing incidence. When False, uses only the plane-wave
-             reflection coefficient.
-    
+        boundary_loss_correction: When True (default), includes the boundary-loss factor
+            correction to the plane-wave reflection coefficient (Chessell), which is
+            most relevant at grazing incidence. When False, uses only the plane-wave
+            reflection coefficient.
+
     Returns:
         atten: Attenuation in dB
         phase: Phase (radians) of resultant wave relative to direct path
                (Pure tones only; NaN for broadband case)
-    
+
     Notes:
         - Output "attenuation" is an attenuation factor in dB
         - Add to the SPL of the direct wave to compute SPL at receiver
@@ -155,12 +154,13 @@ def ega(hs, hr, d2, f, a, flores, pt=True, cturb=0.0, boundary_loss_correction=T
         np.cos(incidence_angle), image_range, f, a, flores, boundary_loss_correction)
     image_source_magnitude = np.abs(image_source_coeff)  # Magnitude of image source term
     image_source_phase = np.angle(image_source_coeff)  # Phase of image source term
-    
+
     # Compute excess ground attenuation
     if pt:
         # Pure tone expression (Chessell's Equation 19)
         phase_delay = 1j * 2.0 * np.pi * f * path_delay  # Phase delay between paths
-        resultant_amplitude = 1.0 + image_source_coeff * np.exp(phase_delay) / range_ratio  # Direct + image amplitude
+        # Direct + image amplitude
+        resultant_amplitude = 1.0 + image_source_coeff * np.exp(phase_delay) / range_ratio
         phase = np.angle(resultant_amplitude)
         attn = np.abs(resultant_amplitude)**2
     else:
@@ -168,15 +168,17 @@ def ega(hs, hr, d2, f, a, flores, pt=True, cturb=0.0, boundary_loss_correction=T
         freq_path_delay = f * path_delay  # Normalized frequency-path delay product
         normalized_image_mag = image_source_magnitude / range_ratio  # Normalized image magnitude
         normalized_image_mag_sq = normalized_image_mag ** 2
-        
+
         # Add turbulence factor (Chessell Equations 25, 27)
-        turbulence_factor = np.exp(-(0.5 * cturb * f * np.sqrt(direct_range))**2) if np.any(cturb > 0.0) else 1.0
-        
+        turbulence_factor = (np.exp(-(0.5 * cturb * f * np.sqrt(direct_range))**2)
+                             if np.any(cturb > 0.0) else 1.0)
+
         # Combine attenuation computation
-        ground_phase_term = CHESSELL_ETA * freq_path_delay + image_source_phase  # interference phase at the band center
+        # Interference phase at the band center
+        ground_phase_term = CHESSELL_ETA * freq_path_delay + image_source_phase
         spherical_phase_term = CHESSELL_MU * freq_path_delay  # the band-width sinc's argument
         cosine_factor = np.cos(ground_phase_term) * turbulence_factor
-        
+
         attn = 1.0 + normalized_image_mag_sq + 2.0 * normalized_image_mag * cosine_factor
         mask_positive_delay = path_delay > 0.0
         # np.where evaluates both branches, so sin(x)/x is also taken at the
@@ -184,13 +186,15 @@ def ega(hs, hr, d2, f, a, flores, pt=True, cturb=0.0, boundary_loss_correction=T
         with np.errstate(divide='ignore', invalid='ignore'):
             attn = np.where(
                 mask_positive_delay,
-                1.0 + normalized_image_mag_sq + 2.0 * normalized_image_mag * np.sin(spherical_phase_term) * cosine_factor / spherical_phase_term,
+                1.0 + normalized_image_mag_sq
+                + 2.0 * normalized_image_mag * np.sin(spherical_phase_term)
+                * cosine_factor / spherical_phase_term,
                 attn
             )
-        
+
         # Phase has no meaning for broadband, so set to NaN
         phase = np.full_like(attn, np.nan)
-    
+
     # Convert magnitude to dB
     if not np.all(np.isfinite(attn)):
         raise ValueError('Error in EGA: non-finite attenuation magnitude encountered (check for f = 0)')
@@ -198,5 +202,5 @@ def ega(hs, hr, d2, f, a, flores, pt=True, cturb=0.0, boundary_loss_correction=T
         attenuation_db = 10.0 * np.log10(attn)
     else:
         raise ValueError('Error in EGA: non-positive attenuation magnitude encountered')
-    
+
     return attenuation_db, phase

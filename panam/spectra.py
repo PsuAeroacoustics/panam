@@ -1,4 +1,5 @@
-"""Spectra and levels: PSDs, one-third octave bands, spectrograms, A-weighting and filters.
+"""Spectra and levels: PSDs, overall and time-history levels, one-third octave bands, spectrograms,
+A-weighting, and high- and low-pass filters (zero-phase by default).
 
 Pressures are in Pa and levels in dB re :data:`P_REF` (20 uPa); frequencies in Hz.
 :func:`tone_aware_band_power` files each tone whole in the band of its own
@@ -17,6 +18,91 @@ from panam.acoustics.plotting import acoustic_plot_style
 
 #: Reference sound pressure, Pa (20 uPa).
 P_REF = 2.0e-5
+
+
+def power_to_db(power):
+    """10 * log10(power), for power relative to its reference (p**2 / pref**2).
+
+    Zero power comes back as -inf (no energy) and NaN stays NaN (no data), with
+    none of numpy's divide-by-zero warnings.  Neither becomes a finite floor:
+    the -3076 dB that ``np.maximum(power, np.finfo(float).tiny)`` gives reads as
+    a level, pulling plot color scales and statistics down with it.
+    """
+    with np.errstate(divide='ignore', invalid='ignore'):
+        return 10.0 * np.log10(np.asarray(power, dtype=float))
+
+
+def safe_log10(x):
+    """
+    Safe version of log10, where values below zero are returned as NaN and values equal to zero are -inf
+    Args:
+        x: array of values
+
+    Returns: checked log10 value
+    """
+    if x == 0:
+        return -np.inf
+    if x < 0:
+        return np.nan
+    else:
+        return np.log10(x)
+
+
+def OASPL(amplitudes):
+    """
+    Integrate an array of SPL amplitudes to compute the OASPL
+    Args:
+        amplitudes: array of SPL amplitudes
+    Returns:
+        OASPL, dB
+    """
+    return 10.0 * safe_log10(np.sum(np.power(10.0, amplitudes / 10.0)))
+
+
+def dBAw(f):
+    """
+    A-weighting curve
+    Args:
+        f: frequencies to evaluate
+
+    Returns: weighting (in dB) at each frequency
+    """
+    f = np.asarray(f, dtype=float)
+    aweights = np.full_like(f, -300.0, dtype=float)
+    pos = f > 0
+    if np.any(pos):
+        fp = f[pos]
+        aweights[pos] = (
+            10.0 * np.log10(
+                1.562339
+                * fp ** 4.0
+                / ((fp ** 2.0 + 107.65265 ** 2.0) * (fp ** 2.0 + 737.86223 ** 2.0))
+            )
+            + 10.0
+            * np.log10(
+                2.242881e16
+                * fp ** 4.0
+                / ((fp ** 2.0 + 20.598997 ** 2.0) ** 2.0 * (fp ** 2.0 + 12194.22 ** 2.0) ** 2.0)
+            )
+        )
+    return aweights
+
+
+def nextpow2(x):
+    """
+    Compute the smallest integer N for x <= 2**N
+    Args:
+        x: number or array-like of values for which to compute N
+
+    Returns:
+        number or array like of integral N
+    """
+    return np.ceil(np.log2(np.abs(x)))
+
+
+def frame_length(window_time, sampling_rate):
+    """Samples in an analysis frame of ``window_time`` seconds: the next power of two."""
+    return int(2.0 ** nextpow2(window_time * sampling_rate))
 
 
 def psd(signal, sampling_rate, cal=0.0, window='hann'):
@@ -51,7 +137,8 @@ def psd(signal, sampling_rate, cal=0.0, window='hann'):
     return frequency, psd_db, level
 
 
-def psd_welch(signal, sampling_rate, cal=0.0, window_time=1.0, window_type='hann', window_overlap=0.5, medfilter=None, passband = None):
+def psd_welch(signal, sampling_rate, cal=0.0, window_time=1.0, window_type='hann', window_overlap=0.5,
+              medfilter=None, passband=None):
     """
     Compute the acoustic power spectral density of a signal
 
@@ -154,24 +241,7 @@ def level_history(signal, sampling_rate, period=1.0, window='hann'):
     return time, level_a, level_z
 
 
-def frame_length(window_time, sampling_rate):
-    """Samples in an analysis frame of ``window_time`` seconds: the next power of two."""
-    return int(2.0 ** nextpow2(window_time * sampling_rate))
-
-
-def nextpow2(x):
-    """
-    Compute the smallest integer N for x <= 2**N
-    Args:
-        x: number or array-like of values for which to compute N
-
-    Returns:
-        number or array like of integral N
-    """
-    return np.ceil(np.log2(np.abs(x)))
-
-
-# Exact base-2 one-third octave band centers, 1000 * 2**(k/3), 0.01 Hz to 100 kHz
+#: Exact base-2 one-third octave band centers, 1000 * 2**(k/3) for k = -50..49, Hz.
 BASE2_BAND_CENTERS = 1000.0 * 2.0 ** (np.arange(-50, 50) / 3.0)
 
 
@@ -190,6 +260,39 @@ def _bands_within(band_centers, fmin, fmax):
     lower, upper = third_octave_band_edges(band_centers)
     slack = 1.0 + 1e-9
     return np.logical_and(lower * slack >= fmin, upper <= fmax * slack)
+
+
+def third_octave_band_edges(band_centers_hz):
+    """Lower and upper edges of one-third octave bands that tile without gaps.
+
+    Nominal centers (12.5, 1250, 1600 Hz, ...) are rounded, so edges taken as
+    ``fc * 2**(+-1/6)`` straight from them overlap their neighbors or leave
+    gaps -- up to 8 % of a band -- and a brick-wall band sum then drops or
+    double-counts whatever lies there (a 1410 Hz tone falls in no band, an
+    895 Hz one in two).  IEC 61260-1 defines each nominal band by its exact
+    base-10 midband ``1000 * 10**(k/10)``, with edges a twentieth of a decade
+    either side, so a nominal center (within a quarter band of one) is given
+    those edges.  When every center is one of this module's own exact base-2
+    centers ``1000 * 2**(k/3)``, they already tile and keep their
+    ``fc * 2**(+-1/6)`` edges.  In a set that mixes the two, the base-2
+    centers take their band's base-10 edges as well, because edges from the
+    two grids do not meet: keeping ``fc * 2**(+-1/6)`` for 1259.9 Hz next to a
+    nominal 1600 Hz band would overlap it by 1.7 Hz.  A center near neither
+    grid keeps ``fc * 2**(+-1/6)``.
+
+    Args:
+        band_centers_hz: band center frequencies, Hz (exact or nominal)
+    Returns: tuple (f_lower, f_upper) of arrays, Hz
+    """
+    fc = np.asarray(band_centers_hz, dtype=float)
+    base2 = 1000.0 * 2.0 ** (np.round(3.0 * np.log2(fc / 1000.0)) / 3.0)
+    if np.allclose(fc, base2, rtol=1e-9, atol=0.0):
+        return fc / 2.0 ** (1.0 / 6.0), fc * 2.0 ** (1.0 / 6.0)
+    base10 = 1000.0 * 10.0 ** (np.round(10.0 * np.log10(fc / 1000.0)) / 10.0)
+    nominal = np.abs(np.log2(fc / base10)) < 1.0 / 12.0
+    fm = np.where(nominal, base10, fc)
+    half_band = np.where(nominal, 10.0 ** (1.0 / 20.0), 2.0 ** (1.0 / 6.0))
+    return fm / half_band, fm * half_band
 
 
 def third_octave_band_levels(signal, sampling_rate, cal=0.0, fmin=20.0, fmax=20000.0, window='hann'):
@@ -228,122 +331,8 @@ def third_octave_band_levels(signal, sampling_rate, cal=0.0, fmin=20.0, fmax=200
     return band_centers, band_levels
 
 
-def third_octave_band_edges(band_centers_hz):
-    """Lower and upper edges of one-third octave bands that tile without gaps.
-
-    Nominal centers (12.5, 1250, 1600 Hz, ...) are rounded, so edges taken as
-    ``fc * 2**(+-1/6)`` straight from them overlap their neighbors or leave
-    gaps -- up to 8 % of a band -- and a brick-wall band sum then drops or
-    double-counts whatever lies there (a 1410 Hz tone falls in no band, an
-    895 Hz one in two).  IEC 61260-1 defines each nominal band by its exact
-    base-10 midband ``1000 * 10**(k/10)``, with edges a twentieth of a decade
-    either side, so a nominal center (within a quarter band of one) is given
-    those edges.  When every center is one of this module's own exact base-2
-    centers ``1000 * 2**(k/3)``, they already tile and keep their
-    ``fc * 2**(+-1/6)`` edges.  In a set that mixes the two, the base-2
-    centers take their band's base-10 edges as well, because edges from the
-    two grids do not meet: keeping ``fc * 2**(+-1/6)`` for 1259.9 Hz next to a
-    nominal 1600 Hz band would overlap it by 1.7 Hz.  A center near neither
-    grid keeps ``fc * 2**(+-1/6)``.
-
-    Args:
-        band_centers_hz: band center frequencies, Hz (exact or nominal)
-    Returns: tuple (f_lower, f_upper) of arrays, Hz
-    """
-    fc = np.asarray(band_centers_hz, dtype=float)
-    base2 = 1000.0 * 2.0 ** (np.round(3.0 * np.log2(fc / 1000.0)) / 3.0)
-    if np.allclose(fc, base2, rtol=1e-9, atol=0.0):
-        return fc / 2.0 ** (1.0 / 6.0), fc * 2.0 ** (1.0 / 6.0)
-    base10 = 1000.0 * 10.0 ** (np.round(10.0 * np.log10(fc / 1000.0)) / 10.0)
-    nominal = np.abs(np.log2(fc / base10)) < 1.0 / 12.0
-    fm = np.where(nominal, base10, fc)
-    half_band = np.where(nominal, 10.0 ** (1.0 / 20.0), 2.0 ** (1.0 / 6.0))
-    return fm / half_band, fm * half_band
-
-
-def spectrogram(signal, sampling_rate, window_time=0.5, window_type="hann", window_overlap=7.0 / 8.0,
-                detrend='constant', dbref=20e-6):
-    """
-    Computes the spectrogram of a signal
-    Args:
-        signal: array-like containing acoustic signal
-        sampling_rate: sampling rate of signal, Hz
-        window_time: duration of windows, s
-        window_type: optional type of window to us, see scipy.signal.window, default="hann"
-        window_overlap: optional proportion of overlap for windows, default=7.0/8.0
-        detrend: optional detrending mode for signal, see scipy.signal.detrend
-        dbref: optional reference value for calculating decibels, default 20e-6
-
-    Returns: tuple (f, t, SPL)
-    WHERE
-    f is an array of frequencies
-    t is an array of times
-    SPL is a frequency x time power spectral density spectrogram, dB re (20 uPa)^2/Hz
-    """
-    # Pick next power of two that captures the window time, and generate the window
-    binwidth = frame_length(window_time, sampling_rate)
-    window = scipy.signal.get_window(window_type, binwidth)
-    # Calculate the spectrogram as a PSD
-    f, t, Sxx = scipy.signal.spectrogram(signal, sampling_rate, window, noverlap=round(window_overlap * binwidth),
-                                         detrend=detrend, mode='psd')
-    # Convert to SPL (exact zeros in Sxx are legitimate; -inf, not a warning)
-    with np.errstate(divide='ignore'):
-        SPL = 10.0 * np.log10(Sxx / (dbref ** 2))
-    return f, t, SPL
-
-
-@acoustic_plot_style
-def plot_spectrogram(signal, sampling_rate, window_time=1.0, window_type="hann", window_overlap=7.0 / 8.0,
-                     detrend='constant', dbref=20e-6, save_name=None, title=None, time0=0, clim=None, flim=None):
-    """
-    Plot a spectrogram of signal
-    Args:
-        signal: array-like containing acoustic signal
-        sampling_rate: sampling rate of signal, Hz
-        window_time: duration of windows, s
-        window_type: optional type of window to us, see scipy.signal.window, default="hann"
-        window_overlap: optional proportion of overlap for windows, default=7.0/8.0
-        detrend: optional detrending mode for signal, see scipy.signal.detrend
-        dbref: optional reference value for calculating decibels, default 20e-6
-        save_name: optional path to image file to save figure, default None
-        title: optional title for the plot, default None
-        time0: optional start time for signal, default 0
-        clim: optional level scale color limits, default None
-        flim: optional frequency scale limits, default None
-
-    Returns: tuple (fig, ax, cs)
-    WHERE
-    fig is a matplotlib handle to the figure
-    ax is a matplotlib handle to the plot axis
-    cs is a matplotlib handle to the contour quadmesh
-    """
-    f, t, SPL = spectrogram(signal, sampling_rate, window_time, window_type, window_overlap, detrend, dbref)
-    if flim is not None:
-        fidx = np.logical_and(f >= flim[0], f <= flim[1])
-        f = f[fidx]
-        SPL = SPL[fidx, :]
-
-    from matplotlib.pyplot import colorbar, subplots   # here: only the plot needs pyplot
-    fig, ax = subplots(facecolor='white')
-    if clim is None:
-        vmin = None
-        vmax = None
-    else:
-        vmin = clim[0]
-        vmax = clim[1]
-    cs = ax.pcolormesh(t + time0, f, SPL, vmin=vmin, vmax=vmax)
-    cb = colorbar(cs, format='%.0f')
-    ax.set_ylabel('Frequency, Hz')
-    ax.set_xlabel('Time, s')
-    cb.set_label('Power Spectral Density, dB')
-    if title is not None:
-        ax.set_title(title)
-    if save_name is not None:
-        fig.savefig(os.path.abspath(os.path.expanduser(save_name)))
-    return fig, ax, cs
-
-
-HANN_ENBW = 1.5          # equivalent noise bandwidth of a Hann window, bins
+#: Equivalent noise bandwidth of a Hann window, bins.
+HANN_ENBW = 1.5
 
 
 def hann_power(offset):
@@ -429,7 +418,8 @@ def _tone_aware_bands(psd, f, lower, upper, doppler=None, *, floor_bins=15, thre
     """:func:`tone_aware_band_power` as (total, tonal, broadband); the last two None unless ``parts``."""
     df = f[1] - f[0]
     floor = _running_floor(psd, floor_bins)
-    peak = (psd == maximum_filter1d(psd, size=2 * lobe + 1, axis=0, mode='nearest')) & (psd > floor * 10 ** (threshold_db / 10))
+    peak = ((psd == maximum_filter1d(psd, size=2 * lobe + 1, axis=0, mode='nearest')) &
+            (psd > floor * 10 ** (threshold_db / 10)))
     peak[:reach] = peak[-reach:] = False
     I, J = np.nonzero(peak)
     p0 = np.maximum(psd[I, J] - floor[I, J], 1e-300)
@@ -461,89 +451,88 @@ def _tone_aware_bands(psd, f, lower, upper, doppler=None, *, floor_bins=15, thre
     return out, tonal_bands, broadband_bands
 
 
-def _bands_missing(dropped, f, lower, upper, doppler):
-    """(Nbands, Npts) True where a band, its edges scaled by each column's
-    ``doppler``, spans a ``dropped`` bin or reaches more than half a bin past
-    the bins ``f`` holds (the most an unscaled band within the selected range
-    can, since the bins stop within a bin of either end of it)."""
-    df = f[1] - f[0]
-    edge0, edge1 = f[0] - 0.5 * df, f[-1] + 0.5 * df
-    lower, upper = np.asarray(lower, dtype=float), np.asarray(upper, dtype=float)
-    out = ((lower[:, None] * doppler[None, :] < edge0 - 0.5 * df)
-           | (upper[:, None] * doppler[None, :] > edge1 + 0.5 * df))
-    if dropped.any():
-        count = np.zeros((dropped.shape[0] + 1, dropped.shape[1]), dtype=np.int32)
-        np.cumsum(dropped, axis=0, dtype=np.int32, out=count[1:])
-        out |= _band_integrals(count, edge0, df, lower, upper, doppler) > 0.0
-    return out
-
-
-def OASPL(amplitudes):
+def spectrogram(signal, sampling_rate, window_time=0.5, window_type="hann", window_overlap=7.0 / 8.0,
+                detrend='constant', dbref=P_REF):
     """
-    Integrate an array of SPL amplitudes to compute the OASPL
+    Computes the spectrogram of a signal
     Args:
-        amplitudes: array of SPL amplitudes
-    Returns:
-        OASPL, dB
+        signal: array-like containing acoustic signal
+        sampling_rate: sampling rate of signal, Hz
+        window_time: duration of windows, s
+        window_type: optional type of window to us, see scipy.signal.window, default="hann"
+        window_overlap: optional proportion of overlap for windows, default=7.0/8.0
+        detrend: optional detrending mode for signal, see scipy.signal.detrend
+        dbref: optional reference pressure for calculating decibels, Pa, default :data:`P_REF`
+            (20 uPa)
+
+    Returns: tuple (f, t, SPL)
+    WHERE
+    f is an array of frequencies
+    t is an array of times
+    SPL is a frequency x time power spectral density spectrogram, dB re (20 uPa)^2/Hz
     """
-    return 10.0 * safe_log10(np.sum(np.power(10.0, amplitudes / 10.0)))
+    # Pick next power of two that captures the window time, and generate the window
+    binwidth = frame_length(window_time, sampling_rate)
+    window = scipy.signal.get_window(window_type, binwidth)
+    # Calculate the spectrogram as a PSD
+    f, t, Sxx = scipy.signal.spectrogram(signal, sampling_rate, window, noverlap=round(window_overlap * binwidth),
+                                         detrend=detrend, mode='psd')
+    # Convert to SPL (exact zeros in Sxx are legitimate; -inf, not a warning)
+    with np.errstate(divide='ignore'):
+        SPL = 10.0 * np.log10(Sxx / (dbref ** 2))
+    return f, t, SPL
 
 
-def power_to_db(power):
-    """10 * log10(power), for power relative to its reference (p**2 / pref**2).
-
-    Zero power comes back as -inf (no energy) and NaN stays NaN (no data), with
-    none of numpy's divide-by-zero warnings.  Neither becomes a finite floor:
-    the -3076 dB that ``np.maximum(power, np.finfo(float).tiny)`` gives reads as
-    a level, pulling plot color scales and statistics down with it.
+@acoustic_plot_style
+def plot_spectrogram(signal, sampling_rate, window_time=1.0, window_type="hann", window_overlap=7.0 / 8.0,
+                     detrend='constant', dbref=P_REF, save_name=None, title=None, time0=0, clim=None, flim=None):
     """
-    with np.errstate(divide='ignore', invalid='ignore'):
-        return 10.0 * np.log10(np.asarray(power, dtype=float))
-
-
-def safe_log10(x):
-    """
-    Safe version of log10, where values below zero are returned as NaN and values equal to zero are -inf
+    Plot a spectrogram of signal
     Args:
-        x: array of values
+        signal: array-like containing acoustic signal
+        sampling_rate: sampling rate of signal, Hz
+        window_time: duration of windows, s
+        window_type: optional type of window to us, see scipy.signal.window, default="hann"
+        window_overlap: optional proportion of overlap for windows, default=7.0/8.0
+        detrend: optional detrending mode for signal, see scipy.signal.detrend
+        dbref: optional reference pressure for calculating decibels, Pa, default :data:`P_REF`
+            (20 uPa)
+        save_name: optional path to image file to save figure, default None
+        title: optional title for the plot, default None
+        time0: optional start time for signal, default 0
+        clim: optional level scale color limits, default None
+        flim: optional frequency scale limits, default None
 
-    Returns: checked log10 value
+    Returns: tuple (fig, ax, cs)
+    WHERE
+    fig is a matplotlib handle to the figure
+    ax is a matplotlib handle to the plot axis
+    cs is a matplotlib handle to the contour quadmesh
     """
-    if x == 0:
-        return -np.inf
-    if x < 0:
-        return np.nan
+    f, t, SPL = spectrogram(signal, sampling_rate, window_time, window_type, window_overlap, detrend, dbref)
+    if flim is not None:
+        fidx = np.logical_and(f >= flim[0], f <= flim[1])
+        f = f[fidx]
+        SPL = SPL[fidx, :]
+
+    from matplotlib.pyplot import colorbar, subplots   # here: only the plot needs pyplot
+    fig, ax = subplots(facecolor='white')
+    if clim is None:
+        vmin = None
+        vmax = None
     else:
-        return np.log10(x)
-
-
-def dBAw(f):
-    """
-    A-weighting curve
-    Args:
-        f: frequencies to evaluate
-
-    Returns: weighting (in dB) at each frequency
-    """
-    f = np.asarray(f, dtype=float)
-    aweights = np.full_like(f, -300.0, dtype=float)
-    pos = f > 0
-    if np.any(pos):
-        fp = f[pos]
-        aweights[pos] = (
-            10.0 * np.log10(
-                1.562339
-                * fp ** 4.0
-                / ((fp ** 2.0 + 107.65265 ** 2.0) * (fp ** 2.0 + 737.86223 ** 2.0))
-            )
-            + 10.0
-            * np.log10(
-                2.242881e16
-                * fp ** 4.0
-                / ((fp ** 2.0 + 20.598997 ** 2.0) ** 2.0 * (fp ** 2.0 + 12194.22 ** 2.0) ** 2.0)
-            )
-        )
-    return aweights
+        vmin = clim[0]
+        vmax = clim[1]
+    cs = ax.pcolormesh(t + time0, f, SPL, vmin=vmin, vmax=vmax)
+    cb = colorbar(cs, format='%.0f')
+    ax.set_ylabel('Frequency, Hz')
+    ax.set_xlabel('Time, s')
+    cb.set_label('Power Spectral Density, dB')
+    if title is not None:
+        ax.set_title(title)
+    if save_name is not None:
+        fig.savefig(os.path.abspath(os.path.expanduser(save_name)))
+    return fig, ax, cs
 
 
 def highpass(x, fpass, fs, zero_phase=True):

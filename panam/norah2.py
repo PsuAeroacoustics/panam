@@ -1,9 +1,11 @@
 """NORAH2 (HELENA, ECAC Doc 32) hemispheres: reading, writing, and a NICEOPS database from them.
 
 :func:`write_norah2_hemisphere` and :func:`write_norah2_levels` write ``.hem``
-files, :func:`load_norah2_hemisphere` reads them, and
-:func:`build_database_from_norah2` imports them into a NICEOPS database
-(``docs/THEORY.md`` section 8 and ``docs/norah2_import.md``).
+files, :func:`write_norah2_triangulation` writes the ``[type]_Triangulation.int``
+file through which NORAH2 finds them, and :func:`load_norah2_hemisphere` reads
+them. :func:`build_database_from_norah2` imports them into a NICEOPS database
+(``docs/THEORY.md`` section 8 and ``docs/norah2_import.md``). Distances are in
+meters, speeds in knots and angles in degrees (NORAH2 phi and theta).
 """
 
 import os
@@ -16,6 +18,7 @@ import numpy as np
 from panam import provenance as _provenance
 from panam import unit_conversion
 from panam.acoustics.atmosphere import Atmosphere
+from panam.acoustics.iso_9613_1_1993 import saturation_pressure
 from panam.geometry import norah2umapr
 from panam.absorption import metadata_atmosphere, _band_attenuation_db, _check_band_method
 from panam.gridding import _sample_hemisphere_levels
@@ -40,33 +43,20 @@ NORAH2_BAND_CENTERS_HZ = np.array([
     1000.0, 1250.0, 1600.0, 2000.0, 2500.0, 3150.0, 4000.0, 5000.0, 6300.0, 8000.0,
     10000.0])
 
-
 #: Polar angle: 0 at the nose, 90 straight down (at phi = 0), 180 at the tail.
 NORAH2_THETA_DEG = np.arange(0.0, 180.0 + 1e-9, 10.0)
-
-
 #: Azimuth: negative to port, positive to starboard, 0 in the vertical plane.
 NORAH2_PHI_DEG = np.arange(-90.0, 90.0 + 1e-9, 10.0)
-
 
 #: Every NORAH2 hemisphere is defined at 60 m, with absorption over those 60 m
 #: included for the ICAO reference atmosphere (FREEFIELD = 2).  NORAH2 takes
 #: that absorption back out using TAMB/RELHUM/PAMB before propagating, so the
 #: header and the levels must agree.
 NORAH2_REFERENCE_DISTANCE_M = 60.0
-
-
 NORAH2_REFERENCE_TEMPERATURE_K = 298.15
-
-
 NORAH2_REFERENCE_RELATIVE_HUMIDITY = 70.0
-
-
 NORAH2_REFERENCE_PRESSURE_PA = 101325.0
-
-
 NORAH2_MISSING_LEVEL = -999.0
-
 
 #: Third table of every shipped triangulation file: level corrections NORAH2
 #: applies for operations it has no hemisphere of their own for.
@@ -131,7 +121,7 @@ def write_norah2_hemisphere(
 
     Args:
         filename: Path to the output ``.hem`` file.
-        hemisphere: Output dict from :func:`depropagate_hemisphere` with
+        hemisphere: Output dict from :func:`depropagation.depropagate_hemisphere` with
             ``third_octave=True``.
         speed_knots: ``ACSPEED`` (knots).  The format labels it indicated airspeed,
             but NORAH2 looks hemispheres up by ground speed, which is what panam's
@@ -148,7 +138,7 @@ def write_norah2_hemisphere(
             shipped files carry these and some do not; they are written only
             when given.
         minimum_level_db: Levels (at 60 m) below this are written as -999; see
-            :func:`write_aam_hemisphere_netcdf`. Pass -inf to keep every finite level.
+            :func:`sphere_io.write_aam_hemisphere_netcdf`. Pass -inf to keep every finite level.
         overwrite: If False, raises when filename exists.
 
     Returns:
@@ -475,6 +465,21 @@ def write_norah2_triangulation(filename, hemispheres, *, corrections=NORAH2_DEFA
     return triangles
 
 
+def _conditions_are_collinear(mus, gammas):
+    """Whether (advance ratio, flight path angle) points all lie on one line.
+
+    Taken as NICEOPS takes them, each axis normalized onto [0, 1] (a
+    collinear set stays collinear under that, and the tolerance then has a
+    scale).  A constant axis is collinear.
+    """
+    if np.ptp(mus) == 0.0 or np.ptp(gammas) == 0.0:
+        return True
+    points = np.column_stack(((mus - mus.min()) / np.ptp(mus),
+                              (gammas - gammas.min()) / np.ptp(gammas)))
+    offsets = points[1:] - points[0]
+    return bool(np.linalg.matrix_rank(offsets, tol=1e-9) < 2)
+
+
 # --- Importing NORAH2 hemispheres into a NICEOPS database -------------------
 #
 # The two formats disagree on four things, each worth a decibel or more if it
@@ -502,22 +507,16 @@ def write_norah2_triangulation(filename, hemispheres, *, corrections=NORAH2_DEFA
 #: database speed_reference each one produces.
 NORAH2_SPEED_MAPPINGS = {'ias_to_tas': 'air', 'ground_speed': 'ground'}
 
-
 #: ICAO standard sea-level density, kg/m^3: indicated airspeed is true airspeed
 #: in air of this density.
 STANDARD_SEA_LEVEL_DENSITY = 1.225
 
-
 #: Specific gas constants of dry air and water vapor, J/(kg K).
 DRY_AIR_GAS_CONSTANT = 287.058
-
-
 WATER_VAPOR_GAS_CONSTANT = 461.495
-
 
 #: Radius of every sphere in a panam-built NICEOPS database: 100 ft.
 DATABASE_SPHERE_RADIUS_M = 30.48
-
 
 #: The table constants a .hem must carry for it to be converted.
 _NORAH2_REQUIRED_CONSTANTS = ('POLDIST', 'FREEFIELD', 'TAMB', 'RELHUM', 'PAMB', 'ACSPEED', 'GAMM')
@@ -529,7 +528,6 @@ def humid_air_density(temperature_k, pressure_pa, relative_humidity):
     The vapor pressure is ``relative_humidity`` percent of the ISO 9613-1
     saturation pressure, the same formula the absorption uses.
     """
-    from panam.acoustics.iso_9613_1_1993 import saturation_pressure
     temperature_k = float(temperature_k)
     vapor_pa = float(relative_humidity) / 100.0 * saturation_pressure(temperature_k) * 1000.0
     return ((float(pressure_pa) - vapor_pa) / (DRY_AIR_GAS_CONSTANT * temperature_k)
@@ -715,17 +713,17 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
       direction's level instead, as NORAH2 does at use time, still with
       coverage 0;
     - the upper hemisphere completed by panam's mirror, phi -> 180 - phi, with
-      coverage 0 (:func:`mirror_phi_to_upper_surface`);
+      coverage 0 (:func:`database.mirror_phi_to_upper_surface`);
     - the speed mapped by ``speed_mapping`` (:func:`norah2_speed_knots`), and the
       flight path angle taken from GAMM (negative in descent) as stored.
 
-    With ``synthesize_hover``, a hover is added as :func:`build_empirical_database`
+    With ``synthesize_hover``, a hover is added as :func:`database.build_empirical_database`
     makes one (THEORY 7.4): the slowest converted condition within
-    :data:`LEVEL_FLIGHT_TOLERANCE` degrees of level flight (the slowest overall,
+    :data:`database.LEVEL_FLIGHT_TOLERANCE` degrees of level flight (the slowest overall,
     with a warning, if none is) is averaged fore to aft in energy, a cell keeps
     coverage 1 only where both partners were measured, and the result is written
     at advance ratio 0 and flight path angles -12, 0 and +12 deg
-    (:data:`HOVER_FLIGHT_PATH_ANGLES`).  Its groups carry ``condition_origin =
+    (:data:`database.HOVER_FLIGHT_PATH_ANGLES`).  Its groups carry ``condition_origin =
     'synthesized_hover'`` and the source file's ``norah2_source`` and constants.
 
     The root records ``speed_reference`` from the mapping,
@@ -754,7 +752,7 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
             place of each file's measurement atmosphere.
         radius_m: sphere radius, meters.
         atmosphere: the atmosphere the broadband EAA is computed in (over
-            1000 m, as :func:`build_empirical_database` does).
+            1000 m, as :func:`database.build_empirical_database` does).
         accept_ground_included: convert FREEFIELD = 0 hemispheres, whose levels
             include the ground reflection, with a warning instead of refusing
             them.  Their levels are taken as free field, so the ground is
@@ -956,6 +954,53 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
                                    condition_origin='synthesized_hover',
                                    constants=source_condition['constants']))
 
+    _check_norah2_conditions(conditions)
+
+    # Written to a temporary file beside the output and moved into place only
+    # when complete, so a failure while writing neither leaves a partial
+    # database nor destroys an existing one (_atomic_output).
+    with _atomic_output(database_path) as temporary:
+        _write_norah2_database(temporary, pending_groups, conditions,
+                               speed_mapping=speed_mapping, atmosphere=atmosphere,
+                               main_rotor_radius=main_rotor_radius,
+                               main_rotor_tip_speed=main_rotor_tip_speed,
+                               vehicle_weight_newtons=float(vehicle_weight_newtons),
+                               weight_coefficient=weight_coefficient,
+                               thrust_air_density=float(thrust_air_density),
+                               mirror_rotor=mirror_rotor,
+                               accept_ground_included=accept_ground_included,
+                               fill_empty=fill_empty,
+                               scale_tip_speed_by_rmomega=scale_tip_speed_by_rmomega,
+                               # 'flight_acoustics.build_database_from_norah2' is a fixed panam_tool value
+                               # (docs/file_formats.md); it stays as written though the function moved here.
+                               provenance=_provenance.build_provenance(
+                                   'flight_acoustics.build_database_from_norah2', settings,
+                                   inputs=inputs))
+    return [{k: v for k, v in c.items() if k != 'constants'} for c in conditions]
+
+
+def _norah2_rotor_speed_fraction(constants, filename):
+    """A .hem's main rotor speed as a fraction of nominal, from RmOmega (percent).
+
+    Refuses a file without RmOmega, or with one outside 50-130 %: shipped A109,
+    EC120, EC135 and R66 files carry values such as -999, -479, 44 or (most
+    EC120 files) 337-410, which look like rpm.
+    """
+    if 'RmOmega' not in constants:
+        raise ValueError(f'{filename}: no RmOmega in the table constants, so its tip speed cannot '
+                         'be scaled; leave out scale_tip_speed_by_rmomega or the file')
+    percent = float(constants['RmOmega'])
+    if not (np.isfinite(percent) and 50.0 <= percent <= 130.0):
+        raise ValueError(f'{filename}: RmOmega = {percent:g} is not a rotor speed in percent of '
+                         'nominal (expected 50-130; a value near 400 may be rpm)')
+    return percent / 100.0
+
+
+def _check_norah2_conditions(conditions):
+    """Raise or warn where NICEOPS would refuse or degrade the set of ``conditions``.
+
+    ``conditions`` are the per-condition dicts of :func:`build_database_from_norah2`.
+    """
     # NICEOPS refuses two spheres at one condition, and a set of two or more
     # that does not span both axes it triangulates over; say so here, naming
     # the files.
@@ -990,58 +1035,6 @@ def build_database_from_norah2(hem_files, database_filename, *, main_rotor_tip_s
         warnings.warn(f'the {len(conditions)} hemispheres lie on one line in (speed, flight path '
                       'angle), so NICEOPS finds no triangle among them and takes the nearest '
                       'condition rather than interpolating')
-
-    # Written to a temporary file beside the output and moved into place only
-    # when complete, so a failure while writing neither leaves a partial
-    # database nor destroys an existing one (_atomic_output).
-    with _atomic_output(database_path) as temporary:
-        _write_norah2_database(temporary, pending_groups, conditions,
-                               speed_mapping=speed_mapping, atmosphere=atmosphere,
-                               main_rotor_radius=main_rotor_radius,
-                               main_rotor_tip_speed=main_rotor_tip_speed,
-                               vehicle_weight_newtons=float(vehicle_weight_newtons),
-                               weight_coefficient=weight_coefficient,
-                               thrust_air_density=float(thrust_air_density),
-                               mirror_rotor=mirror_rotor,
-                               accept_ground_included=accept_ground_included,
-                               fill_empty=fill_empty,
-                               scale_tip_speed_by_rmomega=scale_tip_speed_by_rmomega,
-                               provenance=_provenance.build_provenance(
-                                   'flight_acoustics.build_database_from_norah2', settings,
-                                   inputs=inputs))
-    return [{k: v for k, v in c.items() if k != 'constants'} for c in conditions]
-
-
-def _norah2_rotor_speed_fraction(constants, filename):
-    """A .hem's main rotor speed as a fraction of nominal, from RmOmega (percent).
-
-    Refuses a file without RmOmega, or with one outside 50-130 %: shipped A109,
-    EC120, EC135 and R66 files carry values such as -999, -479, 44 or (most
-    EC120 files) 337-410, which look like rpm.
-    """
-    if 'RmOmega' not in constants:
-        raise ValueError(f'{filename}: no RmOmega in the table constants, so its tip speed cannot '
-                         'be scaled; leave out scale_tip_speed_by_rmomega or the file')
-    percent = float(constants['RmOmega'])
-    if not (np.isfinite(percent) and 50.0 <= percent <= 130.0):
-        raise ValueError(f'{filename}: RmOmega = {percent:g} is not a rotor speed in percent of '
-                         'nominal (expected 50-130; a value near 400 may be rpm)')
-    return percent / 100.0
-
-
-def _conditions_are_collinear(mus, gammas):
-    """Whether (advance ratio, flight path angle) points all lie on one line.
-
-    Taken as NICEOPS takes them, each axis normalized onto [0, 1] (a
-    collinear set stays collinear under that, and the tolerance then has a
-    scale).  A constant axis is collinear.
-    """
-    if np.ptp(mus) == 0.0 or np.ptp(gammas) == 0.0:
-        return True
-    points = np.column_stack(((mus - mus.min()) / np.ptp(mus),
-                              (gammas - gammas.min()) / np.ptp(gammas)))
-    offsets = points[1:] - points[0]
-    return bool(np.linalg.matrix_rank(offsets, tol=1e-9) < 2)
 
 
 def _check_build_atmosphere(atmosphere):

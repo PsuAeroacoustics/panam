@@ -1,4 +1,4 @@
-"""Every name of the PANAM library from when it was this one module.
+"""The library's names from before the split, re-exported from the topic modules.
 
 flight_acoustics held the library's functions until they were split into
 topic modules (``spectra``, ``depropagation``, ``database`` and the others;
@@ -8,7 +8,8 @@ re-exported for its users (the signal loaders of :mod:`panam.acoustics.signal_io
 ``Atmosphere``, ``BAND_ABSORPTION_METHODS`` and :mod:`panam.unit_conversion`), so
 that ``from panam import flight_acoustics as fa`` and ``fa.depropagate_hemisphere``
 keep working.  Other modules it happened to import (``np``,
-``band_absorption_db`` and the like) are not re-exported.  It defines nothing, and new functions are not added to it.
+``band_absorption_db`` and the like) are not re-exported.  It defines nothing, and new
+functions are not added to it.
 
 Library modules import from the topic modules, not from here.  Replacing a
 function here, as a test's monkeypatch does, does not change what the topic
@@ -23,7 +24,7 @@ from panam.spectra import (P_REF, psd, psd_welch, overall_SPL, level_history, fr
                            BASE2_BAND_CENTERS, _within_quarter_band, _bands_within, third_octave_band_levels,
                            third_octave_band_edges, spectrogram, plot_spectrogram, HANN_ENBW, hann_power,
                            _running_integral_at, _band_integrals, _running_floor, tone_aware_band_power,
-                           _tone_aware_bands, _bands_missing, OASPL, power_to_db, safe_log10, dBAw, highpass,
+                           _tone_aware_bands, OASPL, power_to_db, safe_log10, dBAw, highpass,
                            lowpass)
 from panam.metrics import (PNL_BAND_FREQUENCIES, _INF, _NOY_SPL_A, _NOY_SPL_B, _NOY_SPL_C, _NOY_SPL_D,
                            _NOY_SPL_E, _NOY_M_B, _NOY_M_C, _NOY_M_D, _NOY_M_E, noys, perceived_noise_level,
@@ -41,7 +42,7 @@ from panam.gridding import (interpolate_hemisphere_power, _interpolate_measured_
                             _sample_hemisphere_levels, ADAPTIVE_INTERPOLATION, adaptive_idw_weights, shepIDW,
                             shepIDW_weights, shepIDW_apply)
 from panam.depropagation import (_AIR_RELATIVE_DOPPLER_RAYS, ambient_from_frames, gate_ambient,
-                                 range_cap_mask, ray_azimuth_deg, air_relative_doppler_factor,
+                                 range_cap_mask, ray_azimuth_deg, air_relative_doppler_factor, _bands_missing,
                                  depropagate_hemisphere)
 from panam.sphere_io import (KNOT_MPS, load_nc_sphere, AAM_SCALAR_UNIT_WIDTH, AZIMUTH_REFERENCES,
                              WIND_SPEED_UNITS, WIND_SOURCES, POUND_FORCE_NEWTONS, RUN_METADATA_VARIABLES,

@@ -4,10 +4,16 @@
 adds the load-factor ladder, the extended flight path angles and the
 synthesized hover, and writes the database through :func:`add_sphere_group`
 (``docs/THEORY.md`` section 7; the contract is ``docs/file_formats.md``).
+:func:`extract_SPL` reduces one sphere file to the levels a group carries, and
+:func:`read_vehicle_data` and :func:`read_vehicle_rotor_data` read the vehicle file.
+:func:`norah2.build_database_from_norah2` writes through the same helpers: the root
+writer (``_write_database_root``), :func:`add_sphere_group`, the sphere completion and
+the hover synthesis (``_synthesized_hover_sphere``).
 Databases are metric; sphere files keep ft and knots.
 """
 
 import fnmatch
+import json
 import os
 import warnings
 from collections import namedtuple
@@ -22,66 +28,34 @@ from panam.acoustics.atmosphere import Atmosphere
 from panam.spectra import dBAw, OASPL, power_to_db
 from panam.geometry import art2umapr
 from panam.absorption import _band_attenuation_db
+from panam import sphere_statistics
 from panam.sphere_io import (AZIMUTH_REFERENCES, KNOT_MPS, load_nc_sphere, mask_missing_levels,
                              POUND_FORCE_NEWTONS, read_run_metadata, _atomic_output, _read_azimuth_reference,
                              _read_doppler_shift_removed, _read_scalar)
 
 
-def read_vehicle_rotor_data(filename):
-    """Main rotor radius (m), tip speed (m/s), weight (N) and density (kg/m^3) of a vehicle file.
-
-    Takes either the NICEOPS vehicle JSON or panam's ``vehicle.cfg``; both have
-    sections ``Main Rotor`` (radius, tip speed), ``Vehicle`` (weight, a mass in
-    kg) and ``Atmosphere`` (density, the one the thrust coefficient is formed
-    with).  Refuses a file that lacks any of them.
-    """
-    import json
-    path = os.path.abspath(os.path.expanduser(str(filename)))
-    if not os.path.isfile(path):
-        raise FileNotFoundError(f'vehicle file not found: {filename}')
-    if path.lower().endswith('.json'):
-        with open(path, 'r', encoding='utf-8') as handle:
-            sections = json.load(handle)
-    else:
-        config = ConfigParser()
-        config.read(path)
-        sections = {name: dict(config[name]) for name in config.sections()}
-    wanted = (('Main Rotor', 'radius'), ('Main Rotor', 'tip speed'), ('Vehicle', 'weight'),
-              ('Atmosphere', 'density'))
-    values = {}
-    for section, key in wanted:
-        try:
-            values[(section, key)] = float(sections[section][key])
-        except (KeyError, TypeError, ValueError):
-            raise ValueError(f'{filename}: no usable [{section}] "{key}"') from None
-    return dict(main_rotor_radius_m=values[('Main Rotor', 'radius')],
-                main_rotor_tip_speed_mps=values[('Main Rotor', 'tip speed')],
-                vehicle_weight_newtons=STANDARD_GRAVITY * values[('Vehicle', 'weight')],
-                air_density_kg_m3=values[('Atmosphere', 'density')])
-
-
-# On-disk format version written into every database as "database_version".
-# 0 / absent  -- built before this was introduced.  Hover spheres in those files
-#                may have broken directivity (see mirror_phi_to_upper_surface).
-# 1           -- directivity mirror correct; hover spheres fore-aft averaged on an
-#                energy basis with EAA recomputed from the averaged spectrum.
+#: On-disk format version written into every database as "database_version".
+#: 0 / absent  -- built before this was introduced.  Hover spheres in those files
+#:                may have broken directivity (see mirror_phi_to_upper_surface).
+#: 1           -- directivity mirror correct; hover spheres fore-aft averaged on an
+#:                energy basis with EAA recomputed from the averaged spectrum.
 DATABASE_FORMAT_VERSION = 1
 
 
-# Values of the root attribute speed_reference: whether a condition's advance
-# ratio and flight path angle are taken against the ground or the air.
+#: Values of the root attribute speed_reference: whether a condition's advance
+#: ratio and flight path angle are taken against the ground or the air.
 SPEED_REFERENCES = ('ground', 'air')
 
 
-# A condition is "near level flight" within this many degrees of zero flight
-# path angle.  Used both to pick the source sphere for hover and to choose which
-# conditions get re-emitted at extended flight path angles.
+#: A condition is "near level flight" within this many degrees of zero flight
+#: path angle.  Used both to pick the source sphere for hover and to choose which
+#: conditions get re-emitted at extended flight path angles.
 LEVEL_FLIGHT_TOLERANCE = 2.0
 
 
-# One condition to write, ready for add_sphere_group.  ``frequency`` and
-# ``amplitude`` are None when the database carries no spectra; ``coverage`` is
-# (n_phi, n_theta, n_bands) bool, see _complete_sphere_with_coverage.
+#: One condition to write, ready for add_sphere_group.  ``frequency`` and
+#: ``amplitude`` are None when the database carries no spectra; ``coverage`` is
+#: (n_phi, n_theta, n_bands) bool, see _complete_sphere_with_coverage.
 _SphereCondition = namedtuple('_SphereCondition', [
     'name', 'phi', 'theta', 'radius', 'SPLA', 'EAA', 'speed', 'flight_path_angle',
     'load_factor', 'frequency', 'amplitude', 'coverage', 'run_metadata'], defaults=(None,))
@@ -107,153 +81,203 @@ GROUP_RUN_METADATA_NUMBERS = (
 
 #: Per-group text attributes alongside them.
 GROUP_RUN_METADATA_TEXT = ('wind_source', 'wind_units', 'wind_reference_direction',
-                                 'air_density_source', 'source_sphere', 'condition_origin')
+                           'air_density_source', 'source_sphere', 'condition_origin')
 
 
 #: Values of a group's condition_origin.
 CONDITION_ORIGINS = ('measured', 'extended_flight_path_angle', 'synthesized_hover')
 
 
-def _resolve_azimuth_reference(filenames, argument=None):
-    """The single azimuth_reference every source sphere shares.
+# ---- Vehicle files ----
 
-    As :func:`_resolve_doppler_shift_removed`: a sphere that carries one is taken at its
-    word and an ``argument`` given must agree with it; a sphere without one takes the
-    argument, or 'track' (what every sphere was built in before the attribute existed),
-    with a warning.  A database filed in two frames at once is refused.
+#: Standard gravity, m/s^2: vehicle weights in the configs are masses in kg.
+STANDARD_GRAVITY = 9.80665
+
+
+def read_vehicle_rotor_data(filename):
+    """Main rotor radius (m), tip speed (m/s), weight (N) and density (kg/m^3) of a vehicle file.
+
+    Takes either the NICEOPS vehicle JSON or panam's ``vehicle.cfg``; both have
+    sections ``Main Rotor`` (radius, tip speed), ``Vehicle`` (weight, a mass in
+    kg) and ``Atmosphere`` (density, the one the thrust coefficient is formed
+    with).  Refuses a file that lacks any of them.
     """
-    if argument is not None and argument not in AZIMUTH_REFERENCES:
-        raise ValueError('azimuth_reference must be one of {} or None, not {!r}'.format(
-            AZIMUTH_REFERENCES, argument))
-    fallback = 'track' if argument is None else argument
-    resolved = {}
-    unlabeled = []
-    for filename in filenames:
-        value = _read_azimuth_reference(filename)
-        if value is None:
-            unlabeled.append(filename)
-            resolved[filename] = fallback
-            continue
-        if argument is not None and value != argument:
-            raise ValueError('{} carries azimuth_reference = {!r}, but the build was asked for {!r}'
-                             .format(os.path.basename(filename), value, argument))
-        resolved[filename] = value
-    if unlabeled and argument is None:
-        warnings.warn("{} source sphere(s) carry no azimuth_reference; assuming 'track' "
-                      "(azimuth from the ground track)".format(len(unlabeled)))
-    values = set(resolved.values())
-    if len(values) > 1:
-        groups = ['{}: {}'.format(value, ', '.join(os.path.basename(f) for f, v in resolved.items()
-                                                    if v == value))
-                  for value in sorted(values)]
-        raise ValueError('azimuth_reference differs between the sources of one database '
-                         '(' + '; '.join(groups) + '); build every sphere in one frame')
-    return values.pop() if values else fallback
+    path = os.path.abspath(os.path.expanduser(str(filename)))
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f'vehicle file not found: {filename}')
+    if path.lower().endswith('.json'):
+        with open(path, 'r', encoding='utf-8') as handle:
+            sections = json.load(handle)
+    else:
+        config = ConfigParser()
+        config.read(path)
+        sections = {name: dict(config[name]) for name in config.sections()}
+    wanted = (('Main Rotor', 'radius'), ('Main Rotor', 'tip speed'), ('Vehicle', 'weight'),
+              ('Atmosphere', 'density'))
+    values = {}
+    for section, key in wanted:
+        try:
+            values[(section, key)] = float(sections[section][key])
+        except (KeyError, TypeError, ValueError):
+            raise ValueError(f'{filename}: no usable [{section}] "{key}"') from None
+    return dict(main_rotor_radius_m=values[('Main Rotor', 'radius')],
+                main_rotor_tip_speed_mps=values[('Main Rotor', 'tip speed')],
+                vehicle_weight_newtons=STANDARD_GRAVITY * values[('Vehicle', 'weight')],
+                air_density_kg_m3=values[('Atmosphere', 'density')])
 
 
-def group_run_metadata(filename, main_rotor_area=None, main_rotor_tip_speed=None,
-                       condition_origin='measured'):
-    """The per-group run metadata for a condition whose levels came from sphere ``filename``.
+def read_vehicle_weight_newtons(directory_name):
+    """Vehicle weight in newtons from a sphere directory's ``vehicle.cfg``.
 
-    Reads the sphere's :func:`read_run_metadata` and forms the two dimensionless labels a
-    database can be relabeled by later:
-
-    * ``advance_ratio_air``: the run's horizontal airspeed (ground velocity minus the wind
-      at the aircraft) over the tip speed, as ``advance_ratio`` is its horizontal ground
-      speed over the tip speed;
-    * ``thrust_coefficient_run``: the run's own gross weight over rho A V_tip^2 at the run's
-      air density, where ``thrust_coefficient`` uses the vehicle file's nominal weight and
-      density.  It is the run's, not scaled by the group's load factor.
-
-    NaN wherever an input is unknown.  A synthesized hover keeps the source run's weight,
-    density and C_T (its levels are that run's), but no wind or advance ratio, which
-    describe a flight condition the hover is not.
+    Separate from :func:`read_vehicle_data` so the database builder can write
+    the root ``vehicle_weight_newtons`` without changing that function's
+    fourteen-element return tuple.  Returns None when the config does not carry
+    a weight.
     """
-    if condition_origin not in CONDITION_ORIGINS:
-        raise ValueError('condition_origin must be one of {}, not {!r}'.format(CONDITION_ORIGINS, condition_origin))
-    run = read_run_metadata(filename)
-    nan = float('nan')
-    area = nan if main_rotor_area is None else float(main_rotor_area)
-    tip_speed = nan if main_rotor_tip_speed is None else float(main_rotor_tip_speed)
-    weight_newtons = run['gross_weight_lb'] * POUND_FORCE_NEWTONS
-    density = run['air_density_kg_m3']
-    out = dict(gross_weight=weight_newtons, air_density=density,
-               wind_along_track=run['wind_along_track'], wind_cross_track=run['wind_cross_track'],
-               advance_ratio_air=KNOT_MPS * run['airspeed_knots'] / tip_speed,
-               thrust_coefficient_run=weight_newtons / (density * area * tip_speed ** 2),
-               wind_source=run['wind_source'] or 'none', wind_units=run['wind_units'],
-               wind_reference_direction=run['wind_reference_direction'],
-               air_density_source=run['air_density_source'] or 'none',
-               source_sphere=os.path.basename(str(filename)), condition_origin=condition_origin)
-    if condition_origin == 'synthesized_hover':
-        out.update(wind_along_track=nan, wind_cross_track=nan, advance_ratio_air=nan,
-                   wind_source='none', wind_units='', wind_reference_direction='')
-    return out
+    config = ConfigParser()
+    config.read(os.path.abspath(os.path.expanduser(directory_name) + '/vehicle.cfg'))
+    if not config.has_section('Vehicle') or 'weight' not in config['Vehicle']:
+        return None
+    return STANDARD_GRAVITY * float(config['Vehicle']['weight'])
 
 
-def _resolve_doppler_shift_removed(filenames, argument=None):
-    """The single DOPPLER_SHIFT_REMOVED flag every source sphere shares.
+def read_vehicle_data(directory_name, runs=None, speeds=None, flight_path_angles=None):
+    """Rotor and vehicle data from a sphere directory's ``vehicle.cfg``.
 
-    A sphere that carries the flag is taken at its word, and an ``argument``
-    given alongside must agree with it.  A sphere without the flag takes the
-    argument, or 0 (received frame) when there is none, with a warning.  Sources
-    that disagree would be combined into one database, so they are refused.
-    Returns the shared flag, 0 when there are no sources.
+    Args:
+        directory_name: the directory holding ``vehicle.cfg``.
+        runs: run numbers to look up in the ``[Option]`` reflist workbook; used only when the
+            config has an ``[Option]`` section.
+        speeds: flight speeds, kt (replaced by the reflist's indicated airspeeds when it is used).
+        flight_path_angles: flight path angles, deg.
+
+    Returns: a 14-tuple (main rotor radius m, main rotor area m^2, main rotor tip speed m/s,
+        main rotor blade count, tail rotor radius m, tail rotor area m^2, tail rotor tip speed
+        m/s, tail rotor blade count, advance ratios, weight coefficients, hover tip Mach numbers,
+        alphas deg, nondimensional flat-plate drag, speeds kt).  With an ``[Option]`` reflist
+        and ``runs``, the rotor radii, areas and tail tip speed are None and the main rotor tip
+        speed is the mean of the reflist's airspeeds over its advance ratios.  Otherwise the
+        advance ratios and alphas are None without ``speeds``.  Alphas are None without
+        ``flight_path_angles``.
     """
-    if argument is not None and argument not in (0, 1):
-        raise ValueError('doppler_shift_removed must be 0, 1 or None, not {!r}'.format(argument))
-    fallback = 0 if argument is None else int(argument)
-    resolved = {}
-    unlabelled = []
-    for filename in filenames:
-        flag = _read_doppler_shift_removed(filename)
-        if flag is None:
-            unlabelled.append(filename)
-            resolved[filename] = fallback
-            continue
-        if argument is not None and flag != argument:
-            raise ValueError('{} carries DOPPLER_SHIFT_REMOVED = {}, but the build was asked for {}'
-                             .format(os.path.basename(filename), flag, argument))
-        resolved[filename] = flag
-    if unlabelled and argument is None:
-        warnings.warn('{} source sphere(s) carry no DOPPLER_SHIFT_REMOVED; assuming 0 '
-                      '(received-frame spheres)'.format(len(unlabelled)))
-    values = set(resolved.values())
-    if len(values) > 1:
-        groups = ['{}: {}'.format(value, ', '.join(os.path.basename(f) for f, v in resolved.items()
-                                                    if v == value))
-                  for value in sorted(values)]
-        raise ValueError('DOPPLER_SHIFT_REMOVED differs between the sources of one database '
-                         '(' + '; '.join(groups) + '); combine spheres of one convention only')
-    return values.pop() if values else fallback
+    # Process config file
+    local_config = os.path.expanduser(directory_name) + '/vehicle.cfg'
+    abs_config = os.path.abspath(local_config)
+    config = ConfigParser()
+    config.read(abs_config)
+    number_of_main_rotor_blades = float(config['Main Rotor']['blades'])
+    number_of_tail_rotor_blades = float(config['Tail Rotor']['blades'])
+    if config.has_section('Option') and runs is not None:
+        # read drag value and then open Excel reflist file for individual conditions
+        nondimensional_flat_plate_drag = float(config['Option']['fbar'])
+        reference_list = config['Option']['reflist']
+        absolute_path_to_list = os.path.abspath(os.path.expanduser(directory_name) + '/' + reference_list)
+        import openpyxl                         # here: only the [Option] reference list needs it
+        wb = openpyxl.load_workbook(absolute_path_to_list, read_only=True, data_only=True)
+        try:
+            ws = wb.active
+            if ws is None:
+                raise ValueError("Workbook has no active sheet")
+            # One row per run: the run number in column B, the indicated
+            # airspeed in W, and advance ratio, weight coefficient and hover
+            # tip Mach number in AH:AJ.  Read whole rows, so a blank run cell
+            # drops its own row rather than shifting every later run onto the
+            # conditions of the row below.
+            rows = [row for row in ws.iter_rows(min_row=2, max_col=36, values_only=True)
+                    if row[1] is not None]
+        finally:
+            # A read-only workbook holds its file open until closed
+            wb.close()
+        run_numbers = [row[1] for row in rows]
+        selected = [rows[run_numbers.index(r)] for r in runs]
+        advance_ratios = np.array([row[33] for row in selected])
+        weight_coefficients = np.array([row[34] for row in selected])
+        hover_tip_mach_numbers = np.array([row[35] for row in selected])
+        # The reflist's indicated airspeeds replace the caller's speeds.
+        speeds = np.array([row[22] for row in selected])
+        main_rotor_tip_speed = np.mean(KNOT_MPS * speeds / advance_ratios)
+        # The reflist gives no rotor geometry.
+        main_rotor_radius = None
+        main_rotor_area = None
+        tail_rotor_radius = None
+        tail_rotor_area = None
+        tail_rotor_tip_speed = None
+        alphas = None
+        if flight_path_angles is not None:
+            drag_to_weight_ratio = 0.5 * nondimensional_flat_plate_drag * advance_ratios ** 2 / weight_coefficients
+            alphas = -np.degrees(drag_to_weight_ratio) - flight_path_angles
+    else:
+        main_rotor_radius = np.array(float(config['Main Rotor']['radius']))
+        main_rotor_area = np.pi * main_rotor_radius ** 2
+        main_rotor_tip_speed = np.array(float(config['Main Rotor']['tip speed']))
+        tail_rotor_radius = np.array(float(config['Tail Rotor']['radius']))
+        tail_rotor_area = np.pi * tail_rotor_radius ** 2
+        tail_rotor_tip_speed = np.array(float(config['Tail Rotor']['tip speed']))
+        ambient_temperature = np.array(float(config['Atmosphere']['temperature']))
+        speed_of_sound = 20.05 * np.sqrt(ambient_temperature)
+        ambient_density = np.array(float(config['Atmosphere']['density']))
+        vehicle_weight_kg = np.array(float(config['Vehicle']['weight']))
+        vehicle_weight_newtons = STANDARD_GRAVITY * vehicle_weight_kg
+        effective_flat_plate_drag_area = np.array(float(config['Vehicle']['drag']))
+        nondimensional_flat_plate_drag = effective_flat_plate_drag_area / main_rotor_area
+        hover_tip_mach_numbers = main_rotor_tip_speed / speed_of_sound
+        weight_coefficients = vehicle_weight_newtons / (
+                ambient_density * main_rotor_area * main_rotor_tip_speed ** 2)
+        advance_ratios = None
+        alphas = None
+        if speeds is not None:
+            ground_speed_meters_per_sec = KNOT_MPS * speeds
+            advance_ratios = ground_speed_meters_per_sec / main_rotor_tip_speed
+            hover_tip_mach_numbers = hover_tip_mach_numbers * np.ones_like(advance_ratios)
+            drag_to_weight_ratio = 0.5 * nondimensional_flat_plate_drag * advance_ratios ** 2 / weight_coefficients
+            if flight_path_angles is not None:
+                alphas = -np.degrees(drag_to_weight_ratio) - flight_path_angles
+
+    return (main_rotor_radius, main_rotor_area, main_rotor_tip_speed,
+            number_of_main_rotor_blades, tail_rotor_radius, tail_rotor_area, tail_rotor_tip_speed,
+            number_of_tail_rotor_blades, advance_ratios, weight_coefficients, hover_tip_mach_numbers, alphas,
+            nondimensional_flat_plate_drag, speeds)
 
 
-def average_fore_and_aft(spectrum):
-    """Average a sphere fore-to-aft on an energy (p^2) basis.
+# ---- Reducing a sphere to group levels ----
 
-    ``spectrum`` is dB per band with shape (phi, theta, frequency); theta runs
-    nose (0) to tail (180), so band j = n-1-i is the fore/aft partner of band i.
-    Each pair is replaced by their mean-square average::
+def extract_SPL(filename, infreqs=None, distance=1000,
+                atmosphere=Atmosphere(temperature=293.15, pressure=101.325,
+                                      relative_humidity=20.0), absorption_band_method='center'):
+    """Read a sphere file and reduce it to the levels a database group carries.
 
-        10 * log10( 0.5 * (10**(Li/10) + 10**(Lj/10)) )
-
-    A plain arithmetic mean of decibels is not an energy average and biases the
-    result low -- about 0.4 dB for a pair 5.8 dB apart, which is the spread seen
-    between fore/aft partners in real spheres.  The middle band of an odd-length
-    theta axis is its own partner and is left unchanged.
+    ``distance`` (m) and ``atmosphere`` set the EAA, with each band's attenuation
+    formed by ``absorption_band_method`` (see :func:`spla_and_eaa_from_spectrum`).
     """
-    spectrum = np.array(spectrum, dtype=float, copy=True)
-    n_theta = spectrum.shape[1]
-    # -inf entries mean "no energy" and are expected; 10**(-inf/10) == 0.
-    with np.errstate(divide='ignore', invalid='ignore'):
-        for i in range(n_theta // 2):
-            j = n_theta - 1 - i
-            mean_square = 0.5 * (10.0 ** (spectrum[:, i, :] / 10.0)
-                                 + 10.0 ** (spectrum[:, j, :] / 10.0))
-            averaged = 10.0 * np.log10(mean_square)
-            spectrum[:, i, :] = averaged
-            spectrum[:, j, :] = averaged
-    return spectrum
+    return _reduce_sphere_levels(*load_nc_sphere(filename), infreqs, distance, atmosphere,
+                                 absorption_band_method)
+
+
+def _reduce_sphere_levels(amplitude, phi, theta, frequency, radius, speed, flight_path_angle,
+                          infreqs, distance, atmosphere, absorption_band_method):
+    """:func:`extract_SPL` from levels already read, as :func:`load_nc_sphere` returns them.
+
+    amplitude is dB (phi, theta, frequency), any sentinel or NaN read as no energy;
+    radius is ft, speed kt, angles deg.  Returns what :func:`extract_SPL` returns.
+    """
+    # Convert radius to meters
+    radius = radius * 0.3048
+    # Replace masked values with no-energy SPL
+    amplitude = mask_missing_levels(amplitude)
+    # Check frequency range
+    if infreqs is not None:
+        frequency_index = (frequency >= infreqs[0]) & (frequency <= infreqs[1])
+        amplitude = amplitude[:, :, frequency_index]
+        frequency = frequency[frequency_index]
+    SPLO = power_to_db(np.sum(np.power(10.0, amplitude / 10.0), axis=2))
+    # A-weighted OASPL and excess atmospheric attenuation
+    SPLA, EAA = spla_and_eaa_from_spectrum(amplitude, frequency, distance, atmosphere, absorption_band_method)
+    # Convert from ART to UMAPR coordinates
+    _, P = np.meshgrid(theta, phi)
+    azi, elv = art2umapr(np.pi * P / 180.0, np.pi * theta / 180.0)
+    # frequency/amplitude are returned so callers can recompute band-based
+    # quantities (e.g. EAA) after modifying the spectrum.
+    return azi, elv, phi, theta, radius, SPLO, SPLA, EAA, speed, flight_path_angle, frequency, amplitude
 
 
 def spla_and_eaa_from_spectrum(spectrum, frequency, distance, atmosphere, absorption_band_method='center'):
@@ -283,6 +307,47 @@ def spla_and_eaa_from_spectrum(spectrum, frequency, distance, atmosphere, absorp
         eaa = spla - spla_attenuated
     return spla, eaa
 
+
+def _finite_sphere_levels(spla, eaa):
+    """Sanitize EAA where ambient gating emptied a direction.
+
+    Ambient gating legitimately empties a direction -- a low-power descent can
+    sit at the noise floor over most of the aft hemisphere -- and then
+    ``SPLA = -inf``, so ``EAA = SPLA - SPLAa`` is ``-inf - -inf``, a NaN.
+
+    The level itself is left alone, including when it is -inf. That was checked
+    against NICEOPS rather than assumed (its build/niceops, B205 track, Be407
+    database, patching the directions a flyover actually uses so the test is
+    demonstrably sensitive -- 26.9 dB of footprint change):
+
+    * ``dBA = -inf`` and ``dBA = -3064`` give byte-identical footprints with no
+      NaN cells. Its ``eval`` subtracts spreading and attenuation from the
+      level and the exposure integral then sums energy, so a -inf direction
+      contributes nothing -- which is exactly what an empty direction means.
+    * ``EAA = NaN`` does not stay local: it put 886 NaN cells into a 120x120
+      footprint and moved the mean level by 1.3 dB.
+
+    So only EAA needs a value here, and zero is the right one: with no energy
+    in the direction there is no excess attenuation to apply to it.
+    """
+    spla = np.asarray(spla, dtype=float)
+    eaa = np.asarray(eaa, dtype=float).copy()
+    eaa[~np.isfinite(eaa)] = 0.0
+    return spla, eaa
+
+
+def _measured_bins(amplitude, eaa):
+    """(n_phi, n_theta, n_bands) bool: True where a bin carries a measurement.
+
+    A bin is measured when its level is finite after :func:`mask_missing_levels`,
+    which turns the masked, gated and empty bins into -inf.  A direction whose
+    EAA is not finite is not measured either: :func:`_finite_sphere_levels`
+    zeroes that EAA, so the value is a fill, not an observation.
+    """
+    return np.isfinite(amplitude) & np.isfinite(eaa)[:, :, None]
+
+
+# ---- Completion and hover ----
 
 def _complete_sphere(phi_list, theta_list, spla, eaa, amplitude):
     """Extend a lower-hemisphere sphere onto its upper surface.
@@ -329,15 +394,76 @@ def _complete_sphere_with_coverage(phi_list, theta_list, spla, eaa, amplitude, m
     return phi, theta, spla[rows], eaa[rows], amplitude[rows], coverage
 
 
-def _measured_bins(amplitude, eaa):
-    """(n_phi, n_theta, n_bands) bool: True where a bin carries a measurement.
+def mirror_phi_to_upper_surface(phi_list):
+    """Complete a lower-hemisphere sphere onto its upper surface.
 
-    A bin is measured when its level is finite after :func:`mask_missing_levels`,
-    which turns the masked, gated and empty bins into -inf.  A direction whose
-    EAA is not finite is not measured either: :func:`_finite_sphere_levels`
-    zeroes that EAA, so the value is a fill, not an observation.
+    Sphere data covers only the lower half of the roll circle, phi in
+    [-90, 90] degrees with phi = 0 straight down.  The upper half is the
+    reflection through the horizontal plane, phi -> 180 - phi wrapped into
+    [-180, 180):  0 (down) -> -180 (up; the same direction as 180), and +/-90
+    map to themselves because the horizontal plane belongs to both halves.
+
+    Returns (mirror_phi, source_index): the azimuths of the reflected rows
+    and the indices of the source rows they came from, so that every data array
+    can be extended consistently::
+
+        mirror_phi, idx = mirror_phi_to_upper_surface(phi_list)
+        phi_full  = np.concatenate((phi_list, mirror_phi))
+        SPLA_full = np.concatenate((SPLA, SPLA[idx]))
+
+    Rows whose reflection already exists in phi_list are dropped, so the
+    shared +/-90 edges appear once rather than twice and the completed sphere
+    has no duplicate (phi, theta) points.
+
+    NOTE on two earlier forms, both of which produced bad databases:
+
+    * np.concatenate((phi, -phi)) is a left/right flip *within* the lower
+      half.  Because the source range is symmetric about zero it maps [-90, 90]
+      onto itself, emitting a second copy of the lower hemisphere under the same
+      labels and leaving the upper surface empty.  The hover spheres in
+      S-76D_M3.nod were built this way: every (phi, theta) there carries two
+      conflicting levels, 630 of 703 pairs disagreeing by up to 5.77 dB.
+    * A three-part concatenation that sliced phi as [h+1:n], [:], [1:h]
+      but the data arrays as [1:h], [:], [h+1:n].  Those slices have equal
+      length only when len(phi_list) is even; the real sphere grids have 19
+      azimuths, so the labels ran one row out of step with the acoustic data
+      across most of the sphere -- corrupting forward-flight spheres too.
     """
-    return np.isfinite(amplitude) & np.isfinite(eaa)[:, :, None]
+    phi_list = np.asarray(phi_list, dtype=float)
+    reflected = (180.0 - phi_list + 180.0) % 360.0 - 180.0
+    # Drop reflections that coincide with a source azimuth (the +/-90 edges),
+    # comparing on a rounded grid so exact float equality is not required.
+    already_present = np.isin(np.round(reflected, 9), np.round(phi_list, 9))
+    source_index = np.flatnonzero(~already_present)
+    return reflected[source_index], source_index
+
+
+def average_fore_and_aft(spectrum):
+    """Average a sphere fore-to-aft on an energy (p^2) basis.
+
+    ``spectrum`` is dB per band with shape (phi, theta, frequency); theta runs
+    nose (0) to tail (180), so band j = n-1-i is the fore/aft partner of band i.
+    Each pair is replaced by their mean-square average::
+
+        10 * log10( 0.5 * (10**(Li/10) + 10**(Lj/10)) )
+
+    A plain arithmetic mean of decibels is not an energy average and biases the
+    result low -- about 0.4 dB for a pair 5.8 dB apart, which is the spread seen
+    between fore/aft partners in real spheres.  The middle band of an odd-length
+    theta axis is its own partner and is left unchanged.
+    """
+    spectrum = np.array(spectrum, dtype=float, copy=True)
+    n_theta = spectrum.shape[1]
+    # -inf entries mean "no energy" and are expected; 10**(-inf/10) == 0.
+    with np.errstate(divide='ignore', invalid='ignore'):
+        for i in range(n_theta // 2):
+            j = n_theta - 1 - i
+            mean_square = 0.5 * (10.0 ** (spectrum[:, i, :] / 10.0)
+                                 + 10.0 ** (spectrum[:, j, :] / 10.0))
+            averaged = 10.0 * np.log10(mean_square)
+            spectrum[:, i, :] = averaged
+            spectrum[:, j, :] = averaged
+    return spectrum
 
 
 def _fore_aft_measured(measured):
@@ -405,7 +531,7 @@ def _synthesized_hover_sphere(phi_list, theta_list, amplitude, measured, frequen
                               absorption_band_method='center'):
     """Synthesize a completed hover sphere from a slow flight sphere's band levels (THEORY 7.4).
 
-    Shared by :func:`build_empirical_database` and :func:`build_database_from_norah2`.
+    Shared by :func:`build_empirical_database` and :func:`norah2.build_database_from_norah2`.
     The spectrum is averaged fore to aft in energy (:func:`average_fore_and_aft`),
     a cell is measured only where both partners were (:func:`_fore_aft_measured`),
     ``hover_correction`` (dB; see :func:`build_empirical_database`) is added,
@@ -453,49 +579,237 @@ def _synthesized_hover_sphere(phi_list, theta_list, amplitude, measured, frequen
     return _complete_sphere_with_coverage(phi_list, theta_list, SPLA, EAA, amplitude, measured)
 
 
-def mirror_phi_to_upper_surface(phi_list):
-    """Complete a lower-hemisphere sphere onto its upper surface.
+# ---- Source spheres and run metadata ----
 
-    Sphere data covers only the lower half of the roll circle, phi in
-    [-90, 90] degrees with phi = 0 straight down.  The upper half is the
-    reflection through the horizontal plane, phi -> 180 - phi wrapped into
-    [-180, 180):  0 (down) -> -180 (up; the same direction as 180), and +/-90
-    map to themselves because the horizontal plane belongs to both halves.
+def _select_sphere_files(directory_name, spheres=None, exclude=None):
+    """The sphere files :func:`build_empirical_database` uses, and those ``exclude`` drops.
 
-    Returns (mirror_phi, source_index): the azimuths of the reflected rows
-    and the indices of the source rows they came from, so that every data array
-    can be extended consistently::
-
-        mirror_phi, idx = mirror_phi_to_upper_surface(phi_list)
-        phi_full  = np.concatenate((phi_list, mirror_phi))
-        SPLA_full = np.concatenate((SPLA, SPLA[idx]))
-
-    Rows whose reflection already exists in phi_list are dropped, so the
-    shared +/-90 edges appear once rather than twice and the completed sphere
-    has no duplicate (phi, theta) points.
-
-    NOTE on two earlier forms, both of which produced bad databases:
-
-    * np.concatenate((phi, -phi)) is a left/right flip *within* the lower
-      half.  Because the source range is symmetric about zero it maps [-90, 90]
-      onto itself, emitting a second copy of the lower hemisphere under the same
-      labels and leaving the upper surface empty.  The hover spheres in
-      S-76D_M3.nod were built this way: every (phi, theta) there carries two
-      conflicting levels, 630 of 703 pairs disagreeing by up to 5.77 dB.
-    * A three-part concatenation that sliced phi as [h+1:n], [:], [1:h]
-      but the data arrays as [1:h], [:], [h+1:n].  Those slices have equal
-      length only when len(phi_list) is even; the real sphere grids have 19
-      azimuths, so the labels ran one row out of step with the acoustic data
-      across most of the sphere -- corrupting forward-flight spheres too.
+    Returns ``(used, excluded)``, two sorted lists of absolute paths.  Without
+    ``spheres``, the candidates are every ``*.nc`` in directory_name; with it,
+    the files it names, a relative path taken relative to directory_name.  A
+    named file that does not exist raises FileNotFoundError.  ``exclude`` holds
+    file names or ``fnmatch`` patterns matched against each file name; one that
+    matches no candidate is warned about, since it is most likely a typo.
     """
-    phi_list = np.asarray(phi_list, dtype=float)
-    reflected = (180.0 - phi_list + 180.0) % 360.0 - 180.0
-    # Drop reflections that coincide with a source azimuth (the +/-90 edges),
-    # comparing on a rounded grid so exact float equality is not required.
-    already_present = np.isin(np.round(reflected, 9), np.round(phi_list, 9))
-    source_index = np.flatnonzero(~already_present)
-    return reflected[source_index], source_index
+    directory = os.path.abspath(os.path.expanduser(directory_name))
+    if spheres is None:
+        candidates = glob(os.path.join(directory, '*.nc'))
+    else:
+        if isinstance(spheres, (str, os.PathLike)):
+            raise TypeError('spheres must be a list of files, not one file')
+        candidates = []
+        for sphere in spheres:
+            path = os.path.join(directory, os.path.expanduser(os.fspath(sphere)))
+            if not os.path.isfile(path):
+                raise FileNotFoundError('sphere file not found: {}'.format(path))
+            candidates.append(os.path.abspath(path))
+    candidates = sorted(set(candidates))
+    if exclude is None:
+        return candidates, []
+    if isinstance(exclude, (str, os.PathLike)):
+        exclude = [exclude]
+    patterns = [os.path.basename(os.fspath(pattern)) for pattern in exclude]
+    for pattern in patterns:
+        if not any(fnmatch.fnmatchcase(os.path.basename(f), pattern) for f in candidates):
+            warnings.warn('exclude pattern {!r} matches no sphere file'.format(pattern))
+    excluded = [f for f in candidates
+                if any(fnmatch.fnmatchcase(os.path.basename(f), p) for p in patterns)]
+    return [f for f in candidates if f not in excluded], excluded
 
+
+def _sphere_condition(filename):
+    """The (SPEED kt, FLIGHT_PATH_ANGLE deg) a sphere file records, NaN where unreadable."""
+    with Dataset(filename, mode='r') as handle:
+        return _read_scalar(handle, 'SPEED'), _read_scalar(handle, 'FLIGHT_PATH_ANGLE')
+
+
+def _group_repeat_conditions(filenames, speed_tolerance_knots=0.0):
+    """Group sphere files by flight condition, for :func:`build_empirical_database`.
+
+    Two files share a condition when their FLIGHT_PATH_ANGLE agrees to 1e-9 deg
+    and their SPEED agrees to 1e-9 kt, or lies within speed_tolerance_knots (kt)
+    of the slowest file of the group.  Returns a list of tuples of file names,
+    each in the order of ``filenames``, ordered by its first file, so that
+    files with no repeat give one 1-tuple each, in their own order.
+    """
+    conditions = [_sphere_condition(f) for f in filenames]
+    order = sorted(range(len(filenames)),
+                   key=lambda i: (round(conditions[i][1], 9), conditions[i][0], i))
+    groups = []
+    for i in order:
+        speed, angle = conditions[i]
+        if groups:
+            first_speed, first_angle = conditions[groups[-1][0]]
+            if round(angle, 9) == round(first_angle, 9) and (
+                    round(speed, 9) == round(first_speed, 9)
+                    or speed - first_speed <= speed_tolerance_knots):
+                groups[-1].append(i)
+                continue
+        groups.append([i])
+    return [tuple(filenames[i] for i in sorted(group)) for group in sorted(groups, key=min)]
+
+
+def _extract_condition_SPL(filenames, infreqs, distance, atmosphere, absorption_band_method,
+                           speed_tolerance_knots=0.0):
+    """:func:`extract_SPL` for one condition: one sphere file, or the energy average of several.
+
+    Several files are averaged by :func:`sphere_statistics.average_spheres`, a -999
+    cell read as no data, after which a cell no run covers is no energy, as
+    :func:`extract_SPL` reads a -999.  speed_tolerance_knots (kt) is the SPEED
+    spread allowed between them.  The speed returned is the runs' mean, kt.
+    """
+    if len(filenames) == 1:
+        return extract_SPL(filenames[0], infreqs, distance, atmosphere, absorption_band_method)
+    average = sphere_statistics.average_spheres(
+        filenames, speed_tolerance_knots=max(float(speed_tolerance_knots), 1e-9),
+        flight_path_angle_tolerance_deg=1e-9)
+    return _reduce_sphere_levels(
+        average['levels_db'], average['phi_deg'], average['theta_deg'], average['frequency_hz'],
+        np.asarray(average['radius_ft']), np.asarray(average['speed_knots']),
+        np.asarray(average['flight_path_angle_deg']), infreqs, distance, atmosphere,
+        absorption_band_method)
+
+
+def group_run_metadata(filename, main_rotor_area=None, main_rotor_tip_speed=None,
+                       condition_origin='measured'):
+    """The per-group run metadata for a condition whose levels came from sphere ``filename``.
+
+    Reads the sphere's :func:`read_run_metadata` and forms the two dimensionless labels a
+    database can be relabeled by later:
+
+    * ``advance_ratio_air``: the run's horizontal airspeed (ground velocity minus the wind
+      at the aircraft) over the tip speed, as ``advance_ratio`` is its horizontal ground
+      speed over the tip speed;
+    * ``thrust_coefficient_run``: the run's own gross weight over rho A V_tip^2 at the run's
+      air density, where ``thrust_coefficient`` uses the vehicle file's nominal weight and
+      density.  It is the run's, not scaled by the group's load factor.
+
+    NaN wherever an input is unknown.  A synthesized hover keeps the source run's weight,
+    density and C_T (its levels are that run's), but no wind or advance ratio, which
+    describe a flight condition the hover is not.
+    """
+    if condition_origin not in CONDITION_ORIGINS:
+        raise ValueError('condition_origin must be one of {}, not {!r}'.format(CONDITION_ORIGINS, condition_origin))
+    run = read_run_metadata(filename)
+    nan = float('nan')
+    area = nan if main_rotor_area is None else float(main_rotor_area)
+    tip_speed = nan if main_rotor_tip_speed is None else float(main_rotor_tip_speed)
+    weight_newtons = run['gross_weight_lb'] * POUND_FORCE_NEWTONS
+    density = run['air_density_kg_m3']
+    out = dict(gross_weight=weight_newtons, air_density=density,
+               wind_along_track=run['wind_along_track'], wind_cross_track=run['wind_cross_track'],
+               advance_ratio_air=KNOT_MPS * run['airspeed_knots'] / tip_speed,
+               thrust_coefficient_run=weight_newtons / (density * area * tip_speed ** 2),
+               wind_source=run['wind_source'] or 'none', wind_units=run['wind_units'],
+               wind_reference_direction=run['wind_reference_direction'],
+               air_density_source=run['air_density_source'] or 'none',
+               source_sphere=os.path.basename(str(filename)), condition_origin=condition_origin)
+    if condition_origin == 'synthesized_hover':
+        out.update(wind_along_track=nan, wind_cross_track=nan, advance_ratio_air=nan,
+                   wind_source='none', wind_units='', wind_reference_direction='')
+    return out
+
+
+def _merged_run_metadata(rows):
+    """One condition's run metadata from the :func:`group_run_metadata` of each run averaged into it.
+
+    One row is returned as it is.  Several give the mean of each numeric value (NaN
+    if any run's is unknown, and for the winds if the runs declare different wind
+    units or wind reference directions, which make their winds incommensurable),
+    the first run's text values, except wind_source, which names every source the
+    runs used, '+'-joined in run order ('none' only if no run had one), and every
+    run's source_sphere, one per line.
+    """
+    if len(rows) == 1:
+        return rows[0]
+    merged = dict(rows[0])
+    for name, _ in GROUP_RUN_METADATA_NUMBERS:
+        merged[name] = float(np.mean([row[name] for row in rows]))
+    if any(len({row[key] for row in rows}) > 1
+           for key in ('wind_units', 'wind_reference_direction')):
+        merged.update(wind_along_track=float('nan'), wind_cross_track=float('nan'))
+    sources = [part for row in rows for part in row['wind_source'].split('+')
+               if part not in ('', 'none')]
+    merged['wind_source'] = '+'.join(dict.fromkeys(sources)) or 'none'
+    merged['source_sphere'] = '\n'.join(row['source_sphere'] for row in rows)
+    return merged
+
+
+def _resolve_doppler_shift_removed(filenames, argument=None):
+    """The single DOPPLER_SHIFT_REMOVED flag every source sphere shares.
+
+    A sphere that carries the flag is taken at its word, and an ``argument``
+    given alongside must agree with it.  A sphere without the flag takes the
+    argument, or 0 (received frame) when there is none, with a warning.  Sources
+    that disagree would be combined into one database, so they are refused.
+    Returns the shared flag, 0 when there are no sources.
+    """
+    if argument is not None and argument not in (0, 1):
+        raise ValueError('doppler_shift_removed must be 0, 1 or None, not {!r}'.format(argument))
+    fallback = 0 if argument is None else int(argument)
+    resolved = {}
+    unlabeled = []
+    for filename in filenames:
+        flag = _read_doppler_shift_removed(filename)
+        if flag is None:
+            unlabeled.append(filename)
+            resolved[filename] = fallback
+            continue
+        if argument is not None and flag != argument:
+            raise ValueError('{} carries DOPPLER_SHIFT_REMOVED = {}, but the build was asked for {}'
+                             .format(os.path.basename(filename), flag, argument))
+        resolved[filename] = flag
+    if unlabeled and argument is None:
+        warnings.warn('{} source sphere(s) carry no DOPPLER_SHIFT_REMOVED; assuming 0 '
+                      '(received-frame spheres)'.format(len(unlabeled)))
+    values = set(resolved.values())
+    if len(values) > 1:
+        groups = ['{}: {}'.format(value, ', '.join(os.path.basename(f) for f, v in resolved.items()
+                                                    if v == value))
+                  for value in sorted(values)]
+        raise ValueError('DOPPLER_SHIFT_REMOVED differs between the sources of one database '
+                         '(' + '; '.join(groups) + '); combine spheres of one convention only')
+    return values.pop() if values else fallback
+
+
+def _resolve_azimuth_reference(filenames, argument=None):
+    """The single azimuth_reference every source sphere shares.
+
+    As :func:`_resolve_doppler_shift_removed`: a sphere that carries one is taken at its
+    word and an ``argument`` given must agree with it; a sphere without one takes the
+    argument, or 'track' (what every sphere was built in before the attribute existed),
+    with a warning.  A database filed in two frames at once is refused.
+    """
+    if argument is not None and argument not in AZIMUTH_REFERENCES:
+        raise ValueError('azimuth_reference must be one of {} or None, not {!r}'.format(
+            AZIMUTH_REFERENCES, argument))
+    fallback = 'track' if argument is None else argument
+    resolved = {}
+    unlabeled = []
+    for filename in filenames:
+        value = _read_azimuth_reference(filename)
+        if value is None:
+            unlabeled.append(filename)
+            resolved[filename] = fallback
+            continue
+        if argument is not None and value != argument:
+            raise ValueError('{} carries azimuth_reference = {!r}, but the build was asked for {!r}'
+                             .format(os.path.basename(filename), value, argument))
+        resolved[filename] = value
+    if unlabeled and argument is None:
+        warnings.warn("{} source sphere(s) carry no azimuth_reference; assuming 'track' "
+                      "(azimuth from the ground track)".format(len(unlabeled)))
+    values = set(resolved.values())
+    if len(values) > 1:
+        groups = ['{}: {}'.format(value, ', '.join(os.path.basename(f) for f, v in resolved.items()
+                                                    if v == value))
+                  for value in sorted(values)]
+        raise ValueError('azimuth_reference differs between the sources of one database '
+                         '(' + '; '.join(groups) + '); build every sphere in one frame')
+    return values.pop() if values else fallback
+
+
+# ---- Building a database ----
 
 def build_empirical_database(directory_name, database_filename, load_factors=np.linspace(0.7, 2.3, 5), infreqs=None,
                              distance=1000,
@@ -517,6 +831,12 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     broadband EAA, m; infreqs, when given, is the (low, high) band range kept,
     Hz; level_flight_tolerance is in degrees of flight path angle.
 
+    absorption_band_method sets how each band's attenuation over ``distance``
+    (m) enters the EAA (:func:`spla_and_eaa_from_spectrum`): 'center' (default,
+    the ISO 9613-1 coefficient at the band center), 'arp5534' (SAE ARP 5534) or
+    'integrated' (ISO 9613-1 integrated over the band, flat band levels).  The
+    database records it only in the provenance settings.
+
     spheres, when given, is the explicit list of sphere files to use in place
     of the directory's ``*.nc``; a relative path is taken relative to
     directory_name, so the names :func:`noise_abatement_2017.select_from_manifest`
@@ -537,7 +857,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     reference only, and let NICEOPS scale levels (and, for a spectral
     database, every band) to the queried load factor analytically instead of
     from stored samples.  It carries the same information: every load factor
-    this function would otherwise materialise is the *same* spectrum offset by
+    this function would otherwise materialize is the *same* spectrum offset by
     a uniform ``20*log10(load_factor)`` -- add_sphere_group does not scale
     ``amplitude``, only ``dBA`` and ``thrust_coefficient`` -- so eight copies
     of it (the shipped databases' load factor count) store nothing the reader
@@ -566,7 +886,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
 
     hover_source, when given, is the sphere file the hover is synthesized from in place of
     the slowest near-level one in the directory -- typically that same run rebuilt with
-    ``build_sphere(remove_doppler=True)``, so that the fore-to-aft average combines
+    ``noise_abatement_2017.build_sphere(remove_doppler=True)``, so that the fore-to-aft average combines
     spectra at their emitted frequencies.  The flight spheres in the directory keep
     their received ones.  hover_source is a path resolved against the current
     directory, not against sphere_directory as the names in ``spheres`` are.
@@ -613,7 +933,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     :data:`AZIMUTH_REFERENCES`) is always written: what the flight spheres'
     azimuth is measured from, the ground track or the airframe's heading, for
     NICEOPS to orient its sphere by.  It is the value every source sphere in
-    the directory carries (``build_sphere(azimuth_reference=)``); azimuth_reference,
+    the directory carries (``noise_abatement_2017.build_sphere(azimuth_reference=)``); azimuth_reference,
     when given, is assumed for spheres that carry none and must agree with those
     that do, and spheres filed in different frames are refused.  Without either,
     'track', as every sphere was built before the attribute existed.  A hover is
@@ -640,13 +960,6 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     ``exclude`` by file name in ``panam_inputs``), and, as float attributes, ``load_factors``
     (omitted with ``load_factors=None``; ``fixed_load_factor`` says so) and
     ``extended_flight_path_angles_deg`` (omitted when not given).
-
-
-    absorption_band_method sets how each band's attenuation over ``distance``
-    (m) enters the EAA (:func:`spla_and_eaa_from_spectrum`): 'center' (default,
-    the ISO 9613-1 coefficient at the band center), 'arp5534' (SAE ARP 5534) or
-    'integrated' (ISO 9613-1 integrated over the band, flat band levels).  The
-    database records it only in the provenance settings.
 
     NICEOPS takes one sphere per flight condition, so two spheres with the
     same SPEED and FLIGHT_PATH_ANGLE (equal to 1e-9 kt and deg) are refused.
@@ -742,6 +1055,8 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                              main_rotor_tip_speed=main_rotor_tip_speed,
                              vehicle_weight_newtons=read_vehicle_weight_newtons(directory_name),
                              azimuth_reference=azimuth,
+                             # A fixed panam_tool value (docs/file_formats.md): it kept its name when the
+                             # function moved here.
                              provenance=_provenance.build_provenance(
                                  'flight_acoustics.build_empirical_database', settings,
                                  inputs=inputs))
@@ -865,127 +1180,14 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                              run_metadata=condition.run_metadata)
 
 
-def _sphere_condition(filename):
-    """The (SPEED kt, FLIGHT_PATH_ANGLE deg) a sphere file records, NaN where unreadable."""
-    with Dataset(filename, mode='r') as handle:
-        return _read_scalar(handle, 'SPEED'), _read_scalar(handle, 'FLIGHT_PATH_ANGLE')
-
-
-def _group_repeat_conditions(filenames, speed_tolerance_knots=0.0):
-    """Group sphere files by flight condition, for :func:`build_empirical_database`.
-
-    Two files share a condition when their FLIGHT_PATH_ANGLE agrees to 1e-9 deg
-    and their SPEED agrees to 1e-9 kt, or lies within speed_tolerance_knots (kt)
-    of the slowest file of the group.  Returns a list of tuples of file names,
-    each in the order of ``filenames``, ordered by its first file, so that
-    files with no repeat give one 1-tuple each, in their own order.
-    """
-    conditions = [_sphere_condition(f) for f in filenames]
-    order = sorted(range(len(filenames)),
-                   key=lambda i: (round(conditions[i][1], 9), conditions[i][0], i))
-    groups = []
-    for i in order:
-        speed, angle = conditions[i]
-        if groups:
-            first_speed, first_angle = conditions[groups[-1][0]]
-            if round(angle, 9) == round(first_angle, 9) and (
-                    round(speed, 9) == round(first_speed, 9)
-                    or speed - first_speed <= speed_tolerance_knots):
-                groups[-1].append(i)
-                continue
-        groups.append([i])
-    return [tuple(filenames[i] for i in sorted(group)) for group in sorted(groups, key=min)]
-
-
-def _extract_condition_SPL(filenames, infreqs, distance, atmosphere, absorption_band_method,
-                           speed_tolerance_knots=0.0):
-    """:func:`extract_SPL` for one condition: one sphere file, or the energy average of several.
-
-    Several files are averaged by :func:`sphere_statistics.average_spheres`, a -999
-    cell read as no data, after which a cell no run covers is no energy, as
-    :func:`extract_SPL` reads a -999.  speed_tolerance_knots (kt) is the SPEED
-    spread allowed between them.  The speed returned is the runs' mean, kt.
-    """
-    if len(filenames) == 1:
-        return extract_SPL(filenames[0], infreqs, distance, atmosphere, absorption_band_method)
-    from panam import sphere_statistics            # here: only merge_repeats needs it (scipy.sparse)
-    average = sphere_statistics.average_spheres(
-        filenames, speed_tolerance_knots=max(float(speed_tolerance_knots), 1e-9),
-        flight_path_angle_tolerance_deg=1e-9)
-    return _reduce_sphere_levels(
-        average['levels_db'], average['phi_deg'], average['theta_deg'], average['frequency_hz'],
-        np.asarray(average['radius_ft']), np.asarray(average['speed_knots']),
-        np.asarray(average['flight_path_angle_deg']), infreqs, distance, atmosphere,
-        absorption_band_method)
-
-
-def _merged_run_metadata(rows):
-    """One condition's run metadata from the :func:`group_run_metadata` of each run averaged into it.
-
-    One row is returned as it is.  Several give the mean of each numeric value (NaN
-    if any run's is unknown, and for the winds if the runs declare different wind
-    units or wind reference directions, which make their winds incommensurable),
-    the first run's text values, except wind_source, which names every source the
-    runs used, '+'-joined in run order ('none' only if no run had one), and every
-    run's source_sphere, one per line.
-    """
-    if len(rows) == 1:
-        return rows[0]
-    merged = dict(rows[0])
-    for name, _ in GROUP_RUN_METADATA_NUMBERS:
-        merged[name] = float(np.mean([row[name] for row in rows]))
-    if any(len({row[key] for row in rows}) > 1
-           for key in ('wind_units', 'wind_reference_direction')):
-        merged.update(wind_along_track=float('nan'), wind_cross_track=float('nan'))
-    sources = [part for row in rows for part in row['wind_source'].split('+')
-               if part not in ('', 'none')]
-    merged['wind_source'] = '+'.join(dict.fromkeys(sources)) or 'none'
-    merged['source_sphere'] = '\n'.join(row['source_sphere'] for row in rows)
-    return merged
-
-
-def _select_sphere_files(directory_name, spheres=None, exclude=None):
-    """The sphere files :func:`build_empirical_database` uses, and those ``exclude`` drops.
-
-    Returns ``(used, excluded)``, two sorted lists of absolute paths.  Without
-    ``spheres``, the candidates are every ``*.nc`` in directory_name; with it,
-    the files it names, a relative path taken relative to directory_name.  A
-    named file that does not exist raises FileNotFoundError.  ``exclude`` holds
-    file names or ``fnmatch`` patterns matched against each file name; one that
-    matches no candidate is warned about, since it is most likely a typo.
-    """
-    directory = os.path.abspath(os.path.expanduser(directory_name))
-    if spheres is None:
-        candidates = glob(os.path.join(directory, '*.nc'))
-    else:
-        if isinstance(spheres, (str, os.PathLike)):
-            raise TypeError('spheres must be a list of files, not one file')
-        candidates = []
-        for sphere in spheres:
-            path = os.path.join(directory, os.path.expanduser(os.fspath(sphere)))
-            if not os.path.isfile(path):
-                raise FileNotFoundError('sphere file not found: {}'.format(path))
-            candidates.append(os.path.abspath(path))
-    candidates = sorted(set(candidates))
-    if exclude is None:
-        return candidates, []
-    if isinstance(exclude, (str, os.PathLike)):
-        exclude = [exclude]
-    patterns = [os.path.basename(os.fspath(pattern)) for pattern in exclude]
-    for pattern in patterns:
-        if not any(fnmatch.fnmatchcase(os.path.basename(f), pattern) for f in candidates):
-            warnings.warn('exclude pattern {!r} matches no sphere file'.format(pattern))
-    excluded = [f for f in candidates
-                if any(fnmatch.fnmatchcase(os.path.basename(f), p) for p in patterns)]
-    return [f for f in candidates if f not in excluded], excluded
-
+# ---- Writing a database ----
 
 def _write_database_root(ncdatabase, *, fixed_load_factor, speed_reference, atmosphere,
                          main_rotor_radius, main_rotor_tip_speed, vehicle_weight_newtons,
                          azimuth_reference, provenance=None):
     """Write the root flags, build atmosphere and vehicle data every database carries.
 
-    Shared by :func:`build_empirical_database` and :func:`build_database_from_norah2`.
+    Shared by :func:`build_empirical_database` and :func:`norah2.build_database_from_norah2`.
     The vehicle values are skipped when None.  azimuth_reference (one of
     :data:`AZIMUTH_REFERENCES`) is required, so that no database is written
     without saying which frame its spheres' azimuth is measured in.
@@ -1088,34 +1290,6 @@ def _grid_and_frequency_are_shared(pending_groups):
     return True
 
 
-def _finite_sphere_levels(spla, eaa):
-    """Sanitise EAA where ambient gating emptied a direction.
-
-    Ambient gating legitimately empties a direction -- a low-power descent can
-    sit at the noise floor over most of the aft hemisphere -- and then
-    ``SPLA = -inf``, so ``EAA = SPLA - SPLAa`` is ``-inf - -inf``, a NaN.
-
-    The level itself is left alone, including when it is -inf. That was checked
-    against NICEOPS rather than assumed (its build/niceops, B205 track, Be407
-    database, patching the directions a flyover actually uses so the test is
-    demonstrably sensitive -- 26.9 dB of footprint change):
-
-    * ``dBA = -inf`` and ``dBA = -3064`` give byte-identical footprints with no
-      NaN cells. Its ``eval`` subtracts spreading and attenuation from the
-      level and the exposure integral then sums energy, so a -inf direction
-      contributes nothing -- which is exactly what an empty direction means.
-    * ``EAA = NaN`` does not stay local: it put 886 NaN cells into a 120x120
-      footprint and moved the mean level by 1.3 dB.
-
-    So only EAA needs a value here, and zero is the right one: with no energy
-    in the direction there is no excess attenuation to apply to it.
-    """
-    spla = np.asarray(spla, dtype=float)
-    eaa = np.asarray(eaa, dtype=float).copy()
-    eaa[~np.isfinite(eaa)] = 0.0
-    return spla, eaa
-
-
 def add_sphere_group(ncdatabase, groupname, phi, theta, radius, SPLA, EAA, speed, flight_path_angle, load_factor,
                      main_rotor_radius, main_rotor_tip_speed, weight_coefficient, frequency=None, amplitude=None,
                      write_grid_and_frequency=True, doppler_shift_removed=None, coverage=None,
@@ -1180,10 +1354,11 @@ def add_sphere_group(ncdatabase, groupname, phi, theta, radius, SPLA, EAA, speed
     this_group.variables['dBA'][:] = SPLA.flatten() + level_offset
     this_group.createVariable("EAA", 'f8', ("channels",))
     this_group.variables['EAA'][:] = EAA.flatten()
+    has_spectrum = frequency is not None and amplitude is not None
     # Store the source spectrum alongside the reduced levels, so a database can
     # be re-reduced (different weighting, different propagation distance)
     # without going back to the original sphere files.
-    if frequency is not None and amplitude is not None:
+    if has_spectrum:
         # Same reasoning as "channels" above: local dimensions in every group,
         # only the frequency values themselves are conditionally skipped.
         this_group.createDimension("frequency", np.size(frequency))
@@ -1194,7 +1369,6 @@ def add_sphere_group(ncdatabase, groupname, phi, theta, radius, SPLA, EAA, speed
             this_group.variables['frequency'][:] = np.asarray(frequency).flatten()
         this_group.createVariable("amplitude", 'f8', ("PHI", "THETA", "frequency"))
         this_group.variables['amplitude'][:] = amplitude
-    has_spectrum = frequency is not None and amplitude is not None
 
     if doppler_shift_removed is not None:
         if doppler_shift_removed not in (0, 1):
@@ -1230,142 +1404,3 @@ def add_sphere_group(ncdatabase, groupname, phi, theta, radius, SPLA, EAA, speed
             this_group.setncattr(name + '_units', str(run_metadata['wind_units']) if units is None else units)
         for name in GROUP_RUN_METADATA_TEXT:
             this_group.setncattr(name, str(run_metadata[name]))
-
-
-# Standard gravity, m/s^2: vehicle weights in the configs are masses in kg
-STANDARD_GRAVITY = 9.80665
-
-
-def read_vehicle_weight_newtons(directory_name):
-    """Vehicle weight in newtons from a sphere directory's ``vehicle.cfg``.
-
-    Separate from :func:`read_vehicle_data` so the database builder can write
-    the root ``vehicle_weight_newtons`` without changing that function's
-    fourteen-element return tuple.  Returns None when the config does not carry
-    a weight.
-    """
-    config = ConfigParser()
-    config.read(os.path.abspath(os.path.expanduser(directory_name) + '/vehicle.cfg'))
-    if not config.has_section('Vehicle') or 'weight' not in config['Vehicle']:
-        return None
-    # Matches read_vehicle_data's constant, so the two agree to the digit.
-    return STANDARD_GRAVITY * float(config['Vehicle']['weight'])
-
-
-def read_vehicle_data(directory_name, runs=None, speeds=None, flight_path_angles=None):
-    # Process config file
-    local_config = os.path.expanduser(directory_name) + '/vehicle.cfg'
-    abs_config = os.path.abspath(local_config)
-    config = ConfigParser()
-    config.read(abs_config)
-    number_of_main_rotor_blades = float(config['Main Rotor']['blades'])
-    number_of_tail_rotor_blades = float(config['Tail Rotor']['blades'])
-    if config.has_section('Option') and runs is not None:
-        # read drag value and then open Excel reflist file for individual conditions
-        nondimensional_flat_plate_drag = float(config['Option']['fbar'])
-        reference_list = config['Option']['reflist']
-        absolute_path_to_list = os.path.abspath(os.path.expanduser(directory_name) + '/' + reference_list)
-        import openpyxl                         # here: only the [Option] reference list needs it
-        wb = openpyxl.load_workbook(absolute_path_to_list, read_only=True, data_only=True)
-        try:
-            ws = wb.active
-            if ws is None:
-                raise ValueError("Workbook has no active sheet")
-            # One row per run: the run number in column B, the indicated
-            # airspeed in W, and advance ratio, weight coefficient and hover
-            # tip Mach number in AH:AJ.  Read whole rows, so a blank run cell
-            # drops its own row rather than shifting every later run onto the
-            # conditions of the row below.
-            rows = [row for row in ws.iter_rows(min_row=2, max_col=36, values_only=True)
-                    if row[1] is not None]
-        finally:
-            # A read-only workbook holds its file open until closed
-            wb.close()
-        run_numbers = [row[1] for row in rows]
-        selected = [rows[run_numbers.index(r)] for r in runs]
-        advance_ratios = np.array([row[33] for row in selected])
-        weight_coefficients = np.array([row[34] for row in selected])
-        hover_tip_mach_numbers = np.array([row[35] for row in selected])
-        # The reflist's indicated airspeeds replace the caller's speeds.
-        speeds = np.array([row[22] for row in selected])
-        main_rotor_tip_speed = np.mean(KNOT_MPS * speeds / advance_ratios)
-        # The reflist gives no rotor geometry.
-        main_rotor_radius = None
-        main_rotor_area = None
-        tail_rotor_radius = None
-        tail_rotor_area = None
-        tail_rotor_tip_speed = None
-        alphas = None
-        if flight_path_angles is not None:
-            drag_to_weight_ratio = 0.5 * nondimensional_flat_plate_drag * advance_ratios ** 2 / weight_coefficients
-            alphas = -np.degrees(drag_to_weight_ratio) - flight_path_angles
-    else:
-        main_rotor_radius = np.array(float(config['Main Rotor']['radius']))
-        main_rotor_area = np.pi * main_rotor_radius ** 2
-        main_rotor_tip_speed = np.array(float(config['Main Rotor']['tip speed']))
-        tail_rotor_radius = np.array(float(config['Tail Rotor']['radius']))
-        tail_rotor_area = np.pi * tail_rotor_radius ** 2
-        tail_rotor_tip_speed = np.array(float(config['Tail Rotor']['tip speed']))
-        ambient_temperature = np.array(float(config['Atmosphere']['temperature']))
-        speed_of_sound = 20.05 * np.sqrt(ambient_temperature)
-        ambient_density = np.array(float(config['Atmosphere']['density']))
-        vehicle_weight_kg = np.array(float(config['Vehicle']['weight']))
-        vehicle_weight_newtons = STANDARD_GRAVITY * vehicle_weight_kg
-        effective_flat_plate_drag_area = np.array(float(config['Vehicle']['drag']))
-        nondimensional_flat_plate_drag = effective_flat_plate_drag_area / main_rotor_area
-        hover_tip_mach_numbers = main_rotor_tip_speed / speed_of_sound
-        weight_coefficients = vehicle_weight_newtons / (
-                ambient_density * main_rotor_area * main_rotor_tip_speed ** 2)
-        advance_ratios = None
-        alphas = None
-        if speeds is not None:
-            ground_speed_meters_per_sec = KNOT_MPS * speeds
-            advance_ratios = ground_speed_meters_per_sec / main_rotor_tip_speed
-            hover_tip_mach_numbers = hover_tip_mach_numbers * np.ones_like(advance_ratios)
-            drag_to_weight_ratio = 0.5 * nondimensional_flat_plate_drag * advance_ratios ** 2 / weight_coefficients
-            if flight_path_angles is not None:
-                alphas = -np.degrees(drag_to_weight_ratio) - flight_path_angles
-
-    return (main_rotor_radius, main_rotor_area, main_rotor_tip_speed,
-            number_of_main_rotor_blades, tail_rotor_radius, tail_rotor_area, tail_rotor_tip_speed,
-            number_of_tail_rotor_blades, advance_ratios, weight_coefficients, hover_tip_mach_numbers, alphas,
-            nondimensional_flat_plate_drag, speeds)
-
-
-def extract_SPL(filename, infreqs=None, distance=1000,
-                atmosphere=Atmosphere(temperature=293.15, pressure=101.325,
-                                      relative_humidity=20.0), absorption_band_method='center'):
-    """Read a sphere file and reduce it to the levels a database group carries.
-
-    ``distance`` (m) and ``atmosphere`` set the EAA, with each band's attenuation
-    formed by ``absorption_band_method`` (see :func:`spla_and_eaa_from_spectrum`).
-    """
-    return _reduce_sphere_levels(*load_nc_sphere(filename), infreqs, distance, atmosphere,
-                                 absorption_band_method)
-
-
-def _reduce_sphere_levels(amplitude, phi, theta, frequency, radius, speed, flight_path_angle,
-                          infreqs, distance, atmosphere, absorption_band_method):
-    """:func:`extract_SPL` from levels already read, as :func:`load_nc_sphere` returns them.
-
-    amplitude is dB (phi, theta, frequency), any sentinel or NaN read as no energy;
-    radius is ft, speed kt, angles deg.  Returns what :func:`extract_SPL` returns.
-    """
-    # Convert radius to meters
-    radius = radius * 0.3048
-    # Replace masked values with no-energy SPL
-    amplitude = mask_missing_levels(amplitude)
-    # Check frequency range
-    if infreqs is not None:
-        frequency_index = (frequency >= infreqs[0]) & (frequency <= infreqs[1])
-        amplitude = amplitude[:, :, frequency_index]
-        frequency = frequency[frequency_index]
-    SPLO = power_to_db(np.sum(np.power(10.0, amplitude / 10.0), axis=2))
-    # A-weighted OASPL and excess atmospheric attenuation
-    SPLA, EAA = spla_and_eaa_from_spectrum(amplitude, frequency, distance, atmosphere, absorption_band_method)
-    # Convert from ART to UMAPR coordinates
-    _, P = np.meshgrid(theta, phi)
-    azi, elv = art2umapr(np.pi * P / 180.0, np.pi * theta / 180.0)
-    # frequency/amplitude are returned so callers can recompute band-based
-    # quantities (e.g. EAA) after modifying the spectrum.
-    return azi, elv, phi, theta, radius, SPLO, SPLA, EAA, speed, flight_path_angle, frequency, amplitude

@@ -1,6 +1,13 @@
 """Noise metrics: perceived noise level (PNL, PNLT, EPNL), sound exposure level and
 MIL-STD-1474E aural nondetectability.
 
+:func:`effective_perceived_noise_level` builds on :func:`perceived_noise_level`
+and :func:`tone_correction`; :func:`sound_exposure_level` integrates over the
+interval from :func:`ten_db_down_interval`;
+:func:`mil_std_1474e_nondetectability_distance` takes Table C-1 from
+:func:`load_mil_std_1474e_table_c1` or a CSV path, and
+:data:`MIL_STD_1474E_TABLE_C1_FILE` is the copy PANAM ships.
+
 Band levels are one-third octave levels in dB; times in s; distances in m.
 ``docs/THEORY.md`` section 9 gives the equations.
 """
@@ -13,11 +20,12 @@ import numpy as np
 # --------------------------------------------------------------------------
 # Perceived noise level metrics (PNL, PNLT, EPNL)
 #
-# Implements 14 CFR Part 36 Appendix A, section A36.4 (identical to ICAO
-# Annex 16 Vol. I Appendix 2): noy conversion via Table A36-3, PNL, the
-# ten-step spectral-irregularity (tone) correction with Table A36-2, the
-# A36.4.4.2 band-sharing check, applied as ICAO Annex 16 Vol. I App. 2 adds
-# it (a separate Delta_B on the EPNL), and the duration correction.
+# Implements 14 CFR Part 36 Appendix A, section A36.4 (harmonized with, not
+# identical to, ICAO Annex 16 Vol. I Appendix 2): noy conversion via Table
+# A36-3, PNL, the ten-step spectral-irregularity (tone) correction with Table
+# A36-2, the A36.4.4.2 band-sharing check, added as a separate Delta_B on the
+# EPNL (a departure from Annex 16; docs/THEORY.md section 9), and the
+# duration correction.
 # Cross-checked against the CFR text and the MATLAB reference implementation
 # (tools.git/metrics/EPNLcalc.m); deviations from that MATLAB code are
 # deliberate and follow the regulation:
@@ -35,50 +43,32 @@ PNL_BAND_FREQUENCIES = np.array([
 
 
 _INF = np.inf
-
-
 # Table A36-3: constants for mathematically formulated noy values.
 _NOY_SPL_A = np.array([91.0, 85.9, 87.3, 79.9, 79.8, 76.0, 74.0, 74.9, 94.6,
                        _INF, _INF, _INF, _INF, _INF, _INF, _INF, _INF, _INF,
                        _INF, _INF, _INF, _INF, 44.3, 50.7])
-
-
 _NOY_SPL_B = np.array([64.0, 60, 56, 53, 51, 48, 46, 44, 42, 40, 40, 40, 40,
                        40, 38, 34, 32, 30, 29, 29, 30, 31, 37, 41])
-
-
 _NOY_SPL_C = np.array([52.0, 51, 49, 47, 46, 45, 43, 42, 41, 40, 40, 40, 40,
                        40, 38, 34, 32, 30, 29, 29, 30, 31, 34, 37])
-
-
 _NOY_SPL_D = np.array([49.0, 44, 39, 34, 30, 27, 24, 21, 18, 16, 16, 16, 16,
                        16, 15, 12, 9, 5, 4, 5, 6, 10, 17, 21])
-
-
 _NOY_SPL_E = np.array([55.0, 51, 46, 42, 39, 36, 33, 30, 27, 25, 25, 25, 25,
                        25, 23, 21, 18, 15, 14, 14, 15, 17, 23, 29])
-
-
 _NOY_M_B = np.array([0.043478, 0.040570, 0.036831, 0.036831, 0.035336,
                      0.033333, 0.033333, 0.032051, 0.030675, 0.030103,
                      0.030103, 0.030103, 0.030103, 0.030103, 0.030103,
                      0.029960, 0.029960, 0.029960, 0.029960, 0.029960,
                      0.029960, 0.029960, 0.042285, 0.042285])
-
-
 _NOY_M_C = np.array([0.030103, 0.030103, 0.030103, 0.030103, 0.030103,
                      0.030103, 0.030103, 0.030103, 0.030103, 0.0, 0.0, 0.0,
                      0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                      0.029960, 0.029960])           # 0.0 = "not applicable"
-
-
 _NOY_M_D = np.array([0.079520, 0.068160, 0.068160, 0.059640, 0.053013,
                      0.053013, 0.053013, 0.053013, 0.053013, 0.053013,
                      0.053013, 0.053013, 0.053013, 0.053013, 0.059640,
                      0.053013, 0.053013, 0.047712, 0.047712, 0.053013,
                      0.053013, 0.068160, 0.079520, 0.059640])
-
-
 _NOY_M_E = np.array([0.058098, 0.058098, 0.052288, 0.047534, 0.043573,
                      0.043573, 0.040221, 0.037349, 0.034859, 0.034859,
                      0.034859, 0.034859, 0.034859, 0.034859, 0.034859,
@@ -208,12 +198,12 @@ def tone_correction(band_levels, masked=False):
     # Step 9: Table A36-2. Note 500 Hz belongs to the middle range.
     freq = PNL_BAND_FREQUENCIES
     low = (freq < 500.0) | (freq > 5000.0)      # F/3-1/2, F/6, 10/3
-    mid = ~low                                   # 2F/3-1, F/3, 20/3
     c = np.zeros_like(spl)
     F = f_diff
     c_low = np.where(F >= 20.0, 10.0 / 3.0,
                      np.where(F >= 3.0, F / 6.0,
                               np.where(F >= 1.5, F / 3.0 - 0.5, 0.0)))
+    # Middle range, 500 <= f <= 5000 Hz: 2F/3-1, F/3, 20/3
     c_mid = np.where(F >= 20.0, 20.0 / 3.0,
                      np.where(F >= 3.0, F / 3.0,
                               np.where(F >= 1.5, 2.0 * F / 3.0 - 1.0, 0.0)))
@@ -288,12 +278,12 @@ def effective_perceived_noise_level(band_level_history, dt=0.5,
     PNLTM - 10.  Every sample between the limits is summed, dips below
     PNLTM - 10 included.
 
-    The band-sharing adjustment follows ICAO Annex 16 Vol. I, Appendix 2
-    (and FAA AC 36-4): when C at PNLTM is below the mean C of the five
-    records centered there, delta_b = PNL(kM) + C_avg - PNLTM is added to the
-    EPNL as a separate term.  PNLTM, the 10 dB-down limits and D are those of
-    the unadjusted PNLT history.  Read literally, 14 CFR 36 raises PNLTM and
-    takes D from it, and the two cancel in EPNL = PNLTM + D.
+    Band sharing: when C at PNLTM is below the mean C of the five records
+    centered there, delta_b = PNL(kM) + C_avg - PNLTM is added to the EPNL
+    as a separate term.  PNLTM, the 10 dB-down limits and D are those of the
+    unadjusted PNLT history.  Annex 16 instead adds delta_b to PNLTM and takes
+    the 10 dB-down points from the adjusted PNLTM.  Read literally, 14 CFR 36
+    raises PNLTM and takes D from it, and the two cancel in EPNL = PNLTM + D.
     """
     if normalization not in ('regulatory', 'exact'):
         raise ValueError("normalization must be 'regulatory' or 'exact'")
@@ -343,6 +333,10 @@ def effective_perceived_noise_level(band_level_history, dt=0.5,
         "pnlt": pnlt, "pnl": pnl, "c_max": c_max, "tone_band": tone_band,
         "clipped": bool(k1 == 0 or k2 == len(pnlt) - 1),
     }
+
+
+# --------------------------------------------------------------------------
+# Sound exposure level and the 10 dB-down duration
 
 
 def ten_db_down_interval(levels, down=10.0):
@@ -425,6 +419,10 @@ def sound_exposure_level(levels, dt, down=10.0, weighted_levels=None, *, missing
         'missing_samples': int(np.isnan(segment).sum()),
         'clipped': bool(k1 == 0 or k2 == levels.size - 1),
     }
+
+
+# --------------------------------------------------------------------------
+# MIL-STD-1474E aural nondetectability
 
 
 #: MIL-STD-1474E Table C-1, converted to CSV, as PANAM ships it (package data).

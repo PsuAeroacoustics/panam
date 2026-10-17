@@ -13,7 +13,7 @@ cell's average, ``'no_energy'`` counts it as a run with zero power.  A NaN on
 disk is always no data.
 
 :func:`node_statistics` describes the samples behind each node of a gridded
-hemisphere (:func:`flight_acoustics.depropagate_hemisphere` with
+hemisphere (:func:`depropagation.depropagate_hemisphere` with
 ``return_statistics=True``), and :func:`node_statistics_variables` puts them on an
 ART grid for a sphere file.
 """
@@ -218,7 +218,7 @@ def average_spheres(paths_or_datasets, min_runs=1, missing='no_data', speed_tole
 def write_averaged_sphere(filename, average, title=None, overwrite=True):
     """Write an :func:`average_spheres` result as an AAM sphere file.
 
-    Through :func:`flight_acoustics.write_aam_hemisphere_netcdf` (``art_levels``): the
+    Through :func:`write_aam_hemisphere_netcdf` (``art_levels``): the
     levels are written as they are, -999 where missing or below -100 dB, with the
     runs' mean weight as EMPTY_WEIGHT.  Two extra variables follow, which AAM and
     NICEOPS do not read: ``N_RUNS`` (i4, the runs covering each cell) and
@@ -254,10 +254,10 @@ def write_averaged_sphere(filename, average, title=None, overwrite=True):
 
 
 def idw_weight_matrix(neighbors, n_points):
-    """The neighbor list of :func:`flight_acoustics.shepIDW_weights` as a sparse matrix.
+    """The neighbor list of :func:`gridding.shepIDW_weights` as a sparse matrix.
 
     Args:
-        neighbors: the second element of what :func:`flight_acoustics.shepIDW_weights`
+        neighbors: the second element of what :func:`gridding.shepIDW_weights`
             returns: per node (flattened), the sample indices and their weights.
         n_points: number of samples.
 
@@ -279,7 +279,7 @@ def node_statistics(weights, power, mic):
 
     A node's samples are those with a positive weight whose power is not NaN.  Their
     weights w_i are renormalized over them, as the gridding renormalizes them
-    (:func:`flight_acoustics.depropagate_hemisphere`), and the node's value is the
+    (:func:`depropagation.depropagate_hemisphere`), and the node's value is the
     weighted energy mean P = sum w_i p_i / sum w_i, at level L = 10 lg P.
 
     * ``n_samples``: the number of the node's samples.
@@ -349,16 +349,16 @@ def node_statistics(weights, power, mic):
 def node_statistics_variables(hemisphere, phi_deg=None, theta_deg=None, field='bands_db'):
     """``N_SAMPLES`` and ``AMPLITUDE_STD`` of a hemisphere on an ART grid.
 
-    For :func:`flight_acoustics.write_aam_hemisphere_netcdf`'s ``extra_variables``.
+    For :func:`write_aam_hemisphere_netcdf`'s ``extra_variables``.
     Each ART point takes the statistics of the gridded node nearest it in azimuth and
     in elevation: the band levels are interpolated between nodes, their statistics are
     not.
 
     Args:
-        hemisphere: a :func:`flight_acoustics.depropagate_hemisphere` result made with
+        hemisphere: a :func:`depropagation.depropagate_hemisphere` result made with
             ``third_octave=True`` and ``return_statistics=True``.
         phi_deg, theta_deg: the ART grid, deg; default the writer's
-            (:data:`flight_acoustics.AAM_DEFAULT_PHI_DEG`, ``AAM_DEFAULT_THETA_DEG``).
+            (:data:`AAM_DEFAULT_PHI_DEG`, ``AAM_DEFAULT_THETA_DEG``).
         field: the third-octave field, 'bands_db' (default), 'tonal_db' or 'broadband_db'.
 
     Returns:
@@ -507,7 +507,7 @@ def plot_sphere_difference(result, band=None, level_range=None, grid_convention=
         band: band center to map (Hz); default the overall difference.
         level_range: (low, high) color range, dB; default symmetric about 0 over
             the largest finite difference.
-        grid_convention: grid lines, as :func:`flight_acoustics.plot_lambert_ea`
+        grid_convention: grid lines, as :func:`plot_lambert_ea`
             (default 'art').
 
     Returns:
@@ -531,5 +531,5 @@ def plot_sphere_difference(result, band=None, level_range=None, grid_convention=
     theta, phi = np.meshgrid(result['theta_deg'], result['phi_deg'])
     azi, elv = art2umapr(np.radians(phi), np.radians(theta))
     fig, _, _ = plot_lambert_ea(azi, elv, field, level_range, grid_convention=grid_convention,
-                                   cmap='RdBu_r', colorbar_label=label)
+                                cmap='RdBu_r', colorbar_label=label)
     return fig

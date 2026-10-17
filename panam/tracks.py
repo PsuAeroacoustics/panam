@@ -3,6 +3,12 @@
 import numpy as np
 
 
+#: The NASA track file column behind each output key of :func:`load_NASA_track`.
+_NASA_TRACK_COLUMNS = {'time': 'utcsec', 'latitude': 'lat', 'longitude': 'lon', 'altitude': 'alt',
+                       'heading': 'heading', 'pitch': 'pitch', 'roll': 'roll', 'x': 'x', 'y': 'y',
+                       'z': 'z', 'vx': 'vx', 'vy': 'vy', 'vz': 'vz'}
+
+
 def load_NASA_track(trackfile):
     """
     Load NASA track file and return data in a structured format.
@@ -15,7 +21,7 @@ def load_NASA_track(trackfile):
             'latitude': numpy.ndarray of latitude in degrees
             'longitude': numpy.ndarray of longitude in degrees
             'altitude': numpy.ndarray of altitude in feet
-            'heading': numpy.ndarray of heading in degrees  
+            'heading': numpy.ndarray of heading in degrees
             'pitch': numpy.ndarray of pitch in degrees
             'roll': numpy.ndarray of roll in degrees
             'x', 'y', 'z': numpy.ndarray of position in feet (local coordinates,
@@ -25,40 +31,12 @@ def load_NASA_track(trackfile):
                 store it positive DOWN, except EC130B4 test day 298, which
                 stores it positive up.  Take its sign from
                 :func:`noise_abatement_2017.vz_sign`.
-    """    
+    """
     data = np.genfromtxt(trackfile, delimiter=',', names=True)
-    time = data['utcsec']
-    latitude = data['lat']
-    longitude = data['lon']
-    altitude = data['alt']  
-    heading = data['heading']
-    pitch = data['pitch']
-    roll = data['roll']
-    x = data['x']
-    y = data['y']
-    z = data['z']
-    vx = data['vx']
-    vy = data['vy']
-    vz = data['vz']   
-
-    return {
-        'time': time,
-        'latitude': latitude,
-        'longitude': longitude,
-        'altitude': altitude,
-        'heading': heading,
-        'pitch': pitch,
-        'roll': roll,
-        'x': x,
-        'y': y,
-        'z': z,
-        'vx': vx,
-        'vy': vy,
-        'vz': vz,
-    }
+    return {key: data[column] for key, column in _NASA_TRACK_COLUMNS.items()}
 
 
-def filter_track(track, xlims = None, ylims = None, zlims = None, decimate=1):
+def filter_track(track, xlims=None, ylims=None, zlims=None, decimate=1):
     """
     Filter track data based on specified limits for x, y, z coordinates.
 
@@ -70,21 +48,11 @@ def filter_track(track, xlims = None, ylims = None, zlims = None, decimate=1):
         decimate: integer factor to decimate the track data (default: 1, no decimation).
     Returns:
         dict containing filtered track data with the same keys as input.
-    """    
-    x = track['x']
-    y = track['y']
-    z = track['z']
-    mask = np.ones_like(x, dtype=bool)
-
-    if xlims is not None:
-        mask = np.logical_and(mask, x >= xlims[0])
-        mask = np.logical_and(mask, x <= xlims[1])
-    if ylims is not None:
-        mask = np.logical_and(mask, y >= ylims[0])
-        mask = np.logical_and(mask, y <= ylims[1])
-    if zlims is not None:
-        mask = np.logical_and(mask, z >= zlims[0])
-        mask = np.logical_and(mask, z <= zlims[1])
+    """
+    mask = np.ones_like(track['x'], dtype=bool)
+    for axis, lims in (('x', xlims), ('y', ylims), ('z', zlims)):
+        if lims is not None:
+            mask &= (track[axis] >= lims[0]) & (track[axis] <= lims[1])
 
     filtered_track = {}
     for key in track:
@@ -93,4 +61,4 @@ def filter_track(track, xlims = None, ylims = None, zlims = None, decimate=1):
     if decimate > 1:
         for key in filtered_track:
             filtered_track[key] = filtered_track[key][::decimate]
-    return filtered_track   
+    return filtered_track

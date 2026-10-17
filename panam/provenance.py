@@ -2,10 +2,11 @@
 
 :func:`build_provenance` returns the stamp as a dict of text attributes, and
 :func:`write_provenance` writes it as global attributes of an open netCDF
-file.  The sphere writer (:func:`flight_acoustics.write_aam_hemisphere_netcdf`)
-and both database writers (:func:`flight_acoustics.build_empirical_database`,
-:func:`flight_acoustics.build_database_from_norah2`) write one.  The attributes
-are optional: no reader requires them.  See ``docs/file_formats.md``.
+file.  The sphere writer (:func:`sphere_io.write_aam_hemisphere_netcdf`) and
+both database writers (:func:`database.build_empirical_database`,
+:func:`norah2.build_database_from_norah2`) write one; their ``panam_tool`` keeps
+the ``flight_acoustics.<name>`` form they had before the library was split.  The
+attributes are optional: no reader requires them.  See ``docs/file_formats.md``.
 
 The settings are written as canonical JSON (sorted keys, no whitespace), so
 equal settings give the same text and the same SHA-256 whatever order they
