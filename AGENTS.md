@@ -13,10 +13,10 @@ Instructions for AI coding tools working on PANAM. Human developers: see
   `requirements.txt` to package names: pip reads a path there against the
   current directory, which breaks a project that installs it with `-r`.
 - Layout: the library is the package `panam/` (`from panam import
-  flight_acoustics as fa`), the command-line tools are scripts in `tools/`, the
-  examples are scripts in `examples/`. The library never imports from
-  `tools/` or `examples/`; a tool holds its argument parsing and calls into
-  `panam`.
+  depropagation`; `flight_acoustics` re-exports the names it had before the
+  split), the command-line tools are scripts in `tools/`, the examples are
+  scripts in `examples/`. The library never imports from `tools/` or
+  `examples/`; a tool holds its argument parsing and calls into `panam`.
 - Tests: `pytest`, or `pytest -q -m "not data"` to skip the external-data tests.
   One file: `pytest tests/test_ega.py`.
 - `pytest.ini` puts `.` and `tests/` on `sys.path`, so the tests import `panam`
@@ -34,9 +34,9 @@ Instructions for AI coding tools working on PANAM. Human developers: see
 Library modules, in `panam/`:
 
 - `flight_acoustics.py`: re-exports every name it had before it was split into
-  the topic modules below, so `fa.<name>` keeps working. Add nothing to it, and
-  import the topic modules, not it, in library code (`tests/test_module_layout.py`
-  lists the older modules that still use it).
+  the topic modules below, so `fa.<name>` keeps working. Add nothing to it.
+  Library code imports the topic modules, not `flight_acoustics`;
+  `tests/test_module_layout.py` lists the older modules that still use it.
 - Topic modules: `spectra.py` (PSDs, bands, spectrograms, `dBAw`), `metrics.py`
   (PNL/EPNL, SEL, MIL-STD-1474E), `geometry.py` (`hemigen`, `dedopplerize`,
   `art2umapr`, Lambert angles), `absorption.py`, `gridding.py` (IDW weights,
@@ -121,9 +121,12 @@ examples tables list them.
   `PANAM_REGENERATE_GOLDEN=1 python -m pytest tests/test_golden_results.py`.
 - Never regenerate `tests/data/python_acoustics_reference.npz` from PANAM.
 - Shared fixtures: `tests/sphere_helpers.py`. Tests use the `Agg` backend.
-  `tests/conftest.py` validates every database built through `fa.build_...`.
-  A monkeypatch must target the module that makes the call (`depropagation.hemigen`),
-  not `fa`.
+  `tests/conftest.py` validates every database that `build_empirical_database`
+  or `build_database_from_norah2` writes (through `database`, `norah2` or
+  `fa`). A monkeypatch replaces a name where its caller looks it up:
+  `depropagation.hemigen`, or `noise_abatement_2017.fa.<name>` (`na.fa.<name>`
+  in the tests) for a module that still calls through the namespace. Patching
+  `fa` does not reach the topic modules.
 - Skips: `@pytest.mark.data` (external datasets), NICEOPS executables not
   configured, example data missing. CI (`.github/workflows/tests.yml`: Ubuntu
   with Python 3.11 and 3.14, macOS with 3.14; coverage and `--durations=20`

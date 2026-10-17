@@ -32,7 +32,7 @@ that needs them is slower.
 
 | Directory | What is in it |
 |---|---|
-| `panam/` | The library: `from panam import flight_acoustics as fa`. The module map is in [`docs/DEVELOPING.md`](docs/DEVELOPING.md#module-map) |
+| `panam/` | The library: `from panam import depropagation`; `flight_acoustics` re-exports the names it had before the split. The module map is in [`docs/DEVELOPING.md`](docs/DEVELOPING.md#module-map) |
 | `tools/` | The command-line tools ([below](#tools)): `python tools/<name>.py -h` |
 | `examples/` | Tutorials and worked examples ([below](#examples)) |
 | `example_data/` | A sphere, a `vehicle.cfg` and a hexacopter recording for the examples and tests |

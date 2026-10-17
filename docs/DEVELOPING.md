@@ -10,8 +10,9 @@ contracts are in [file_formats.md](file_formats.md). AI coding tools read
 The repository has three kinds of code, in three directories:
 
 - `panam/`, the library: a package of modules imported by name,
-  `from panam import flight_acoustics as fa`. Importing `panam` itself loads
-  none of them.
+  `from panam import depropagation`; `flight_acoustics` re-exports the names
+  it had before the split ([Module map](#module-map)). Importing `panam`
+  itself loads none of them.
 - `tools/`, the command-line tools, one script per tool. The library never
   imports from `tools/` ([Where new code goes](#where-new-code-goes)).
 - `examples/`, tutorials and worked examples: scripts that show the library
@@ -317,11 +318,18 @@ Shared fixtures (a minimal hemisphere, a sphere directory with its
 `vehicle.cfg`, raw sphere files) are in `tests/sphere_helpers.py`.
 
 `tests/conftest.py` runs `nod_database.validate_nod` on every database that
-`fa.build_empirical_database` or `fa.build_database_from_norah2` writes during the
-tests, including scripts run in-process with `run_here`, and fails the test on a
-violation. Call the builders through the module (`fa.build_...`), not a name
-imported before the session starts. A database written in a subprocess is
-validated by the test itself.
+`build_empirical_database` or `build_database_from_norah2` writes during the
+tests, called through `database`, `norah2` or the `fa` namespace, including
+scripts run in-process with `run_here`, and fails the test on a violation.
+Call the builders through a module attribute (`database.build_...`,
+`fa.build_...`), not a name imported before the session starts. A database
+written in a subprocess is validated by the test itself.
+
+A monkeypatch replaces a function where its caller looks it up:
+`depropagation.hemigen` for the call in `depropagate_hemisphere`, or
+`noise_abatement_2017.fa.depropagate_hemisphere` (`na.fa` in the tests) for a
+module that still calls through the namespace. Patching `fa` does not change
+what a topic module calls.
 
 ### Golden results
 

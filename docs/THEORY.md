@@ -1377,8 +1377,8 @@ These are in PANAM but not used to build the databases.
 
 ## Appendix: Where each model lives
 
-A function is named with its module, a module of `panam/`, and the names after it in a row are in the
-same module until another is named; a script is named by its path. Tests are in `tests/`.
+Each row names a function with its module in `panam/` (`spectra.psd`); the names after it are in the
+same module until another module is named. A script is named by its path. Tests are in `tests/`.
 
 | Section | Functions | Tests |
 | --- | --- | --- |
