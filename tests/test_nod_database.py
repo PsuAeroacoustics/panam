@@ -8,6 +8,8 @@ import numpy as np
 import pytest
 from netCDF4 import Dataset
 
+import panam.database
+import panam.norah2
 from panam import flight_acoustics as fa
 from panam import nod_database as nd
 from sphere_helpers import minimal_hemisphere, write_sphere_directory
@@ -48,8 +50,9 @@ def _rules(path):
 
 
 def test_every_build_in_the_tests_is_validated():
-    assert fa.build_empirical_database.__wrapped__ is not None
-    assert fa.build_database_from_norah2.__wrapped__ is not None
+    for build in (fa.build_empirical_database, panam.database.build_empirical_database,
+                  fa.build_database_from_norah2, panam.norah2.build_database_from_norah2):
+        assert build.__wrapped__ is not None
 
 
 def test_a_fixed_load_factor_database_reads_back_as_written(shared):

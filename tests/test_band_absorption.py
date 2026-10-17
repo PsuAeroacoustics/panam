@@ -2,7 +2,7 @@
 options that use them: absorption_band_method on the filter-bank depropagation, the
 EAA and the NORAH2 import, and absorption_profile on the depropagation and build_sphere."""
 
-import inspect
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -322,8 +322,8 @@ def test_norah2_levels_take_the_band_method():
 
 def test_numpy_warnings_are_suppressed_locally():
     """AGENTS.md: np.errstate, never np.seterr, which changes the process-wide state."""
-    from panam import flight_acoustics
-    assert 'np.seterr' not in inspect.getsource(flight_acoustics)
+    for path in Path(fa.__file__).parent.rglob('*.py'):
+        assert 'np.seterr' not in path.read_text(), path.name
     before = np.geterr()
     spectrum = np.full((1, 3, 2), -np.inf)
     fa.average_fore_and_aft(spectrum)

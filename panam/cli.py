@@ -15,7 +15,8 @@ import matplotlib.pyplot as plt
 from panam.acoustics.atmosphere import Atmosphere
 
 #: The default atmosphere of a database's broadband EAA (Atmosphere arguments:
-#: K, kPa, percent), as flight_acoustics' database builders default to it.
+#: K, kPa, percent), as database.build_empirical_database and norah2.build_database_from_norah2
+#: default to it.
 BUILD_ATMOSPHERE = dict(temperature=293.15, pressure=101.325, relative_humidity=20.0)
 
 

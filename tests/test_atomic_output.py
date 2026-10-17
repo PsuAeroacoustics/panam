@@ -1,4 +1,4 @@
-"""Writers write a file in full or not at all (flight_acoustics._atomic_output)."""
+"""Writers write a file in full or not at all (sphere_io._atomic_output)."""
 
 import glob
 import os
@@ -6,6 +6,7 @@ import os
 import numpy as np
 import pytest
 
+from panam import database
 from panam import flight_acoustics as fa
 from panam import provenance
 from sphere_helpers import VEHICLE_CFG, minimal_hemisphere
@@ -86,8 +87,8 @@ def test_a_database_interrupted_mid_write_leaves_no_file(tmp_path, monkeypatch):
         _write_sphere(spheres / name, speed, angle)
     output = tmp_path / 'out'
     output.mkdir()
-    monkeypatch.setattr(fa, 'add_sphere_group', _interrupt)
+    monkeypatch.setattr(database, 'add_sphere_group', _interrupt)
     with pytest.raises(_Interrupted):
-        fa.build_empirical_database(str(spheres), str(output / 'db.nod'),
-                                    load_factors=np.array([1.0]), store_spectrum=False)
+        database.build_empirical_database(str(spheres), str(output / 'db.nod'),
+                                          load_factors=np.array([1.0]), store_spectrum=False)
     assert _leftovers(output) == []

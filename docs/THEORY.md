@@ -45,7 +45,7 @@ PANAM turns flight-test microphone recordings into source noise spheres. The app
 fixed-radius source hemisphere of the Fundamental Rotorcraft Acoustic Modeling from Experiments
 (FRAME) method [1, 2, 3]. Each steady flight condition gets
 one sphere: the band levels the aircraft radiates in every direction, referred to a fixed radius.
-The shipped databases come from the 2017 Noise Abatement flight test [4, 5].
+The shipped databases come from the 2017 Noise Abatement flight test [4].
 
 For each run, PANAM:
 
@@ -101,7 +101,7 @@ states its units.
 ### 2.1 Short-time spectra
 
 Microphone pressure (Pa, as stored; PANAM applies no calibration) is analyzed in Hann-windowed
-frames [6], with the mean removed from each frame (`spectrogram`'s default
+frames [5], with the mean removed from each frame (`spectrogram`'s default
 `detrend='constant'`). The frame length is the power of two at or above $T_w f_s$ samples
 (`frame_length`). The linear spectral density is $S(f) = S_{xx}(f)/p_\mathrm{ref}^2$,
 $p_\mathrm{ref} = 20\ \mu\mathrm{Pa}$, and its level is
@@ -117,7 +117,7 @@ its own frequency grid). Each frame is a single periodogram. The averaging happe
 samples that fall in a sphere cell (§6). The spectrum at an emission point's reception time is
 interpolated between frame centers **in power**, not in dB.
 
-Welch averaging [7] is available for stationary signals (`psd_welch`). The whole-record
+Welch averaging [6] is available for stationary signals (`psd_welch`). The whole-record
 spectrum (`psd`, and through it `third_octave_band_levels`, `overall_SPL` and `level_history`) is
 one Hann-windowed, density-scaled periodogram; the Hann window keeps an off-bin rotor tone's
 leakage near the tone, where a rectangular window spreads it across the spectrum. `overall_SPL`'s
@@ -126,10 +126,11 @@ that by the A-weighted fraction of the Hann spectrum.
 
 ### 2.2 One-third-octave bands
 
-Band edges follow IEC 61260-1 [8] (`third_octave_band_edges`). A band with a nominal
+Band edges follow IEC 61260-1 [7] (`third_octave_band_edges`). A band with a nominal
 center (within 1/12 octave of $1000\cdot10^{n/10}$ Hz, $n$ an integer) takes the base-10 edges
 $f_m 10^{\pm 1/20}$ around its exact midband frequency $f_m$. A set of exact base-2 centers
-$1000\cdot2^{n/3}$ takes $f_c 2^{\pm1/6}$; `third_octave_band_levels` uses such centers. The
+$1000\cdot2^{n/3}$ takes $f_c 2^{\pm1/6}$ (a base-2 design, which IEC 61260-1:2014 no longer
+specifies); `third_octave_band_levels` uses such centers. The
 sphere build uses the 31 nominal centers from 10 Hz to 10 kHz, so its edges are base 10.
 
 **Allocation.** By default a band's power is the sum of whole FFT bins inside its edges:
@@ -143,7 +144,7 @@ splits its window main lobe between two bands. `tone_aware_band_power` files eac
 1. The floor is the running median of $S$ over 15 bins, taken over the bins the ambient gate left
    nonzero. A tone is a local maximum over ±2 bins standing more than 6 dB above it.
 2. Its offset from the peak bin follows from the Hann window's two-bin interpolation
-   [9], with $S_0$ and $S_{l,r}$ the floor-subtracted peak and neighbors:
+   [8], with $S_0$ and $S_{l,r}$ the floor-subtracted peak and neighbors:
    $u = \sqrt{\max(S_l, S_r)/S_0}$, $\delta = \pm\,\mathrm{clip}\!\left(\frac{2u - 1}{u + 1}, 0, \tfrac12\right)$, toward the larger neighbor.
 3. Its power corrects the peak bin for the window's scalloping, with $\mathrm{ENBW} = 1.5$ bins:
 
@@ -193,7 +194,7 @@ W_A(f) = 10\lg\frac{1.562339\, f^4}{(f^2 + 107.65265^2)(f^2 + 737.86223^2)}
        + 10\lg\frac{2.242881\times10^{16}\, f^4}{(f^2 + 20.598997^2)^2 (f^2 + 12194.22^2)^2},
 $$
 
-the pole frequencies of IEC 61672-1 [10] (12194.22 Hz where the standard gives 12194.217),
+the pole frequencies of IEC 61672-1 [9] (12194.22 Hz where the standard gives 12194.217),
 normalized to 0 dB at 1 kHz (`dBAw`). It is applied per FFT bin in depropagation and per band
 center in the EAA (§7.2).
 
@@ -234,7 +235,7 @@ coincides with it, because its tip-path-plane normal is the load-factor directio
 vertical when the aircraft does not accelerate.
 
 The AAM/NORAH2 ("ART") sphere angles are $\theta$ from the nose and $\phi$ from straight down,
-positive to starboard [11] (`art2umapr`):
+positive to starboard [10] (`art2umapr`):
 
 $$
 \hat{\mathbf{d}} = (\cos\theta,\ \sin\theta\sin\phi,\ \sin\theta\cos\phi)\quad(\text{forward, starboard, down}).
@@ -242,7 +243,7 @@ $$
 
 **Track frame.** The 2017 tracks are in each layout's local frame: $+x$ along the layout's true
 bearing $b$, $+y$ to the left, $z$ up. Latitude and longitude map to local east and north on the
-WGS84 radii of curvature at the run's reference point [12] (`local_east_north_ft`), then
+WGS84 radii of curvature at the run's reference point [11] (`local_east_north_ft`), then
 rotate by $b$ (`east_north_to_frame`): $x = E\sin b + N\cos b$, $y = -E\cos b + N\sin b$.
 `frame_bearing_deg` takes $b$ from the reference list's `true_heading`. When the track carries
 latitude and longitude, the run has a reference point, and the track spans at least 500 ft, it
@@ -287,10 +288,10 @@ convective term.
 
 | Model | Impedance |
 | --- | --- |
-| Delany–Bazley [13] | $Z = 1 + 9.08X^{-0.75} + 11.9iX^{-0.73}$ |
-| Miki [14] | $Z = 1 + 5.50X^{-0.632} + 8.43iX^{-0.632}$ |
-| Variable porosity [15] | $Z = (1+i)\sqrt{\dfrac{1000\,\sigma_e}{\pi\gamma_\mathrm{air}\rho_0 f}} + \dfrac{i c_0 \alpha_e}{8\pi\gamma_\mathrm{air} f}$ |
-| Hard-backed Delany–Bazley layer, depth $d_l$ [15] | $Z = Z_c\coth(-ik_l d_l)$ |
+| Delany–Bazley [12] | $Z = 1 + 9.08X^{-0.75} + 11.9iX^{-0.73}$ |
+| Miki [13] | $Z = 1 + 5.50X^{-0.632} + 8.43iX^{-0.632}$ |
+| Variable porosity [14] | $Z = (1+i)\sqrt{\dfrac{1000\,\sigma_e}{\pi\gamma_\mathrm{air}\rho_0 f}} + \dfrac{i c_0 \alpha_e}{8\pi\gamma_\mathrm{air} f}$ |
+| Hard-backed Delany–Bazley layer, depth $d_l$ [14] | $Z = Z_c\coth(-ik_l d_l)$ |
 
 For the layer, $Z_c = 1 + 9.08X^{-0.754} + 11.9iX^{-0.732}$ and
 $k_l = (2\pi f/c_0)(1 + 10.8X^{-0.70} + 10.3iX^{-0.595})$. $c_0$ is the sound speed the caller
@@ -303,8 +304,8 @@ $\sigma_e$ in Pa·s/m².
 with isothermal compressibility and $\alpha_e = \alpha/\Omega_0$. The form usually quoted,
 $0.436(1+i)\sqrt{\sigma_e/f} + 19.48\,i\alpha_e/f$, has twice the coefficient,
 $c_0/(4\pi\gamma_\mathrm{air})$, so its $\alpha_e$ is defined differently: an $\alpha_e$ fitted in
-that form is halved here. The printed eq. (10) of [15] has not been checked against
-this. The 2017 site ground uses $\alpha_e = 0$ (§4.6), where the two agree.
+that form is halved here. Eq. (10) of [14] has this coefficient, $c_0/(8\pi\gamma_\mathrm{air})$.
+The 2017 site ground uses $\alpha_e = 0$ (§4.6), where the two agree.
 
 A thin layer of low resistivity is not passive at low frequency ($\mathrm{Re}\,\beta < 0$). The
 exact Green's function used by the plate BEM (§4.5) refuses it; the impedance,
@@ -324,7 +325,7 @@ Q = R_p + (1 - R_p)\left[1 + i\sqrt{\pi}\,p_w\,\mathrm{w}(p_w)\right], \qquad
 p_w = \sqrt{\frac{i\pi f R_2}{c\,(1 + \beta\cos\vartheta)}}\,(\cos\vartheta + \beta).
 $$
 
-This is the corrected Chien–Soroka form [16, 17]. $\mathrm{w}(z) = e^{-z^2}\mathrm{erfc}(-iz)$
+This is the corrected Chien–Soroka form [15, 16]. $\mathrm{w}(z) = e^{-z^2}\mathrm{erfc}(-iz)$
 is the Faddeeva function (SciPy's `wofz`). The code keeps $p_w$ itself rather than the principal
 root of $w = p_w^2$. The two differ only for a mass-like ground ($\mathrm{Im}\,\beta > 0$), where the
 principal root would admit a growing surface wave. There is no cutoff in $\lvert w\rvert$. Without
@@ -333,8 +334,8 @@ an admittance given, $\beta$ is Delany–Bazley's at the flow resistance passed.
 ### 4.3 Excess ground attenuation: `ega()`
 
 `ega()` is the ground-effect model of the Wyle short-range propagation model
-[18], after Chien and Soroka and Chessell [19], with the corrections noted
-by Daigle, Embleton and Piercy [20]. It uses the Delany–Bazley impedance and the path
+[17], after Chien and Soroka [15] and Chessell [18], with the corrections noted
+by Daigle, Embleton and Piercy [19]. It uses the Delany–Bazley impedance and the path
 delay $\tau = (R_2 - R_1)/c$. For a pure tone (`pt=True`, the default):
 
 $$
@@ -368,31 +369,32 @@ $$
 with $a_d$ and $a_r$ the microphone's free-field amplitude response at each path's angle of
 incidence (1 when not given). `free_field_microphone_response` gives that response for the 2017
 pole microphones (GRAS 46AE, a 40AE capsule) from the manufacturer's free-field corrections
-[21], re on-axis incidence, interpolated linearly in angle and in log frequency, and 0 below
+[20], re on-axis incidence, interpolated linearly in angle and in log frequency, and 0 below
 500 Hz. `pole_incidence` gives the two paths' incidence angles on the microphone's axis, and
 `certification_axis` the certification orientation: the axis normal to the plane containing the
 flight line and the pole, so that sound from the flight line arrives at grazing (90°) incidence.
 Two refinements act on the reflected path:
 
-- **Turbulence** reduces its coherence with the HARMONOISE form [22, 15],
+- **Turbulence** reduces its coherence with the HARMONOISE form [21, 14],
   $C_\mathrm{turb} = \exp\left[-\tfrac38 B k^2 \gamma_p^{5/3} R_1 \gamma_T\right]$, with $B = 0.364$,
   $\gamma_p = h_s h_r/(h_s + h_r)$, and the strength
   $\gamma_T = \mathcal{C}_T^2/T_\mathrm{mean}^2 + 22\mathcal{C}_v^2/(3c_0^2)$ (`gamma_t`, default 0)
-  from the temperature and wind structure parameters [23] and the mean air temperature
+  from the temperature and wind structure parameters [22] and the mean air temperature
   $T_\mathrm{mean}$ (K), lengths in meters. The caller forms $\gamma_T$; `pole_level` takes it as given.
 - **Roughness** of rms height $\sigma_h$ (`roughness`, default 0) reduces its amplitude by the
-  Kirchhoff (Ament) factor [24]: $a_r \leftarrow a_r\exp[-2(k\sigma_h\cos\vartheta)^2]$.
+  Kirchhoff (Ament) factor [23]: $a_r \leftarrow a_r\exp[-2(k\sigma_h\cos\vartheta)^2]$.
 
 ### 4.5 Ground-plate microphones
 
-The 2017 ground microphones are GRAS 67AX microphones flush in GR1425 plates lying on the
-ground: radius $a = 0.2$ m, 8 mm thick, tapering to a 2.5 mm edge (a 20 mm taper length is
-assumed), with the microphone at $0.75a$ from the center, outboard of the track
-[4, 25]. This holds for the channels the dataset labels `invgb7` ("inverted over a ground
-board with a 7 mm gap") too: they were flush as well, so `noise_abatement_2017.BOARD_MIC_HEIGHT_FT`
-puts both instrument types at height 0. A plate is not an ideal pressure-doubling surface: it is finite and
-raised, and the ground around it is not rigid [26]. Kingan, Go and co-workers model
-ground-board microphones with a boundary element method over impedance ground [27, 28].
+The 2017 ground microphones are GRAS 67AX microphones flush in GR1425 plates lying on the ground:
+radius $a = 0.2$ m (400 mm across, which [4] calls a 15 inch ground board), 8 mm thick, tapering to
+a 2.5 mm edge [24] (a 20 mm taper length is assumed), with the microphone at $0.75a$ from the
+center, outboard of the track [4, 24, 25]. This holds for the channels the dataset labels `invgb7`
+("inverted over a ground board with a 7 mm gap") too: they were flush as well, so
+`noise_abatement_2017.BOARD_MIC_HEIGHT_FT` puts both instrument types at height 0. A plate is not an
+ideal pressure-doubling surface: it is finite and raised [26], and the ground around it is not
+rigid: Kingan, Go and co-workers model ground-board microphones with a boundary element method over
+impedance ground [27, 28].
 PANAM computes the response with an axisymmetric (body-of-revolution) boundary element method
 [29] of the plate's own profile (`panam/axisymmetric_bem.py`).
 
@@ -589,8 +591,8 @@ one-third octave band loses $\delta_B$, formed from the pure-tone attenuation
 $\delta_t(f) = \alpha(f)\,s$ by one of three methods (`absorption_band_method`):
 
 - `'center'` (the default everywhere): $\delta_B = \delta_t(f_c)$ at the given band center.
-- `'arp5534'`: SAE ARP 5534 [40], from the pure-tone attenuation at the exact base-10 mid-band
-  frequency $f_m = 10^{i/10}$ (`exact_midband_frequency`) [52, Eqs. 16–17]:
+- `'arp5534'`: SAE ARP 5534 [34], from the pure-tone attenuation at the exact base-10 mid-band
+  frequency $f_m = 10^{i/10}$ (`exact_midband_frequency`) [35, Eqs. 16–17]:
 
   $$
   \delta_B = \begin{cases}
@@ -745,7 +747,7 @@ $$
 $$
 
 By default (`interpolation=None`) the weights are Franke and Nielson's modified Shepard weights
-[34, 35] within a fixed radius $R_n$ (`rmax`, default 25°; `shepIDW_weights`):
+[36, 37] within a fixed radius $R_n$ (`rmax`, default 25°; `shepIDW_weights`):
 
 $$
 w_i = \left(\frac{R_n - d_{g,i}}{R_n\,d_{g,i}}\right)^2\ (d_{g,i} \le R_n), \qquad
@@ -808,7 +810,7 @@ these states are written to the sphere file (−999) and to the database (`cover
 [`file_formats.md`](file_formats.md#how-a-bins-state-travels).
 
 For plots, spheres are drawn in the azimuthal equal-area projection centered on the nadir
-[36] (`lambert_ea`, `lambert_lon`): $x = q\sin\lambda$, $y = q\cos\lambda$, with
+[38] (`lambert_ea`, `lambert_lon`): $x = q\sin\lambda$, $y = q\cos\lambda$, with
 $q = 2\sin[(90^\circ - e)/2]$ and $\lambda = 180^\circ - \psi$, a view from above with the nose up
 and starboard to the right.
 
@@ -937,7 +939,7 @@ the lower hemisphere onto itself) and the energy-averaged hover with recomputed 
 ## 8. NORAH2 and AAM interchange
 
 **NORAH2 import** (`build_database_from_norah2`, `tools/norah2_to_nod.py`). A NORAH2 hemisphere (`.hem`)
-[37, 38, 39] gives one-third-octave levels on a 10° grid at the distance POLDIST
+[39, 40, 41] gives one-third-octave levels on a 10° grid at the distance POLDIST
 (60 m in the shipped forward-flight files), free field with absorption to that distance in the
 file's own atmosphere (TAMB, RELHUM, PAMB). PANAM refers it to the NICEOPS sphere radius $r$
 (`radius_m`, `--radius`, default 30.48 m = 100 ft; `norah2_levels_at_radius`):
@@ -948,7 +950,7 @@ $$
 
 with POLDIST read from each file and $\alpha_\mathrm{file}$ the ISO 9613-1 coefficient at the
 band centers in the file's atmosphere. For $r > \mathrm{POLDIST}$ the same expression adds the
-absorption between the two. NORAH2 itself applies SAE ARP 5534's band correction [40]; with
+absorption between the two. NORAH2 itself applies SAE ARP 5534's band correction [34]; with
 `absorption_band_method='arp5534'` (`--absorption-band-method arp5534`) the absorption term
 becomes $\delta_B(\mathrm{POLDIST}) - \delta_B(r)$ (§5.4), and the EAA uses the same method.
 The default, `'center'`, keeps the band-center coefficient. The angle conventions agree with NICEOPS's (`norah2umapr`),
@@ -1004,7 +1006,7 @@ $$
   because NICEOPS forms the trajectory's $C_T$ with its vehicle file's nominal tip speed. A
   file without RmOmega, or with one outside 50–130%, is refused.
 
-**Export.** Spheres can be written in the AAM netCDF format [11], in the variable order AAM 3.1
+**Export.** Spheres can be written in the AAM netCDF format [10], in the variable order AAM 3.1
 reads by position, and as NORAH2 hemispheres (`write_norah2_hemisphere`). The NORAH2 export
 resamples the third-octave hemisphere in linear power onto the NORAH2 10° grid and its 31 nominal
 bands from 10 Hz to 10 kHz, as in §6.3. It moves the levels to 60 m, takes out the absorption the
@@ -1046,12 +1048,13 @@ rpm idle, −2 dB full rpm idle).
 **Sound exposure level** (`sound_exposure_level`). Over the 10 dB-down window (the first to the
 last sample within 10 dB of the maximum, dips included; unlike the EPNL limits, a sample below the
 threshold is never one), $\mathrm{SEL} = 10\lg\left(\sum_k 10^{L_k/10}\Delta t/1\ \mathrm{s}\right)$
-[41]. A $-\infty$ sample is zero energy; a NaN sample is refused unless `missing='omit'`. The
-result is flagged `clipped` when the window touches either end of the record. Unlike NICEOPS,
+[42, §J36.109(b)]. A $-\infty$ sample is zero energy; a NaN sample is refused unless
+`missing='omit'`. The result is flagged `clipped` when the window touches either end of the record.
+Unlike NICEOPS,
 PANAM's samples are already in reception time.
 
 **Time-weighted levels** (`panam.acoustics.time_weighting`). A pressure history is weighted in
-frequency, then in time, as IEC 61672-1 [10] defines a sound level meter. The A and C weightings
+frequency, then in time, as IEC 61672-1 [9] defines a sound level meter. The A and C weightings
 are the analog filters of its Annex E, with poles at $f_1 = 20.598997$, $f_2 = 107.65265$,
 $f_3 = 737.86223$ and $f_4 = 12194.217$ Hz:
 
@@ -1077,7 +1080,7 @@ $$
 
 discretized as $y_n = a y_{n-1} + (1-a) p_{w,n}^2$, $a = e^{-1/(f_s\tau)}$, from $y = 0$ before
 the first sample (`time_weighted_square`). I is the impulse detector of the withdrawn IEC 60651
-[51]: a 35 ms exponential average followed by a peak hold that decays with a 1.5 s time constant.
+[43]: a 35 ms exponential average followed by a peak hold that decays with a 1.5 s time constant.
 `time_weighted_level` returns the level $10\lg(\overline{p^2}/p_\mathrm{ref}^2)$ at every sample,
 its maximum (e.g. $L_{AF\max}$, $L_{AS\max}$) and the time of the maximum. A 4 kHz tone burst of
 duration $T_b$ reads $10\lg(1 - e^{-T_b/\tau})$ below the steady tone's level, the reference
@@ -1091,9 +1094,10 @@ non-overlapping blocks (`period`, default 1 s), each from `overall_SPL`, and
 `sound_exposure_level`'s `lmax` is the maximum of the samples passed in; neither is a
 time-weighted level.
 
-**EPNL** (`effective_perceived_noise_level`) follows 14 CFR 36, Appendix A, §A36.4 [41],
-identical to ICAO Annex 16 [42]. Its input is a history of 24 one-third-octave band levels,
-50 Hz to 10 kHz in ascending order (`PNL_BAND_FREQUENCIES`), so a 31-band sphere spectrum has to be
+**EPNL** (`effective_perceived_noise_level`) follows 14 CFR 36, Appendix A, §A36.4 [42], harmonized
+with ICAO Annex 16, Vol. I, Appendix 2 [44] but not identical to it. Its input is a history of 24
+one-third-octave band levels, 50 Hz to 10 kHz in ascending order (`PNL_BAND_FREQUENCIES`), so a
+31-band sphere spectrum has to be
 cut to those bands first. It uses noy values $N$ from Table A36-3;
 $\mathrm{PNL} = 40 + \frac{10}{\lg 2}\lg(0.85N_\max + 0.15\sum N)$; the ten-step tone correction
 with Table A36-2; the band-sharing check of §A36.4.4.2; and the duration correction
@@ -1111,12 +1115,13 @@ ported from this implementation.
 **Band sharing.** When the tone correction $C$ at PNLTM is below the mean $\bar C$ of the five
 records centered there (§A36.4.4.2), or of those that exist when PNLTM is within two samples of a
 record end (this truncation is not flagged), the adjustment $\Delta_B = \bar C - C(k_M)$ is added to
-the EPNL as a separate term, as ICAO Annex 16 Vol. I, Appendix 2 and FAA AC 36-4 apply it:
-$\mathrm{EPNL} = \mathrm{PNLTM} + D_E + \Delta_B$, with PNLTM, the 10 dB-down limits and $D_E$ all
-from the unadjusted PNLT history. Read literally, 14 CFR 36 raises PNLTM and takes $D_E$ from it,
-so the adjustment cancels in $\mathrm{PNLTM} + D_E$ and acts only by narrowing the duration, which
-lowers the EPNL. `effective_perceived_noise_level` returns `pnltm` (adjusted),
-`pnltm_unadjusted` and `delta_b`.
+the EPNL as a separate term: $\mathrm{EPNL} = \mathrm{PNLTM} + D_E + \Delta_B$, with PNLTM, the
+10 dB-down limits and $D_E$ all from the unadjusted PNLT history. This departs from Annex 16
+[44, App. 2, §4.4.2–4.6.3], which adds $\Delta_B$ to PNLTM and uses the adjusted PNLTM for the
+10 dB-down points and for EPNL. Read literally, 14 CFR 36 raises PNLTM and takes $D_E$ from it, so
+the adjustment cancels in $\mathrm{PNLTM} + D_E$ and acts only by narrowing the duration, which
+lowers the EPNL. `effective_perceived_noise_level` returns `pnltm` (adjusted), `pnltm_unadjusted`
+and `delta_b`.
 
 The regulation's tone correction is defined for finite band levels. A band of $-\infty$ (zero
 energy) would make the step-7 background infinite or undefined, so it enters steps 1–7 at its
@@ -1126,7 +1131,7 @@ NICEOPS's `below_noy_floor` masking. A NaN band is a missing level: noys, PNL, $
 NaN, and EPNL refuses the history.
 
 **Aural nondetectability** (`mil_std_1474e_nondetectability_distance`). MIL-STD-1474E Table C-I
-[43] gives, per one-third-octave band, the limit at each nondetectability distance $x_j$
+[45] gives, per one-third-octave band, the limit at each nondetectability distance $x_j$
 (5 m to 6 km), measured at a distance $x^\mathrm{m}_j$; a distance is met when no band exceeds its
 limit (§C.5.1.2). PANAM ships the table as `panam/data/mil_std_1474e_table_c1_full.csv`
 (`MIL_STD_1474E_TABLE_C1_FILE`, read by `load_mil_std_1474e_table_c1`): 24 bands from 50 Hz to 10 kHz, 20 distance columns, measured at
@@ -1138,7 +1143,7 @@ not evaluated (`outside_spectrum`). It is then normalized to 10 m, $L_{10} = L +
 taken to each column's measurement distance by spherical spreading, giving the exceedance
 $\Delta L_j = L_{10} + 20\lg(10/x^\mathrm{m}_j) - L_{\lim,j}$. A band's distance is where
 $\Delta L$, interpolated linearly in $\lg x$ between adjacent columns, falls to zero for the last
-time. Within a measurement-distance group this is the reading of Figures C-1 to C-5; across the
+time. Within a measurement-distance group this is the reading of Figures C-1 to C-3; across the
 30–100 m and 400–500 m group boundaries it rests on the same spreading that shifts the spectrum.
 The nondetectability distance is the largest over the bands, every band counting. A band under
 every column gives 5 m, an upper bound; one over the 6 km column gives 6 km, a lower bound that
@@ -1178,7 +1183,7 @@ harmonics that make a pulse sharp and ambient noise pulls the kurtosis toward 3 
 They describe the microphone record they are computed on.
 
 **Loudness** (`panam.acoustics.psychoacoustics.loudness_zwicker`) follows the stationary method
-of ISO 532-1:2017 (Zwicker) [53] from 28 one-third-octave band levels $L_i$, 25 Hz to 12.5 kHz,
+of ISO 532-1:2017 (Zwicker) [46] from 28 one-third-octave band levels $L_i$, 25 Hz to 12.5 kHz,
 for a free (frontal) or diffuse field. PANAM's spheres and hemispheres stop at 10 kHz;
 `iso_532_1_levels` takes their 25 Hz to 10 kHz bands and sets 12.5 kHz to no energy, so the
 loudness omits whatever that band holds. The 11 bands up to 250 Hz are first corrected for the
@@ -1208,7 +1213,7 @@ levels include the leakage of the standard's filter bank into the neighboring ba
 down); the tone's band alone gives 0.93 sone. A band of $-\infty$ has no energy; a spectrum with a
 NaN band gives NaN.
 
-**Sharpness** (`sharpness_din`) follows DIN 45692:2009 [54]:
+**Sharpness** (`sharpness_din`) follows DIN 45692:2009 [47]:
 
 $$
 S = 0.11\,\frac{\int_0^{24} N'(z)\,g(z)\,z\,dz}{N}\ \mathrm{acum}, \qquad
@@ -1222,14 +1227,14 @@ A 1 kHz critical-band noise (920–1080 Hz) at 60 dB is 1.00 acum. $S$ is NaN wh
 
 These are in PANAM but not used to build the databases.
 
-- **Vold–Kalman order tracking** (`panam/vold_kalman_filter.py`) [44, 45]. Each order $j$ is a
+- **Vold–Kalman order tracking** (`panam/vold_kalman_filter.py`) [48, 49]. Each order $j$ is a
   slowly varying complex envelope $a_j$ on a known phasor
   $\Theta_j(n) = \exp\left(2\pi i\,\Delta t\sum_{m \le n} f_j(m)\right)$, $n$ the sample
   index. The data equation $x = \sum_j a_j\Theta_j + \nu$ and a structural equation of order $p$,
   $\sum_{s=0}^{p}(-1)^s\binom{p}{s}a_j(n+s) = \varepsilon_j(n)$, are solved together by least
   squares, minimizing $\lVert x - \sum_j a_j\Theta_j\rVert^2 + \sum_j\lVert w\,\varepsilon_j\rVert^2$.
   A component $\Omega$ rad/sample from the order passes with gain
-  $1/\left[1 + w^2\left(2\sin(\Omega/2)\right)^{2p}\right]$ [45]. Setting that to $1/\sqrt2$ at
+  $1/\left[1 + w^2\left(2\sin(\Omega/2)\right)^{2p}\right]$ [49]. Setting that to $1/\sqrt2$ at
   half the full −3 dB bandwidth $B_w$ (Hz) gives the weight, unless `r` is passed:
 
   $$
@@ -1265,8 +1270,8 @@ These are in PANAM but not used to build the databases.
   offset between a predicted track and a measured one (`ridge_track`: the largest Hann-windowed
   spectral peak in a band, refined by a parabola through the log power) estimates $\tau$.
 - **Ground-board models** in `panam/ground_plane.py`, from the plate study: Fresnel-zone weighting of a
-  finite plate (strip [46] and disc [47]), blended in energy [48] or in dB;
-  an impedance-discontinuity model after De Jong and Lam and Monazzam [49, 50]; a thin-disc
+  finite plate (strip [50] and disc [51]), blended in energy [52, 14] or in dB;
+  an impedance-discontinuity model after De Jong and Lam and Monazzam [53, 54]; a thin-disc
   BEM [27] (`disc_bem_scattered`); and a 3-D surface-mesh BEM of the raised, tapered plate
   (`raised_plate_scattering`), the same integral equation and Green's function as §4.5, which the
   axisymmetric BEM replaced at a fraction of the cost and is checked against. See
@@ -1372,39 +1377,39 @@ These are in PANAM but not used to build the databases.
 
 ## Appendix: Where each model lives
 
-Functions are in `panam/flight_acoustics.py` unless another module is named: a module name alone is a
-module of `panam/`, and a script is named by its path. Tests are in `tests/`.
+Each row names a function with its module in `panam/` (`spectra.psd`); the names after it are in the
+same module until another module is named. A script is named by its path. Tests are in `tests/`.
 
 | Section | Functions | Tests |
 | --- | --- | --- |
-| §2.1 Short-time spectra | `spectrogram`, `frame_length`, `psd`, `psd_welch`, `overall_SPL`, `level_history` | `test_acoustics.py`, `test_generate_hemisphere.py` |
-| §2.2 Bands | `third_octave_band_edges`, `third_octave_band_levels`, `tone_aware_band_power` (`return_parts`), `hann_power`, `depropagate_hemisphere` (`decompose_tonal`), `noise_abatement_2017.build_sphere` (`tone_split`), `panam.acoustics.filters.third_octave_filter_bank` | `test_third_octave_band_edges.py`, `test_third_octave_band_levels.py`, `test_band_selection.py`, `test_tone_aware_band_power.py`, `test_generate_hemisphere.py`, `test_noise_abatement_2017.py`, `test_third_octave_filter_bank.py` |
-| §2.3 A-weighting | `dBAw` | `test_acoustics.py` |
-| §3.1–3.2 Geometry | `hemigen`, `art2umapr`; `noise_abatement_2017.local_east_north_ft`, `east_north_to_frame`, `frame_bearing_deg` | `test_lambert_geometry.py`, `test_hemisphere_geometry_accuracy.py`, `test_azimuth_reference.py`, `test_track_check.py` |
-| §3.3 Doppler | `depropagate_hemisphere` (`remove_doppler`, `air_relative_doppler`) | `test_generate_hemisphere.py`, `test_tone_aware_band_power.py`, `test_refracted_rays.py` |
+| §2.1 Short-time spectra | `spectra.spectrogram`, `frame_length`, `psd`, `psd_welch`, `overall_SPL`, `level_history` | `test_acoustics.py`, `test_generate_hemisphere.py` |
+| §2.2 Bands | `spectra.third_octave_band_edges`, `third_octave_band_levels`, `tone_aware_band_power` (`return_parts`), `hann_power`, `depropagation.depropagate_hemisphere` (`decompose_tonal`), `noise_abatement_2017.build_sphere` (`tone_split`), `panam.acoustics.filters.third_octave_filter_bank` | `test_third_octave_band_edges.py`, `test_third_octave_band_levels.py`, `test_band_selection.py`, `test_tone_aware_band_power.py`, `test_generate_hemisphere.py`, `test_noise_abatement_2017.py`, `test_third_octave_filter_bank.py` |
+| §2.3 A-weighting | `spectra.dBAw` | `test_acoustics.py` |
+| §3.1–3.2 Geometry | `geometry.hemigen`, `art2umapr`; `noise_abatement_2017.local_east_north_ft`, `east_north_to_frame`, `frame_bearing_deg` | `test_lambert_geometry.py`, `test_hemisphere_geometry_accuracy.py`, `test_azimuth_reference.py`, `test_track_check.py` |
+| §3.3 Doppler | `depropagation.depropagate_hemisphere` (`remove_doppler`, `air_relative_doppler`) | `test_generate_hemisphere.py`, `test_tone_aware_band_power.py`, `test_refracted_rays.py` |
 | §3.4 Steady segments | `noise_abatement_2017.steady_window`, `flight_condition` | `test_noise_abatement_2017.py` |
 | §4.1 Impedance | `ground_plane.surface_admittance` | `test_ground_validation.py` |
-| §4.2 Reflection coefficient | `spherical_reflection_coefficient` | `test_reflection_coefficient.py` |
-| §4.3 `ega()` | `ega` | `test_ega.py` |
+| §4.2 Reflection coefficient | `ground_effect.spherical_reflection_coefficient` | `test_reflection_coefficient.py` |
+| §4.3 `ega()` | `ground_effect.ega` | `test_ega.py` |
 | §4.4 Pole microphones | `ground_plane.pole_level`, `turbulence_coherence`, `free_field_microphone_response`, `pole_incidence`, `certification_axis` | `test_ground_plane.py`, `test_ground_validation.py` |
 | §4.5 Plate BEM | `axisymmetric_bem.scattering`, `table`, `board_level`, `write_netcdf`; `ground_plane.exact_half_space_green`, `image_integrals`, `ImageIntegralTable`, `sub_band_factors`, `table_frames`; `noise_abatement_2017.plate_table`, `plate_response` | `test_axisymmetric_bem.py`, `test_ground_validation.py` |
 | §4.6 Site ground | `noise_abatement_2017.SITE_GROUND` | (none) |
-| §5.1–5.2 Depropagation | `depropagate_hemisphere`; `noise_abatement_2017.build_sphere` | `test_ambient_gating.py`, `test_generate_hemisphere.py`, `test_golden_results.py`, `test_synthetic_flyover.py` |
+| §5.1–5.2 Depropagation | `depropagation.depropagate_hemisphere`; `noise_abatement_2017.build_sphere` | `test_ambient_gating.py`, `test_generate_hemisphere.py`, `test_golden_results.py`, `test_synthetic_flyover.py` |
 | §5.3 Rays | `refracted_rays.external_ray_model`, `straight_ray_model`, `uniform_wind_ray_model`; `noise_abatement_2017.wind_in_frame_ft_s` (`build_sphere(ray_model='wind')`) | `test_refracted_rays.py`, `test_run_metadata.py` |
-| §5.4 Atmosphere | `panam.acoustics.iso_9613_1_1993`, `panam.acoustics.atmosphere.Atmosphere`, `atmosorb`; `noise_abatement_2017.run_atmosphere`, `air_density_kg_m3` | `test_acoustics.py`, `test_python_acoustics_equivalence.py`, `test_run_metadata.py`, `test_noise_abatement_2017.py` |
-| §5.4 Band and layered absorption | `panam.acoustics.atmosphere.band_absorption_db`, `arp5534_band_attenuation`, `exact_midband_frequency`, `layered_attenuation_db`, `check_absorption_profile`; `depropagate_hemisphere` (`absorption_band_method`, `absorption_profile`), `noise_abatement_2017.build_sphere`, `spla_and_eaa_from_spectrum`, `norah2_levels_at_radius` | `test_band_absorption.py`, `test_spla_and_eaa.py`, `test_norah2_import.py` |
-| §5.5 Forward synthesis | `synthesis.synthesize_band_histories`, `_bin_band_absorption_db`, `doppler_shift_band_power`, `measured_band_histories`, `leave_mics_out`, `residual_statistics`; `interpolate_hemisphere_power` | `test_synthesis.py` |
-| §6.1 Fixed radius | `shepIDW`, `shepIDW_weights`, `shepIDW_apply`, `geodist` | `test_shep_idw.py`, `test_no_data.py`, `test_hemisphere_geometry_accuracy.py` |
-| §6.2 Adaptive radius | `adaptive_idw_weights`, `ADAPTIVE_INTERPOLATION` | `test_adaptive_interpolation.py`, `test_hemisphere_geometry_accuracy.py` |
-| §6.3 Output grids | `write_aam_hemisphere_netcdf`, `_sample_hemisphere_levels`, `interpolate_hemisphere_power`, `mask_missing_levels`, `lambert_ea`, `lambert_lon` | `test_write_aam_hemisphere_netcdf.py`, `test_hemisphere_sampling.py`, `test_no_data.py`, `test_lambert_geometry.py` |
-| §6.4 Node statistics | `sphere_statistics.node_statistics`, `idw_weight_matrix`, `node_statistics_variables`; `depropagate_hemisphere` (`return_statistics`), `noise_abatement_2017.build_sphere` (`node_statistics`) | `test_node_statistics.py`, `test_noise_abatement_2017.py` |
-| §7.1–7.2 Condition, EAA | `build_empirical_database`, `read_vehicle_data`, `add_sphere_group`, `extract_SPL`, `spla_and_eaa_from_spectrum`, `_finite_sphere_levels`, `_measured_bins`; repeat runs: `_group_repeat_conditions`, `_extract_condition_SPL`, `_merged_run_metadata` | `test_spla_and_eaa.py`, `test_database_provenance.py`, `test_vehicle_data.py`, `test_merge_repeats.py` |
-| §7.3 Load factor | `add_sphere_group` | `test_load_factor_scaling.py`, `test_write_aam_hemisphere_netcdf.py` |
-| §7.4 Hover | `average_fore_and_aft`, `_fore_aft_measured`, `_synthesized_hover_sphere`, `_hover_source_index`, `_hover_flight_path_angles` | `test_hover_averaging.py`, `test_sphere_completion_integration.py`, `test_empirical_database_hover_selection.py`, `test_database_provenance.py`, `test_norah2_import.py` |
-| §7.5 Completion | `mirror_phi_to_upper_surface`, `_complete_sphere_with_coverage` | `test_mirror_phi.py`, `test_sphere_completion_integration.py` |
-| §8 NORAH2 | `build_database_from_norah2`, `norah2_levels_at_radius`, `norah2_speed_knots`, `humid_air_density`, `fill_norah2_empty_cells`, `_norah2_rotor_speed_fraction`, `write_norah2_hemisphere`, `write_norah2_levels`, `write_norah2_triangulation`, `norah2umapr` | `test_norah2_import.py`, `test_write_norah2_hemisphere.py` |
+| §5.4 Atmosphere | `panam.acoustics.iso_9613_1_1993`, `panam.acoustics.atmosphere.Atmosphere`, `absorption.atmosorb`; `noise_abatement_2017.run_atmosphere`, `air_density_kg_m3` | `test_acoustics.py`, `test_python_acoustics_equivalence.py`, `test_run_metadata.py`, `test_noise_abatement_2017.py` |
+| §5.4 Band and layered absorption | `panam.acoustics.atmosphere.band_absorption_db`, `arp5534_band_attenuation`, `exact_midband_frequency`, `layered_attenuation_db`, `check_absorption_profile`; `depropagation.depropagate_hemisphere` (`absorption_band_method`, `absorption_profile`), `noise_abatement_2017.build_sphere`, `database.spla_and_eaa_from_spectrum`, `norah2.norah2_levels_at_radius` | `test_band_absorption.py`, `test_spla_and_eaa.py`, `test_norah2_import.py` |
+| §5.5 Forward synthesis | `synthesis.synthesize_band_histories`, `_bin_band_absorption_db`, `doppler_shift_band_power`, `measured_band_histories`, `leave_mics_out`, `residual_statistics`; `gridding.interpolate_hemisphere_power` | `test_synthesis.py` |
+| §6.1 Fixed radius | `gridding.shepIDW`, `shepIDW_weights`, `shepIDW_apply`, `geometry.geodist` | `test_shep_idw.py`, `test_no_data.py`, `test_hemisphere_geometry_accuracy.py` |
+| §6.2 Adaptive radius | `gridding.adaptive_idw_weights`, `ADAPTIVE_INTERPOLATION` | `test_adaptive_interpolation.py`, `test_hemisphere_geometry_accuracy.py` |
+| §6.3 Output grids | `sphere_io.write_aam_hemisphere_netcdf`, `gridding._sample_hemisphere_levels`, `interpolate_hemisphere_power`, `sphere_io.mask_missing_levels`, `geometry.lambert_ea`, `lambert_lon` | `test_write_aam_hemisphere_netcdf.py`, `test_hemisphere_sampling.py`, `test_no_data.py`, `test_lambert_geometry.py` |
+| §6.4 Node statistics | `sphere_statistics.node_statistics`, `idw_weight_matrix`, `node_statistics_variables`; `depropagation.depropagate_hemisphere` (`return_statistics`), `noise_abatement_2017.build_sphere` (`node_statistics`) | `test_node_statistics.py`, `test_noise_abatement_2017.py` |
+| §7.1–7.2 Condition, EAA | `database.build_empirical_database`, `read_vehicle_data`, `add_sphere_group`, `extract_SPL`, `spla_and_eaa_from_spectrum`, `_finite_sphere_levels`, `_measured_bins`; repeat runs: `_group_repeat_conditions`, `_extract_condition_SPL`, `_merged_run_metadata` | `test_spla_and_eaa.py`, `test_database_provenance.py`, `test_vehicle_data.py`, `test_merge_repeats.py` |
+| §7.3 Load factor | `database.add_sphere_group` | `test_load_factor_scaling.py`, `test_write_aam_hemisphere_netcdf.py` |
+| §7.4 Hover | `database.average_fore_and_aft`, `_fore_aft_measured`, `_synthesized_hover_sphere`, `_hover_source_index`, `_hover_flight_path_angles` | `test_hover_averaging.py`, `test_sphere_completion_integration.py`, `test_empirical_database_hover_selection.py`, `test_database_provenance.py`, `test_norah2_import.py` |
+| §7.5 Completion | `database.mirror_phi_to_upper_surface`, `_complete_sphere_with_coverage` | `test_mirror_phi.py`, `test_sphere_completion_integration.py` |
+| §8 NORAH2 | `norah2.build_database_from_norah2`, `norah2_levels_at_radius`, `norah2_speed_knots`, `humid_air_density`, `fill_norah2_empty_cells`, `_norah2_rotor_speed_fraction`, `write_norah2_hemisphere`, `write_norah2_levels`, `write_norah2_triangulation`, `geometry.norah2umapr` | `test_norah2_import.py`, `test_write_norah2_hemisphere.py` |
 | §8 Sphere to NORAH2 | `tools/sphere_to_norah2.py`: `sphere_to_norah2`, `sphere_levels_on_norah2_grid` | `test_sphere_to_norah2.py`, `test_cli_scripts.py` (smoke) |
-| §9 Metrics | `sound_exposure_level`, `ten_db_down_interval`, `noys`, `perceived_noise_level`, `tone_correction`, `effective_perceived_noise_level`, `mil_std_1474e_nondetectability_distance` | `test_sound_exposure_level.py`, `test_pnl_epnl.py`, `test_mil_std_nondetectability.py` |
+| §9 Metrics | `metrics.sound_exposure_level`, `ten_db_down_interval`, `noys`, `perceived_noise_level`, `tone_correction`, `effective_perceived_noise_level`, `mil_std_1474e_nondetectability_distance` | `test_sound_exposure_level.py`, `test_pnl_epnl.py`, `test_mil_std_nondetectability.py` |
 | §9 Time-weighted levels | `panam.acoustics.time_weighting.frequency_weighting_sos`, `apply_frequency_weighting`, `time_weighted_square`, `time_weighted_level`, `leq` | `test_time_weighting.py` |
 | §9 Impulsiveness | `panam.acoustics.impulsiveness.crest_factor`, `kurtosis`, `pulse_peak_to_rms`, `bvi_harmonic_ratio`, `frame_signal` | `test_impulsiveness.py` |
 | §9 Loudness, sharpness | `panam.acoustics.psychoacoustics.loudness_zwicker`, `loudness_level`, `sharpness_din`, `iso_532_1_levels` | `test_psychoacoustics.py` |
@@ -1412,64 +1417,63 @@ module of `panam/`, and a script is named by its path. Tests are in `tests/`.
 | §10 Order tracks, clock offsets | `order_tracking.doppler_factor`, `observed_order_track`, `ridge_track`, `estimate_clock_offset`, `order_track_offset`; `examples/hexacopter_vkf_example.py`: `heard_rotor_speed` | `test_order_tracking.py`, `test_hexacopter_vkf_example.py` |
 | §10 Ground-board models, two-path fit | `ground_plane.board_*`, `disc_bem_scattered`, `raised_plate_scattering`, `fit_two_path`, `height_from_path_difference` | `test_ground_plane.py`, `test_ground_validation.py`, `test_axisymmetric_bem.py` |
 | §10 Ground impedance inversion | `ground_plane.fit_ground_impedance` | `test_ground_impedance_fit.py` |
-| §10 Array planning | `linear_array_plan` (through the `tools/array_planner.py design` CLI); `array_coverage`, `hover_array_coverage`, `takeoff_array_coverage` (through `tools/array_planner.py coverage`, `hover` and `takeoff`) | `test_array_coverage.py` (the coverage functions on known geometry), `test_array_planner.py` (the CLI's spacing, options and case files), `test_cli_scripts.py` (smoke) |
-| §10 Footprint, fried egg | `project_sphere`, `project_directory`, `fried_egg_plot`, `is_noisy` | `test_projection.py`, `test_no_data.py`, `test_cli_scripts.py` (smoke) |
-| §10 De-Dopplerization | `dedopplerize`; `examples/hexacopter_vkf_example.py`: `dedopplerize_record` | `test_acoustics.py`, `test_hexacopter_vkf_example.py` |
-| §10 Repeat-run averaging, comparison | `sphere_statistics.average_spheres`, `write_averaged_sphere`, `compare_spheres`, `cell_solid_angles`, `plot_sphere_difference`; in a database build, `build_empirical_database(merge_repeats=True)` (`_group_repeat_conditions`, `_extract_condition_SPL`) | `test_sphere_statistics.py`, `test_merge_repeats.py`, `test_cli_scripts.py` (smoke) |
+| §10 Array planning | `array_design.linear_array_plan` (through the `tools/array_planner.py design` CLI); `array_coverage`, `hover_array_coverage`, `takeoff_array_coverage` (through `tools/array_planner.py coverage`, `hover` and `takeoff`) | `test_array_coverage.py` (the coverage functions on known geometry), `test_array_planner.py` (the CLI's spacing, options and case files), `test_cli_scripts.py` (smoke) |
+| §10 Footprint, fried egg | `projection.project_sphere`, `project_directory`, `fried_egg_plot`, `is_noisy` | `test_projection.py`, `test_no_data.py`, `test_cli_scripts.py` (smoke) |
+| §10 De-Dopplerization | `geometry.dedopplerize`; `examples/hexacopter_vkf_example.py`: `dedopplerize_record` | `test_acoustics.py`, `test_hexacopter_vkf_example.py` |
+| §10 Repeat-run averaging, comparison | `sphere_statistics.average_spheres`, `write_averaged_sphere`, `compare_spheres`, `cell_solid_angles`, `plot_sphere_difference`; in a database build, `database.build_empirical_database(merge_repeats=True)` (`_group_repeat_conditions`, `_extract_condition_SPL`) | `test_sphere_statistics.py`, `test_merge_repeats.py`, `test_cli_scripts.py` (smoke) |
 
 ## References
-
 1. Greenwood, E., "Fundamental Rotorcraft Acoustic Modeling from Experiments (FRAME)," Ph.D. Dissertation, Dept. of Aerospace Engineering, University of Maryland, College Park, MD, 2011. http://hdl.handle.net/1903/11518
 2. Schmitz, F. H., Greenwood, E., Sickenberger, R. D., Gopalan, G., Sim, B. W.-C., Conner, D., Moralez, E., III, and Decker, W. A., "Measurement and Characterization of Helicopter Noise in Steady-State and Maneuvering Flight," *Proceedings of the American Helicopter Society 63rd Annual Forum*, Virginia Beach, VA, May 2007. https://doi.org/10.4050/VFS-F63-000258
 3. Greenwood, E., Schmitz, F. H., and Sickenberger, R. D., "A Semiempirical Noise Modeling Method for Helicopter Maneuvering Flight Operations," *Journal of the American Helicopter Society*, Vol. 60, No. 2, 2015, Paper 022007. https://doi.org/10.4050/JAHS.60.022007
 4. Watts, M. E., Greenwood, E., Smith, C. D., and Stephenson, J. H., "Noise Abatement Flight Test Data Report," NASA TM-2019-220264, NASA Langley Research Center, Hampton, VA, March 2019.
-5. Pascioni, K. A., Greenwood, E., Watts, M. E., Smith, C. D., and Stephenson, J. H., "Medium-Sized Helicopter Noise Abatement Flight Test," *Proceedings of the Vertical Flight Society 76th Annual Forum*, Virtual, October 2020. https://doi.org/10.4050/F-0076-2020-16497
-6. Harris, F. J., "On the Use of Windows for Harmonic Analysis with the Discrete Fourier Transform," *Proceedings of the IEEE*, Vol. 66, No. 1, 1978, pp. 51–83. https://doi.org/10.1109/PROC.1978.10837
-7. Welch, P. D., "The Use of Fast Fourier Transform for the Estimation of Power Spectra: A Method Based on Time Averaging over Short, Modified Periodograms," *IEEE Transactions on Audio and Electroacoustics*, Vol. AU-15, No. 2, 1967, pp. 70–73. https://doi.org/10.1109/TAU.1967.1161901
-8. "Electroacoustics — Octave-Band and Fractional-Octave-Band Filters — Part 1: Specifications," IEC 61260-1:2014, International Electrotechnical Commission, Geneva, 2014.
-9. Grandke, T., "Interpolation Algorithms for Discrete Fourier Transforms of Weighted Signals," *IEEE Transactions on Instrumentation and Measurement*, Vol. IM-32, No. 2, 1983, pp. 350–355. https://doi.org/10.1109/TIM.1983.4315077
-10. "Electroacoustics — Sound Level Meters — Part 1: Specifications," IEC 61672-1:2013, Ed. 2.0, International Electrotechnical Commission, Geneva, 2013.
-11. Page, J. A., Rapoza, A., Oberg, A., Hastings, A., Baker, G., and Shumway, M., "Advanced Acoustic Model (AAM) Technical Reference and User's Guide," Software Manual, Version 3.1, U.S. Department of Transportation, Volpe National Transportation Systems Center, Cambridge, MA, May 2021.
-12. "Department of Defense World Geodetic System 1984: Its Definition and Relationships with Local Geodetic Systems," NIMA TR8350.2, 3rd ed., Amendment 1, National Imagery and Mapping Agency, July 1997 (amended January 2000).
-13. Delany, M. E., and Bazley, E. N., "Acoustical Properties of Fibrous Absorbent Materials," *Applied Acoustics*, Vol. 3, No. 2, 1970, pp. 105–116. https://doi.org/10.1016/0003-682X(70)90031-9
-14. Miki, Y., "Acoustical Properties of Porous Materials — Modifications of Delany-Bazley Models," *Journal of the Acoustical Society of Japan (E)*, Vol. 11, No. 1, 1990, pp. 19–24. https://doi.org/10.1250/ast.11.19
-15. Attenborough, K., and Taherzadeh, S., "Prediction of Outdoor Ground Effect," *Applied Acoustics*, Vol. 242, 2026, Paper 111067. https://doi.org/10.1016/j.apacoust.2025.111067
-16. Chien, C. F., and Soroka, W. W., "Sound Propagation Along an Impedance Plane," *Journal of Sound and Vibration*, Vol. 43, No. 1, 1975, pp. 9–20. https://doi.org/10.1016/0022-460X(75)90200-X
-17. Chien, C. F., and Soroka, W. W., "A Note on the Calculation of Sound Propagation Along an Impedance Surface," *Journal of Sound and Vibration*, Vol. 69, No. 2, 1980, pp. 340–343. https://doi.org/10.1016/0022-460X(80)90618-5
-18. Stusnick, E., Plotkin, K. J., and Sutherland, L. C., "Short-Range Acoustic Propagation Model," Wyle Laboratories Research Report WR 85-19, Wyle Laboratories, Arlington, VA, July 1985.
-19. Chessell, C. I., "Propagation of Noise Along a Finite Impedance Boundary," *Journal of the Acoustical Society of America*, Vol. 62, No. 4, 1977, pp. 825–834. https://doi.org/10.1121/1.381603
-20. Daigle, G. A., Embleton, T. F. W., and Piercy, J. E., "Some Comments on the Literature of Propagation near Boundaries of Finite Acoustical Impedance," *Journal of the Acoustical Society of America*, Vol. 66, No. 3, 1979, pp. 918–919. https://doi.org/10.1121/1.383207
-21. "Free-Field and Random Incidence Corrections," Microsoft Excel workbook GRAS_Free-field_and_Random_Incidence_Corrections.xlsx, sheet "Half-inch (Opt1)," GRAS Sound & Vibration, Holte, Denmark. URL: https://www.grasacoustics.com
-22. van Maercke, D., and Defrance, J., "Development of an Analytical Model for Outdoor Sound Propagation Within the Harmonoise Project," *Acta Acustica united with Acustica*, Vol. 93, No. 2, 2007, pp. 201–212.
-23. Ostashev, V. E., and Wilson, D. K., *Acoustics in Moving Inhomogeneous Media*, 2nd ed., CRC Press, Boca Raton, FL, 2015. https://doi.org/10.1201/b18922
-24. Ament, W. S., "Toward a Theory of Reflection by a Rough Surface," *Proceedings of the IRE*, Vol. 41, No. 1, 1953, pp. 142–146. https://doi.org/10.1109/JRPROC.1953.274171
+5. Harris, F. J., "On the Use of Windows for Harmonic Analysis with the Discrete Fourier Transform," *Proceedings of the IEEE*, Vol. 66, No. 1, 1978, pp. 51–83. https://doi.org/10.1109/PROC.1978.10837
+6. Welch, P. D., "The Use of Fast Fourier Transform for the Estimation of Power Spectra: A Method Based on Time Averaging over Short, Modified Periodograms," *IEEE Transactions on Audio and Electroacoustics*, Vol. AU-15, No. 2, 1967, pp. 70–73. https://doi.org/10.1109/TAU.1967.1161901
+7. "Electroacoustics — Octave-Band and Fractional-Octave-Band Filters — Part 1: Specifications," IEC 61260-1:2014, International Electrotechnical Commission, Geneva, 2014.
+8. Grandke, T., "Interpolation Algorithms for Discrete Fourier Transforms of Weighted Signals," *IEEE Transactions on Instrumentation and Measurement*, Vol. IM-32, No. 2, 1983, pp. 350–355. https://doi.org/10.1109/TIM.1983.4315077
+9. "Electroacoustics — Sound Level Meters — Part 1: Specifications," IEC 61672-1:2013, Ed. 2.0, International Electrotechnical Commission, Geneva, 2013.
+10. Page, J. A., Rapoza, A., Oberg, A., Hastings, A., Baker, G., and Shumway, M., "Advanced Acoustic Model (AAM) Technical Reference and User's Guide," Software Manual, Version 3.1, U.S. Department of Transportation, Volpe National Transportation Systems Center, Cambridge, MA, May 2021.
+11. "Department of Defense World Geodetic System 1984: Its Definition and Relationships with Local Geodetic Systems," NIMA TR8350.2, 3rd ed., Amendment 1, National Imagery and Mapping Agency, July 1997 (amended January 2000).
+12. Delany, M. E., and Bazley, E. N., "Acoustical Properties of Fibrous Absorbent Materials," *Applied Acoustics*, Vol. 3, No. 2, 1970, pp. 105–116. https://doi.org/10.1016/0003-682X(70)90031-9
+13. Miki, Y., "Acoustical Properties of Porous Materials — Modifications of Delany-Bazley Models," *Journal of the Acoustical Society of Japan (E)*, Vol. 11, No. 1, 1990, pp. 19–24. https://doi.org/10.1250/ast.11.19
+14. Attenborough, K., and Taherzadeh, S., "Prediction of Outdoor Ground Effect," *Applied Acoustics*, Vol. 242, 2026, Paper 111067. https://doi.org/10.1016/j.apacoust.2025.111067
+15. Chien, C. F., and Soroka, W. W., "Sound Propagation Along an Impedance Plane," *Journal of Sound and Vibration*, Vol. 43, No. 1, 1975, pp. 9–20. https://doi.org/10.1016/0022-460X(75)90200-X
+16. Chien, C. F., and Soroka, W. W., "A Note on the Calculation of Sound Propagation Along an Impedance Surface," *Journal of Sound and Vibration*, Vol. 69, No. 2, 1980, pp. 340–343. https://doi.org/10.1016/0022-460X(80)90618-5
+17. Stusnick, E., Plotkin, K. J., and Sutherland, L. C., "Short-Range Acoustic Propagation Model," Wyle Laboratories Research Report WR 85-19, Wyle Laboratories, Arlington, VA, July 1985.
+18. Chessell, C. I., "Propagation of Noise Along a Finite Impedance Boundary," *Journal of the Acoustical Society of America*, Vol. 62, No. 4, 1977, pp. 825–834. https://doi.org/10.1121/1.381603
+19. Daigle, G. A., Embleton, T. F. W., and Piercy, J. E., "Some Comments on the Literature of Propagation near Boundaries of Finite Acoustical Impedance," *Journal of the Acoustical Society of America*, Vol. 66, No. 3, 1979, pp. 918–919. https://doi.org/10.1121/1.383207
+20. "Free-Field and Random Incidence Corrections," Microsoft Excel workbook GRAS_Free-field_and_Random_Incidence_Corrections.xlsx, sheet "Half-inch (Opt1)," GRAS Sound & Vibration, Holte, Denmark. URL: https://www.grasacoustics.com
+21. van Maercke, D., and Defrance, J., "Development of an Analytical Model for Outdoor Sound Propagation Within the Harmonoise Project," *Acta Acustica united with Acustica*, Vol. 93, No. 2, 2007, pp. 201–212.
+22. Ostashev, V. E., and Wilson, D. K., *Acoustics in Moving Inhomogeneous Media*, 2nd ed., CRC Press, Boca Raton, FL, 2015. https://doi.org/10.1201/b18922
+23. Ament, W. S., "Toward a Theory of Reflection by a Rough Surface," *Proceedings of the IRE*, Vol. 41, No. 1, 1953, pp. 142–146. https://doi.org/10.1109/JRPROC.1953.274171
+24. "67AX ½-inch CCP Ground Array Microphone Set," Product Data, 25 June 2012, G.R.A.S. Sound & Vibration, Holte, Denmark. URL: https://grasacoustics.com/fileadmin-gras/Products/Files/pd_67ax_ver_25_june_2012.pdf
 25. "Ground-Plane Microphone Configuration for Propeller-Driven Light-Aircraft Noise Measurement," SAE ARP4055A, SAE International, Warrendale, PA, 2020.
 26. Shivashankara, B. N., and Stubbs, G. W., "Ground Plane Microphone for Measurement of Aircraft Flyover Noise," *Journal of Aircraft*, Vol. 24, No. 11, 1987, pp. 751–758. https://doi.org/10.2514/3.45517
 27. Kingan, M. J., Go, S. T., Piscoya, R., and Ochmann, M., "On the Modelling of Ground-Board Mounted Microphones for Outdoor Noise Measurements," *Journal of Sound and Vibration*, Vol. 565, 2023, Paper 117894. https://doi.org/10.1016/j.jsv.2023.117894
 28. Go, S. T., Kingan, M. J., Schmid, G., and Hall, A., "On the Use of Ground-Board Mounted Microphones for Outdoor Noise Measurements," *Journal of Sound and Vibration*, Vol. 584, 2024, Paper 118432. https://doi.org/10.1016/j.jsv.2024.118432
-29. Seybert, A. F., Soenarko, B., Rizzo, F. J., and Shippy, D. J., "A Special Integral Equation Formulation for Acoustic Radiation and Scattering for Axisymmetric Bodies and Boundary Conditions," *Journal of the Acoustical Society of America*, Vol. 80, No. 4, 1986, pp. 1241–1247.
+29. Seybert, A. F., Soenarko, B., Rizzo, F. J., and Shippy, D. J., "A Special Integral Equation Formulation for Acoustic Radiation and Scattering for Axisymmetric Bodies and Boundary Conditions," *Journal of the Acoustical Society of America*, Vol. 80, No. 4, 1986, pp. 1241–1247. https://doi.org/10.1121/1.393817
 30. Ochmann, M., "The Complex Equivalent Source Method for Sound Propagation over an Impedance Plane," *Journal of the Acoustical Society of America*, Vol. 116, No. 6, 2004, pp. 3304–3311. https://doi.org/10.1121/1.1819504
 31. Taraldsen, G., "The Complex Image Method," *Wave Motion*, Vol. 43, No. 1, 2005, pp. 91–97. https://doi.org/10.1016/j.wavemoti.2005.07.001
 32. Morse, P. M., and Ingard, K. U., *Theoretical Acoustics*, McGraw–Hill, New York, 1968, Chap. 8.
 33. "Acoustics — Attenuation of Sound during Propagation Outdoors — Part 1: Calculation of the Absorption of Sound by the Atmosphere," ISO 9613-1:1993, International Organization for Standardization, Geneva, 1993.
-34. Shepard, D., "A Two-Dimensional Interpolation Function for Irregularly-Spaced Data," *Proceedings of the 1968 23rd ACM National Conference*, ACM, New York, 1968, pp. 517–524. https://doi.org/10.1145/800186.810616
-35. Franke, R., and Nielson, G., "Smooth Interpolation of Large Sets of Scattered Data," *International Journal for Numerical Methods in Engineering*, Vol. 15, No. 11, 1980, pp. 1691–1704. https://doi.org/10.1002/nme.1620151110
-36. Snyder, J. P., "Map Projections — A Working Manual," U.S. Geological Survey Professional Paper 1395, U.S. Government Printing Office, Washington, DC, 1987. https://doi.org/10.3133/pp1395
-37. Olsen, H., Tuinstra, M., and van Oosten, N., "D1.5d Rotorcraft Noise Modelling Guidance," Research Project NOISE, EASA.2020.FC.06, Royal Netherlands Aerospace Centre (NLR), for the European Union Aviation Safety Agency, Cologne, January 2024.
-38. van Oosten, N., Ionescu, S. E., Meliveo, L., Konovalova, O., van der Meulen, J. M., and Tuinstra, M., "D2.3 NORAH Hemisphere Database Extension," Research Project NOISE, EASA.2020.FC.06, European Union Aviation Safety Agency, Cologne, December 2023.
-39. "Report on Standard Method of Computing Rotorcraft Noise Contours," ECAC.CEAC Doc 32, 1st ed., European Civil Aviation Conference, Neuilly-sur-Seine, France, May 2026.
-40. "Application of Pure-Tone Atmospheric Absorption Losses to One-Third Octave-Band Data," SAE ARP5534, SAE International, Warrendale, PA, 2013.
-41. "Noise Standards: Aircraft Type and Airworthiness Certification," Title 14, Code of Federal Regulations, Part 36, Appendix A, "Aircraft Noise Measurement and Evaluation Under § 36.101." URL: https://www.ecfr.gov/current/title-14/part-36 [retrieved 8 October 2026].
-42. "Environmental Protection, Volume I — Aircraft Noise," Annex 16 to the Convention on International Civil Aviation, 8th ed., International Civil Aviation Organization, Montréal, July 2017.
-43. "Design Criteria Standard: Noise Limits," MIL-STD-1474E, U.S. Department of Defense, Washington, DC, 15 April 2015.
-44. Vold, H., and Leuridan, J., "High Resolution Order Tracking at Extreme Slew Rates, Using Kalman Tracking Filters," SAE Technical Paper 931288, May 1993. https://doi.org/10.4271/931288
-45. Tůma, J., "The Passband Width of the Vold-Kalman Order Tracking Filter," *Transactions of the VŠB – Technical University of Ostrava, Mechanical Series*, Vol. 51, No. 2, 2005, pp. 149–154.
-46. Hothersall, D. C., and Harriott, J. N. B., "Approximate Models for Sound Propagation Above Multi-Impedance Plane Boundaries," *Journal of the Acoustical Society of America*, Vol. 97, No. 2, 1995, pp. 918–926. https://doi.org/10.1121/1.412136
-47. Plovsing, B., "Nord2000. Comprehensive Outdoor Sound Propagation Model. Part 1: Propagation in an Atmosphere without Significant Refraction," DELTA Acoustics & Vibration Report AV 1849/00 (revised), Hørsholm, Denmark, March 2006.
-48. Boulanger, P., Waters-Fuller, T., Attenborough, K., and Li, K. M., "Models and Measurements of Sound Propagation from a Point Source over Mixed Impedance Ground," *Journal of the Acoustical Society of America*, Vol. 102, No. 3, 1997, pp. 1432–1442. https://doi.org/10.1121/1.420101
-49. de Jong, B. A., Moerkerken, A., and van der Toorn, J. D., "Propagation of Sound over Grassland and over an Earth Barrier," *Journal of Sound and Vibration*, Vol. 86, No. 1, 1983, pp. 23–46. https://doi.org/10.1016/0022-460X(83)90941-0
-50. Lam, Y. W., and Monazzam, M. R., "On the Modeling of Sound Propagation over Multi-Impedance Discontinuities Using a Semiempirical Diffraction Formulation," *Journal of the Acoustical Society of America*, Vol. 120, No. 2, 2006, pp. 686–698. https://doi.org/10.1121/1.2216905
-51. "Sound Level Meters," IEC 60651:1979, International Electrotechnical Commission, Geneva, 1979 (withdrawn; replaced by IEC 61672-1).
-52. Rickley, E. J., Rosenbaum, J. E., Fleming, G. G., Roof, C. J., and Boeker, E. R., "Development of Simplified Procedure for Computing the Absorption of Sound by the Atmosphere and Applicability to Aircraft Noise Certification: Proposed SAE Method," DOT-VNTSC-FAA-12-14, U.S. Department of Transportation, Volpe National Transportation Systems Center, Cambridge, MA, November 2012.
-53. "Acoustics — Methods for Calculating Loudness — Part 1: Zwicker Method," ISO 532-1:2017, International Organization for Standardization, Geneva, 2017.
-54. "Measurement Technique for the Simulation of the Auditory Sensation of Sharpness," DIN 45692:2009-08, Deutsches Institut für Normung, Berlin, 2009.
+34. "Application of Pure-Tone Atmospheric Absorption Losses to One-Third Octave-Band Data," SAE ARP5534, SAE International, Warrendale, PA, 2013.
+35. Rickley, E. J., Rosenbaum, J. E., Fleming, G. G., Roof, C. J., and Boeker, E. R., "Development of Simplified Procedure for Computing the Absorption of Sound by the Atmosphere and Applicability to Aircraft Noise Certification: Proposed SAE Method," DOT-VNTSC-FAA-12-14, U.S. Department of Transportation, Volpe National Transportation Systems Center, Cambridge, MA, November 2012.
+36. Shepard, D., "A Two-Dimensional Interpolation Function for Irregularly-Spaced Data," *Proceedings of the 1968 23rd ACM National Conference*, ACM, New York, 1968, pp. 517–524. https://doi.org/10.1145/800186.810616
+37. Franke, R., and Nielson, G., "Smooth Interpolation of Large Sets of Scattered Data," *International Journal for Numerical Methods in Engineering*, Vol. 15, No. 11, 1980, pp. 1691–1704. https://doi.org/10.1002/nme.1620151110
+38. Snyder, J. P., "Map Projections — A Working Manual," U.S. Geological Survey Professional Paper 1395, U.S. Government Printing Office, Washington, DC, 1987. https://doi.org/10.3133/pp1395
+39. Olsen, H., Tuinstra, M., and van Oosten, N., "D1.5d Rotorcraft Noise Modelling Guidance," Research Project NOISE, EASA.2020.FC.06, Royal Netherlands Aerospace Centre (NLR), for the European Union Aviation Safety Agency, Cologne, January 2024.
+40. van Oosten, N., Ionescu, S. E., Meliveo, L., Konovalova, O., van der Meulen, J. M., and Tuinstra, M., "D2.3 NORAH Hemisphere Database Extension," Research Project NOISE, EASA.2020.FC.06, European Union Aviation Safety Agency, Cologne, December 2023.
+41. "Report on Standard Method of Computing Rotorcraft Noise Contours," ECAC.CEAC Doc 32, 1st ed., European Civil Aviation Conference, Neuilly-sur-Seine, France, May 2026.
+42. "Noise Standards: Aircraft Type and Airworthiness Certification," Title 14, Code of Federal Regulations, Part 36, Appendix A, "Aircraft Noise Measurement and Evaluation Under § 36.101," and Appendix J, "Alternative Noise Certification Procedure for Helicopters Under Subpart H Having a Maximum Certificated Takeoff Weight of Not More Than 7,000 Pounds." URL: https://www.ecfr.gov/current/title-14/part-36 [retrieved 8 October 2026].
+43. "Sound Level Meters," IEC 60651:1979, International Electrotechnical Commission, Geneva, 1979 (withdrawn; replaced by IEC 61672-1).
+44. "Environmental Protection, Volume I — Aircraft Noise," Annex 16 to the Convention on International Civil Aviation, 8th ed., International Civil Aviation Organization, Montréal, July 2017.
+45. "Design Criteria Standard: Noise Limits," MIL-STD-1474E, U.S. Department of Defense, Washington, DC, 15 April 2015.
+46. "Acoustics — Methods for Calculating Loudness — Part 1: Zwicker Method," ISO 532-1:2017, International Organization for Standardization, Geneva, 2017.
+47. "Measurement Technique for the Simulation of the Auditory Sensation of Sharpness," DIN 45692:2009-08, Deutsches Institut für Normung, Berlin, 2009.
+48. Vold, H., and Leuridan, J., "High Resolution Order Tracking at Extreme Slew Rates, Using Kalman Tracking Filters," SAE Technical Paper 931288, May 1993. https://doi.org/10.4271/931288
+49. Tůma, J., "The Passband Width of the Vold-Kalman Order Tracking Filter," *Transactions of the VŠB – Technical University of Ostrava, Mechanical Series*, Vol. 51, No. 2, 2005, pp. 149–154.
+50. Hothersall, D. C., and Harriott, J. N. B., "Approximate Models for Sound Propagation Above Multi-Impedance Plane Boundaries," *Journal of the Acoustical Society of America*, Vol. 97, No. 2, 1995, pp. 918–926. https://doi.org/10.1121/1.412136
+51. Plovsing, B., "Nord2000. Comprehensive Outdoor Sound Propagation Model. Part 1: Propagation in an Atmosphere without Significant Refraction," DELTA Acoustics & Vibration Report AV 1849/00 (revised), Hørsholm, Denmark, March 2006.
+52. Boulanger, P., Waters-Fuller, T., Attenborough, K., and Li, K. M., "Models and Measurements of Sound Propagation from a Point Source over Mixed Impedance Ground," *Journal of the Acoustical Society of America*, Vol. 102, No. 3, 1997, pp. 1432–1442. https://doi.org/10.1121/1.420101
+53. de Jong, B. A., Moerkerken, A., and van der Toorn, J. D., "Propagation of Sound over Grassland and over an Earth Barrier," *Journal of Sound and Vibration*, Vol. 86, No. 1, 1983, pp. 23–46. https://doi.org/10.1016/0022-460X(83)90941-0
+54. Lam, Y. W., and Monazzam, M. R., "On the Modeling of Sound Propagation over Multi-Impedance Discontinuities Using a Semiempirical Diffraction Formulation," *Journal of the Acoustical Society of America*, Vol. 120, No. 2, 2006, pp. 686–698. https://doi.org/10.1121/1.2216905

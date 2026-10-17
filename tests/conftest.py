@@ -29,10 +29,13 @@ def _validated(build):
 @pytest.fixture(scope='session', autouse=True)
 def every_built_database_keeps_the_contract():
     """Run validate_nod on every database that build_empirical_database or
-    build_database_from_norah2 writes during the tests (called through the
-    module, ``fa.build_...``, or by a script run in-process)."""
-    from panam import flight_acoustics as fa
+    build_database_from_norah2 writes during the tests, called through its
+    module (``database.build_empirical_database``), the namespace
+    (``fa.build_...``) or by a script run in-process."""
+    from panam import database, flight_acoustics as fa, norah2
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(fa, 'build_empirical_database', _validated(fa.build_empirical_database))
-        patch.setattr(fa, 'build_database_from_norah2', _validated(fa.build_database_from_norah2))
+        for module, name in ((database, 'build_empirical_database'), (norah2, 'build_database_from_norah2')):
+            validated = _validated(getattr(module, name))
+            patch.setattr(module, name, validated)
+            patch.setattr(fa, name, validated)
         yield
