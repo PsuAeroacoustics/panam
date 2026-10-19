@@ -1668,7 +1668,7 @@ same module until another module is named. A script is named by its path. Tests 
 45. "Design Criteria Standard: Noise Limits," MIL-STD-1474E, U.S. Department of Defense, Washington, DC, 15 April 2015.
 46. "Acoustics — Methods for Calculating Loudness — Part 1: Zwicker Method," ISO 532-1:2017, International Organization for Standardization, Geneva, 2017.
 47. "Measurement Technique for the Simulation of the Auditory Sensation of Sharpness," DIN 45692:2009-08, Deutsches Institut für Normung, Berlin, 2009.
-48. Vold, H., and Leuridan, J., "High Resolution Order Tracking at Extreme Slew Rates, Using Kalman Tracking Filters," SAE Technical Paper 931288, May 1993. https://doi.org/10.4271/931288
+48. Vold, H., and Leuridan, J., "High Resolution Order Tracking at Extreme Slew Rates Using Kalman Tracking Filters," *Shock and Vibration*, Vol. 2, No. 6, 1995, pp. 507–515. https://doi.org/10.1155/1995/919402
 49. Tůma, J., "The Passband Width of the Vold-Kalman Order Tracking Filter," *Transactions of the VŠB – Technical University of Ostrava, Mechanical Series*, Vol. 51, No. 2, 2005, pp. 149–154.
 50. Hothersall, D. C., and Harriott, J. N. B., "Approximate Models for Sound Propagation Above Multi-Impedance Plane Boundaries," *Journal of the Acoustical Society of America*, Vol. 97, No. 2, 1995, pp. 918–926. https://doi.org/10.1121/1.412136
 51. Plovsing, B., "Nord2000. Comprehensive Outdoor Sound Propagation Model. Part 1: Propagation in an Atmosphere without Significant Refraction," DELTA Acoustics & Vibration Report AV 1849/00 (revised), Hørsholm, Denmark, March 2006.
