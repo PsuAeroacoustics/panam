@@ -58,6 +58,10 @@ def test_defaults_are_the_functions_defaults(tmp_path):
 
 
 def test_every_option_maps_to_its_keyword(tmp_path):
+    from panam import directional_coherence
+    record_path = tmp_path / 'coherence.json'
+    directional_coherence.save_coherence_record(
+        directional_coherence.CoherenceRecord(scale_hz_deg=700.0, exponent=1.8, source='cli'), record_path)
     args = script.parse_arguments([
         str(tmp_path), str(tmp_path / 'db.nod'), '--load-factors', '0,1,1.5', '--extended-fpa=-24:35',
         '--level-flight-tolerance', '3', '--hover-source', 'h.nc', '--speed-reference', 'air',
@@ -65,8 +69,10 @@ def test_every_option_maps_to_its_keyword(tmp_path):
         '--frequency-range', '50:5000', '--build-temperature', '280', '--build-pressure', '100',
         '--build-humidity', '50', '--no-spectrum', '--no-clamp-empty', '--sphere', 'a.nc',
         '--sphere', 'b.nc', '--exclude', 'c*.nc', '--absorption-band-method', 'arp5534',
-        '--merge-repeats', '--merge-speed-tolerance', '1.5'])
+        '--merge-repeats', '--merge-speed-tolerance', '1.5', '--coherence', str(record_path)])
     options = script.build_options(args)
+    coherence = options.pop('coherence')
+    assert (coherence.scale_hz_deg, coherence.exponent, coherence.source) == (700.0, 1.8, 'cli')
     atmosphere = options.pop('atmosphere')
     assert (atmosphere.temperature, atmosphere.pressure, atmosphere.relative_humidity) == (280, 100, 50)
     assert options == dict(load_factors=[0.0, 1.0, 1.5], extended_flight_path_angles=(-24.0, 35.0),

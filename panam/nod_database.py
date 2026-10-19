@@ -34,6 +34,7 @@ from panam.spectra import power_to_db
 from panam.geometry import art2umapr
 from panam.sphere_io import AZIMUTH_REFERENCES, band_index, KNOT_MPS
 from panam.database import DATABASE_FORMAT_VERSION, SPEED_REFERENCES
+from panam.directional_coherence import ROTATIONS
 from panam.lambert_plots import plot_lambert_ea
 from panam import pt_database as pt
 
@@ -200,6 +201,41 @@ def _root(database):
     return variables, attributes
 
 
+#: The coherence record's numeric root attributes (directional_coherence), each one positive number.
+COHERENCE_NUMBERS = ('main_rotor_blades', 'coherence_rotation_limit_Hz', 'coherence_scale_Hz_deg',
+                     'coherence_exponent', 'coherence_spread_scale_Hz_deg', 'coherence_spread_exponent')
+
+
+def _check_coherence(database, root, attributes, names, shared, violate):
+    """R7: the coherence record's root attributes, when present, are what NICEOPS reads."""
+    for name in COHERENCE_NUMBERS:
+        if name not in attributes:
+            continue
+        values = np.asarray(attributes[name]).reshape(-1)
+        if values.size != 1 or not np.issubdtype(values.dtype, np.number) or not (
+                np.isfinite(values[0]) and values[0] > 0):
+            violate('R7', None, f'{name} is {attributes[name]!r}, not one positive number')
+    rotation = attributes.get('main_rotor_rotation')
+    if rotation is not None and str(rotation) not in ROTATIONS:
+        violate('R7', None, f'main_rotor_rotation {rotation!r} is not one of {tuple(ROTATIONS)}')
+    for a, b in (('coherence_scale_Hz_deg', 'coherence_exponent'),
+                 ('coherence_spread_scale_Hz_deg', 'coherence_spread_exponent')):
+        if (a in attributes) != (b in attributes):
+            violate('R7', None, f'{a} and {b} come together')
+    if 'coherence_tonal_fraction' in attributes:
+        fraction = np.asarray(attributes['coherence_tonal_fraction'], dtype=float).reshape(-1)
+        if not np.all((fraction >= 0) & (fraction <= 1)):
+            violate('R7', None, 'coherence_tonal_fraction is not within [0, 1]')
+        if shared and 'frequency' in root:
+            bands = np.size(root['frequency'])
+        elif names and 'frequency' in database.groups[names[0]].variables:
+            bands = database.groups[names[0]].variables['frequency'].size
+        else:
+            bands = 0
+        if fraction.size != bands:
+            violate('R7', None, f'coherence_tonal_fraction holds {fraction.size} values for {bands} bands')
+
+
 def _group_names(database):
     """Group names in sphere order (``sphere2`` before ``sphere10``), then any others."""
     def order(name):
@@ -343,6 +379,7 @@ def validate_nod(path):
             for name in ('phi', 'theta'):
                 if name not in root:
                     violate('R4', None, f'shared_grid_and_frequency is set but the root has no {name}')
+        _check_coherence(database, root, attributes, names, shared, violate)
         if not names:
             violate('R2', None, 'no condition groups')
         expected_names = ['sphere{}'.format(i) for i in range(len(names))]

@@ -1102,6 +1102,33 @@ coefficients $\ge 0$, fitted by non-negative least squares with a second-differe
 weights $1/\hat E^2$ refitted from the model (a random phasor's power is exponentially distributed,
 its spread its mean). `fitted_pt_sphere` writes $D_r$ and $I_r$ onto the grid (§7.6).
 
+### 7.8 Coherence between emission directions
+
+A sphere holds levels, not phases. NICEOPS adds rays that leave the source in different
+directions (its point-source urban model) with the source's coherency between their directions,
+which a database may record (`directional_coherence`; the names are in
+[`file_formats.md`](file_formats.md#source-coherence)). It is measured from microphone signals
+de-Dopplerized onto emission time (§10), so that at one emission time every microphone holds the
+sound the source sent in its own direction. In band $b$, for microphones $a$ and $c$ in a window,
+
+$$
+\rho_{ac} = \frac{\sum_s \sum_{f \in b} X_a^*(f, s)\, X_c(f, s)}
+{\sqrt{\sum_s \sum_{f\in b} |X_a|^2 \;\sum_s \sum_{f\in b} |X_c|^2}},
+$$
+
+over the window's Hann segments $s$ of $16/f_b$ s (between $1/16$ and $1/2$ s) and the band's
+bins, the band coherency a sum of band energies needs, not a coherence per bin. A pattern turning
+with a rotor at $\Omega$ reaches azimuth $\psi + \delta\psi$ about the shaft $\delta\psi/\Omega$
+later, so with the rotation removed each bin's cross term is multiplied by
+$e^{2\pi i f \tau_{ac}}$, $\tau_{ac} = s\,\mathrm{wrap}(\psi_c - \psi_a)/\Omega$ per segment, $s = +1$
+counterclockwise seen from above. The model (`fit_coherence`) is the mean
+$\bar g = \exp[-(f_b\theta/\theta_0)^{p_0}]$, $\theta$ the separation in degrees, times the
+band-averaged delay $\overline{e^{-2\pi i f\tau}}$ in bands up to $4.5\,B\Omega/2\pi$; each band's
+coherence beyond $40^\circ$, $T_b = \langle|\rho|^2 - 1/n\rangle$, $n$ segments times bins; and the
+coherence's decay $\gamma^2 = T_b + (1 - T_b)\exp[-(f_b\theta/\theta_s)^{p_s}]$, fitted to bins of
+band and separation weighted equally. The cases given (passes, hovers) count equally however many
+pair-windows each holds.
+
 ## 8. NORAH2 and AAM interchange
 
 **NORAH2 import** (`build_database_from_norah2`, `tools/norah2_to_nod.py`). A NORAH2 hemisphere (`.hem`)
@@ -1577,6 +1604,7 @@ same module until another module is named. A script is named by its path. Tests 
 | §7.5 Completion | `database.mirror_phi_to_upper_surface`, `_complete_sphere_with_coverage` | `test_mirror_phi.py`, `test_sphere_completion_integration.py` |
 | §7.6 Pure tones, multirotor conditions | `pt_database.build_pt_database`, `write_pt_database`, `measured_pt_sphere`, `fitted_pt_sphere`, `read_pt_sphere`, `_tones`, `_multirotor_axes`, `hover_induced_velocity`, `hover_shaft_rate`, `_sync_groups`, `_speed_reference`, `_merge_close_speeds`; `nod_database.validate_nod` (T and M rules) | `test_pt_database.py`, `test_nod_database.py` |
 | §7.7 Measured rotor tones | `rotor_tones.rotor_azimuth`, `emission_azimuth`, `received_shaft_rate`, `rotor_locked_tones`, `tone_noise`, `depropagate_tones`, `plate_tone_table`, `plate_tone_response`, `grid_tones`, `clock_offsets`, `axis_angles`, `harmonic_basis`, `fit_directivities`, `evaluate_directivity`, `fit_summed_directivities`, `fit_incoherent_directivities`, `evaluate_energy_directivity`, `energy_basis`; `vold_kalman_filter` (`phase`) | `test_rotor_tones.py`, `test_vold_kalman_filter.py` |
+| §7.8 Directional coherence | `directional_coherence.band_coherency`, `fit_coherence`, `write_coherence_record`, `read_coherence_record`, `save_coherence_record`, `load_coherence_record`; `database.build_empirical_database(coherence=)`; `nod_database.validate_nod` (R7) | `test_directional_coherence.py`, `test_niceops_loads_databases.py`, `test_build_empirical_database_cli.py` |
 | §8 NORAH2 | `norah2.build_database_from_norah2`, `norah2_levels_at_radius`, `norah2_speed_knots`, `humid_air_density`, `fill_norah2_empty_cells`, `_norah2_rotor_speed_fraction`, `write_norah2_hemisphere`, `write_norah2_levels`, `write_norah2_triangulation`, `geometry.norah2umapr` | `test_norah2_import.py`, `test_write_norah2_hemisphere.py` |
 | §8 Sphere to NORAH2 | `tools/sphere_to_norah2.py`: `sphere_to_norah2`, `sphere_levels_on_norah2_grid` | `test_sphere_to_norah2.py`, `test_cli_scripts.py` (smoke) |
 | §9 Metrics | `metrics.sound_exposure_level`, `ten_db_down_interval`, `noys`, `perceived_noise_level`, `tone_correction`, `effective_perceived_noise_level`, `mil_std_1474e_nondetectability_distance` | `test_sound_exposure_level.py`, `test_pnl_epnl.py`, `test_mil_std_nondetectability.py` |

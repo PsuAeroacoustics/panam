@@ -88,3 +88,23 @@ def test_niceops_exports_the_source_sphere_back_unchanged(spheres, tmp_path):
     assert float(np.ravel(radius)[0]) == 100.0
     assert float(np.ravel(speed)[0]) == pytest.approx(70.0, abs=1e-3)
     np.testing.assert_allclose(exported[rows], source, atol=1e-4)
+
+
+def test_niceops_reads_the_coherence_record(spheres, tmp_path):
+    """The coherence record (directional_coherence) is read by NICEOPS, and a tonal
+    fraction that does not match the bands is refused, not misread."""
+    from panam import directional_coherence as dc
+    database = tmp_path / 'database.nod'
+    record = dc.CoherenceRecord(blades=4.0, rotation='counterclockwise', scale_hz_deg=800.0, exponent=1.5,
+                                tonal_fraction=np.array([0.5, 0.3, 0.1]),
+                                tonal_fraction_bands=np.array([100.0, 125.0, 160.0]), source='panam test')
+    fa.build_empirical_database(str(spheres), str(database), coherence=record)
+    result = _niceops('-d', str(database), '--self_test', '-l', 'self_test.log', cwd=tmp_path)
+    log = (tmp_path / 'self_test.log').read_text()
+    assert result.returncode == 0, log[-2000:] + result.stderr
+    assert "records its vehicle's coherence between emission directions (panam test)" in log
+    with Dataset(database, 'a') as nc:
+        nc.coherence_tonal_fraction = np.array([0.5, 0.3])
+    result = _niceops('-d', str(database), '--self_test', '-l', 'refused.log', cwd=tmp_path)
+    assert result.returncode != 0
+    assert 'coherence_tonal_fraction holds 2 values' in (tmp_path / 'refused.log').read_text()

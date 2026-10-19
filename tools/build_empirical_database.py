@@ -15,6 +15,7 @@ import sys
 from panam.acoustics.atmosphere import Atmosphere, BAND_ABSORPTION_METHODS
 
 from panam import cli
+from panam import directional_coherence
 from panam import flight_acoustics
 from panam.geometry import SPHERE_FRAMES
 
@@ -88,6 +89,10 @@ def make_parser():
                       help='write each condition once, at 1 g, and let NICEOPS scale it '
                            '(load_factors=None)')
 
+    parser.add_argument('--coherence', default=None, metavar='JSON',
+                        help="the vehicle's coherence between emission directions, as "
+                             "directional_coherence.save_coherence_record wrote it, recorded at the root "
+                             "for NICEOPS's ray sums (default none: NICEOPS takes its defaults)")
     parser.add_argument('--extended-fpa', type=cli.colon_pair, default=None, metavar='LO:HI',
                         help='re-emit every near-level condition at these two flight path angles, deg '
                              '(e.g. --extended-fpa=-24:35; default none: the hover is written at -12, 0 and +12)')
@@ -172,6 +177,7 @@ def build_options(args):
         absorption_band_method=args.absorption_band_method,
         merge_repeats=args.merge_repeats,
         merge_speed_tolerance=args.merge_speed_tolerance,
+        coherence=None if args.coherence is None else directional_coherence.load_coherence_record(args.coherence),
     )
     if args.fixed_load_factor:
         options['load_factors'] = None

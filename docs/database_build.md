@@ -211,6 +211,27 @@ them with their units):
   band's absorption taken at its center frequency (`--absorption-band-method arp5534` or
   `integrated`, THEORY §5.4).
 
+**The vehicle's coherence between emission directions** (optional). NICEOPS's point-source
+urban model adds rays leaving the source in different directions with a model of how coherent the
+source is between them, and takes it from the database where the database records one
+([file_formats.md](file_formats.md#source-coherence)). To record the vehicle's own, measure it from
+the same runs the spheres came from, de-Dopplerized onto emission time, and fit it with the
+vehicle's passes and hovers as separate cases:
+
+```python
+from panam import directional_coherence as dc
+cases = [dc.band_coherency(signals, emission, fs, track_time, track, microphones, bands,
+                           window=1.0, rotation=(omega, 1)) for ...]   # a case per kind of run
+record = dc.fit_coherence(cases, bands, rotation_rate=omega, blades=4, rotation='counterclockwise',
+                          source='Be407, 2017 passes and hovers')
+dc.save_coherence_record(record, 'Be407_coherence.json')
+```
+
+and pass it as `--coherence Be407_coherence.json` (or `coherence=` in Python, or a recipe's
+`[database.coherence]` table of the record's fields). Without it, NICEOPS takes its defaults, which
+are this fit to the Bell 407's 2017 passes and hovers. Give `blades` and `rotation` only for a
+vehicle with one main rotor whose sense is known; a multirotor's record leaves them out.
+
 The script refuses to replace an existing database without `--overwrite`. The hover
 correction is a Python callable and has no flag; a [build recipe](#build-recipes) names it as
 `"module:callable"`. `--recipe FILE.toml` takes the recipe's `[database]` settings, and

@@ -23,6 +23,7 @@ from glob import glob
 from netCDF4 import Dataset
 import numpy as np
 
+from panam import directional_coherence as _directional_coherence
 from panam import provenance as _provenance
 from panam.acoustics.atmosphere import Atmosphere
 from panam.spectra import dBAw, OASPL, power_to_db
@@ -882,7 +883,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                              speed_reference='ground', doppler_shift_removed=None,
                              azimuth_reference=None, spheres=None, exclude=None,
                              absorption_band_method='center', merge_repeats=False,
-                             merge_speed_tolerance=0.0, sphere_frame=None):
+                             merge_speed_tolerance=0.0, sphere_frame=None, coherence=None):
     """Build a NICEOPS sphere database from a directory of sphere files.
 
     directory_name holds vehicle.cfg and, unless ``spheres`` says otherwise,
@@ -1030,6 +1031,14 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     ``exclude`` by file name in ``panam_inputs``), and, as float attributes, ``load_factors``
     (omitted with ``load_factors=None``; ``fixed_load_factor`` says so) and
     ``extended_flight_path_angles_deg`` (omitted when not given).
+
+    coherence, when given, is the vehicle's coherence between emission directions, which
+    NICEOPS's point-source urban model weights each pair of rays by: a
+    :class:`directional_coherence.CoherenceRecord` (or a mapping of its fields, as a build
+    recipe gives it), usually from :func:`directional_coherence.fit_coherence`. It is written
+    as root attributes (``docs/file_formats.md``), the tonal fraction interpolated onto the
+    database's bands and left out without stored spectra. Without it the database carries
+    none, and NICEOPS takes its defaults.
 
     NICEOPS takes one sphere per flight condition, so two spheres with the
     same SPEED and FLIGHT_PATH_ANGLE (equal to 1e-9 kt and deg) are refused.
@@ -1257,6 +1266,11 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                              write_grid_and_frequency=not shared_grid_and_frequency,
                              doppler_shift_removed=doppler, coverage=condition.coverage,
                              run_metadata=condition.run_metadata)
+        if coherence is not None:
+            if not isinstance(coherence, _directional_coherence.CoherenceRecord):
+                coherence = _directional_coherence.CoherenceRecord(**coherence)
+            _directional_coherence.write_coherence_record(ncdatabase, coherence,
+                                                          band_centers=pending_groups[0].frequency)
 
 
 # ---- Writing a database ----

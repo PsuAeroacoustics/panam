@@ -144,6 +144,8 @@ Attributes:
 | `hover_source` | when given: the hover source sphere's file name |
 | `source_spheres` | the file names of the spheres used, one per line, sorted (no directory); always written by `build_empirical_database` |
 | `excluded_spheres` | when `exclude` was given: the file names it left out, one per line |
+| `main_rotor_blades`, `main_rotor_rotation` | when `coherence` gives them: the main rotor's blade count, and `counterclockwise` or `clockwise` seen from above ([source coherence](#source-coherence)) |
+| `coherence_rotation_limit_Hz`, `coherence_scale_Hz_deg` and `coherence_exponent`, `coherence_spread_scale_Hz_deg` and `coherence_spread_exponent`, `coherence_tonal_fraction`, `coherence_source` | when `coherence` gives them: the vehicle's coherence between emission directions ([source coherence](#source-coherence)) |
 
 `build_empirical_database` also records `load_factors` (f8 array; left out with
 `load_factors=None`, which `fixed_load_factor` records) and `extended_flight_path_angles_deg`
@@ -155,6 +157,34 @@ A NORAH2 import adds the attributes `source_format`, `norah2_speed_mapping`,
 `norah2_thrust_air_density_kg_m3`, `norah2_hover_source` (the file a synthesized hover was
 made from, or `none`) and `norah2_scale_tip_speed_by_rmomega` (1 when each advance ratio
 was formed with the file's RmOmega).
+
+### Source coherence
+
+The spheres carry levels, not phases. NICEOPS's point-source urban model (`niceops --buildings`)
+adds rays that leave the source in different directions with a model of how coherent the source
+is between two directions theta degrees apart, in a band at f Hz
+(`directional_coherence`, whose docstring has it in full): a mean coherency
+exp(-(f theta / `coherence_scale_Hz_deg`)^`coherence_exponent`), with the main rotor's delay
+(its azimuth difference about the shaft over its rotation rate) in the bands centred up to
+`coherence_rotation_limit_Hz`, and a spread about it from the coherence
+T + (1 - T) exp(-(f theta / `coherence_spread_scale_Hz_deg`)^`coherence_spread_exponent`), T the
+band's `coherence_tonal_fraction`. Every attribute is optional: what a database leaves out takes
+NICEOPS's defaults (`directional_coherence.DEFAULTS`), and the rotor the vehicle file's
+`Main Rotor` `blades` and `rotation` where the database records no coherence at all. The fits are
+the ones the database's own rotor implies, made with the delay removed where it gives
+`main_rotor_blades` and `main_rotor_rotation` and without it otherwise. NICEOPS turns the rotor at
+the database's `rotor_rpm` when it has one, and at the vehicle file's tip speed over radius
+otherwise.
+
+| attribute | content |
+| --- | --- |
+| `main_rotor_blades` | f8, the main rotor's blade count |
+| `main_rotor_rotation` | `counterclockwise` or `clockwise`, seen from above |
+| `coherence_rotation_limit_Hz` | f8, the band centre up to which the rotor's delay holds (default 4.5 blade-passage frequencies) |
+| `coherence_scale_Hz_deg`, `coherence_exponent` | f8, the mean coherency's decay; together |
+| `coherence_spread_scale_Hz_deg`, `coherence_spread_exponent` | f8, the coherence's decay; together |
+| `coherence_tonal_fraction` | f8 array, T, one per band of the database's spectra, within [0, 1] |
+| `coherence_source` | text, what the fits were made from |
 
 ### Condition groups
 
@@ -373,25 +403,28 @@ which the writers keep; a reader may rely on them.
    in the group or, when `shared_grid_and_frequency` is true, at the root.
 5. **R5.** `radius` × `rotor_scale` is the same in every group.
 6. **R6.** `EAA` is finite. `dBA` is finite or -inf, never NaN or +inf.
-7. **C1.** `database_version`, when present, is an integer from 0 to
+7. **R7.** The [source coherence](#source-coherence) attributes, when present: the numbers each
+   one positive value, `main_rotor_rotation` one of its two values, each scale with its exponent,
+   and `coherence_tonal_fraction` within [0, 1], one per band of the spectra.
+8. **C1.** `database_version`, when present, is an integer from 0 to
    `DATABASE_FORMAT_VERSION`.
-8. **C2.** `speed_reference` and `azimuth_reference`, when present, take the values listed
+9. **C2.** `speed_reference` and `azimuth_reference`, when present, take the values listed
    above.
-9. **C3.** A group with `amplitude` has its band centers, in the group or shared at the
+10. **C3.** A group with `amplitude` has its band centers, in the group or shared at the
    root. A group's own `phi`, `theta` or `frequency` equals the shared one at the root.
-10. **C4.** `amplitude` is over (`PHI`, `THETA`, `frequency`), with PHI × THETA = channels and
+11. **C4.** `amplitude` is over (`PHI`, `THETA`, `frequency`), with PHI × THETA = channels and
     one band center per band, and the channels are its row-major flatten, rows sorted by
     `phi` (channel order, above).
-11. **C5.** `amplitude` is finite or -inf, never NaN or +inf.
-12. **C6.** `coverage` is 0 or 1, over the dimensions given above, and is 1 only where the
+12. **C5.** `amplitude` is finite or -inf, never NaN or +inf.
+13. **C6.** `coverage` is 0 or 1, over the dimensions given above, and is 1 only where the
     level it marks (the band, or `dBA` without spectra) is finite.
-13. **C7.** A direction with no finite band has `dBA` = -inf and `EAA` = 0.
-14. **C8.** With `fixed_load_factor` set, `thrust_coefficient` is the same in every group.
-15. **C9.** `DOPPLER_SHIFT_REMOVED`, when present, is 0 or 1 and the same in every group.
-16. **C10.** Every `rotor_scale` equals `main_rotor_radius_meters`, when present.
-17. **C11.** The groups are named `sphere0` to `sphere<N-1>`.
-18. **C12.** `condition_origin`, when present, is one of the three values above.
-19. **C13.** `phi` is in [-180, 180) deg and `theta` is in [0, 180] deg (ART angles, above).
+14. **C7.** A direction with no finite band has `dBA` = -inf and `EAA` = 0.
+15. **C8.** With `fixed_load_factor` set, `thrust_coefficient` is the same in every group.
+16. **C9.** `DOPPLER_SHIFT_REMOVED`, when present, is 0 or 1 and the same in every group.
+17. **C10.** Every `rotor_scale` equals `main_rotor_radius_meters`, when present.
+18. **C11.** The groups are named `sphere0` to `sphere<N-1>`.
+19. **C12.** `condition_origin`, when present, is one of the three values above.
+20. **C13.** `phi` is in [-180, 180) deg and `theta` is in [0, 180] deg (ART angles, above).
 
 A database listing `sources` (format 2) also keeps the T rules:
 
