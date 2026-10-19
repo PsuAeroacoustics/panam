@@ -16,9 +16,11 @@ This module measures that from a flight test (:func:`band_coherency`, on microph
 signals already de-Dopplerized onto emission time with :func:`panam.geometry.dedopplerize`),
 fits the parameters (:func:`fit_coherence`), and reads and writes them as a database's root
 attributes (:func:`write_coherence_record`, :func:`read_coherence_record`;
-``docs/file_formats.md`` has the names). A database without them takes NICEOPS's
-defaults, :data:`DEFAULTS`: the fits to the 2017 Bell 407 passes and hovers
-(niceops-validation, ``coherence/``).
+``docs/file_formats.md`` has the names). NICEOPS takes a database that records any of them
+with this model, filling what it leaves out from :data:`DEFAULTS`, the fits to the 2017
+Bell 407 passes and hovers (niceops-validation, ``coherence/``). A database without them
+assumes nothing of the source's phase: NICEOPS adds its rays in energy, except those leaving
+within a small cone of each other. The rotor's delay comes only from a record.
 
 The band coherency is the cross power over the band divided by the root of the two auto
 powers, not a coherence per frequency bin: a ray sum adds band energies, so that is what it
@@ -31,10 +33,10 @@ import math
 import numpy as np
 from scipy.optimize import minimize
 
-#: NICEOPS's defaults (its source_coherence.hpp), the fits a database without a record takes:
-#: the mean coherency's decay with the rotor's delay removed, and without it; the
-#: coherence's decay; the tonal fraction's law 1 / (1 + (f / corner)^power); and how many
-#: blade-passage frequencies the delay holds to.
+#: What NICEOPS fills a record's gaps with (its source_coherence.hpp): the mean coherency's
+#: decay with the rotor's delay removed, and without it; the coherence's decay; the tonal
+#: fraction's law 1 / (1 + (f / corner)^power); and how many blade-passage frequencies the
+#: delay holds to.
 DEFAULTS = dict(scale_hz_deg=850.0, exponent=1.6, scale_without_rotation_hz_deg=475.0,
                 exponent_without_rotation=2.3, spread_scale_hz_deg=2120.0, spread_exponent=1.0,
                 tonal_corner_hz=58.0, tonal_power=1.67, rotation_harmonics=4.5)
@@ -52,8 +54,8 @@ class CoherenceRecord:
     ('counterclockwise' or 'clockwise', seen from above) give NICEOPS the main rotor's
     delay, at the database's rotor speed; ``rotation_limit_hz`` the band centre up to which
     it holds. The fits are the ones the record's own rotor implies: with the delay removed
-    where it gives the blades and the rotation, without it otherwise, and NICEOPS does not
-    mix in a vehicle file's rotor where the record holds fits. ``tonal_fraction`` is T per
+    where it gives the blades and the rotation, without it otherwise; NICEOPS applies the
+    rotor's delay from a record only. ``tonal_fraction`` is T per
     band at ``tonal_fraction_bands`` (Hz); the writer interpolates it onto the database's
     own bands. ``source`` is free text saying what the fits were made from.
     """
@@ -296,7 +298,7 @@ def fit_coherence(records, bands, rotation_rate=None, blades=None, rotation=None
 
     ``records`` is one set of records, or a list of sets (cases: a vehicle's passes and its
     hovers, say), each weighted equally however many pair-windows it holds; all made with
-    the same ``bands`` and rotation. NICEOPS's defaults are this fit to the Bell 407's
+    the same ``bands`` and rotation. :data:`DEFAULTS` is this fit to the Bell 407's
     passes and hovers as two cases.
 
     With ``rotation_rate`` (rad/s), ``blades`` and ``rotation``, the records must have been

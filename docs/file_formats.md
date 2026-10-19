@@ -168,13 +168,15 @@ exp(-(f theta / `coherence_scale_Hz_deg`)^`coherence_exponent`), with the main r
 (its azimuth difference about the shaft over its rotation rate) in the bands centred up to
 `coherence_rotation_limit_Hz`, and a spread about it from the coherence
 T + (1 - T) exp(-(f theta / `coherence_spread_scale_Hz_deg`)^`coherence_spread_exponent`), T the
-band's `coherence_tonal_fraction`. Every attribute is optional: what a database leaves out takes
-NICEOPS's defaults (`directional_coherence.DEFAULTS`), and the rotor the vehicle file's
-`Main Rotor` `blades` and `rotation` where the database records no coherence at all. The fits are
-the ones the database's own rotor implies, made with the delay removed where it gives
-`main_rotor_blades` and `main_rotor_rotation` and without it otherwise. NICEOPS turns the rotor at
-the database's `rotor_rpm` when it has one, and at the vehicle file's tip speed over radius
-otherwise.
+band's `coherence_tonal_fraction`. Every attribute is optional. A database that records any of
+them is taken with this model, what it leaves out filled with the fits to the Bell 407
+(`directional_coherence.DEFAULTS`); one that records none assumes nothing of the source's phase,
+and NICEOPS adds its rays in energy except those leaving within a small cone of each other
+(1° by default). The rotor's delay comes only from the database's `main_rotor_blades` and
+`main_rotor_rotation`, never from a vehicle file. The fits are the ones the database's own rotor
+implies, made with the delay removed where it gives those two and without it otherwise. NICEOPS
+turns the rotor at the database's `rotor_rpm` when it has one, and at the vehicle file's tip
+speed over radius otherwise.
 
 | attribute | content |
 | --- | --- |

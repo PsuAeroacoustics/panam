@@ -228,9 +228,11 @@ dc.save_coherence_record(record, 'Be407_coherence.json')
 ```
 
 and pass it as `--coherence Be407_coherence.json` (or `coherence=` in Python, or a recipe's
-`[database.coherence]` table of the record's fields). Without it, NICEOPS takes its defaults, which
-are this fit to the Bell 407's 2017 passes and hovers. Give `blades` and `rotation` only for a
-vehicle with one main rotor whose sense is known; a multirotor's record leaves them out.
+`[database.coherence]` table of the record's fields). Without it, NICEOPS assumes nothing of the
+source's phase: it adds rays in energy, except those leaving within a small cone of each other.
+What a record leaves out NICEOPS fills with the same fit to the Bell 407's 2017 passes and hovers.
+Give `blades` and `rotation` only for a vehicle with one main rotor whose sense is known, since
+they are the only way NICEOPS applies the rotor's delay; a multirotor's record leaves them out.
 
 The script refuses to replace an existing database without `--overwrite`. The hover
 correction is a Python callable and has no flag; a [build recipe](#build-recipes) names it as
