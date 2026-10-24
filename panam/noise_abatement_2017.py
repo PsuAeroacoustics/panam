@@ -1449,7 +1449,8 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
                  nose_from_heading=False, samples_path=None, tone_aware=False, tone_split=False,
                  azimuth_reference=None, wind=None, track_check=True,
                  min_height_above_array_ft=MIN_HEIGHT_ABOVE_ARRAY_FT, air_relative_doppler=False,
-                 absorption_profile=None, absorption_band_method='center', node_statistics=False):
+                 absorption_profile=None, absorption_band_method='center', node_statistics=False,
+                 sphere_frame='level'):
     """Depropagate one run into an AAM-style source sphere.
 
     ``track_check`` (default True) refuses, with :class:`TrackRefused` and the reason, a run
@@ -1469,6 +1470,11 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     (``nose_from_heading``) is always heading-filed, and None picks 'heading' for it;
     'track' with ``nose_from_heading`` is refused.  Written to the sphere as the attribute
     ``azimuth_reference``, which ``build_empirical_database`` carries to the database.
+
+    ``sphere_frame`` (:data:`geometry.SPHERE_FRAMES`) is the frame the sphere is filed in:
+    'level' (default), PANAM's and the database's own, so the database is built from it
+    without a second resampling; or 'flight_path', AAM's, pitched by the run's flight path
+    angle, for a sphere handed to AAM with a deck flown at AOA 0.  The builder reads either.
 
     ``wind``, if given, is the wind at the aircraft over the window, as
     :func:`normalize_wind` takes it: components or speed and direction, with the ``units``
@@ -1877,6 +1883,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
             overwrite=overwrite,
             doppler_shift_removed=1.0 if remove_doppler else 0.0,
             azimuth_reference=azimuth_reference,
+            sphere_frame=sphere_frame,
             run_metadata=run_metadata,
             provenance=stamp,
             extra_variables=(sphere_statistics.node_statistics_variables(hemisphere, phi_deg, theta_deg, field)

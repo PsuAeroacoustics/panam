@@ -26,12 +26,13 @@ import numpy as np
 from panam import provenance as _provenance
 from panam.acoustics.atmosphere import Atmosphere
 from panam.spectra import dBAw, OASPL, power_to_db
-from panam.geometry import art2umapr
+from panam.geometry import art2umapr, SPHERE_FRAMES
+from panam.gridding import repitch_art_levels
 from panam.absorption import _band_attenuation_db
 from panam import sphere_statistics
 from panam.sphere_io import (AZIMUTH_REFERENCES, KNOT_MPS, load_nc_sphere, mask_missing_levels,
-                             POUND_FORCE_NEWTONS, read_run_metadata, _atomic_output, _read_azimuth_reference,
-                             _read_doppler_shift_removed, _read_scalar)
+                             POUND_FORCE_NEWTONS, read_run_metadata, read_sphere_frame, _atomic_output,
+                             _read_azimuth_reference, _read_doppler_shift_removed, _read_scalar)
 
 
 #: On-disk format version written into every database as "database_version".
@@ -243,23 +244,38 @@ def read_vehicle_data(directory_name, runs=None, speeds=None, flight_path_angles
 
 def extract_SPL(filename, infreqs=None, distance=1000,
                 atmosphere=Atmosphere(temperature=293.15, pressure=101.325,
-                                      relative_humidity=20.0), absorption_band_method='center'):
-    """Read a sphere file and reduce it to the levels a database group carries.
+                                      relative_humidity=20.0), absorption_band_method='center',
+                sphere_frame=None):
+    """Read a sphere file and reduce it to the levels a database group carries, in the level frame.
 
     ``distance`` (m) and ``atmosphere`` set the EAA, with each band's attenuation
     formed by ``absorption_band_method`` (see :func:`spla_and_eaa_from_spectrum`).
+    ``sphere_frame`` is the frame the file's directions are in
+    (:data:`geometry.SPHERE_FRAMES`); None takes the file's own ``sphere_frame``, or
+    'level' when it records none.  A flight-path sphere is pitched to level
+    (:func:`gridding.repitch_art_levels`).
     """
+    if sphere_frame is None:
+        sphere_frame = read_sphere_frame(filename) or 'level'
     return _reduce_sphere_levels(*load_nc_sphere(filename), infreqs, distance, atmosphere,
-                                 absorption_band_method)
+                                 absorption_band_method, sphere_frame)
 
 
 def _reduce_sphere_levels(amplitude, phi, theta, frequency, radius, speed, flight_path_angle,
-                          infreqs, distance, atmosphere, absorption_band_method):
+                          infreqs, distance, atmosphere, absorption_band_method, sphere_frame='level',
+                          with_measured=False):
     """:func:`extract_SPL` from levels already read, as :func:`load_nc_sphere` returns them.
 
     amplitude is dB (phi, theta, frequency), any sentinel or NaN read as no energy;
-    radius is ft, speed kt, angles deg.  Returns what :func:`extract_SPL` returns.
+    radius is ft, speed kt, angles deg; sphere_frame is the frame amplitude is filed
+    in.  Returns what :func:`extract_SPL` returns: (azimuth, elevation, phi, theta,
+    radius m, SPLO, SPLA, EAA, speed, flight path angle, frequency, amplitude), the
+    levels level.  with_measured appends ``measured``, (phi, theta, band) bool, True
+    where a band is read from measured cells of the file's own hemisphere (every
+    finite one of a level sphere), for the builder's coverage.
     """
+    if sphere_frame not in SPHERE_FRAMES:
+        raise ValueError('sphere_frame must be one of {}, not {!r}'.format(SPHERE_FRAMES, sphere_frame))
     # Convert radius to meters
     radius = radius * 0.3048
     # Replace masked values with no-energy SPL
@@ -269,6 +285,11 @@ def _reduce_sphere_levels(amplitude, phi, theta, frequency, radius, speed, fligh
         frequency_index = (frequency >= infreqs[0]) & (frequency <= infreqs[1])
         amplitude = amplitude[:, :, frequency_index]
         frequency = frequency[frequency_index]
+    if sphere_frame == 'flight_path':
+        # AAM's frame: pitched nose-up by the flight path angle (THEORY 3.2).
+        amplitude, measured = repitch_art_levels(amplitude, phi, theta, float(np.ravel(flight_path_angle)[0]))
+    else:
+        measured = np.isfinite(amplitude)
     SPLO = power_to_db(np.sum(np.power(10.0, amplitude / 10.0), axis=2))
     # A-weighted OASPL and excess atmospheric attenuation
     SPLA, EAA = spla_and_eaa_from_spectrum(amplitude, frequency, distance, atmosphere, absorption_band_method)
@@ -277,7 +298,8 @@ def _reduce_sphere_levels(amplitude, phi, theta, frequency, radius, speed, fligh
     azi, elv = art2umapr(np.pi * P / 180.0, np.pi * theta / 180.0)
     # frequency/amplitude are returned so callers can recompute band-based
     # quantities (e.g. EAA) after modifying the spectrum.
-    return azi, elv, phi, theta, radius, SPLO, SPLA, EAA, speed, flight_path_angle, frequency, amplitude
+    out = (azi, elv, phi, theta, radius, SPLO, SPLA, EAA, speed, flight_path_angle, frequency, amplitude)
+    return out + (measured,) if with_measured else out
 
 
 def spla_and_eaa_from_spectrum(spectrum, frequency, distance, atmosphere, absorption_band_method='center'):
@@ -650,16 +672,20 @@ def _group_repeat_conditions(filenames, speed_tolerance_knots=0.0):
 
 
 def _extract_condition_SPL(filenames, infreqs, distance, atmosphere, absorption_band_method,
-                           speed_tolerance_knots=0.0):
+                           speed_tolerance_knots=0.0, sphere_frame='level'):
     """:func:`extract_SPL` for one condition: one sphere file, or the energy average of several.
 
     Several files are averaged by :func:`sphere_statistics.average_spheres`, a -999
     cell read as no data, after which a cell no run covers is no energy, as
     :func:`extract_SPL` reads a -999.  speed_tolerance_knots (kt) is the SPEED
     spread allowed between them.  The speed returned is the runs' mean, kt.
+    sphere_frame is the frame the files are filed in; they are averaged in it and
+    the average pitched to level.  Returns :func:`extract_SPL`'s tuple and the
+    ``measured`` mask of :func:`_reduce_sphere_levels`.
     """
     if len(filenames) == 1:
-        return extract_SPL(filenames[0], infreqs, distance, atmosphere, absorption_band_method)
+        return _reduce_sphere_levels(*load_nc_sphere(filenames[0]), infreqs, distance, atmosphere,
+                                     absorption_band_method, sphere_frame, with_measured=True)
     average = sphere_statistics.average_spheres(
         filenames, speed_tolerance_knots=max(float(speed_tolerance_knots), 1e-9),
         flight_path_angle_tolerance_deg=1e-9)
@@ -667,7 +693,7 @@ def _extract_condition_SPL(filenames, infreqs, distance, atmosphere, absorption_
         average['levels_db'], average['phi_deg'], average['theta_deg'], average['frequency_hz'],
         np.asarray(average['radius_ft']), np.asarray(average['speed_knots']),
         np.asarray(average['flight_path_angle_deg']), infreqs, distance, atmosphere,
-        absorption_band_method)
+        absorption_band_method, sphere_frame, with_measured=True)
 
 
 def group_run_metadata(filename, main_rotor_area=None, main_rotor_tip_speed=None,
@@ -772,6 +798,37 @@ def _resolve_doppler_shift_removed(filenames, argument=None):
     return values.pop() if values else fallback
 
 
+def _resolve_sphere_frames(filenames, argument=None):
+    """The frame each source sphere is filed in, ``{filename: frame}``.
+
+    As :func:`_resolve_doppler_shift_removed`: a sphere that records one is taken at its
+    word and an ``argument`` given must agree with it; a sphere without one takes the
+    argument, or 'level' (every sphere PANAM wrote before the attribute existed), with a
+    warning, since AAM's own spheres are in the flight-path frame.  Unlike the other two,
+    frames may differ between the sources: each sphere is pitched to level as it is read.
+    """
+    if argument is not None and argument not in SPHERE_FRAMES:
+        raise ValueError('sphere_frame must be one of {} or None, not {!r}'.format(SPHERE_FRAMES, argument))
+    fallback = 'level' if argument is None else argument
+    resolved = {}
+    unlabeled = []
+    for filename in filenames:
+        value = read_sphere_frame(filename)
+        if value is None:
+            unlabeled.append(filename)
+            resolved[filename] = fallback
+            continue
+        if argument is not None and value != argument:
+            raise ValueError('{} carries sphere_frame = {!r}, but the build was asked for {!r}'
+                             .format(os.path.basename(filename), value, argument))
+        resolved[filename] = value
+    if unlabeled and argument is None:
+        warnings.warn("{} source sphere(s) carry no sphere_frame; assuming 'level' (PANAM's). AAM's own "
+                      "spheres are in the flight-path frame: pass sphere_frame='flight_path' for "
+                      "them".format(len(unlabeled)))
+    return resolved
+
+
 def _resolve_azimuth_reference(filenames, argument=None):
     """The single azimuth_reference every source sphere shares.
 
@@ -822,7 +879,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                              speed_reference='ground', doppler_shift_removed=None,
                              azimuth_reference=None, spheres=None, exclude=None,
                              absorption_band_method='center', merge_repeats=False,
-                             merge_speed_tolerance=0.0):
+                             merge_speed_tolerance=0.0, sphere_frame=None):
     """Build a NICEOPS sphere database from a directory of sphere files.
 
     directory_name holds vehicle.cfg and, unless ``spheres`` says otherwise,
@@ -940,6 +997,16 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     oriented by its heading whatever this says, on both sides (``hover_source``
     is not consulted).
 
+    The database is level (``docs/THEORY.md`` section 3.2), and its root attribute
+    sphere_frame says so.  Each source sphere is read in the frame it records
+    (:data:`geometry.SPHERE_FRAMES`): a 'flight_path' sphere, AAM's, is pitched to level
+    by its FLIGHT_PATH_ANGLE (:func:`gridding.repitch_art_levels`); cells beyond its own
+    hemisphere, filled from its equator, or read mostly from unmeasured cells have
+    coverage 0.
+    sphere_frame, when given, is assumed for spheres that record none and must agree
+    with those that do; without it they are taken as level, with a warning.  Repeat
+    runs merged into one condition must share a frame.
+
     Every condition group also carries the metadata of the measured run its
     levels came from (see :func:`group_run_metadata` and
     :data:`GROUP_RUN_METADATA_NUMBERS`) as group attributes, NaN where the
@@ -1014,9 +1081,14 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                                                         main_rotor_tip_speed, origin)
                                      for filename in filenames])
 
-    def condition_levels(filenames):
+    def condition_levels(filenames, frames=None):
+        frames = sphere_frames if frames is None else frames
+        names = {frames[f] for f in filenames}
+        if len(names) > 1:
+            raise ValueError('{} are filed in different frames ({}); merge spheres of one frame only'.format(
+                ' and '.join(os.path.basename(f) for f in filenames), ', '.join(sorted(names))))
         return _extract_condition_SPL(filenames, infreqs, distance, atmosphere,
-                                      absorption_band_method, merge_speed_tolerance)
+                                      absorption_band_method, merge_speed_tolerance, names.pop())
 
     # Sorted, so group numbering and hover-sphere ties do not depend on the
     # order the filesystem happens to list the directory in.
@@ -1044,6 +1116,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     # half-written database behind.
     doppler = _resolve_doppler_shift_removed(file_list, doppler_shift_removed)
     azimuth = _resolve_azimuth_reference(file_list, azimuth_reference)
+    sphere_frames = _resolve_sphere_frames(file_list, sphere_frame)
 
     # Set up the database.  Written to a temporary file and moved into place
     # only when complete (_atomic_output); the with block closes it explicitly,
@@ -1094,11 +1167,12 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
         for filenames in condition_files:
             # Load the sphere data (the energy average of repeat runs, when merged)
             (_, _, phi_list, theta_list, radius, _, SPLA, EAA, speed, flight_path_angle,
-             frequency, amplitude) = condition_levels(filenames)
-            condition_inputs[filenames] = (phi_list, theta_list, radius, EAA, frequency, amplitude)
+             frequency, amplitude, in_hemisphere) = condition_levels(filenames)
             # Which bins carry a measurement.  Taken before the clamp, and before the
-            # completion fills the upper surface, so a gated bin is recorded as such.
-            measured = _measured_bins(amplitude, EAA)
+            # completion fills the upper surface, so a gated bin is recorded as such;
+            # a flight-path sphere's cells read from beyond its hemisphere are not.
+            measured = in_hemisphere & _measured_bins(amplitude, EAA)
+            condition_inputs[filenames] = (phi_list, theta_list, radius, frequency, amplitude, measured)
             if clamp_empty_directions:
                 SPLA, EAA = _finite_sphere_levels(SPLA, EAA)
             # Remembered for picking the hover source (_hover_source_index).
@@ -1125,12 +1199,14 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
             # and the group is received-frame like the flight spheres around it.
             min_speed_files = (os.path.abspath(os.path.expanduser(hover_source)),)
             (_, _, phi_list, theta_list, radius, _, _, eaa_source, _, _,
-             frequency, amplitude) = condition_levels(min_speed_files)
+             frequency, amplitude, in_hemisphere) = condition_levels(
+                min_speed_files, _resolve_sphere_frames(min_speed_files, sphere_frame))
+            measured = in_hemisphere & _measured_bins(amplitude, eaa_source)
         else:
-            phi_list, theta_list, radius, eaa_source, frequency, amplitude = condition_inputs[min_speed_files]
+            phi_list, theta_list, radius, frequency, amplitude, measured = condition_inputs[min_speed_files]
         # Now, adapt the lowest speed sphere to a hover sphere by averaging from fore to aft
         phi_full, theta_full, SPLA_full, EAA_full, amplitude_full, coverage_full = _synthesized_hover_sphere(
-            phi_list, theta_list, amplitude, _measured_bins(amplitude, eaa_source), frequency,
+            phi_list, theta_list, amplitude, measured, frequency,
             distance, atmosphere, hover_correction=hover_correction,
             clamp_empty_directions=clamp_empty_directions,
             absorption_band_method=absorption_band_method)
@@ -1221,6 +1297,8 @@ def _write_database_root(ncdatabase, *, fixed_load_factor, speed_reference, atmo
     # reference unit, as Atmosphere is written), relative humidity in percent.
     ncdatabase.speed_reference = speed_reference
     ncdatabase.azimuth_reference = azimuth_reference
+    # Every database is level: AAM's flight-path spheres are pitched to it as they are read.
+    ncdatabase.sphere_frame = 'level'
     ncdatabase.build_temperature_K = float(atmosphere.temperature)
     ncdatabase.build_pressure_kPa = float(atmosphere.pressure)
     ncdatabase.build_relative_humidity_percent = float(atmosphere.relative_humidity)

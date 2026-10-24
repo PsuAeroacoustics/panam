@@ -62,7 +62,7 @@ PRE_EXISTING_GROUP_VARIABLES = {
     'dBA', 'EAA', 'amplitude',
 }
 ADDED_ROOT_ATTRIBUTES = {'speed_reference', 'build_temperature_K', 'build_pressure_kPa',
-                         'build_relative_humidity_percent', 'azimuth_reference'}
+                         'build_relative_humidity_percent', 'azimuth_reference', 'sphere_frame'}
 ADDED_GROUP_VARIABLES = {'DOPPLER_SHIFT_REMOVED', 'coverage'}
 # The per-run metadata are group attributes, never variables: a variable per group is a
 # dataset NICEOPS's nc_open has to open (0.23 s more per load on a 1432-group database).

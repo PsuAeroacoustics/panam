@@ -89,6 +89,10 @@ def make_parser():
                         help="'track' (the default for flight) measures each sphere's azimuth from the ground track; "
                              "'heading' from the tracked INS heading, with Doppler and depropagation "
                              'still on the ground velocity.  Written to every sphere and so to the database')
+    parser.add_argument('--sphere-frame', choices=('level', 'flight_path'), default='level',
+                        help="the frame each sphere is filed in: level (default; PANAM's and the "
+                             "database's) or flight_path (AAM's, pitched by the run's flight path angle, "
+                             'for a deck flown at AOA 0)')
     parser.add_argument('--nose-from-heading', action='store_true',
                         help='orient each sphere by the tracked heading, for hovers: no Doppler or '
                              'convective term, and the whole record instead of a steady window '
@@ -292,6 +296,7 @@ def build_options(args):
         tone_aware=args.tone_aware or args.tone_split,
         tone_split=args.tone_split,
         node_statistics=args.node_statistics,
+        sphere_frame=args.sphere_frame,
         skip_existing=args.skip_existing, skip_unchanged=args.skip_unchanged, jobs=args.jobs)
 
 

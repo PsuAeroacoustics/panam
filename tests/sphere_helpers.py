@@ -39,7 +39,9 @@ def minimal_hemisphere():
 def write_sphere_directory(directory, hemispheres, **grid):
     """Write ``(hemisphere, speed_knots, flight_path_angle_deg)`` triples as
     X101.nc, X102.nc, ... beside a vehicle.cfg; ``grid`` passes phi_deg and
-    theta_deg on to the writer."""
+    theta_deg on to the writer.  Level spheres, as the 2017 build writes them, unless
+    ``grid`` says otherwise."""
+    grid.setdefault('sphere_frame', 'level')
     directory.mkdir(exist_ok=True)
     (directory / 'vehicle.cfg').write_text(VEHICLE_CFG)
     for i, (hemisphere, speed, angle) in enumerate(hemispheres):

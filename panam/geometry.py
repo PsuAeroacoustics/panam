@@ -6,7 +6,8 @@ microphone and :func:`dedopplerize` resamples a pressure onto emission time
 files, ``.nod``, NORAH2) has phi 0 below, positive to starboard, and theta 0 at
 the nose; UMAPR (hemisphere dicts) has azimuth 180 ahead, 90 starboard, and
 elevation positive below the horizon.  :func:`art2umapr` and :func:`norah2umapr`
-convert; :func:`lambert_ea` and :func:`lambert_lon` place directions on the Lambert
+convert.  ART spheres are filed in one of :data:`SPHERE_FRAMES`, and
+:func:`pitch_art_directions` turns directions between them.  :func:`lambert_ea` and :func:`lambert_lon` place directions on the Lambert
 equal-area page, and :func:`geodist` is the great-circle arc between two directions.
 :func:`finite_difference_velocity` differentiates a sampled track.
 Lengths are in the caller's units, speeds in those units per second.  hemigen and
@@ -123,6 +124,42 @@ def finite_difference_velocity(time, position):
     differences of ``position`` (Nt, 3) over ``time`` (Nt,) s (one-sided at the
     ends), as ``depropagate_hemisphere`` takes it when none is given."""
     return np.gradient(position, axis=0) / np.gradient(time)[:, None]
+
+
+#: The frames an ART sphere's directions are filed in.  ``'level'``: theta from the
+#: ground track (or heading) in the horizontal plane, phi from straight down; PANAM's
+#: measured spheres, NICEOPS's databases and NORAH2's hemispheres.  ``'flight_path'``:
+#: the same axes pitched nose-up by the sphere's flight path angle, so theta 0 is along
+#: the velocity; AAM's body frame with the deck's angle of attack 0, in which AAM pitches
+#: a sphere by the track's flight path angle (AAM TR section 2.4).
+SPHERE_FRAMES = ('level', 'flight_path')
+
+
+def pitch_art_directions(phi_deg, theta_deg, pitch_deg):
+    """ART directions given in a frame pitched nose-up by ``pitch_deg``, in the unpitched frame.
+
+    The pitched frame's forward axis is (cos p, 0, -sin p) in the unpitched
+    (forward, starboard, down) axes and its down axis (sin p, 0, cos p); starboard
+    is shared.  A flight-path sphere at flight path angle gamma is the level frame
+    pitched by gamma, so ``pitch_art_directions(phi, theta, gamma)`` gives a
+    flight-path direction's level angles, and ``-gamma`` the reverse.
+
+    Args:
+        phi_deg, theta_deg: ART angles in the pitched frame, deg, any matching shapes.
+        pitch_deg: the pitch, deg, positive nose up.
+
+    Returns: (phi_deg, theta_deg) in the unpitched frame, phi in (-180, 180].
+    """
+    phi = np.radians(np.asarray(phi_deg, dtype=float))
+    theta = np.radians(np.asarray(theta_deg, dtype=float))
+    pitch = np.radians(float(pitch_deg))
+    forward = np.cos(theta)
+    starboard = np.sin(theta) * np.sin(phi)
+    down = np.sin(theta) * np.cos(phi)
+    level_forward = np.cos(pitch) * forward + np.sin(pitch) * down
+    level_down = -np.sin(pitch) * forward + np.cos(pitch) * down
+    return (np.degrees(np.arctan2(starboard, level_down)),
+            np.degrees(np.arccos(np.clip(level_forward, -1.0, 1.0))))
 
 
 def art2umapr(phi, theta):

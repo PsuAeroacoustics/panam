@@ -3,6 +3,8 @@
 :func:`interpolate_hemisphere_power` samples a gridded UMAPR hemisphere at any
 direction, bilinearly in energy over the measured cells; :func:`_sample_hemisphere_levels`
 is the sphere and NORAH2 writers' front end to it (``docs/THEORY.md`` section 6.3).
+:func:`repitch_art_levels` refiles an ART sphere's levels in a frame pitched from its own
+(section 3.2: AAM's flight-path frame to the level one).
 
 Scattered samples onto grid nodes: :func:`adaptive_idw_weights` chooses each node's
 radius from the microphones around it; :func:`shepIDW`, :func:`shepIDW_weights` and
@@ -13,6 +15,8 @@ in energy.  Angles are in degrees.
 import numpy as np
 import scipy.sparse as sparse
 from scipy.interpolate import RegularGridInterpolator
+
+from panam.geometry import pitch_art_directions
 
 
 def interpolate_hemisphere_power(levels_db, elv_grid_deg, azi_grid_deg, azi_q_deg, elv_q_deg):
@@ -110,6 +114,75 @@ def _interpolate_measured_power(axes, power, measured, points):
     covered = weight >= 0.5
     Pq = np.divide(Pq, weight, out=np.zeros_like(Pq), where=covered)
     return Pq, covered
+
+
+def repitch_art_levels(levels_db, phi_deg, theta_deg, pitch_deg):
+    """An ART sphere's band levels refiled in a frame pitched from the one they are in.
+
+    The levels are filed in a frame pitched nose-up by ``pitch_deg`` from the
+    frame they are returned in, on the same (phi, theta) grid: a flight-path
+    sphere at flight path angle gamma comes back level with ``pitch_deg=gamma``,
+    and a level one in the flight-path frame with ``-gamma``.  Each grid direction
+    is read off the source bilinearly in energy over its measured (finite) cells,
+    as :func:`interpolate_hemisphere_power` reads a hemisphere.  A lower-hemisphere
+    sphere (|phi| <= 90 deg) has no data above its own equator, where a pitched
+    grid direction near the rim can land, up to the pitch away; it takes the level
+    of the nearest point on the equator there (the direction with its down
+    component dropped), and such a cell is never measured.  The mirror image, as the
+    database completion fills the upper surface, reads twice as far from the
+    direction: on a level pattern of 10 dB from horizon to nadir pitched 8 deg it
+    filled the nose 2.8 dB loud, the nearest point 1.4.  A sphere storing the whole
+    circle wraps in phi.
+
+    Args:
+        levels_db: (Nphi, Ntheta, Nf) band levels, dB, -inf or NaN where missing.
+        phi_deg, theta_deg: the grid's strictly increasing ART axes, deg.
+        pitch_deg: the source frame's pitch from the returned one, deg, nose up.
+
+    Returns: (levels_db, measured): the levels on the same grid in the returned
+        frame (-inf where not covered) and a bool array of the same shape, True
+        where a cell is read from measured cells of the source's own half.  A zero
+        pitch returns the levels as they are.
+    """
+    levels = np.asarray(levels_db, dtype=float)
+    phi_axis = np.asarray(phi_deg, dtype=float).ravel()
+    theta_axis = np.asarray(theta_deg, dtype=float).ravel()
+    if levels.ndim != 3 or levels.shape[:2] != (phi_axis.size, theta_axis.size):
+        raise ValueError('levels_db must be shaped (phi, theta, frequency) = ({}, {}, ...), not {}'.format(
+            phi_axis.size, theta_axis.size, levels.shape))
+    if np.any(np.diff(phi_axis) <= 0.0) or np.any(np.diff(theta_axis) <= 0.0):
+        raise ValueError('phi_deg and theta_deg must be strictly increasing')
+    if float(pitch_deg) == 0.0:
+        return levels.copy(), np.isfinite(levels)
+    theta_grid, phi_grid = np.meshgrid(theta_axis, phi_axis)
+    query_phi, query_theta = pitch_art_directions(phi_grid, theta_grid, -float(pitch_deg))
+    if np.max(np.abs(phi_axis)) > 90.0 + 1e-9:
+        # The whole circle: wrap, with a seam column one period on, as
+        # interpolate_hemisphere_power does in azimuth.
+        mirrored = np.zeros(query_phi.shape, dtype=bool)
+        phi0 = float(phi_axis[0])
+        if not np.isclose(phi_axis[-1], phi0 + 360.0, rtol=0.0, atol=1e-6):
+            phi_axis = np.append(phi_axis, phi0 + 360.0)
+            levels = np.concatenate((levels, levels[:1]), axis=0)
+        query_phi = (query_phi - phi0) % 360.0 + phi0
+    else:
+        # Above the equator: the nearest point on it, phi +/-90 at the theta of the
+        # direction's (forward, starboard) part.
+        mirrored = np.abs(query_phi) > 90.0 + 1e-9
+        forward = np.cos(np.radians(query_theta))
+        starboard = np.sin(np.radians(query_theta)) * np.sin(np.radians(query_phi))
+        equator_theta = np.degrees(np.arctan2(np.abs(starboard), forward))
+        query_theta = np.where(mirrored, equator_theta, query_theta)
+        query_phi = np.where(mirrored, np.where(starboard < 0.0, -90.0, 90.0), query_phi)
+    power = np.power(10.0, np.where(np.isnan(levels), -np.inf, levels) / 10.0)
+    points = np.column_stack((query_phi.ravel(), query_theta.ravel()))
+    Pq, covered = _interpolate_measured_power((phi_axis, theta_axis), power, np.isfinite(levels), points)
+    shape = query_phi.shape + (levels.shape[2],)
+    Pq, covered = Pq.reshape(shape), covered.reshape(shape)
+    out = np.full(shape, -np.inf)
+    positive = covered & (Pq > 0.0)
+    out[positive] = 10.0 * np.log10(Pq[positive])
+    return out, covered & ~mirrored[:, :, None]
 
 
 def _sample_hemisphere_levels(hemisphere, mode, azi_q_deg, elv_q_deg, minimum_level_db):

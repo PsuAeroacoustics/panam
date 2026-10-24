@@ -74,6 +74,7 @@ The main options:
 | `--ray-profiles DIR` | none | depropagate along refracted rays through each run's NICEOPS atmosphere CSV, `<run>.csv` (heights in ft), traced by `niceops_ray_geometry`; straight lines for a run without one |
 | `--recipe FILE.toml` | none | take settings from a [build recipe](#build-recipes); options given override it |
 | `--azimuth-reference` | `track` | `track` or `heading` (see [the heading frame](#the-heading-frame)) |
+| `--sphere-frame` | `level` | `level`, or `flight_path`: AAM's frame, pitched by the run's flight path angle, for spheres handed to AAM with a deck flown at AOA 0 ([THEORY §3.2](THEORY.md#32-directions)); the database builder reads either |
 | `--no-track-check`, `--min-height-above-array-ft` | check on, 10 ft | see [options](#options) |
 | `--tone-aware` | off | file each tone whole in the band of its own frequency |
 | `--tone-split` | off | also write each run's tonal and broadband parts (implies `--tone-aware`; see below) |
@@ -162,6 +163,12 @@ instead (`sphere_statistics.average_spheres`), and `--merge-speed-tolerance KT` 
 spheres at one flight path angle whose speeds lie within KT of the slowest. The merged
 condition's `source_sphere` names every run, and `panam_inputs` lists each merged set as
 `merged_spheres`.
+
+The database is level. Each sphere is read in the frame its `sphere_frame` records; one in
+AAM's flight-path frame (an AAM or NASA/ART sphere, or one built with `--sphere-frame
+flight_path`) is pitched to level by its `FLIGHT_PATH_ANGLE`, and the rim it does not cover gets
+coverage 0 ([THEORY §3.2](THEORY.md#32-directions)). A sphere that records no frame is taken as
+level with a warning; `--sphere-frame flight_path` says otherwise for AAM's own spheres.
 
 Every other option of `build_empirical_database` that takes a plain value has a flag, and
 each flag defaults to the function's default (`python tools/build_empirical_database.py -h` lists
