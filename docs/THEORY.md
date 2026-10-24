@@ -241,6 +241,40 @@ $$
 \hat{\mathbf{d}} = (\cos\theta,\ \sin\theta\sin\phi,\ \sin\theta\cos\phi)\quad(\text{forward, starboard, down}).
 $$
 
+**Sphere frames.** Sphere files share these angles but not their axes. PANAM's spheres,
+NICEOPS's databases and NORAH2's hemispheres are **level**: the forward axis is the track (or
+heading) in the horizontal plane. NORAH2 orients its hemisphere by heading and slip and banks it
+by roll, but applies no pitch and no flight path angle. AAM's sphere is fixed to the body, whose
+pitch is the deck's angle of attack plus the flight path angle [10], so with AOA 0 its forward
+axis is the velocity: the **flight-path** frame, the level one pitched nose-up by the sphere's
+flight path angle $\gamma$. A direction in it, $(f, s, d)$, is level as
+
+$$
+f_\ell = f\cos\gamma + d\sin\gamma, \qquad s_\ell = s, \qquad d_\ell = -f\sin\gamma + d\cos\gamma
+$$
+
+(`pitch_art_directions`; $-\gamma$ the reverse). A sphere file records its frame in the
+attribute `sphere_frame`.
+
+- The AAM writer files the flight-path frame by default, so a deck flown at AOA 0 hears what
+  PANAM measured. Each grid direction is pitched to level and read off the hemisphere; one above
+  the horizon reads the hemisphere's mirror image through the horizontal plane, as the database
+  completion does (§7.5).
+- The 2017 build files its spheres level, so a database is built from them without a second
+  resampling.
+- The database builder takes a flight-path sphere to level (`repitch_art_levels`). Each level
+  grid direction is pitched into the file's frame and read bilinearly in energy over its measured
+  cells (§6.3). Where it lands beyond the file's own hemisphere (a band up to $|\gamma|$ wide
+  along the horizon, ahead in a descent and aft in a climb), it takes the level of the nearest
+  point on the file's equator and has coverage 0; the NORAH2 converter writes it missing. Two
+  resamplings of a smooth 10 dB pattern on AAM's
+  10° by 5° grid cost 0.04 dB on average and 0.7 dB at most, beside the horizon.
+- A sphere that records no frame is taken as level, with a warning; AAM's own are flight-path,
+  so a build from them says `sphere_frame='flight_path'`.
+- The NORAH2 converter pitches a flight-path sphere to level as well.
+- At hover the rule is the same: a synthesized hover written at $\pm 12°$ is pitched by that
+  angle, and AAM pitches it back by the track's.
+
 **Track frame.** The 2017 tracks are in each layout's local frame: $+x$ along the layout's true
 bearing $b$, $+y$ to the left, $z$ up. Latitude and longitude map to local east and north on the
 WGS84 radii of curvature at the run's reference point [11] (`local_east_north_ft`), then
@@ -1385,7 +1419,7 @@ same module until another module is named. A script is named by its path. Tests 
 | §2.1 Short-time spectra | `spectra.spectrogram`, `frame_length`, `psd`, `psd_welch`, `overall_SPL`, `level_history` | `test_acoustics.py`, `test_generate_hemisphere.py` |
 | §2.2 Bands | `spectra.third_octave_band_edges`, `third_octave_band_levels`, `tone_aware_band_power` (`return_parts`), `hann_power`, `depropagation.depropagate_hemisphere` (`decompose_tonal`), `noise_abatement_2017.build_sphere` (`tone_split`), `panam.acoustics.filters.third_octave_filter_bank` | `test_third_octave_band_edges.py`, `test_third_octave_band_levels.py`, `test_band_selection.py`, `test_tone_aware_band_power.py`, `test_generate_hemisphere.py`, `test_noise_abatement_2017.py`, `test_third_octave_filter_bank.py` |
 | §2.3 A-weighting | `spectra.dBAw` | `test_acoustics.py` |
-| §3.1–3.2 Geometry | `geometry.hemigen`, `art2umapr`; `noise_abatement_2017.local_east_north_ft`, `east_north_to_frame`, `frame_bearing_deg` | `test_lambert_geometry.py`, `test_hemisphere_geometry_accuracy.py`, `test_azimuth_reference.py`, `test_track_check.py` |
+| §3.1–3.2 Geometry | `geometry.hemigen`, `art2umapr`, `pitch_art_directions`; `gridding.repitch_art_levels`; `noise_abatement_2017.local_east_north_ft`, `east_north_to_frame`, `frame_bearing_deg` | `test_lambert_geometry.py`, `test_hemisphere_geometry_accuracy.py`, `test_azimuth_reference.py`, `test_track_check.py`, `test_sphere_frame.py` |
 | §3.3 Doppler | `depropagation.depropagate_hemisphere` (`remove_doppler`, `air_relative_doppler`) | `test_generate_hemisphere.py`, `test_tone_aware_band_power.py`, `test_refracted_rays.py` |
 | §3.4 Steady segments | `noise_abatement_2017.steady_window`, `flight_condition` | `test_noise_abatement_2017.py` |
 | §4.1 Impedance | `ground_plane.surface_admittance` | `test_ground_validation.py` |

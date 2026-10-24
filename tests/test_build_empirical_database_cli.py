@@ -61,7 +61,7 @@ def test_every_option_maps_to_its_keyword(tmp_path):
     args = script.parse_arguments([
         str(tmp_path), str(tmp_path / 'db.nod'), '--load-factors', '0,1,1.5', '--extended-fpa=-24:35',
         '--level-flight-tolerance', '3', '--hover-source', 'h.nc', '--speed-reference', 'air',
-        '--azimuth-reference', 'heading', '--doppler-removed', '1', '--distance', '500',
+        '--azimuth-reference', 'heading', '--sphere-frame', 'flight_path', '--doppler-removed', '1', '--distance', '500',
         '--frequency-range', '50:5000', '--build-temperature', '280', '--build-pressure', '100',
         '--build-humidity', '50', '--no-spectrum', '--no-clamp-empty', '--sphere', 'a.nc',
         '--sphere', 'b.nc', '--exclude', 'c*.nc', '--absorption-band-method', 'arp5534',
@@ -71,7 +71,8 @@ def test_every_option_maps_to_its_keyword(tmp_path):
     assert (atmosphere.temperature, atmosphere.pressure, atmosphere.relative_humidity) == (280, 100, 50)
     assert options == dict(load_factors=[0.0, 1.0, 1.5], extended_flight_path_angles=(-24.0, 35.0),
                            level_flight_tolerance=3.0, hover_source='h.nc', speed_reference='air',
-                           azimuth_reference='heading', doppler_shift_removed=1, distance=500.0,
+                           azimuth_reference='heading', sphere_frame='flight_path', doppler_shift_removed=1,
+                           distance=500.0,
                            infreqs=(50.0, 5000.0), store_spectrum=False, clamp_empty_directions=False,
                            spheres=['a.nc', 'b.nc'], exclude=['c*.nc'], absorption_band_method='arp5534',
                            merge_repeats=True, merge_speed_tolerance=1.5)

@@ -5,7 +5,8 @@ theta) grid and writes the sphere netCDF; :func:`load_nc_sphere` reads one back.
 The file contract, with ``RADIUS`` in ft and ``SPEED`` in knots, is
 ``docs/file_formats.md``.  :func:`mask_missing_levels` maps the on-disk missing
 markers (NaN, -999, >1e34) to -inf.  :func:`read_run_metadata` reads a sphere's
-per-run metadata back; :func:`band_index` finds a band center on a frequency axis.
+per-run metadata back and :func:`read_sphere_frame` the frame its directions are filed in;
+:func:`band_index` finds a band center on a frequency axis.
 :func:`_atomic_output`, used by the sphere writer, both database writers and the ``.hem``
 writers (not :func:`norah2.write_norah2_triangulation`), writes a file in full or not at
 all.
@@ -21,7 +22,7 @@ import numpy as np
 
 from panam import provenance as _provenance
 from panam import unit_conversion
-from panam.geometry import art2umapr
+from panam.geometry import art2umapr, pitch_art_directions, SPHERE_FRAMES
 from panam.gridding import _sample_hemisphere_levels
 
 
@@ -160,6 +161,27 @@ def _azimuth_reference_of(handle, name):
     if value not in AZIMUTH_REFERENCES:
         raise ValueError('{}: azimuth_reference must be one of {}, found {!r}'.format(
             name, AZIMUTH_REFERENCES, value))
+    return value
+
+
+def read_sphere_frame(filename):
+    """The sphere_frame a sphere file records (one of :data:`geometry.SPHERE_FRAMES`), or None.
+
+    None means the file does not say: every sphere PANAM wrote before the attribute
+    existed is level, and AAM's own are in the flight-path frame of a deck flown
+    with AOA 0.
+    """
+    with Dataset(filename, mode='r') as handle:
+        return _sphere_frame_of(handle, filename)
+
+
+def _sphere_frame_of(handle, name):
+    """:func:`read_sphere_frame` of an open sphere ``handle``; ``name`` labels errors."""
+    if 'sphere_frame' not in handle.ncattrs():
+        return None
+    value = str(handle.getncattr('sphere_frame')).strip()
+    if value not in SPHERE_FRAMES:
+        raise ValueError('{}: sphere_frame must be one of {}, found {!r}'.format(name, SPHERE_FRAMES, value))
     return value
 
 
@@ -330,6 +352,7 @@ def write_aam_hemisphere_netcdf(
         minimum_level_db: float = -100.0,
         overwrite: bool = True,
         azimuth_reference: Optional[str] = None,
+        sphere_frame: str = 'flight_path',
         run_metadata: Optional[dict] = None,
         art_levels=None,
         extra_variables: Optional[dict] = None,
@@ -353,6 +376,13 @@ def write_aam_hemisphere_netcdf(
     AAM spheres are stored on a regular grid in ART (phi/theta). This function
     interpolates the UMAPR grid onto a separable ART grid (``phi_deg`` x ``theta_deg``)
     in the *linear power* domain and converts back to dB.
+
+    The hemisphere is level (``docs/THEORY.md`` section 3.2).  AAM's sphere is fixed
+    to the body, pitched by the deck's angle of attack plus the flight path angle, so
+    by default the grid is filed in the flight-path frame: pitched nose-up by
+    ``flight_path_angle_deg``, and read for a deck flown with AOA 0.  A direction
+    that frame puts above the horizon reads the hemisphere's mirror image through
+    the horizontal plane, as the database completion does.
 
     Args:
         filename: Path to the output netCDF file.
@@ -384,6 +414,11 @@ def write_aam_hemisphere_netcdf(
             one of :data:`AZIMUTH_REFERENCES`; written as the text attribute
             ``azimuth_reference``.  None writes nothing (a reader then assumes
             'track', as every sphere before it was).
+        sphere_frame: the frame the grid is filed in, one of
+            :data:`geometry.SPHERE_FRAMES`, written as the text attribute
+            ``sphere_frame``: 'flight_path' (default; AAM's, see above) or 'level'
+            (PANAM's own, for spheres a database is built from, which then are not
+            resampled twice).  With ``art_levels`` the levels must already be in it.
         run_metadata: optional dict describing the run the sphere was built
             from, written as the scalar variables of :data:`RUN_METADATA_VARIABLES`
             (left out where a key is absent, None or NaN, which
@@ -423,6 +458,8 @@ def write_aam_hemisphere_netcdf(
     if azimuth_reference is not None and azimuth_reference not in AZIMUTH_REFERENCES:
         raise ValueError('azimuth_reference must be one of {}, not {!r}'.format(
             AZIMUTH_REFERENCES, azimuth_reference))
+    if sphere_frame not in SPHERE_FRAMES:
+        raise ValueError('sphere_frame must be one of {}, not {!r}'.format(SPHERE_FRAMES, sphere_frame))
     if float(doppler_shift_removed) not in (0.0, 1.0):
         raise ValueError('doppler_shift_removed must be 0 or 1, not {!r}'.format(doppler_shift_removed))
     xyz = np.asarray(xyz_ft, dtype=np.float32).ravel()
@@ -495,12 +532,16 @@ def write_aam_hemisphere_netcdf(
         with np.errstate(invalid='ignore'):
             amplitude_db[amplitude_db < float(minimum_level_db)] = -np.inf
     else:
-        # ART grid points -> UMAPR for interpolation
+        # ART grid points -> UMAPR for interpolation, through the level frame
         TH, PH = np.meshgrid(theta_deg, phi_deg)
+        if sphere_frame == 'flight_path':
+            PH, TH = pitch_art_directions(PH, TH, flight_path_angle_deg)
         azi_rad, elv_rad = art2umapr(np.deg2rad(PH), np.deg2rad(TH))
+        # Above the horizon (elevation < 0), the mirror image through the horizontal plane.
+        elv_deg = np.abs(np.degrees(elv_rad))
         # Output amplitude array: (phi, theta, freq)
         frequency_hz, amplitude_db = _sample_hemisphere_levels(
-            hemisphere, mode, np.degrees(azi_rad), np.degrees(elv_rad), minimum_level_db)
+            hemisphere, mode, np.degrees(azi_rad), elv_deg, minimum_level_db)
     nphi = phi_deg.size
     nth = theta_deg.size
     nfreq = int(np.asarray(frequency_hz).size)
@@ -607,6 +648,7 @@ def write_aam_hemisphere_netcdf(
         vMT.unit = _scalar_unit('DEGREE')
 
         ds.title = title if title is not None else 'AAM/RNM acoustic hemisphere'
+        ds.sphere_frame = sphere_frame
         if azimuth_reference is not None:
             ds.azimuth_reference = azimuth_reference
         if metadata is not None:

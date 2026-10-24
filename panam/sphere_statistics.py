@@ -29,7 +29,7 @@ from panam.acoustics.plotting import acoustic_plot_style
 from panam.geometry import art2umapr
 from panam.sphere_io import (AAM_DEFAULT_PHI_DEG, AAM_DEFAULT_THETA_DEG, band_index, missing_level_sentinel,
                              write_aam_hemisphere_netcdf, _azimuth_reference_of, _doppler_shift_removed_of,
-                             _read_scalar)
+                             _read_scalar, _sphere_frame_of)
 from panam.lambert_plots import plot_lambert_ea
 
 #: How a sphere file's -999 (or >1e34) cell is read: left out, or zero power.
@@ -51,6 +51,7 @@ def _read_handle(handle, name, missing):
 
     doppler = _doppler_shift_removed_of(handle, name)
     reference = _azimuth_reference_of(handle, name)
+    frame = _sphere_frame_of(handle, name)
     weight = sum(scalar(n, 0.0) for n in ('EMPTY_WEIGHT', 'FUEL_WEIGHT', 'LOAD_WEIGHT'))
     return dict(
         name=name,
@@ -64,6 +65,7 @@ def _read_handle(handle, name, missing):
         weight_lb=weight,
         doppler_shift_removed=doppler,
         azimuth_reference=reference,
+        sphere_frame=frame,
     )
 
 
@@ -82,8 +84,8 @@ def read_sphere(source, missing='no_data'):
         ``levels_db`` (dB, shaped (phi, theta, frequency)), ``radius_ft`` (ft),
         ``speed_knots`` (kt), ``flight_path_angle_deg`` (deg), ``weight_lb`` (lb, the
         sum of EMPTY_WEIGHT, FUEL_WEIGHT and LOAD_WEIGHT), ``doppler_shift_removed``
-        (0, 1, or None when absent), ``azimuth_reference`` (str, or None when
-        absent) and ``name``.
+        (0, 1, or None when absent), ``azimuth_reference`` and ``sphere_frame`` (str, or
+        None when absent) and ``name``.
     """
     if missing not in MISSING_MEANINGS:
         raise ValueError('missing must be one of {}, not {!r}'.format(MISSING_MEANINGS, missing))
@@ -170,6 +172,10 @@ def average_spheres(paths_or_datasets, min_runs=1, missing='no_data', speed_tole
     if len({'track' if r is None else r for r in references}) > 1:
         raise ValueError('azimuth_reference differs between the spheres: {}'.format(
             ', '.join('{} ({})'.format(s['name'], s['azimuth_reference']) for s in spheres)))
+    frames = [s.get('sphere_frame') for s in spheres]
+    if len({'level' if f is None else f for f in frames}) > 1:
+        raise ValueError('sphere_frame differs between the spheres: {}'.format(
+            ', '.join('{} ({})'.format(s['name'], s.get('sphere_frame')) for s in spheres)))
     dopplers = [s['doppler_shift_removed'] for s in spheres]
     if len({0 if d is None else d for d in dopplers}) > 1:
         raise ValueError('DOPPLER_SHIFT_REMOVED differs between the spheres: {}'.format(
@@ -208,6 +214,7 @@ def average_spheres(paths_or_datasets, min_runs=1, missing='no_data', speed_tole
         weight_lb=float(np.mean([s['weight_lb'] for s in spheres])),
         doppler_shift_removed=flags[0] if flags else None,
         azimuth_reference=labeled[0] if labeled else None,
+        sphere_frame=next((f for f in frames if f is not None), None),
         sources=[s['name'] for s in spheres],
         settings=dict(min_runs=min_runs, missing=missing,
                       speed_tolerance_knots=float(speed_tolerance_knots),
@@ -242,6 +249,8 @@ def write_averaged_sphere(filename, average, title=None, overwrite=True):
         empty_weight_lb=average['weight_lb'], fuel_weight_lb=0.0, load_weight_lb=0.0,
         doppler_shift_removed=average['doppler_shift_removed'] or 0,
         azimuth_reference=average['azimuth_reference'],
+        # Averaged in the frame the runs were filed in; unlabeled runs are PANAM's, level.
+        sphere_frame=average.get('sphere_frame') or 'level',
         title=title if title is not None else 'Energy average of {} spheres'.format(
             len(average.get('sources', []))),
         overwrite=overwrite,

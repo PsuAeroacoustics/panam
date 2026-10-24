@@ -16,6 +16,7 @@ from panam.acoustics.atmosphere import Atmosphere, BAND_ABSORPTION_METHODS
 
 from panam import cli
 from panam import flight_acoustics
+from panam.geometry import SPHERE_FRAMES
 
 EPILOG = """\
 hover_correction, a callable that adds dB to the synthesized hover per direction
@@ -104,6 +105,10 @@ def make_parser():
     parser.add_argument('--azimuth-reference', choices=flight_acoustics.AZIMUTH_REFERENCES, default=None,
                         help="what the spheres' azimuth is measured from, for spheres that carry no "
                              "azimuth_reference (default: the spheres' own, else track)")
+    parser.add_argument('--sphere-frame', choices=SPHERE_FRAMES, default=None,
+                        help="the frame spheres that carry no sphere_frame are filed in: level (PANAM's) "
+                             "or flight_path (AAM's, pitched to level as they are read) (default: the "
+                             "spheres' own, else level with a warning)")
     parser.add_argument('--doppler-removed', type=int, choices=(0, 1), default=None,
                         help='DOPPLER_SHIFT_REMOVED for spheres that carry no flag: 0 received '
                              "frequencies, 1 emitted (default: the spheres' own, else 0 with a warning)")
@@ -161,6 +166,7 @@ def build_options(args):
         speed_reference=args.speed_reference,
         doppler_shift_removed=args.doppler_removed,
         azimuth_reference=args.azimuth_reference,
+        sphere_frame=args.sphere_frame,
         spheres=args.spheres,
         exclude=args.exclude,
         absorption_band_method=args.absorption_band_method,

@@ -45,9 +45,12 @@ grid is PHI every 10° and THETA every 5°. `build_sphere` uses that grid with t
 from 10 Hz to 10 kHz. When it is given a `reference_sphere`, it uses the legacy sphere's
 grid and bands instead. `AMPLITUDE` carries no `_FillValue`.
 
-Attributes: `title`, and when known `azimuth_reference` (`track` or `heading`; a reader takes
-a sphere without it as `track`). Every sphere also carries the
-[provenance stamp](#provenance-stamp).
+Attributes: `title`; `sphere_frame`, the frame `PHI` and `THETA` are filed in: `flight_path`
+(the writer's default; AAM's body frame with AOA 0, pitched nose-up by `FLIGHT_PATH_ANGLE`) or
+`level` (`build_sphere`'s; PANAM's, NICEOPS's and NORAH2's). A reader takes a sphere without it
+as `level`, with a warning ([THEORY §3.2](THEORY.md#32-directions)). And when known
+`azimuth_reference` (`track` or `heading`; a reader takes a sphere without it as `track`).
+Every sphere also carries the [provenance stamp](#provenance-stamp).
 
 **Per-run metadata.** When `build_sphere` passes `run_metadata`, the file also carries
 these f8 scalar variables after `AMPLITUDE`. A variable is left out when its value is
@@ -72,7 +75,8 @@ The file also carries these text attributes, each '' when unknown:
 
 **Averaged spheres.** `sphere_statistics.write_averaged_sphere` (`tools/sphere_diff.py average`)
 writes an energy average of repeat runs in the same layout, with the runs' mean `SPEED`,
-`FLIGHT_PATH_ANGLE` and weight (as `EMPTY_WEIGHT`). It adds two optional variables after
+`FLIGHT_PATH_ANGLE` and weight (as `EMPTY_WEIGHT`), in the runs' frame; runs filed in different
+frames are refused. It adds two optional variables after
 everything else. AAM and NICEOPS do not read them, and a reader may ignore them.
 
 | variable | type, dimensions | `unit` | content |
@@ -132,6 +136,7 @@ Attributes:
 | --- | --- |
 | `speed_reference` | `ground` or `air`: what the advance ratio and flight path angle are taken against |
 | `azimuth_reference` | `track` or `heading` (see [the heading frame](database_build.md#the-heading-frame)); always written |
+| `sphere_frame` | `level`, always: flight-path spheres are pitched to level as they are read. NICEOPS refuses any other value |
 | `build_temperature_K`, `build_pressure_kPa`, `build_relative_humidity_percent` | the atmosphere the EAA was computed in (default 293.15 K, 101.325 kPa, 20%) |
 | `hover_correction` | when one was applied: its `description`, or `applied` |
 | `hover_source` | when given: the hover source sphere's file name |
