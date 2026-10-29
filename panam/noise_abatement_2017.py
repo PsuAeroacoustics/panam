@@ -1,4 +1,4 @@
-"""Regenerate AAM source spheres from the 2017 FAA/NASA Noise Abatement flight test.
+"""Regenerate AAM source spheres from the FAA/NASA Noise Abatement flight tests (2017; 2019 too).
 
 The spheres shipped in ``Sphere_Database`` were depropagated without any
 ambient reference.  Depropagation multiplies the measured spectrum by
@@ -20,6 +20,12 @@ Layout of the dataset this module expects (``root``)::
     <aircraft>/<aircraft>_AC_Data/<run>AC.csv  tracking, local array frame
     <aircraft>/<aircraft>_Acoustic_Data/...    <run>_<mic>_pascal.nc, per channel
     <aircraft>/*MicFullList.csv, *StaticList.csv   instrument type per channel
+
+The 2019 test (Coyle Field, NJ; the S-76D) has the same layout, read the same way, with
+three differences: its weather is one whole-test station file,
+``<aircraft>_all_SWS_weather.csv`` (:func:`run_atmosphere`); its reference list names the
+run time ``utc_secs_from_mid``; and its tracks' z is not altitude less ``ref_elips_ft``
+(``track_datum``, :meth:`NoiseAbatementTest.load_track`).
 
 Conventions established by checking regenerated labels against the legacy
 spheres (see :func:`steady_window`):
@@ -83,13 +89,28 @@ AIRCRAFT_SPHERE_PREFIX = {
     'EC130B4': 'EC130',
     'R44': 'RO-44',
     'R66': 'RO-66',
+    'S76D': 'S-76D',
 }
 
 #: Total width of the legacy spheres' ``title`` attribute, blank padded.
 AAM_TITLE_WIDTH = 77
 
-#: Year the test was flown; run ids carry the day of year, not the date.
+#: Year the test was flown when its recordings do not say (:attr:`NoiseAbatementTest.year`); run
+#: ids carry the day of year, not the date.
 TEST_YEAR = 2017
+
+#: What a track's z is measured from (:meth:`NoiseAbatementTest.load_track`): ``'track'``, the
+#: file's own z; ``'reference'``, altitude less the reference list's ``ref_elips_ft``, the datum
+#: of the microphones' heights.  The two agree at Amedee; Eglin's tracks put z 2-3 ft above
+#: ``alt - ref_elips_ft``, and Coyle Field's (2019) 8.5 ft (alt - z = 54.27 ft against 62.8).
+TRACK_DATUMS = ('track', 'reference')
+
+#: (dataset, run-number prefix) -> {microphone: why}: channels the test's own logs call bad, left out of every
+#: run the prefix matches.  The prefix is usually a flight day.
+BAD_CHANNELS = {
+    ('S76D', '176'): {33: "the reference list's day-176 ambient run: 'Position 33 has spikes in data; BAD THROUGHOUT "
+                          "ALL RUNS' (the microphone was changed on day 177)"},
+}
 
 #: Instrument types that sit on (or flush with) the ground and therefore see
 #: pressure doubling.  Elevated microphones are excluded instead of corrected:
@@ -147,6 +168,19 @@ LEGACY_BAND_CENTERS_HZ = np.array([
 # Dataset indexing
 # --------------------------------------------------------------------------
 
+def reference_seconds(row):
+    """A reference-list row's run time, seconds after midnight UTC, or NaN.  The 2017 lists
+    call it ``utc_secs_from_mid_start``, the 2019 list ``utc_secs_from_mid``."""
+    for name in ('utc_secs_from_mid_start', 'utc_secs_from_mid'):
+        try:
+            value = float((row or {}).get(name) or 'nan')
+        except ValueError:
+            continue
+        if np.isfinite(value):
+            return value
+    return float('nan')
+
+
 def is_steady_flight_card(row):
     """Whether a reference-list row describes a non-maneuvering pass.
 
@@ -190,9 +224,14 @@ def is_steady_flight_card(row):
 class NoiseAbatementTest:
     """Index one aircraft's directory of the 2017 Noise Abatement test."""
 
-    def __init__(self, aircraft, root=None):
-        """``root`` defaults to the ``noise_abatement_2017`` entry of :mod:`local_paths`."""
+    def __init__(self, aircraft, root=None, track_datum='track'):
+        """``root`` defaults to the ``noise_abatement_2017`` entry of :mod:`local_paths`;
+        ``track_datum`` is one of :data:`TRACK_DATUMS`."""
+        if track_datum not in TRACK_DATUMS:
+            raise ValueError('track_datum must be one of {}, not {!r}'.format(TRACK_DATUMS, track_datum))
         self.aircraft = aircraft
+        self.track_datum = track_datum
+        self._year = None
         self.root = local_paths.data_path(DATA_ROOT_NAME, root)
         self.base = os.path.join(self.root, aircraft)
         if not os.path.isdir(self.base):
@@ -288,6 +327,41 @@ class NoiseAbatementTest:
     def track_path(self, run):
         return os.path.join(self.base, self.aircraft + '_AC_Data', run + 'AC.csv')
 
+    def load_track(self, run):
+        """:func:`load_track` of ``run``, its z referred to :attr:`track_datum`: with
+        ``'reference'``, z is the track's altitude less the reference list's ``ref_elips_ft``,
+        the datum the microphones' heights (their files' Z, the microphone lists) use."""
+        track = load_track(self.track_path(run))
+        if self.track_datum == 'reference':
+            elips = _float_or_nan((self.by_run.get(run) or {}).get('ref_elips_ft'))
+            if 'alt' not in track or not np.isfinite(elips):
+                raise ValueError('run {}: track_datum "reference" needs the track\'s alt and the reference '
+                                 'list\'s ref_elips_ft'.format(run))
+            track['z'] = track['alt'] - elips
+        return track
+
+    @property
+    def year(self):
+        """The year the test was flown: the first four-digit year in a recording's ``date``
+        attribute ("August 2017", "June/July 2019"), or :data:`TEST_YEAR`."""
+        if self._year is None:
+            path = next((p for files in self.acoustic_files.values() for p in files.values()), None)
+            if path is not None:
+                try:
+                    with Dataset(path, mode='r') as handle:
+                        self.note_recording_year(handle)
+                except OSError:
+                    pass
+        return self._year or TEST_YEAR
+
+    def note_recording_year(self, handle):
+        """Take :attr:`year` from an open recording's ``date`` attribute, if not known yet: a
+        build reads it from a channel it opens anyway, so no file is opened for it."""
+        if self._year is None:
+            found = re.search(r'(19|20)\d\d', str(getattr(handle, 'date', '')))
+            # 0: looked, and the recordings do not say (TEST_YEAR then).
+            self._year = int(found.group(0)) if found else 0
+
     def ambient_run(self, run):
         """The ambient run to gate ``run`` against.
 
@@ -310,11 +384,7 @@ class NoiseAbatementTest:
         def day(candidate):
             return candidate['combined'][:3]
 
-        def seconds(candidate):
-            try:
-                return float(candidate.get('utc_secs_from_mid_start') or 'nan')
-            except ValueError:
-                return float('nan')
+        seconds = reference_seconds
 
         same_day = [c for c in candidates if day(c) == day(row)]
         pool = same_day or candidates
@@ -335,9 +405,16 @@ class NoiseAbatementTest:
                 warnings.warn('Run {}: no instrument type for mic {}; skipping it'
                               .format(run, mic_number))
                 continue
-            if instrument in GROUND_BOARD_INSTRUMENTS:
+            if instrument in GROUND_BOARD_INSTRUMENTS and not self.bad_channel(run, mic_number):
                 mics.append(mic_number)
         return mics
+
+    def bad_channel(self, run, mic_number):
+        """Why the test's logs call ``mic_number`` bad in ``run`` (:data:`BAD_CHANNELS`), or None."""
+        for (aircraft, prefix), channels in BAD_CHANNELS.items():
+            if aircraft == self.aircraft and str(run).startswith(prefix) and int(mic_number) in channels:
+                return channels[int(mic_number)]
+        return None
 
 
 # --------------------------------------------------------------------------
@@ -657,7 +734,8 @@ def ground_microphone_positions(test, run):
 
         def column(prefix):
             return next((f for f in fields if f and f.strip().lower().startswith(prefix)), None)
-        lat_key, lon_key, hgt_key = column('latitude'), column('longitude'), column('hgt')
+        # Ellipsoidal height: 'Hgt(m)' in the 2017 lists, 'Elips(m)' in the 2019 one.
+        lat_key, lon_key, hgt_key = column('latitude'), column('longitude'), column('hgt') or column('elips')
         if None in (lat_key, lon_key, hgt_key):
             return None, '{} has no Latitude/Longitude/Hgt columns'.format(name)
         for entry in reader:
@@ -1047,6 +1125,8 @@ def load_run_channels(test, run, mics, time_range=None, ground_board_scale=0.5):
             try:
                 handle = stack.enter_context(Dataset(path, mode='r'))
                 location = _signal_header(handle)[2]
+                if hasattr(test, 'note_recording_year'):
+                    test.note_recording_year(handle)
             except Exception as error:                  # noqa: BLE001 - one bad channel must not kill the run
                 warnings.warn('Run {}: could not read mic {} ({}); skipping it'
                               .format(run, mic_number, error))
@@ -1255,6 +1335,37 @@ def _weather_station_files(test, run):
                                          '{}_{}_*.csv'.format(test.aircraft, run[:3]))))
 
 
+def _whole_test_station_file(test):
+    """``<aircraft>_all_SWS_weather.csv`` beside the reference list, the 2019 test's only station
+    record, when the test has no ``<aircraft>_Weather`` folder; else None (2017's tests keep
+    their per-day station files, and their copy of the whole-test file goes unread)."""
+    if os.path.isdir(os.path.join(test.base, test.aircraft + '_Weather')):
+        return None
+    path = os.path.join(test.base, test.aircraft + '_all_SWS_weather.csv')
+    return path if os.path.exists(path) else None
+
+
+def _whole_test_station_samples(path, run):
+    """(airtemp F, humidity %, pressure kPa) per station for ``run`` in a whole-test station
+    file: one row per run (``comb``), each station ``WSnn`` giving ``avgt``, ``avghumid`` and
+    ``avgpress``.  A blank or dead (-1000) station is left out."""
+    with _open_csv(path) as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            row = {(k or '').strip(): (v or '').strip() for k, v in row.items()}
+            if row.get('comb') != str(run):
+                continue
+            stations = sorted({k.split()[0] for k in row if k.endswith(' avgt')})
+            samples = []
+            for station in stations:
+                values = [_float_or_nan(row.get('{} {}'.format(station, name)))
+                          for name in ('avgt', 'avghumid', 'avgpress')]
+                if all(np.isfinite(values)) and values[0] > -100 and values[1] >= 0 and values[2] > 0:
+                    samples.append(tuple(values))
+            return samples
+    return []
+
+
 def run_atmosphere(test, run, fallback=None):
     """Atmosphere measured by the ground weather stations at the time of ``run``.
 
@@ -1272,13 +1383,12 @@ def run_atmosphere(test, run, fallback=None):
 
     The stations folder is ``<aircraft>_Ground_Stations`` for every aircraft
     but EC130B4, whose folder is ``EC130B4_Ground Stations``; both spellings
-    are read.
+    are read.  The 2019 test has no such folder: its stations' per-run means are
+    the whole-test ``<aircraft>_all_SWS_weather.csv`` (:func:`_whole_test_station_file`),
+    in the same units, averaged over its stations the same way.
     """
-    row = test.by_run.get(run)
-    try:
-        run_seconds = float(row.get('utc_secs_from_mid_start'))
-    except (TypeError, ValueError, AttributeError):
-        run_seconds = None
+    run_seconds = reference_seconds(test.by_run.get(run))
+    run_seconds = run_seconds if np.isfinite(run_seconds) else None
 
     samples = []
     for path in _weather_station_files(test, run):
@@ -1301,6 +1411,10 @@ def run_atmosphere(test, run, fallback=None):
         if temperature < -100 or humidity < 0 or pressure <= 0:
             continue
         samples.append((temperature, humidity, pressure))
+
+    whole_test = _whole_test_station_file(test)
+    if not samples and whole_test is not None:
+        samples = _whole_test_station_samples(whole_test, run)
 
     if not samples:
         if fallback is not None:
@@ -1594,7 +1708,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     row = test.by_run[run]
     input_signature = provenance.file_signature(run_input_files(test, run, gate_ambient, reference_sphere,
                                                                  ray_model))
-    track = load_track(test.track_path(run))
+    track = test.load_track(run)
     if nose_from_heading:
         # A hover's flight path angle is the direction of its drift, erratic at a few tenths
         # of a knot, so the steady-flight window would reject it: take the whole record.
@@ -1854,7 +1968,8 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
                    **{name: settings[name] for name in RECORDED_SETTINGS})
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)) or '.', exist_ok=True)
-    title = sphere_title(AIRCRAFT_SPHERE_PREFIX.get(test.aircraft, test.aircraft), row.get('run_num', run), run[:3])
+    title = sphere_title(AIRCRAFT_SPHERE_PREFIX.get(test.aircraft, test.aircraft), row.get('run_num', run), run[:3],
+                         year=test.year)
     spheres = [(output_path, hemisphere, title, 'bands_db')]
     part_paths = {}
     if tone_split:
@@ -1984,6 +2099,9 @@ def run_input_files(test, run, gate_ambient=True, reference_sphere=None, ray_mod
     for pattern in ('*FullRefList.csv', '*MicFullList.csv', '*StaticList.csv'):
         paths += glob.glob(os.path.join(test.base, pattern))
     paths += _weather_station_files(test, run)
+    whole_test = _whole_test_station_file(test)
+    if whole_test is not None:
+        paths.append(whole_test)
     if reference_sphere is not None:
         paths.append(os.fspath(reference_sphere))
     paths += [os.fspath(path) for path in getattr(ray_model, 'source_files', ())]
@@ -2175,19 +2293,19 @@ _WORKER = {}
 
 
 @functools.lru_cache(maxsize=None)
-def _open_test(aircraft, root):
+def _open_test(aircraft, root, track_datum='track'):
     """The :class:`NoiseAbatementTest` of ``aircraft`` at ``root``, opened once per
     process: a :func:`build_all` worker and the ray models it unpickles share it."""
-    return NoiseAbatementTest(aircraft, root=root)
+    return NoiseAbatementTest(aircraft, root=root, track_datum=track_datum)
 
 
-def _start_worker(aircraft, root, norah2_directory, ray_models, winds, kwargs, log_level, log_files):
+def _start_worker(aircraft, root, track_datum, norah2_directory, ray_models, winds, kwargs, log_level, log_files):
     """Initialize a :func:`build_all` worker process: its logging and its own
     :class:`NoiseAbatementTest`."""
     configure_logging(log_level=log_level)
     for path in log_files:
         _add_log_file(path)
-    _WORKER.update(test=_open_test(aircraft, root), norah2_directory=norah2_directory,
+    _WORKER.update(test=_open_test(aircraft, root, track_datum), norah2_directory=norah2_directory,
                    ray_models=ray_models, winds=winds, kwargs=kwargs)
 
 
@@ -2211,8 +2329,13 @@ def _check_picklable(jobs, **values):
 def build_all(aircraft, output_directory, *, root=None, runs=None,
               steady_only=True, reference_directory=None, sphere_prefix=None,
               manifest_path=None, prefetch=True, norah2_directory=None, ray_models=None, winds=None,
-              ray_profiles=None, skip_existing=False, skip_unchanged=False, jobs=1, **kwargs):
+              ray_profiles=None, skip_existing=False, skip_unchanged=False, jobs=1, track_datum='track', **kwargs):
     """Rebuild every usable run for one aircraft.
+
+    ``track_datum`` (:data:`TRACK_DATUMS`) is what the tracks' z is measured from
+    (:meth:`NoiseAbatementTest.load_track`): 'track' (default), the file's z; 'reference',
+    altitude less ``ref_elips_ft``, the microphones' datum, for a test whose tracks disagree
+    with it (Coyle Field, 2019).
 
     ``winds``, if given, is called with each run id and returns that run's ``wind`` for
     :func:`build_sphere` (see :func:`normalize_wind`), or None where the wind at the
@@ -2278,7 +2401,7 @@ def build_all(aircraft, output_directory, *, root=None, runs=None,
         raise ValueError('jobs must be at least 1, not {}'.format(jobs))
     if jobs > 1:
         _check_picklable(jobs, ray_models=ray_models, winds=winds, kwargs=kwargs)
-    test = NoiseAbatementTest(aircraft, root=root)
+    test = NoiseAbatementTest(aircraft, root=root, track_datum=track_datum)
     if ray_profiles is not None:
         if ray_models is not None:
             raise ValueError('give ray_models or ray_profiles, not both')
@@ -2355,7 +2478,7 @@ def build_all(aircraft, output_directory, *, root=None, runs=None,
         executor = ProcessPoolExecutor(
             max_workers=min(jobs, len(plans)), mp_context=multiprocessing.get_context('spawn'),
             initializer=_start_worker,
-            initargs=(aircraft, test.root, norah2_directory, ray_models, winds, kwargs,
+            initargs=(aircraft, test.root, test.track_datum, norah2_directory, ray_models, winds, kwargs,
                       logging.getLogger().getEffectiveLevel(), log_files))
         pool = ThreadPoolExecutor(max_workers=1) if prefetch else None
         try:
@@ -2427,7 +2550,7 @@ class _ProfileRayModels:
     def __getstate__(self):
         state = dict(self.__dict__)
         test = state.pop('test')
-        state['dataset'] = (test.aircraft, test.root)
+        state['dataset'] = (test.aircraft, test.root, test.track_datum)
         return state
 
     def __setstate__(self, state):
@@ -2445,7 +2568,7 @@ class _ProfileRayModels:
             return None
         tracer = local_paths.data_path('niceops_ray_geometry', self.executable)
         test = self._dataset()
-        bearing = frame_bearing_deg(test.by_run[run], load_track(test.track_path(run)))
+        bearing = frame_bearing_deg(test.by_run[run], test.load_track(run))
         return refracted_rays.external_ray_model(tracer, path, frame_bearing_deg=bearing,
                                                  refraction='stratified', receiver='plate',
                                                  length_units='ft')
@@ -2545,7 +2668,7 @@ def read_winds(path):
 
 
 def check_tracks(aircraft, *, root=None, runs=None, steady_only=True, hovers=False,
-                 max_array_range_ft=None, min_steady_duration_s=8.0, **thresholds):
+                 max_array_range_ft=None, min_steady_duration_s=8.0, track_datum='track', **thresholds):
     """Run :func:`check_track` over one aircraft's tracks without building anything.
 
     A dry pass: every run with a tracking file whose card is steady (:func:`is_steady_flight_card`,
@@ -2558,7 +2681,7 @@ def check_tracks(aircraft, *, root=None, runs=None, steady_only=True, hovers=Fal
     'no window' when :func:`steady_window` finds none), reasons (refusals, or the window's
     error), flags, and the check's metrics.
     """
-    test = NoiseAbatementTest(aircraft, root=root)
+    test = NoiseAbatementTest(aircraft, root=root, track_datum=track_datum)
     out = []
     for row in test.reference:
         run = row['combined']
@@ -2575,7 +2698,7 @@ def check_tracks(aircraft, *, root=None, runs=None, steady_only=True, hovers=Fal
             continue
         record = dict(run=run, condition=condition, status='ok', reasons='', flags='')
         try:
-            track = load_track(path)
+            track = test.load_track(run)
             if hover:
                 index_start, index_stop = 0, int(track['time'].size)
             else:

@@ -335,7 +335,7 @@ def test_profile_ray_models_trace_runs_with_a_profile_and_leave_the_rest_straigh
     test = type('Test', (), {})()
     test.by_run = {'285101': dict(true_heading='270'), '285102': dict(true_heading='270')}
     test.track_path = lambda run: run
-    monkeypatch.setattr(na, 'load_track', lambda path: {})
+    test.load_track = lambda run: {}
     seen = []
     monkeypatch.setattr(na.refracted_rays, 'external_ray_model',
                         lambda executable, path, **kwargs: seen.append((executable, path, kwargs)) or 'model')
@@ -354,13 +354,13 @@ def test_profile_ray_models_pickle_for_parallel_builds(tmp_path, monkeypatch):
     import pickle
     (tmp_path / '285101.csv').write_text('height,temperature\n')
     test = type('Test', (), {})()
-    test.aircraft, test.root = 'B407', str(tmp_path)
+    test.aircraft, test.root, test.track_datum = 'B407', str(tmp_path), 'track'
     test.by_run = {'285101': dict(true_heading='270')}
     test.track_path = lambda run: run
+    test.load_track = lambda run: {}
     opened = []
     monkeypatch.setattr(na, 'NoiseAbatementTest',
-                        lambda aircraft, root=None: opened.append((aircraft, root)) or test)
-    monkeypatch.setattr(na, 'load_track', lambda path: {})
+                        lambda aircraft, root=None, track_datum='track': opened.append((aircraft, root)) or test)
     monkeypatch.setattr(na.refracted_rays, 'external_ray_model', lambda executable, path, **kwargs: 'model')
     models = pickle.loads(pickle.dumps(
         na.profile_ray_models(test, str(tmp_path), executable=str(tmp_path / 'tracer'))))
@@ -370,7 +370,7 @@ def test_profile_ray_models_pickle_for_parallel_builds(tmp_path, monkeypatch):
 
 
 def test_build_all_takes_ray_models_or_ray_profiles_not_both(tmp_path, monkeypatch):
-    monkeypatch.setattr(na, 'NoiseAbatementTest', lambda aircraft, root=None: None)
+    monkeypatch.setattr(na, 'NoiseAbatementTest', lambda aircraft, root=None, track_datum='track': None)
     with pytest.raises(ValueError, match='not both'):
         na.build_all('B407', str(tmp_path), runs=[], ray_models=lambda run: None, ray_profiles=str(tmp_path))
 
