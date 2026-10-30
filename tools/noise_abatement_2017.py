@@ -250,6 +250,10 @@ def make_parser():
                         help='also write tonal and broadband part spheres, <name>_tonal.nc and '
                              '<name>_broadband.nc, in tonal/ and broadband/ under output_directory; '
                              'implies --tone-aware (default off)')
+    parser.add_argument('--steady-fallback', action='store_true',
+                        help='where the steady window, judged about the run\'s median nearest the array, '
+                             'finds none, take the longest stretch steady about its own condition on the '
+                             'card\'s climb or descent (the 2019 climb cards; default off)')
     parser.add_argument('--node-statistics', action='store_true',
                         help='also write N_SAMPLES and AMPLITUDE_STD (dB), the samples behind each '
                              'gridded node and their weighted level spread, to every sphere (default off)')
@@ -301,6 +305,7 @@ def build_options(args):
         node_statistics=args.node_statistics,
         sphere_frame=args.sphere_frame,
         track_datum=args.track_datum,
+        steady_fallback=args.steady_fallback,
         skip_existing=args.skip_existing, skip_unchanged=args.skip_unchanged, jobs=args.jobs)
 
 
@@ -364,7 +369,8 @@ def _run_command(parser, args, options):
                                  max_array_range_ft=options['max_array_range_ft'],
                                  min_steady_duration_s=options['min_steady_duration_s'],
                                  min_height_ft=options['min_height_above_array_ft'],
-                                 track_datum=options['track_datum'])
+                                 track_datum=options['track_datum'],
+                                 steady_fallback=options['steady_fallback'])
         for record in checks:
             record['aircraft'] = aircraft
             if record['status'] != 'ok':

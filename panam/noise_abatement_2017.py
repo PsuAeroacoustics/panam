@@ -56,6 +56,7 @@ variables.
 import contextlib
 import functools
 import os
+import collections
 import csv
 import glob
 import inspect
@@ -596,6 +597,104 @@ def steady_window(track, speed_tolerance_knots=4.0, fpa_tolerance_deg=2.0,
         raise ValueError('Steady segment is only {:.1f} s long (need {:.1f} s)'
                          .format(duration, min_duration_s))
     return best_start, best_stop
+
+
+#: The steady-window references :func:`find_steady_window` reports: the run's median over the half
+#: of the record nearest the array (:func:`steady_window`), or the window's own (the fallback).
+STEADY_REFERENCES = ('near half', 'own')
+
+
+def card_path_sign(row):
+    """The sign of the path a reference-list row's card flies: +1 climbing (a positive ``fpa``,
+    or a climb named by power, such as the 2019 cards' BROC, best rate of climb), -1
+    descending, 0 level, None when the card does not say (a blank or an approach procedure's
+    name)."""
+    text = (row.get('fpa') or '').strip().upper()
+    if text in ('BROC', 'MCP'):
+        return 1
+    try:
+        value = float(text)
+    except ValueError:
+        return None
+    return int(np.sign(value))
+
+
+def local_steady_window(track, speed_tolerance_knots=4.0, fpa_tolerance_deg=2.0,
+                        roll_tolerance_deg=5.0, turn_rate_tolerance_deg_s=1.5,
+                        min_duration_s=8.0, max_gap_s=2.0, path_sign=None):
+    """Longest stretch of ``track`` steady about a condition of its own.
+
+    :func:`steady_window` holds speed and flight path angle to a band about the run's median
+    over the half of the record nearest the array.  A card whose condition is flown away from
+    the array's middle has no window there: the 2019 S-76D climbs (C1, C2) dive to 80 ft before
+    the array, pull up and climb at +11 to +23 deg past it, so that half's median path angle
+    is a few degrees and the climb lies outside the band.  Here the band floats: the stretch's
+    speed and path angle each stay within a band of the same width (twice the tolerance) about
+    a value of the stretch's own, and the roll and turn-rate tests are :func:`steady_window`'s.
+    O(n), with monotonic deques for the running extremes.
+
+    A floating band also takes the run-in: the climbs' longest steady stretch is the shallow
+    descent before the pull-up.  ``path_sign`` (:func:`card_path_sign`) keeps the card's own:
+    +1 only samples climbing by more than the tolerance, -1 descending by more, 0 within twice
+    it of level.
+    """
+    speed = np.asarray(track['ground_speed_knots'], dtype=float)
+    fpa = np.asarray(track['fpa_deg'], dtype=float)
+    time = np.asarray(track['time'], dtype=float)
+    ok = np.isfinite(speed) & np.isfinite(fpa)
+    if path_sign is not None:
+        ok &= {1: fpa > fpa_tolerance_deg, -1: fpa < -fpa_tolerance_deg,
+               0: np.abs(fpa) <= 2.0 * fpa_tolerance_deg}[int(path_sign)]
+    if 'roll' in track:
+        ok &= np.abs(track['roll']) <= float(roll_tolerance_deg)
+    if 'heading' in track and track['heading'].size > 1:
+        heading = np.degrees(np.unwrap(np.radians(track['heading'])))
+        ok &= np.abs(np.gradient(heading, track['time'])) <= float(turn_rate_tolerance_deg_s)
+    ok = _close_short_gaps(ok, time, float(max_gap_s))
+    widths = (2.0 * float(speed_tolerance_knots), 2.0 * float(fpa_tolerance_deg))
+    best = (0.0, 0, 0)
+    for run_start, run_stop in zip(*_true_runs(ok)):
+        values = (speed[run_start:run_stop], fpa[run_start:run_stop])
+        lows, highs = ([collections.deque(), collections.deque()] for _ in range(2))
+        left = 0
+        for right in range(run_stop - run_start):
+            for v, low, high in zip(values, lows, highs):
+                while low and v[low[-1]] >= v[right]:
+                    low.pop()
+                low.append(right)
+                while high and v[high[-1]] <= v[right]:
+                    high.pop()
+                high.append(right)
+            while any(v[high[0]] - v[low[0]] > width for v, low, high, width in zip(values, lows, highs, widths)):
+                left += 1
+                for low, high in zip(lows, highs):
+                    if low[0] < left:
+                        low.popleft()
+                    if high[0] < left:
+                        high.popleft()
+            duration = time[run_start + right] - time[run_start + left]
+            if duration > best[0]:
+                best = (duration, run_start + left, run_start + right + 1)
+    if best[0] < min_duration_s:
+        raise ValueError('Steady segment is only {:.1f} s long about its own condition (need {:.1f} s)'
+                         .format(best[0], min_duration_s))
+    return best[1], best[2]
+
+
+def find_steady_window(track, *, local_fallback=False, min_duration_s=8.0, max_array_range=None,
+                       path_sign=None):
+    """``(index_start, index_stop, reference)``: :func:`steady_window`'s window, or with
+    ``local_fallback`` and none there, :func:`local_steady_window`'s on the card's
+    ``path_sign``; ``reference`` is the :data:`STEADY_REFERENCES` entry it was judged
+    against.  The fallback ignores ``max_array_range``, so the two are not combined."""
+    try:
+        start, stop = steady_window(track, max_array_range=max_array_range, min_duration_s=min_duration_s)
+        return start, stop, STEADY_REFERENCES[0]
+    except ValueError:
+        if not local_fallback or max_array_range is not None:
+            raise
+    start, stop = local_steady_window(track, min_duration_s=min_duration_s, path_sign=path_sign)
+    return start, stop, STEADY_REFERENCES[1]
 
 
 def flight_condition(track, index_start, index_stop):
@@ -1533,6 +1632,9 @@ def _sphere_settings(arguments):
     # out of the settings so that a default build keeps the hash it had before the option.
     if not settings.get('node_statistics', False):
         settings.pop('node_statistics', None)
+    # Likewise the steady-window fallback, which changes only runs that had no window.
+    if not settings.get('steady_fallback', False):
+        settings.pop('steady_fallback', None)
     # Whether an existing file may be replaced changes no level: a resumed build with
     # overwrite=False must still match the sphere a default build wrote.
     settings.pop('overwrite', None)
@@ -1554,7 +1656,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
                  azi_step=10.0, elv_step=10.0, rmax=25.0, point_stride=1,
                  min_elevation_deg=10.0, max_array_range_ft=None,
                  max_propagation_range_ft=2000.0, min_steady_duration_s=8.0,
-                 flip_y_for_geometry=False,
+                 steady_fallback=False, flip_y_for_geometry=False,
                  atmosphere=None, speed_of_sound_ft_s=None,
                  apply_absorption_deprop=True, overwrite=True, norah2_directory=None,
                  third_octave_method='fft', board_correction='plate_bem', ground=None,
@@ -1712,10 +1814,11 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
     if nose_from_heading:
         # A hover's flight path angle is the direction of its drift, erratic at a few tenths
         # of a knot, so the steady-flight window would reject it: take the whole record.
-        index_start, index_stop = 0, int(track['time'].size)
+        index_start, index_stop, steady_reference = 0, int(track['time'].size), 'whole record'
     else:
-        index_start, index_stop = steady_window(track, max_array_range=max_array_range_ft,
-                                                min_duration_s=min_steady_duration_s)
+        index_start, index_stop, steady_reference = find_steady_window(
+            track, local_fallback=steady_fallback, min_duration_s=min_steady_duration_s,
+            max_array_range=max_array_range_ft, path_sign=card_path_sign(row))
     speed_knots, fpa_deg = flight_condition(track, index_start, index_stop)
 
     if azimuth_reference is None:
@@ -1947,7 +2050,7 @@ def build_sphere(test, run, output_path, *, reference_sphere=None,
                    relative_humidity=atmosphere.relative_humidity,
                    pressure_kpa=atmosphere.pressure,
                    speed_of_sound_ft_s=speed_of_sound_ft_s,
-                   azimuth_reference=azimuth_reference,
+                   azimuth_reference=azimuth_reference, steady_reference=steady_reference,
                    track_flags='; '.join(check.flags) if check is not None else 'not checked',
                    min_height_above_array_ft=(check.metrics['min_height_above_array_ft']
                                               if check is not None else float('nan')),
@@ -2586,7 +2689,8 @@ def write_manifest(path, records, failures):
               'speed_knots', 'flight_path_angle_deg', 'window_s', 'window_points',
               'min_elevation_deg', 'max_array_range_ft', 'temperature_k',
               'relative_humidity', 'pressure_kpa', 'speed_of_sound_ft_s', 'board_correction',
-              'rays', 'interpolation', 'gaps', 'rim_range', 'azimuth_reference', 'track_flags',
+              'rays', 'interpolation', 'gaps', 'rim_range', 'azimuth_reference', 'steady_reference',
+              'track_flags',
               'min_height_above_array_ft', 'gross_weight_lb', 'air_density_kg_m3', 'air_density_source',
               'wind_source', 'wind_units', 'wind_along_track', 'wind_cross_track', 'airspeed_knots',
               *RECORDED_SETTINGS, 'panam_version', 'settings_sha256', 'error']
@@ -2668,7 +2772,8 @@ def read_winds(path):
 
 
 def check_tracks(aircraft, *, root=None, runs=None, steady_only=True, hovers=False,
-                 max_array_range_ft=None, min_steady_duration_s=8.0, track_datum='track', **thresholds):
+                 max_array_range_ft=None, min_steady_duration_s=8.0, track_datum='track',
+                 steady_fallback=False, **thresholds):
     """Run :func:`check_track` over one aircraft's tracks without building anything.
 
     A dry pass: every run with a tracking file whose card is steady (:func:`is_steady_flight_card`,
@@ -2702,8 +2807,9 @@ def check_tracks(aircraft, *, root=None, runs=None, steady_only=True, hovers=Fal
             if hover:
                 index_start, index_stop = 0, int(track['time'].size)
             else:
-                index_start, index_stop = steady_window(track, max_array_range=max_array_range_ft,
-                                                        min_duration_s=min_steady_duration_s)
+                index_start, index_stop, _ = find_steady_window(
+                    track, local_fallback=steady_fallback, min_duration_s=min_steady_duration_s,
+                    max_array_range=max_array_range_ft, path_sign=card_path_sign(row))
         except ValueError as error:
             record.update(status='no window', reasons=str(error))
             out.append(record)

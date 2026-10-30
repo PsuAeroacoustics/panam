@@ -53,6 +53,16 @@ same layout, with four differences the reader takes:
 `BAD_CHANNELS` leaves out of a run's microphones those its test's logs call bad. One entry is
 listed: day 176's microphone 33 ("BAD THROUGHOUT ALL RUNS").
 
+The climb cards (C1, C2: best rate of climb) dive to about 80 ft before the array, pull up and
+climb at +11 to +23 degrees past it. The steady window is judged against the median over the
+half of the record nearest the array, which there falls between the dive and the climb, so these
+runs have no window. `build_all(steady_fallback=True)` then takes the longest stretch steady
+about its own condition (`local_steady_window`): speed and path angle each within a band of the
+usual width, on the card's own climb or descent (`card_path_sign`). Runs that already have a
+window keep it, and a build without the option keeps its settings hash. The manifest's
+`steady_reference` says which window each sphere used. On the S-76D it adds 12 spheres: three
+climbs, steep descents down to -10.7 degrees, and short level runs.
+
 ### 2. Check the tracks
 
 ```sh

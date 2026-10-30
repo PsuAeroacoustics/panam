@@ -124,3 +124,58 @@ def test_a_channel_the_logs_call_bad_is_left_out_of_its_days_runs(tmp_path, monk
     assert test.ground_board_mics('197421') == []
     assert test.bad_channel('197421', 1) == 'test' and test.bad_channel('198421', 1) is None
     assert 'BAD THROUGHOUT' in test.bad_channel('176108', 33)
+
+
+def _climb_card_track(climb_fpa=(16.5, 19.5), climb_s=10.0, rate=50.0):
+    """A 2019 climb card: a 25 s shallow descent at 75 kt, then a climb at 70 kt whose path
+    angle drifts from climb_fpa[0] to climb_fpa[1] over climb_s, then 10 s level."""
+    parts = [(25.0, 75.0, np.full(int(25.0 * rate), -3.0)),
+             (climb_s, 70.0, np.linspace(*climb_fpa, int(climb_s * rate))),
+             (10.0, 72.0, np.full(int(10.0 * rate), 0.5))]
+    fpa = np.concatenate([p[2] for p in parts])
+    speed = np.concatenate([np.full(p[2].size, p[1]) for p in parts])
+    n = fpa.size
+    time = np.arange(n) / rate
+    return dict(time=time, ground_speed_knots=speed, fpa_deg=fpa, roll=np.zeros(n), heading=np.full(n, 30.0),
+                x=-3000.0 + np.cumsum(speed) * 1.68781 / rate, y=np.zeros(n), z=np.full(n, 200.0))
+
+
+def test_the_card_names_the_sign_of_its_path():
+    assert na.card_path_sign({'fpa': 'BROC'}) == 1
+    assert na.card_path_sign({'fpa': '6'}) == 1
+    assert na.card_path_sign({'fpa': '-7.5'}) == -1
+    assert na.card_path_sign({'fpa': '0'}) == 0
+    assert na.card_path_sign({'fpa': 'Fly Neighborly'}) is None
+    assert na.card_path_sign({'fpa': ''}) is None
+
+
+def test_the_own_condition_window_takes_the_cards_climb_not_the_run_in():
+    """Without the card's sign the floating band takes the longest steady stretch, the run-in;
+    with it, the climb, whose path angle drifts 3 deg, inside the band's 4."""
+    track = _climb_card_track()
+    start, stop = na.local_steady_window(track)
+    assert np.median(track['fpa_deg'][start:stop]) == pytest.approx(-3.0)
+    start, stop = na.local_steady_window(track, path_sign=1)
+    climb = track['fpa_deg'][start:stop]
+    assert climb.min() > 16.0 and track['time'][stop - 1] - track['time'][start] == pytest.approx(10.0, abs=0.05)
+
+
+def test_the_own_condition_window_holds_the_band_width():
+    """A climb whose path angle drifts 6 deg over 10 s holds the 4 deg band for under 8 s."""
+    track = _climb_card_track(climb_fpa=(15.0, 21.0))
+    with pytest.raises(ValueError, match='about its own condition'):
+        na.local_steady_window(track, path_sign=1)
+
+
+def test_the_fallback_is_taken_only_where_the_usual_window_fails(monkeypatch):
+    track = _climb_card_track()
+    usual = na.steady_window(track)
+    assert na.find_steady_window(track, local_fallback=True, path_sign=1) == (*usual, 'near half')
+
+    def no_window(*args, **kwargs):
+        raise ValueError('No steady flight segment found')
+    monkeypatch.setattr(na, 'steady_window', no_window)
+    with pytest.raises(ValueError, match='No steady'):
+        na.find_steady_window(track, path_sign=1)
+    start, stop, reference = na.find_steady_window(track, local_fallback=True, path_sign=1)
+    assert reference == 'own' and track['fpa_deg'][start:stop].min() > 16.0
