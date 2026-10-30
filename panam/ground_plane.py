@@ -244,7 +244,7 @@ def measured_board_transfer(test, run, pole, board, frame_s=0.5, snr_db=10.0,
     """
     from panam import noise_abatement_2017 as na
 
-    track = na.load_track(test.track_path(run))
+    track = test.load_track(run)
     air = na.run_atmosphere(test, run, fallback=fa.Atmosphere(
         temperature=288.15, pressure=101.325, relative_humidity=50.0))
     sound_speed = float(fa.unit_conversion.len_conv(air.soundspeed, from_units='m', to_units='ft'))

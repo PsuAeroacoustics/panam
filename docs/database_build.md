@@ -38,6 +38,31 @@ Their spheres are named with the legacy file prefix (`AIRCRAFT_SPHERE_PREFIX`: `
 `Be407220.nc`. Any other directory name is its own prefix (`build_all(sphere_prefix=...)`
 overrides it).
 
+The 2019 test (the S-76D at Coyle Field, directory `S76D`, sphere prefix `S-76D`) comes in the
+same layout, with four differences the reader takes:
+
+- The reference list's time column is `utc_secs_from_mid` (2017: `utc_secs_from_mid_start`).
+- The microphone list's heights are `Elips(m)` (2017: `Hgt(m)`); both are ellipsoidal heights.
+- There is no `S76D_Weather/`. The run's air comes from `S76D_all_SWS_weather.csv` beside the
+  reference list: four ground stations' per-run means of temperature (F), humidity (%) and
+  pressure (kPa).
+- In the tracks of days 176, 177, 178 and 197, z is 8.53 ft above `alt - ref_elips_ft`, the
+  microphones' datum (day 198's tracks are on it). Build with `--track-datum reference`
+  (`build_all(track_datum='reference')`), which takes z as `alt - ref_elips_ft`.
+
+`BAD_CHANNELS` leaves out of a run's microphones those its test's logs call bad. One entry is
+listed: day 176's microphone 33 ("BAD THROUGHOUT ALL RUNS").
+
+The climb cards (C1, C2: best rate of climb) dive to about 80 ft before the array, pull up and
+climb at +11 to +23 degrees past it. The steady window is judged against the median over the
+half of the record nearest the array, which there falls between the dive and the climb, so these
+runs have no window. `build_all(steady_fallback=True)` then takes the longest stretch steady
+about its own condition (`local_steady_window`): speed and path angle each within a band of the
+usual width, on the card's own climb or descent (`card_path_sign`). Runs that already have a
+window keep it, and a build without the option keeps its settings hash. The manifest's
+`steady_reference` says which window each sphere used. On the S-76D it adds 12 spheres: three
+climbs, steep descents down to -10.7 degrees, and short level runs.
+
 ### 2. Check the tracks
 
 ```sh
@@ -231,6 +256,7 @@ is not the same for every layout:
 | Amedee, hover (`AmedeeNoiseAbatStaticList.csv`) | 279 |
 | Eglin, flight (`EglinNoiseAbatMicFullList.csv`) | 140 |
 | Eglin, hover (`EglinNoiseAbatStaticList.csv`) | 92.3 |
+| Coyle Field (2019), flight (`CoyleNoiseAbatMicFullList.csv`) | 210 |
 
 `frame_bearing_deg` takes `true_heading`, and where the track allows it also fits the
 bearing from the track's latitude and longitude and refuses a disagreement of more than

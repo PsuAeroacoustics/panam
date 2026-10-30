@@ -569,6 +569,10 @@ class _PairTest:
     def track_path(self, run):
         return 'track.csv'
 
+    def load_track(self, run):
+        from panam import noise_abatement_2017 as na
+        return na.load_track(self.track_path(run))
+
 
 def _pass_track():
     # Level pass at 300 ft along x, overhead at 111 s.
