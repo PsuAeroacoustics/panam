@@ -45,6 +45,8 @@ Library modules, in `panam/`:
   `database.py` (`build_empirical_database`, `add_sphere_group`), `norah2.py`
   (`.hem` files, `build_database_from_norah2`), `lambert_plots.py`,
   `projection.py`, `array_design.py`, `tracks.py`, `ground_effect.py` (`ega`).
+- `uas_midstate.py`: reads the Mid-State UAS dataset's run files (`open_run`,
+  `list_runs`); the format is in `docs/file_formats.md`.
 - `noise_abatement_2017.py`: the 2017 flight-test build (`build_sphere`,
   `build_all`, track check, plate tables); its CLI is
   `tools/noise_abatement_2017.py`.

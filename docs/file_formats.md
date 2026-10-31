@@ -6,7 +6,8 @@ This page describes the files PANAM writes and reads at its boundaries:
   reads;
 - the NICEOPS database (`.nod`), which `build_empirical_database` and
   `build_database_from_norah2` write;
-- `vehicle.cfg`, which the user writes (`example_data/vehicle.cfg` is an example).
+- `vehicle.cfg`, which the user writes (`example_data/vehicle.cfg` is an example);
+- the Mid-State UAS run file (`.nc`), which `uas_midstate` reads.
 
 PANAM writes each sphere and database to a temporary file beside the output, named
 `.<name>.<pid>.tmp`, and moves it into place only when it is complete. A failed or interrupted
@@ -442,6 +443,24 @@ row, then one row per run:
 `read_vehicle_data` uses this section only when it is given the runs (`project_directory`,
 `fried_egg_plot`). It then takes the conditions from the workbook and not from
 `[Main Rotor]`. `build_empirical_database` ignores the section.
+
+## Mid-State UAS run file (`.nc`)
+
+One NetCDF-4 file per microphone-array recording of the PSU Mid-State multirotor flight tests (a Tarot X8
+octocopter in 2021, a hexacopter from 2022), at `runs/<date>/<recording>.nc` under the dataset root.
+`panam.uas_midstate` reads it (`open_run`, `list_runs`). Every time axis is in seconds after the root attribute
+`time_origin` (ISO 8601, UTC, with the recorder's clock corrected); positions are east, north, up (m) from the
+root attribute `site_origin`.
+
+| Group | Variables | Notes |
+|---|---|---|
+| `/` (attributes) | `run_id`, `date`, `vehicle`, `array_configuration`, `status`, `time_origin`, `site_origin`, `frame`, `runlog_*`, `daq_hour_offset`, `daq_offset_s`, `daq_offset_uncertainty_s`, `daq_offset_method`, `format_version`, `history` | `status`: `flight`, `ambient`, or why a recording is set apart |
+| `/acoustic` | `counts` (mic, sample) int32; `step` (mic) Pa; `mic`, `channel`, `mic_mount`, `survey_point`, `notes` (mic) strings; `mic_east`, `mic_north`, `mic_up`, `mic_ground_up`, `mic_height_above_ground`, `mic_lat`, `mic_lon` (mic) | **pressure (Pa) = counts × step**; sample `i` at `i / sample_rate` s. The counts are the recorder's integers, so the original float32 export is reproduced to within its own rounding. `mic` is the physical microphone (from its calibration step), `channel` the recorder's channel name |
+| `/vehicle/<topic>` | `time` and fields | PX4 at native rates: `position` (east, north, up m; lat, lon, alt AMSL), `velocity` (m/s), `attitude` (`q` body FRD to NED; roll, pitch, yaw rad), `angular_rate`, `motor_command` (0-1, or PWM µs on the X8), `thrust_setpoint`, `battery`, `air_data` |
+| `/rotors/motor<k>` | `time`, `speed` (rad/s, negative clockwise seen from above), `angle` (rad, where logged) | onboard logger, PX4 motor numbering; attribute `clock` gives its correction |
+| `/weather/<location>_<n>` | `time` and any of `temperature` (degC), `relative_humidity` (%), `pressure` (Pa), wind fields (m/s, degrees), `lat`, `lon` | `location` is `ground` or `onboard` (on the aircraft); attributes give the instrument, clock and source file |
+
+Missing groups mean the stream was not recorded for that run.
 
 ## How the contract is tested
 
