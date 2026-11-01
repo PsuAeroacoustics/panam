@@ -12,13 +12,18 @@ after the run's ``time_origin`` (UTC, with the recorder's clock corrected):
 ``/vehicle/<topic>``
     PX4 state at its own rates: ``position`` (east, north, up in m; lat, lon, alt AMSL), ``velocity``,
     ``attitude`` (quaternion, roll, pitch, yaw in rad), ``angular_rate``, ``motor_command``,
-    ``thrust_setpoint``, ``battery``, ``air_data``.
+    ``thrust_setpoint``, ``battery``, ``air_data``, ``status`` (arming and navigation state),
+    ``land_detector``.
 ``/rotors/motor<k>``
-    onboard rotor ``speed`` (rad/s, negative clockwise seen from above) and, where logged, ``angle`` (rad).
+    onboard rotor ``speed`` (rad/s, negative clockwise seen from above) and, where logged, ``angle`` (rad, the
+    motor controller's own zero; the group attribute ``prop_aligned_angle`` gives each motor's reported angle
+    with its prop along its arm, where that was measured).
 ``/weather/<location>_<n>``
     ground and aircraft-mounted ("onboard") weather, SI units, each group with its instrument and clock.
 
-The site frame is east, north, up (m) from the root attribute ``site_origin``. Lengths here are in m and speeds
+Each group's ``time`` is CF (``seconds since <time_origin>``), so xarray decodes it to datetimes unless opened
+with ``decode_times=False``; this module returns the seconds. The site frame is east, north, up (m) from the root
+attribute ``site_origin``. Lengths here are in m and speeds
 in m/s; :meth:`RunFile.track` converts to ft for :mod:`panam.order_tracking` and the 2017 pipeline.
 """
 import os
@@ -67,6 +72,15 @@ class RunFile:
                 walk(sub, f'{prefix}/{name}')
         walk(self._nc, '')
         return out
+
+    @property
+    def time_origin(self):
+        """UTC of acoustic sample 0 and of time 0 on every group's axis, as numpy datetime64 (ns)."""
+        return np.datetime64(self._nc.time_origin.replace('+00:00', ''), 'ns')
+
+    def utc(self, seconds):
+        """UTC (datetime64 ns) of times given in seconds after time_origin."""
+        return self.time_origin + (np.asarray(seconds, dtype=float) * 1e9).astype('timedelta64[ns]')
 
     @property
     def sample_rate(self):

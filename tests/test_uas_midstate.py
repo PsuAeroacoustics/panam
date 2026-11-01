@@ -74,6 +74,8 @@ def test_time_samples_and_track(tmp_path):
         assert run.rotors() == {} and run.weather() == {}
         assert run.attrs['run_id'] == '2023-06-08_TEST-1'
         assert '/vehicle/position' in run.groups
+        assert run.time_origin == np.datetime64('2023-06-08T14:00:00', 'ns')
+        assert run.utc(1.5) == np.datetime64('2023-06-08T14:00:01.5', 'ns')
 
 
 def test_list_runs(tmp_path):

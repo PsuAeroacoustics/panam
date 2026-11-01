@@ -449,15 +449,15 @@ row, then one row per run:
 One NetCDF-4 file per microphone-array recording of the PSU Mid-State multirotor flight tests (a Tarot X8
 octocopter in 2021, a hexacopter from 2022), at `runs/<date>/<recording>.nc` under the dataset root.
 `panam.uas_midstate` reads it (`open_run`, `list_runs`). Every time axis is in seconds after the root attribute
-`time_origin` (ISO 8601, UTC, with the recorder's clock corrected); positions are east, north, up (m) from the
-root attribute `site_origin`.
+`time_origin` (ISO 8601, UTC, with the recorder's clock corrected), with CF units `seconds since <time_origin>`;
+positions are east, north, up (m) from the root attribute `site_origin`.
 
 | Group | Variables | Notes |
 |---|---|---|
-| `/` (attributes) | `run_id`, `date`, `vehicle`, `array_configuration`, `status`, `time_origin`, `site_origin`, `frame`, `runlog_*`, `daq_hour_offset`, `daq_offset_s`, `daq_offset_uncertainty_s`, `daq_offset_method`, `format_version`, `history` | `status`: `flight`, `ambient`, or why a recording is set apart |
-| `/acoustic` | `counts` (mic, sample) int32; `step` (mic) Pa; `mic`, `channel`, `mic_mount`, `survey_point`, `notes` (mic) strings; `mic_east`, `mic_north`, `mic_up`, `mic_ground_up`, `mic_height_above_ground`, `mic_lat`, `mic_lon` (mic) | **pressure (Pa) = counts × step**; sample `i` at `i / sample_rate` s. The counts are the recorder's integers, so the original float32 export is reproduced to within its own rounding. `mic` is the physical microphone (from its calibration step), `channel` the recorder's channel name |
-| `/vehicle/<topic>` | `time` and fields | PX4 at native rates: `position` (east, north, up m; lat, lon, alt AMSL), `velocity` (m/s), `attitude` (`q` body FRD to NED; roll, pitch, yaw rad), `angular_rate`, `motor_command` (0-1, or PWM µs on the X8), `thrust_setpoint`, `battery`, `air_data` |
-| `/rotors/motor<k>` | `time`, `speed` (rad/s, negative clockwise seen from above), `angle` (rad, where logged) | onboard logger, PX4 motor numbering; attribute `clock` gives its correction |
+| `/` (attributes) | `run_id`, `date`, `vehicle`, `array_configuration`, `status`, `time_origin`, `site_origin`, `frame`, `runlog_*`, `daq_hour_offset`, `daq_hour_offset_source`, `daq_offset_s`, `daq_offset_uncertainty_s`, `daq_offset_method`, `clock_check_*`, `format_version`, `history`, `institution`, `project`, `creator_name`, `license`, `acknowledgment`, `references`, `keywords` | `status`: `flight`, `ambient`, or why a recording is set apart |
+| `/acoustic` | attributes `sample_rate`, `source_file`, `source_sha256`, `source_start_time` (the recorder's own label); `counts` (mic, sample) int32; `step` (mic) Pa; `mic`, `channel`, `mic_mount`, `survey_point`, `notes` (mic) strings; `mic_east`, `mic_north`, `mic_up`, `mic_ground_up`, `mic_height_above_ground`, `mic_lat`, `mic_lon` (mic) | **pressure (Pa) = counts × step**; sample `i` at `i / sample_rate` s. The counts are the recorder's integers, so the original float32 export is reproduced to within its own rounding. `mic` is the physical microphone (from its calibration step), `channel` the recorder's channel name |
+| `/vehicle/<topic>` | `time` and fields | PX4 at native rates: `position` (east, north, up m; lat, lon, alt AMSL), `velocity` (m/s), `attitude` (`q` body FRD to NED; roll, pitch, yaw rad), `angular_rate`, `motor_command` (0-1, or PWM µs on the X8), `thrust_setpoint`, `battery`, `air_data`, `status` (arming, navigation state), `land_detector` |
+| `/rotors/motor<k>` | `time`, `speed` (rad/s, negative clockwise seen from above), `angle` (rad, where logged) | onboard logger, PX4 motor numbering; group attributes: `clock` (its correction), `angle_definition`, `prop_aligned_angle` (per motor, the reported angle with the prop along its arm, where measured) |
 | `/weather/<location>_<n>` | `time` and any of `temperature` (degC), `relative_humidity` (%), `pressure` (Pa), wind fields (m/s, degrees), `lat`, `lon` | `location` is `ground` or `onboard` (on the aircraft); attributes give the instrument, clock and source file |
 
 Missing groups mean the stream was not recorded for that run.
