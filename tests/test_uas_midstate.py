@@ -24,7 +24,8 @@ def write_run(path, fs=1000.0, n=50):
             v = a.createVariable(name, str, ('mic',))
             for i, s in enumerate(vals):
                 v[i] = s
-        for name, vals in (('mic_east', [12.0, 12.0]), ('mic_north', [-28.0, -28.0]), ('mic_up', [-0.8, 0.6])):
+        for name, vals in (('mic_east', [12.0, 12.0]), ('mic_north', [-28.0, -28.0]), ('mic_up', [-0.8, 0.6]),
+                           ('mic_x', [30.0, 30.0]), ('mic_y', [1.0, 1.0]), ('mic_z', [-0.8, 0.6])):
             a.createVariable(name, 'f8', ('mic',))[:] = vals
         a.createVariable('step', 'f8', ('mic',))[:] = step
         a.createVariable('counts', 'i4', ('mic', 'sample'))[:] = counts
@@ -32,7 +33,8 @@ def write_run(path, fs=1000.0, n=50):
         p = v.createGroup('position')
         p.createDimension('time', 3)
         p.createVariable('time', 'f8', ('time',))[:] = [0.0, 0.5, 1.0]
-        for name, vals in (('east', [0.0, 3.048, 6.096]), ('north', [0.0, 0.0, 0.0]), ('up', [10.0, 10.0, 10.0])):
+        for name, vals in (('east', [0.0, 3.048, 6.096]), ('north', [0.0, 0.0, 0.0]), ('up', [10.0, 10.0, 10.0]),
+                           ('x', [0.0, -1.0, -2.0]), ('y', [0.0, 2.0, 4.0]), ('z', [10.0, 10.0, 10.0])):
             p.createVariable(name, 'f8', ('time',))[:] = vals
     return counts, step
 
@@ -71,7 +73,9 @@ def test_time_samples_and_track(tmp_path):
         assert run.samples(0.0105, 0.020) == (10, 20)
         tr = run.track('ft')
         np.testing.assert_allclose(tr['x'], [0.0, 10.0, 20.0])
-        assert run.rotors() == {} and run.weather() == {}
+        assert run.rotors() == {} and run.weather() == {} and run.air_data() == {}
+        np.testing.assert_allclose(run.track(frame='array')['y'], [0.0, 2.0, 4.0])
+        np.testing.assert_allclose(run.receiver('M13', frame='array'), [30.0, 1.0, 0.6])
         assert run.attrs['run_id'] == '2023-06-08_TEST-1'
         assert '/vehicle/position' in run.groups
         assert run.time_origin == np.datetime64('2023-06-08T14:00:00', 'ns')

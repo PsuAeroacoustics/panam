@@ -18,8 +18,14 @@ after the run's ``time_origin`` (UTC, with the recorder's clock corrected):
     onboard rotor ``speed`` (rad/s, negative clockwise seen from above) and, where logged, ``angle`` (rad, the
     motor controller's own zero; the group attribute ``prop_aligned_angle`` gives each motor's reported angle
     with its prop along its arm, where that was measured).
-``/weather/<location>_<n>``
-    ground and aircraft-mounted ("onboard") weather, SI units, each group with its instrument and clock.
+``/air_data``
+    the aircraft-mounted air data system: the instrument's own record (``wx150_<n>``, ``trisonica_<n>``) and
+    ``airspeed``, the calibrated airspeed and the wind derived from it, with the calibration in its attributes.
+``/weather/<instrument>_<n>``
+    ground weather stations, SI units, each group with its instrument and clock.
+
+Positions and velocities are given in the site frame (east, north, up from ``site_origin``) and in the array frame
+(``x`` along runway 16/34, ``y`` lateral to the left, ``z`` up; root attribute ``array_frame``).
 
 Each group's ``time`` is CF (``seconds since <time_origin>``), so xarray decodes it to datetimes unless opened
 with ``decode_times=False``; this module returns the seconds. The site frame is east, north, up (m) from the root
@@ -157,25 +163,39 @@ class RunFile:
         return {int(name[5:]): self._series(f'rotors/{name}') for name in self._nc['rotors'].groups}
 
     def weather(self):
-        """{group name: dict of arrays with its own time}; group attributes (location, instrument, clock) as '@name'."""
+        """Ground weather stations: {group name: dict of arrays with its own time}; attributes (location,
+        instrument, clock) as '@name'."""
         if 'weather' not in self._nc.groups:
             return {}
         return {name: self._series(f'weather/{name}') for name in self._nc['weather'].groups}
 
-    def track(self, units='m'):
-        """The vehicle's position as a track dict (``time`` s; ``x`` east, ``y`` north, ``z`` up) in m or ft, the
-        form :func:`panam.order_tracking.doppler_factor` takes."""
+    def air_data(self):
+        """The aircraft-mounted air data: the instrument's own record (``wx150_1``, ...) and the derived
+        ``airspeed`` group (calibrated airspeed, its body components, the air-relative velocity and the wind, in
+        m/s; attributes give the calibration). {} when the run had none."""
+        if 'air_data' not in self._nc.groups:
+            return {}
+        return {name: self._series(f'air_data/{name}') for name in self._nc['air_data'].groups}
+
+    _FRAMES = {'site': ('east', 'north', 'up'), 'array': ('x', 'y', 'z')}
+
+    def track(self, units='m', frame='site'):
+        """The vehicle's position as a track dict (``time`` s; ``x``, ``y``, ``z``) in m or ft, the form
+        :func:`panam.order_tracking.doppler_factor` takes. ``frame='site'``: east, north, up from the site origin;
+        ``frame='array'``: along runway 16/34, lateral (left), up (the root attribute ``array_frame``)."""
         p = self.vehicle('position')
         scale = {'m': 1.0, 'ft': M_TO_FT}[units]
+        cx, cy, cz = self._FRAMES[frame]
         t, keep = np.unique(p['time'], return_index=True)
-        return {'time': t, 'x': p['east'][keep] * scale, 'y': p['north'][keep] * scale, 'z': p['up'][keep] * scale}
+        return {'time': t, 'x': p[cx][keep] * scale, 'y': p[cy][keep] * scale, 'z': p[cz][keep] * scale}
 
-    def receiver(self, mic, units='m'):
-        """A microphone's (3,) position (east, north, up) in m or ft."""
+    def receiver(self, mic, units='m', frame='site'):
+        """A microphone's (3,) position in m or ft, in the site frame (east, north, up) or the array frame."""
         i = self.mic_index(mic)
         a = self._nc['acoustic']
         scale = {'m': 1.0, 'ft': M_TO_FT}[units]
-        return np.array([a['mic_east'][i], a['mic_north'][i], a['mic_up'][i]], dtype=float) * scale
+        cx, cy, cz = self._FRAMES[frame]
+        return np.array([a[f'mic_{cx}'][i], a[f'mic_{cy}'][i], a[f'mic_{cz}'][i]], dtype=float) * scale
 
 
 def open_run(path):
