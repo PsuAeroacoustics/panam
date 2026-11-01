@@ -24,6 +24,10 @@ after the run's ``time_origin`` (UTC, with the recorder's clock corrected):
 ``/weather/<instrument>_<n>``
     ground weather stations, SI units, each group with its instrument and clock.
 
+``/segments``
+    the flight's steady segments: passes, climbs, descents and hovers, with their conditions, the run log's nominal
+    height and speed, and each microphone's closest approach.
+
 Positions and velocities are given in the site frame (east, north, up from ``site_origin``) and in the array frame
 (``x`` along runway 16/34, ``y`` lateral to the left, ``z`` up; root attribute ``array_frame``).
 
@@ -176,6 +180,26 @@ class RunFile:
         if 'air_data' not in self._nc.groups:
             return {}
         return {name: self._series(f'air_data/{name}') for name in self._nc['air_data'].groups}
+
+    def segments(self):
+        """The steady segments of the flight (passes, climbs, descents, hovers): dict of per-segment arrays (``kind``,
+        ``start``/``end`` s after time_origin, ``direction``, ``ground_speed``, ``height``, ``airspeed``,
+        ``nominal_height_ft``, ...) and per segment and microphone (``closest_distance``, ``closest_time``,
+        ``closest_arrival``, with ``channel`` naming the columns). {} when the run has none."""
+        if 'segments' not in self._nc.groups:
+            return {}
+        g = self._nc['segments']
+        out = {}
+        for name, var in g.variables.items():
+            out[name] = np.array(var[:]) if var.dtype is str else np.array(var[:], dtype=float)
+        out.update({f'@{k}': g.getncattr(k) for k in g.ncattrs()})
+        return out
+
+    def segment_samples(self, index):
+        """Acoustic sample range [start, stop) of segment `index`'s steady portion (vehicle time; add the
+        propagation delay, e.g. ``closest_arrival - closest_time``, for what a microphone heard)."""
+        s = self.segments()
+        return self.samples(s['start'][index], s['end'][index])
 
     _FRAMES = {'site': ('east', 'north', 'up'), 'array': ('x', 'y', 'z')}
 

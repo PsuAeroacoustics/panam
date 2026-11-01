@@ -73,7 +73,7 @@ def test_time_samples_and_track(tmp_path):
         assert run.samples(0.0105, 0.020) == (10, 20)
         tr = run.track('ft')
         np.testing.assert_allclose(tr['x'], [0.0, 10.0, 20.0])
-        assert run.rotors() == {} and run.weather() == {} and run.air_data() == {}
+        assert run.rotors() == {} and run.weather() == {} and run.air_data() == {} and run.segments() == {}
         np.testing.assert_allclose(run.track(frame='array')['y'], [0.0, 2.0, 4.0])
         np.testing.assert_allclose(run.receiver('M13', frame='array'), [30.0, 1.0, 0.6])
         assert run.attrs['run_id'] == '2023-06-08_TEST-1'
@@ -89,3 +89,22 @@ def test_list_runs(tmp_path):
     write_run(d / 'A.nc')
     (d / '._A.nc').write_bytes(b'')
     assert [p.split('/')[-1] for p in um.list_runs(tmp_path)] == ['A.nc', 'B.nc']
+
+
+def test_segments(tmp_path):
+    path = tmp_path / 'run.nc'
+    write_run(path)
+    with netCDF4.Dataset(path, 'a') as nc:
+        g = nc.createGroup('segments')
+        g.createDimension('segment', 2)
+        g.createDimension('mic', 2)
+        k = g.createVariable('kind', str, ('segment',))
+        k[0], k[1] = 'pass', 'hover'
+        g.createVariable('start', 'f8', ('segment',))[:] = [0.010, 0.020]
+        g.createVariable('end', 'f8', ('segment',))[:] = [0.020, 0.040]
+        g.createVariable('closest_distance', 'f8', ('segment', 'mic'))[:] = [[2.0, 3.0], [5.0, 6.0]]
+    with um.open_run(path) as run:
+        s = run.segments()
+        assert list(s['kind']) == ['pass', 'hover']
+        assert s['closest_distance'].shape == (2, 2)
+        assert run.segment_samples(1) == (20, 40)
