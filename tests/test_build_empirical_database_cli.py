@@ -69,7 +69,8 @@ def test_every_option_maps_to_its_keyword(tmp_path):
         '--frequency-range', '50:5000', '--build-temperature', '280', '--build-pressure', '100',
         '--build-humidity', '50', '--no-spectrum', '--no-clamp-empty', '--sphere', 'a.nc',
         '--sphere', 'b.nc', '--exclude', 'c*.nc', '--absorption-band-method', 'arp5534',
-        '--merge-repeats', '--merge-speed-tolerance', '1.5', '--coherence', str(record_path)])
+        '--merge-repeats', '--merge-speed-tolerance', '1.5', '--coherence', str(record_path),
+        '--sphere-type', 'OB12'])
     options = script.build_options(args)
     coherence = options.pop('coherence')
     assert (coherence.scale_hz_deg, coherence.exponent, coherence.source) == (700.0, 1.8, 'cli')
@@ -81,7 +82,12 @@ def test_every_option_maps_to_its_keyword(tmp_path):
                            distance=500.0,
                            infreqs=(50.0, 5000.0), store_spectrum=False, clamp_empty_directions=False,
                            spheres=['a.nc', 'b.nc'], exclude=['c*.nc'], absorption_band_method='arp5534',
-                           merge_repeats=True, merge_speed_tolerance=1.5)
+                           merge_repeats=True, merge_speed_tolerance=1.5, sphere_type='OB12')
+
+
+def test_any_sphere_type_passes_none(tmp_path):
+    args = script.parse_arguments([str(tmp_path), str(tmp_path / 'db.nod'), '--sphere-type', 'any'])
+    assert script.build_options(args)['sphere_type'] is None
 
 
 def test_fixed_load_factor_passes_none(tmp_path):

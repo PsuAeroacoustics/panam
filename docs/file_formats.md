@@ -52,6 +52,8 @@ Attributes: `title`; `sphere_frame`, the frame `PHI` and `THETA` are filed in: `
 `level` (`build_sphere`'s; PANAM's, NICEOPS's and NORAH2's). A reader takes a sphere without it
 as `level`, with a warning ([THEORY §3.2](THEORY.md#32-directions)). And when known
 `azimuth_reference` (`track` or `heading`; a reader takes a sphere without it as `track`).
+PSU-WOPWOP's spheres also carry `sphere_type` (`BB`, `OB12`, `NB` or `PT`), which must agree
+with the AAM flags; a sphere without it is typed by the flags, and one with neither is `BB`.
 Every sphere also carries the [provenance stamp](#provenance-stamp).
 
 **Per-run metadata.** When `build_sphere` passes `run_metadata`, the file also carries

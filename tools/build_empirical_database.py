@@ -18,6 +18,7 @@ from panam import cli
 from panam import directional_coherence
 from panam import flight_acoustics
 from panam.geometry import SPHERE_FRAMES
+from panam.sphere_io import SPHERE_TYPES
 
 EPILOG = """\
 hover_correction, a callable that adds dB to the synthesized hover per direction
@@ -73,6 +74,10 @@ def make_parser():
     selection.add_argument('--exclude', action='append', default=None, metavar='PATTERN',
                            help='leave out spheres whose file name matches this name or shell pattern '
                                 '(e.g. "Be407285236.nc" or "*_hover*.nc"); repeat for each one')
+    selection.add_argument('--sphere-type', choices=SPHERE_TYPES + ('any',), default='BB',
+                           help='build from the spheres of this type and leave out the others, as a '
+                                'PSU-WOPWOP results folder holds every type it wrote; "any" takes every '
+                                'sphere, which must then be of one type (default %(default)s)')
     selection.add_argument('--merge-repeats', action='store_true',
                            help='energy-average spheres at the same speed and flight path angle into one '
                                 'condition (default: refuse them, since NICEOPS takes one sphere per '
@@ -178,6 +183,7 @@ def build_options(args):
         merge_repeats=args.merge_repeats,
         merge_speed_tolerance=args.merge_speed_tolerance,
         coherence=None if args.coherence is None else directional_coherence.load_coherence_record(args.coherence),
+        sphere_type=None if args.sphere_type == 'any' else args.sphere_type,
     )
     if args.fixed_load_factor:
         options['load_factors'] = None

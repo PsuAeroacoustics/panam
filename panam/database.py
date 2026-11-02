@@ -33,7 +33,8 @@ from panam.absorption import _band_attenuation_db
 from panam import sphere_statistics
 from panam.sphere_io import (AZIMUTH_REFERENCES, KNOT_MPS, load_nc_sphere, mask_missing_levels,
                              POUND_FORCE_NEWTONS, read_run_metadata, read_sphere_frame, _atomic_output,
-                             _read_azimuth_reference, _read_doppler_shift_removed, _read_scalar)
+                             _read_azimuth_reference, _read_doppler_shift_removed, _read_scalar,
+                             read_sphere_type, SPHERE_TYPES)
 
 
 #: On-disk format version written into every database as "database_version".
@@ -676,6 +677,33 @@ def _select_sphere_files(directory_name, spheres=None, exclude=None):
     return [f for f in candidates if f not in excluded], excluded
 
 
+def _select_sphere_type(file_list, sphere_type, named):
+    """The spheres of file_list that are of sphere_type (see :func:`build_empirical_database`).
+
+    named: the files were named by the caller, so one of another type is an error
+    rather than left out.
+    """
+    if sphere_type is not None and sphere_type not in SPHERE_TYPES:
+        raise ValueError('sphere_type must be one of {} or None, not {!r}'.format(SPHERE_TYPES, sphere_type))
+    kinds = {f: read_sphere_type(f) for f in file_list}
+    found = sorted(set(kinds.values()))
+    if sphere_type is None:
+        if len(found) > 1:
+            raise ValueError('a database is built from one sphere type, but these spheres are {}; '
+                             'choose one with sphere_type'.format(', '.join(found)))
+        return file_list
+    if named:
+        other = [f for f in file_list if kinds[f] != sphere_type]
+        if other:
+            raise ValueError('{} is a {} sphere, not {}'.format(
+                os.path.basename(other[0]), kinds[other[0]], sphere_type))
+    used = [f for f in file_list if kinds[f] == sphere_type]
+    if file_list and not used:
+        raise ValueError('no {} sphere among the {} sphere files (they are {}); choose a type with '
+                         'sphere_type'.format(sphere_type, len(file_list), ', '.join(found)))
+    return used
+
+
 def _sphere_condition(filename):
     """The (SPEED kt, FLIGHT_PATH_ANGLE deg) a sphere file records, NaN where unreadable."""
     with Dataset(filename, mode='r') as handle:
@@ -916,7 +944,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                              speed_reference='ground', doppler_shift_removed=None,
                              azimuth_reference=None, spheres=None, exclude=None,
                              absorption_band_method='center', merge_repeats=False,
-                             merge_speed_tolerance=0.0, sphere_frame=None, coherence=None):
+                             merge_speed_tolerance=0.0, sphere_frame=None, coherence=None, sphere_type='BB'):
     """Build a NICEOPS sphere database from a directory of sphere files.
 
     directory_name holds vehicle.cfg and, unless ``spheres`` says otherwise,
@@ -936,7 +964,12 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     directory_name, so the names :func:`noise_abatement_2017.select_from_manifest`
     returns can be passed as they are.  exclude, when given, is a list of file
     names or shell-style patterns (``fnmatch``, matched against the file name)
-    whose spheres are left out.  The root text attribute source_spheres always
+    whose spheres are left out.  sphere_type is the type of sphere built from
+    (:data:`sphere_io.SPHERE_TYPES`, read by :func:`sphere_io.read_sphere_type`):
+    the candidates of other types are left out, as a PSU-WOPWOP results folder
+    holds every type it was asked for, but a file ``spheres`` names must be of
+    it.  None takes every candidate, which must then share one type.  The root
+    text attribute source_spheres always
     records the file names used, one per line, sorted; with exclude,
     excluded_spheres records those left out.  Neither holds a directory.
 
@@ -1138,6 +1171,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     # Sorted, so group numbering and hover-sphere ties do not depend on the
     # order the filesystem happens to list the directory in.
     file_list, excluded = _select_sphere_files(directory_name, spheres, exclude)
+    file_list = _select_sphere_type(file_list, sphere_type, named=spheres is not None)
     if not file_list:
         raise ValueError('No sphere files found in ' + str(directory_name))
     if not merge_speed_tolerance >= 0.0:

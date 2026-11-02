@@ -185,6 +185,38 @@ def _sphere_frame_of(handle, name):
     return value
 
 
+#: The sphere types a results folder may hold: one-third octave bands (BB),
+#: 1/12-octave bands (OB12), narrow bands (NB) and pure tones (PT).
+SPHERE_TYPES = ('BB', 'OB12', 'NB', 'PT')
+
+#: AAM's type flag each type sets: OB12 and NB are both narrowband to AAM.
+_AAM_TYPE_FLAG = {'BB': 'BB', 'OB12': 'NB', 'NB': 'NB', 'PT': 'PT'}
+
+
+def read_sphere_type(filename):
+    """The type of a sphere file, one of :data:`SPHERE_TYPES`.
+
+    From its ``sphere_type`` attribute (PSU-WOPWOP's), else from AAM's BB, NB and
+    PT flags (NB=1 reads as NB: the flags do not tell OB12 from NB), else BB, as
+    every sphere PANAM measured is.  Refused: an unknown attribute, more than
+    one flag set, and an attribute its flags contradict.
+    """
+    with Dataset(filename, mode='r') as handle:
+        flags = [name for name in ('BB', 'NB', 'PT')
+                 if name in handle.variables and _read_scalar(handle, name) == 1.0]
+        if len(flags) > 1:
+            raise ValueError('{}: AAM type flags {} are all set; a sphere has one type'.format(
+                filename, ' and '.join(flags)))
+        if 'sphere_type' not in handle.ncattrs():
+            return flags[0] if flags else 'BB'
+        kind = str(handle.getncattr('sphere_type')).strip().upper()
+    if kind not in SPHERE_TYPES:
+        raise ValueError('{}: sphere_type must be one of {}, found {!r}'.format(filename, SPHERE_TYPES, kind))
+    if flags and flags[0] != _AAM_TYPE_FLAG[kind]:
+        raise ValueError('{}: sphere_type {} but the AAM type flag {} is set'.format(filename, kind, flags[0]))
+    return kind
+
+
 def _read_doppler_shift_removed(filename):
     """The DOPPLER_SHIFT_REMOVED flag a sphere file carries, or None if it has none.
 

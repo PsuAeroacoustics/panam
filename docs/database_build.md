@@ -182,6 +182,13 @@ leaves out runs whose track check raised a flag. `--sphere FILE` names spheres o
 instead, and `--exclude` takes shell patterns as well as names. The database's root attribute
 `source_spheres` lists the file names used, and `excluded_spheres` those `--exclude` left out.
 
+A database is built from spheres of one type. `--sphere-type` (default `BB`, one-third
+octave bands) takes the spheres of that type and leaves the others out, since a PSU-WOPWOP
+results folder holds a sphere of every type it was asked for (`BB`, `OB12`, `NB`, `PT`); a
+sphere named with `--sphere` must be of it. `--sphere-type any` takes every sphere and refuses
+a mix. A sphere's type is its `sphere_type` attribute, else AAM's `BB`/`NB`/`PT` flags (which
+read `OB12` as `NB`), else `BB` ([sphere files](file_formats.md)).
+
 NICEOPS takes one sphere per flight condition, so two spheres with the same speed and flight
 path angle are refused. `--merge-repeats` energy-averages such repeat runs into one condition
 instead (`sphere_statistics.average_spheres`), and `--merge-speed-tolerance KT` also merges
