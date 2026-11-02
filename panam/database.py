@@ -797,30 +797,39 @@ def _sphere_condition(filename):
         return _read_scalar(handle, 'SPEED'), _read_scalar(handle, 'FLIGHT_PATH_ANGLE')
 
 
-def _group_repeat_conditions(filenames, speed_tolerance_knots=0.0):
+def _group_repeat_conditions(filenames, speed_tolerance_knots=0.0, thrust_coefficients=None):
     """Group sphere files by flight condition, for :func:`build_empirical_database`.
 
     Two files share a condition when their FLIGHT_PATH_ANGLE agrees to 1e-9 deg
     and their SPEED agrees to 1e-9 kt, or lies within speed_tolerance_knots (kt)
     of the slowest file of the group.  Returns a list of tuples of file names,
     each in the order of ``filenames``, ordered by its first file, so that
-    files with no repeat give one 1-tuple each, in their own order.
+    files with no repeat give one 1-tuple each, in their own order.  With
+    ``thrust_coefficients`` ({file: C_T}, thrust_from='sphere'), files share a
+    condition only if their C_T agree to 1e-6 as well.
     """
     conditions = [_sphere_condition(f) for f in filenames]
+    ct = [None if thrust_coefficients is None else thrust_coefficients[f] for f in filenames]
     order = sorted(range(len(filenames)),
-                   key=lambda i: (round(conditions[i][1], 9), conditions[i][0], i))
+                   key=lambda i: (round(conditions[i][1], 9), 0.0 if ct[i] is None else ct[i], conditions[i][0], i))
     groups = []
     for i in order:
         speed, angle = conditions[i]
         if groups:
             first_speed, first_angle = conditions[groups[-1][0]]
-            if round(angle, 9) == round(first_angle, 9) and (
+            same_thrust = ct[i] is None or abs(ct[i] - ct[groups[-1][0]]) <= 1e-6 * abs(ct[i])
+            if round(angle, 9) == round(first_angle, 9) and same_thrust and (
                     round(speed, 9) == round(first_speed, 9)
                     or speed - first_speed <= speed_tolerance_knots):
                 groups[-1].append(i)
                 continue
         groups.append([i])
     return [tuple(filenames[i] for i in sorted(group)) for group in sorted(groups, key=min)]
+
+
+#: Where each condition's thrust coefficient comes from (build_empirical_database's thrust_from):
+#: the vehicle's nominal weight coefficient, or each sphere's run (a weight or density sweep).
+THRUST_SOURCES = ('vehicle', 'sphere')
 
 
 #: How the builder reads cells at a sphere's floor (build_empirical_database's floor_masking).
@@ -1177,7 +1186,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                              absorption_band_method='center', merge_repeats=False,
                              merge_speed_tolerance=0.0, sphere_frame=None, coherence=None, sphere_type='BB',
                              ignore_sphere_center=False, sphere_levels_lossless=None, floor_masking='auto',
-                             database_frame='level'):
+                             database_frame='level', thrust_from='vehicle'):
     """Build a NICEOPS sphere database from a directory of sphere files.
 
     directory_name holds the sphere files (every ``*.nc`` in it, unless ``spheres``
@@ -1417,6 +1426,22 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     settings['speed_reference'] = speed_reference
     if database_frame not in SPHERE_FRAMES:
         raise ValueError('database_frame must be one of {}, not {!r}'.format(SPHERE_FRAMES, database_frame))
+    if thrust_from not in THRUST_SOURCES:
+        raise ValueError('thrust_from must be one of {}, not {!r}'.format(THRUST_SOURCES, thrust_from))
+    # thrust_from='sphere': each sphere's own run's C_T, its condition's.
+    run_thrust = None
+    if thrust_from == 'sphere':
+        run_thrust = {}
+        for f in file_list:
+            run = read_run_metadata(f)
+            ct = run['gross_weight_lb'] * POUND_FORCE_NEWTONS / (
+                run['air_density_kg_m3'] * main_rotor_area * main_rotor_tip_speed ** 2)
+            if not np.isfinite(ct):
+                raise ValueError("{} records no GROSS_WEIGHT or AIR_DENSITY, which thrust_from='sphere' forms "
+                                 'its thrust coefficient from'.format(os.path.basename(f)))
+            run_thrust[f] = float(ct)
+        # One fixed law only while every run has one C_T.
+        fixed_load_factor = fixed_load_factor and np.ptp(list(run_thrust.values())) <= 1e-6 * max(run_thrust.values())
     _check_sphere_centers(file_list, ignore_sphere_center)
     (kind,) = {read_sphere_type(f) for f in file_list}
     if kind != 'BB' and absorption_band_method != 'center':
@@ -1440,7 +1465,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
         raise ValueError('merge_speed_tolerance applies to merge_repeats=True only')
     # One entry per condition to write: a tuple of the sphere files averaged into it.
     condition_files = _group_repeat_conditions(
-        file_list, merge_speed_tolerance if merge_repeats else 0.0)
+        file_list, merge_speed_tolerance if merge_repeats else 0.0, run_thrust)
     repeats = [files for files in condition_files if len(files) > 1]
     if repeats and not merge_repeats:
         speed, angle = _sphere_condition(repeats[0][0])
@@ -1483,7 +1508,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                              provenance=_provenance.build_provenance(
                                  'flight_acoustics.build_empirical_database', settings,
                                  inputs=inputs))
-        if not fixed_load_factor:
+        if load_factors is not None:
             ncdatabase.load_factors = np.asarray(load_factors, dtype=np.float64).ravel()
         if extended_flight_path_angles is not None:
             ncdatabase.extended_flight_path_angles_deg = np.asarray(
@@ -1617,7 +1642,9 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
             add_sphere_group(ncdatabase, condition.name, condition.phi, condition.theta,
                              condition.radius, condition.SPLA, condition.EAA,
                              condition.speed, condition.flight_path_angle, condition.load_factor,
-                             main_rotor_radius, main_rotor_tip_speed, weight_coefficient,
+                             main_rotor_radius, main_rotor_tip_speed,
+                             weight_coefficient if run_thrust is None
+                             else condition.run_metadata['thrust_coefficient_run'],
                              condition.frequency, condition.amplitude,
                              write_grid_and_frequency=not shared_grid_and_frequency,
                              doppler_shift_removed=doppler, coverage=condition.coverage,

@@ -22,7 +22,7 @@ from panam.nod_database import validate_nod
 
 import sphere_helpers
 
-NICEOPS = sphere_helpers.executable('niceops')
+NICEOPS, _ = sphere_helpers.niceops()
 FLOOR = -40.0
 PHI = np.arange(-180.0, 180.0 + 1e-9, 45.0)
 THETA = np.arange(0.0, 180.0 + 1e-9, 30.0)

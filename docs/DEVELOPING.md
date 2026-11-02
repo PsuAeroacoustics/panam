@@ -307,7 +307,11 @@ Tests that need something this machine may not have skip instead of failing:
 - `skipif` on `sphere_helpers.executable(...)`: the NICEOPS executables
   `niceops` and `niceops_ray_geometry`. `executable` looks in `local_paths`
   (`PANAM_NICEOPS`, `local_paths.toml`), then in the unprefixed environment
-  variable (`NICEOPS`, `NICEOPS_RAY_GEOMETRY`), then on `PATH`.
+  variable (`NICEOPS`, `NICEOPS_RAY_GEOMETRY`), then on `PATH`. The tests that
+  run `niceops` take it through `sphere_helpers.niceops()`, which also skips one
+  whose `--version` is not the NICEOPS commit in `tests/niceops_pin.txt`, the one
+  that reads what PANAM writes (a dirty build of it runs). Re-pin it when a NICEOPS
+  change and a PANAM change go together; `PANAM_NICEOPS_ANY_VERSION=1` runs any.
 - `skipif` on `example_data/AS350B3108.nc`: the bundled example sphere.
 - `importorskip('pyuff')` in the UFF loader tests.
 - `vold_kalman_filter` uses the optional `scikits.umfpack` in its sparse

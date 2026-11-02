@@ -112,6 +112,10 @@ def make_parser():
     parser.add_argument('--speed-reference', choices=flight_acoustics.SPEED_REFERENCES, default=None,
                         help='what the advance ratio and flight path angle are taken against (default: '
                              "what the spheres say, as PSU-WOPWOP's say air; else ground)")
+    parser.add_argument('--thrust-from', choices=('vehicle', 'sphere'), default='vehicle',
+                        help="each condition's thrust coefficient: vehicle, the nominal one of vehicle.cfg; or "
+                             "sphere, each sphere's run's own (GROSS_WEIGHT, AIR_DENSITY), for a weight or "
+                             'density sweep (default %(default)s)')
     parser.add_argument('--database-frame', choices=SPHERE_FRAMES, default='level',
                         help="the frame the database files its spheres in: level, pitching flight-path "
                              "spheres to it, or flight_path, keeping them in AAM's frame for a NICEOPS that "
@@ -201,6 +205,7 @@ def build_options(args):
         ignore_sphere_center=args.ignore_sphere_center,
         floor_masking=args.floor_masking,
         database_frame=args.database_frame,
+        thrust_from=args.thrust_from,
         sphere_levels_lossless=None if args.sphere_levels_lossless is None else args.sphere_levels_lossless == 'yes',
     )
     if args.fixed_load_factor:

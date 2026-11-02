@@ -217,6 +217,24 @@ flag `sphere_levels_lossless`, and NICEOPS absorbs it over the whole range from 
 of the two is refused; `--sphere-levels-lossless yes` declares other lossless spheres, such as
 AAM's own.
 
+Each condition is filed at the vehicle's weight coefficient (`vehicle.cfg`'s weight and density)
+by default, so spheres at one speed and flight path angle are one condition. A weight or density
+sweep (spheres of one vehicle at several gross weights or air densities, as PSU-WOPWOP's carry
+them) takes `--thrust-from sphere`: each sphere's condition is then its run's own thrust
+coefficient, `GROSS_WEIGHT` / (`AIR_DENSITY` π R² V_tip²), spheres at one speed and angle but
+different thrust coefficients are separate conditions, and `--merge-repeats` merges only runs at
+one thrust coefficient. Without `--load-factors` each condition is written once; the database is
+`fixed_load_factor` only while every run has the same thrust coefficient.
+
+`tools/aam_sphere_set.py FOLDER ...` checks a vehicle's spheres before AAM reads them: spheres
+of one AAM type on one grid (radius, angles, bands, PT tone count), whole-foot centers, at most
+ten centers a type, no two spheres at one condition whatever their weights, no OB12 and NB at
+one center, one PT phase convention and one NB bandwidth (errors), and the speed and flight path
+angle spacing, lower hemispheres off level flight and the sound speed (warnings). It prints the
+set sorted by vehicle, type and condition, and the values the deck needs: each type's centers in
+whole feet, the AUDIB bandwidth, and that the track is flown at AOA 0. `--merge OUT` copies
+several results folders into one, renumbering a file whose name is taken. It writes no deck.
+
 PSU-WOPWOP raises a sphere's empty cells to one floor level per file and records it
 (`floor_level_dB`). Those cells are read as no energy, as a missing (-999) cell is, so that
 NICEOPS drops them from its dB blends rather than blending a level nothing produced

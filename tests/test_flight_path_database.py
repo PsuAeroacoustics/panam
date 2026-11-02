@@ -117,7 +117,7 @@ def test_an_averaged_sphere_keeps_its_type_and_run(tmp_path):
 
 # ---- NICEOPS: the same footprint from either frame --------------------------------------------
 
-NICEOPS = sphere_helpers.executable('niceops')
+NICEOPS, NICEOPS_SKIP = sphere_helpers.niceops()
 
 
 def _descent_track(path, speed_kt=80.0, angle_deg=-6.0, seconds=60.0, step=0.5):
@@ -147,7 +147,7 @@ def _footprint(database, track, cwd, name):
     return np.array([[float(v) for v in row.split(',') if v.strip()] for row in rows if row.strip()])
 
 
-@pytest.mark.skipif(NICEOPS is None, reason='niceops not configured (local_paths: niceops)')
+@pytest.mark.skipif(NICEOPS is None, reason=NICEOPS_SKIP)
 def test_niceops_hears_the_same_descent_from_either_frame(tmp_path):
     directory = _folder(tmp_path / 'spheres')
     level = _build(directory, tmp_path / 'level.nod')

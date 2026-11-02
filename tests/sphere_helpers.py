@@ -7,6 +7,7 @@ another.
 
 import os
 import shutil
+import subprocess
 
 import numpy as np
 from netCDF4 import Dataset
@@ -20,6 +21,29 @@ def executable(name):
     local_paths.toml), then the variable <NAME>, then PATH."""
     return (local_paths.data_path(name, required=False) or os.environ.get(name.upper())
             or shutil.which(name))
+
+#: The NICEOPS commit these tests were last run against: one that reads what PANAM writes
+#: (tests/niceops_pin.txt; re-pinned as NICEOPS changes).
+with open(os.path.join(os.path.dirname(__file__), 'niceops_pin.txt')) as _pin:
+    NICEOPS_PIN = _pin.read().strip()
+
+
+def niceops():
+    """``(path, reason)``: the configured niceops when it reports the pinned commit
+    (``--version``; a dirty build of it too), else ``(None, why)`` for a test's skip.
+    PANAM_NICEOPS_ANY_VERSION=1 takes any version."""
+    path = executable('niceops')
+    if path is None:
+        return None, 'niceops not configured (local_paths: niceops)'
+    try:
+        version = subprocess.run([path, '--version'], capture_output=True, text=True, timeout=60).stdout.strip()
+    except OSError as error:
+        return None, 'niceops {} does not run: {}'.format(path, error)
+    if os.environ.get('PANAM_NICEOPS_ANY_VERSION') or version.split('-')[0].startswith(NICEOPS_PIN[:7]):
+        return path, ''
+    return None, ('niceops {} is NICEOPS {}, not the pinned {} (tests/niceops_pin.txt); '
+                  'PANAM_NICEOPS_ANY_VERSION=1 runs it anyway'.format(path, version or '(no version)', NICEOPS_PIN))
+
 
 #: A vehicle.cfg for directories of spheres (AS350-like rotors): example_data/vehicle.cfg.
 with open(os.path.join(os.path.dirname(__file__), os.pardir, 'example_data', 'vehicle.cfg')) as _cfg:

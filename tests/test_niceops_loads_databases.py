@@ -13,12 +13,12 @@ import pytest
 from netCDF4 import Dataset
 
 from panam import flight_acoustics as fa
-from sphere_helpers import executable, minimal_hemisphere, write_sphere_directory
+from sphere_helpers import minimal_hemisphere, niceops, write_sphere_directory
 
-NICEOPS = executable('niceops')
+NICEOPS, NICEOPS_SKIP = niceops()
 
 pytestmark = [
-    pytest.mark.skipif(NICEOPS is None, reason='niceops not configured (local_paths: niceops)'),
+    pytest.mark.skipif(NICEOPS is None, reason=NICEOPS_SKIP),
     pytest.mark.filterwarnings('ignore:.*carry no azimuth_reference:UserWarning'),
 ]
 

@@ -725,7 +725,8 @@ a time axis whose units are not `seconds since <time_origin>`.
 - `tests/test_niceops_loads_databases.py` runs NICEOPS's self-test on PANAM-built
   databases, with the default load factors, `load_factors=None` and
   `store_spectrum=False`. It also checks that NICEOPS's AAM export of a stored condition
-  is the source sphere. It skips when the `niceops` executable is not configured.
+  is the source sphere. It skips when the `niceops` executable is not configured, or is not
+  the NICEOPS commit `tests/niceops_pin.txt` pins.
 - `tests/test_database_provenance.py` pins the root attributes, the group variables, their
   types and dimensions, and the coverage of gated and fore/aft-averaged cells. It also
   checks that a default build differs from the older format only by the added items.
