@@ -931,6 +931,29 @@ def _check_sphere_centers(file_list, ignore_sphere_center):
                                  os.path.basename(filename), ', '.join('{:g}'.format(v) for v in center)))
 
 
+def _resolve_lossless(filenames, argument=None):
+    """Whether the spheres' levels carry no atmospheric absorption.
+
+    PSU-WOPWOP's spheres (air_density_source "wopwop") are lossless; PANAM's are
+    depropagated through the run's atmosphere, so absorbed inside the sphere.  A
+    mix is refused, and so is declaring WOPWOP's spheres absorbed (False);
+    True declares lossless spheres that do not say so, as AAM's own.
+    """
+    wopwop = [_air_density_source(f) == 'wopwop' for f in filenames]
+    if any(wopwop) and not all(wopwop):
+        raise ValueError('{} of {} spheres are PSU-WOPWOP\'s, whose levels are lossless, and the others '
+                         'are not; build a database from one kind'.format(sum(wopwop), len(wopwop)))
+    if all(wopwop) and argument is False:
+        raise ValueError("PSU-WOPWOP's spheres are lossless (no atmospheric absorption); "
+                         'sphere_levels_lossless=False would absorb them from the surface only')
+    return bool(argument) or all(wopwop)
+
+
+def _air_density_source(filename):
+    with Dataset(filename, mode='r') as handle:
+        return str(getattr(handle, 'air_density_source', '')).strip().lower()
+
+
 def _resolve_speed_reference(filenames, argument=None):
     """The speed_reference of a database: what its spheres' ``speed_reference`` says
     (PSU-WOPWOP's spheres say 'air'), an argument given agreeing; 'ground', PANAM's,
@@ -1099,7 +1122,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                              azimuth_reference=None, spheres=None, exclude=None,
                              absorption_band_method='center', merge_repeats=False,
                              merge_speed_tolerance=0.0, sphere_frame=None, coherence=None, sphere_type='BB',
-                             ignore_sphere_center=False):
+                             ignore_sphere_center=False, sphere_levels_lossless=None):
     """Build a NICEOPS sphere database from a directory of sphere files.
 
     directory_name holds the sphere files (every ``*.nc`` in it, unless ``spheres``
@@ -1330,6 +1353,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     weight_coefficient = vehicle['vehicle_weight_newtons'] / (
         vehicle['air_density_kg_m3'] * main_rotor_area * main_rotor_tip_speed ** 2)
     speed_reference = _resolve_speed_reference(file_list, speed_reference)
+    lossless = _resolve_lossless(file_list, sphere_levels_lossless)
     # Recorded as resolved, so a build that leaves it to the spheres has the settings of
     # one that names what they say.
     settings['speed_reference'] = speed_reference
@@ -1382,6 +1406,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                              main_rotor_tip_speed=main_rotor_tip_speed,
                              vehicle_weight_newtons=vehicle['vehicle_weight_newtons'],
                              band_type=BAND_TYPES[kind], prediction_radius=prediction_radius,
+                             sphere_levels_lossless=lossless,
                              azimuth_reference=azimuth,
                              # A fixed panam_tool value (docs/file_formats.md): it kept its name when the
                              # function moved here.
@@ -1520,7 +1545,8 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
 
 def _write_database_root(ncdatabase, *, fixed_load_factor, speed_reference, atmosphere,
                          main_rotor_radius, main_rotor_tip_speed, vehicle_weight_newtons,
-                         azimuth_reference, provenance=None, band_type=None, prediction_radius=None):
+                         azimuth_reference, provenance=None, band_type=None, prediction_radius=None,
+                         sphere_levels_lossless=False):
     """Write the root flags, build atmosphere and vehicle data every database carries.
 
     Shared by :func:`build_empirical_database` and :func:`norah2.build_database_from_norah2`.
@@ -1584,6 +1610,12 @@ def _write_database_root(ncdatabase, *, fixed_load_factor, speed_reference, atmo
     if prediction_radius is not None:
         ncdatabase.createVariable("prediction_radius_meters", 'f8')
         ncdatabase['prediction_radius_meters'][:] = float(prediction_radius)
+    # The spheres' levels carry no atmospheric absorption (PSU-WOPWOP's): NICEOPS
+    # absorbs over the whole range from the center, not from the sphere's surface.
+    # Left out otherwise, as every database before it.
+    if sphere_levels_lossless:
+        ncdatabase.createVariable("sphere_levels_lossless", 'b')
+        ncdatabase['sphere_levels_lossless'][:] = 1
     _provenance.write_provenance(ncdatabase, provenance)
 
 

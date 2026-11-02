@@ -204,6 +204,13 @@ sphere centered off the vehicle's origin (`XYZ` not zero) is refused, since a da
 one source at the origin; `--ignore-sphere-center` builds it as if centered there. Spheres other
 than one-third octave take `--absorption-band-method center` only.
 
+PSU-WOPWOP predicts its spheres in lossless air, where PANAM depropagates a measured sphere
+through the run's atmosphere, so that its levels already hold what the air absorbed inside the
+sphere. A database built from WOPWOP's spheres (`air_density_source = "wopwop"`) carries the root
+flag `sphere_levels_lossless`, and NICEOPS absorbs it over the whole range from the center. A mix
+of the two is refused; `--sphere-levels-lossless yes` declares other lossless spheres, such as
+AAM's own.
+
 NICEOPS takes one sphere per flight condition, so two spheres with the same speed and flight
 path angle are refused. `--merge-repeats` energy-averages such repeat runs into one condition
 instead (`sphere_statistics.average_spheres`), and `--merge-speed-tolerance KT` also merges
