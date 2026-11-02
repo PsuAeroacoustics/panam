@@ -109,9 +109,12 @@ def make_parser():
                         help='path of the sphere file the hover is synthesized from, relative to the '
                              'current directory, not SPHERE_DIRECTORY (default: the slowest sphere '
                              'within the level-flight tolerance)')
-    parser.add_argument('--speed-reference', choices=flight_acoustics.SPEED_REFERENCES, default='ground',
-                        help='what the advance ratio and flight path angle are taken against '
-                             '(default %(default)s)')
+    parser.add_argument('--speed-reference', choices=flight_acoustics.SPEED_REFERENCES, default=None,
+                        help='what the advance ratio and flight path angle are taken against (default: '
+                             "what the spheres say, as PSU-WOPWOP's say air; else ground)")
+    parser.add_argument('--ignore-sphere-center', action='store_true',
+                        help="build spheres centered off the vehicle's origin (XYZ) as if centered there "
+                             '(default: refuse them)')
     parser.add_argument('--azimuth-reference', choices=flight_acoustics.AZIMUTH_REFERENCES, default=None,
                         help="what the spheres' azimuth is measured from, for spheres that carry no "
                              "azimuth_reference (default: the spheres' own, else track)")
@@ -184,6 +187,7 @@ def build_options(args):
         merge_speed_tolerance=args.merge_speed_tolerance,
         coherence=None if args.coherence is None else directional_coherence.load_coherence_record(args.coherence),
         sphere_type=None if args.sphere_type == 'any' else args.sphere_type,
+        ignore_sphere_center=args.ignore_sphere_center,
     )
     if args.fixed_load_factor:
         options['load_factors'] = None

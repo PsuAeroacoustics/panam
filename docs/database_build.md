@@ -189,6 +189,21 @@ sphere named with `--sphere` must be of it. `--sphere-type any` takes every sphe
 a mix. A sphere's type is its `sphere_type` attribute, else AAM's `BB`/`NB`/`PT` flags (which
 read `OB12` as `NB`), else `BB` ([sphere files](file_formats.md)).
 
+The vehicle (main rotor radius and tip speed, and the nominal weight and air density the
+weight coefficient is formed with) comes from `vehicle.cfg`. Spheres that carry it,
+PSU-WOPWOP's (`MAIN_ROTOR_RADIUS`, `MAIN_ROTOR_TIP_SPEED`, `GROSS_WEIGHT`, `AIR_DENSITY`, each
+read in the units its `unit` attribute names), need none: the spheres must then agree on all
+four, so a weight or density sweep still takes its nominal values from `vehicle.cfg`. Where
+both give the main rotor (radius, tip speed, blades) they must agree to 0.1%.
+
+A PSU-WOPWOP sphere's labels reach the database: its `speed_reference` (`air`) is the
+database's unless `--speed-reference` contradicts it (refused), its `PREDICTION_RADIUS`
+becomes the root `prediction_radius_meters` (with a warning under 50 main rotor radii, short of
+the far field), and its type, content, tag, floor and sound speed become group attributes. A
+sphere centered off the vehicle's origin (`XYZ` not zero) is refused, since a database holds
+one source at the origin; `--ignore-sphere-center` builds it as if centered there. Spheres other
+than one-third octave take `--absorption-band-method center` only.
+
 NICEOPS takes one sphere per flight condition, so two spheres with the same speed and flight
 path angle are refused. `--merge-repeats` energy-averages such repeat runs into one condition
 instead (`sphere_statistics.average_spheres`), and `--merge-speed-tolerance KT` also merges

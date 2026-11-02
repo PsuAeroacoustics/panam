@@ -134,9 +134,10 @@ Variables:
 | `same_grid` (R) | byte | true |
 | `fixed_load_factor` | byte | true: each condition is stored once, at 1 g, and the reader scales it (`load_factors=None`) |
 | `database_version` | i4 | `DATABASE_FORMAT_VERSION` (1) |
-| `main_rotor_radius_meters` | f8 | from `vehicle.cfg`, m |
-| `main_rotor_tip_speed_meters_per_sec` | f8 | from `vehicle.cfg`, m/s |
-| `vehicle_weight_newtons` | f8 | `vehicle.cfg`'s weight × 9.80665, N |
+| `main_rotor_radius_meters` | f8 | from `vehicle.cfg`, else the spheres' `MAIN_ROTOR_RADIUS`, m |
+| `main_rotor_tip_speed_meters_per_sec` | f8 | from `vehicle.cfg`, else the spheres' `MAIN_ROTOR_TIP_SPEED`, m/s |
+| `vehicle_weight_newtons` | f8 | `vehicle.cfg`'s weight × 9.80665, else the spheres' common `GROSS_WEIGHT`, N |
+| `prediction_radius_meters` | f8 | when every sphere gives the same `PREDICTION_RADIUS` (PSU-WOPWOP's): the radius, m, the levels were predicted at |
 | `shared_grid_and_frequency` | byte | true when every group has the same `phi`, `theta` and `frequency` |
 | `phi`, `theta` | f8 (`channels`) | only when shared |
 | `frequency` | f8 (`frequency`) | only when shared and spectra are stored |
@@ -145,7 +146,8 @@ Attributes:
 
 | attribute | content |
 | --- | --- |
-| `speed_reference` | `ground` or `air`: what the advance ratio and flight path angle are taken against |
+| `speed_reference` | `ground` or `air`: what the advance ratio and flight path angle are taken against; by default the spheres' own (PSU-WOPWOP's say `air`), else `ground` |
+| `band_type` | the bands of the spheres: `third_octave` (BB), `twelfth_octave` (OB12), `narrowband` (NB) or `pure_tone` (PT) |
 | `azimuth_reference` | `track` or `heading` (see [the heading frame](database_build.md#the-heading-frame)); always written |
 | `sphere_frame` | `level`, always: flight-path spheres are pitched to level as they are read. NICEOPS refuses any other value |
 | `build_temperature_K`, `build_pressure_kPa`, `build_relative_humidity_percent` | the atmosphere the EAA was computed in (default 293.15 K, 101.325 kPa, 20%) |
@@ -260,7 +262,14 @@ source any run named in `wind_source`, and the first run's other text values) an
   but not the wind or `advance_ratio_air`, which describe a flight condition the hover is
   not.
 
-R and V_tip come from `vehicle.cfg`. A NORAH2 import writes none of these attributes.
+**Sphere labels.** A group built from a PSU-WOPWOP sphere also carries what it is labelled
+with, each only where the sphere gives it: `prediction_radius` (m), `floor_level` (dB, the
+level its empty cells were raised to), `speed_of_sound` (m s-1) and `nb_bandwidth` (Hz), each
+with its `<name>_units`, and the text attributes `sphere_type`, `content`, `source_tag` and,
+for a sphere built with `ignore_sphere_center`, `sphere_center_xyz_ft` (its `XYZ`).
+
+R and V_tip come from `vehicle.cfg`, or, without one, from the spheres' `MAIN_ROTOR_RADIUS`
+and `MAIN_ROTOR_TIP_SPEED` ([vehicle](database_build.md)). A NORAH2 import writes none of these attributes.
 Instead, each of its groups carries `norah2_source` and the file's constants as
 `norah2_<NAME>`. Its synthesized hover groups (`synthesize_hover`) also carry
 `condition_origin = 'synthesized_hover'`, with the source file's `norah2_source` and

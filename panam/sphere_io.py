@@ -185,6 +185,42 @@ def _sphere_frame_of(handle, name):
     return value
 
 
+#: The vehicle fields a sphere may carry (PSU-WOPWOP's): each name's key in
+#: :func:`read_sphere_vehicle` and the factor to SI of each unit its ``unit``
+#: attribute may name, the first being the one a field without it is taken in.
+SPHERE_VEHICLE_FIELDS = (
+    ('MAIN_ROTOR_RADIUS', 'main_rotor_radius_m', (('METER', 1.0), ('FEET', 0.3048))),
+    ('MAIN_ROTOR_TIP_SPEED', 'main_rotor_tip_speed_mps', (('M/S', 1.0), ('FT/S', 0.3048))),
+    ('MAIN_ROTOR_BLADES', 'main_rotor_blades', (('', 1.0),)),
+    ('GROSS_WEIGHT', 'gross_weight_newtons', (('POUNDS', POUND_FORCE_NEWTONS), ('NEWTON', 1.0))),
+    ('AIR_DENSITY', 'air_density_kg_m3', (('KG/M^3', 1.0),)),
+)
+
+
+def read_sphere_vehicle(filename):
+    """The vehicle fields of a sphere file (:data:`SPHERE_VEHICLE_FIELDS`) in SI units.
+
+    Returns {key: value}: the main rotor's radius (m), tip speed (m/s) and blade
+    count, and the run's gross weight (N) and air density (kg/m^3); NaN where the
+    file has none, as every sphere PANAM measured.  A unit it does not know is
+    refused.
+    """
+    out = {}
+    with Dataset(filename, mode='r') as handle:
+        for name, key, units in SPHERE_VEHICLE_FIELDS:
+            out[key] = float('nan')
+            if name not in handle.variables:
+                continue
+            variable = handle.variables[name]
+            unit = str(variable.getncattr('unit')).strip().upper() if 'unit' in variable.ncattrs() else units[0][0]
+            factors = dict(units)
+            if unit not in factors:
+                raise ValueError('{}: {} in unit {!r}; expected one of {}'.format(
+                    filename, name, unit, [u for u, _ in units]))
+            out[key] = _read_scalar(handle, name) * factors[unit]
+    return out
+
+
 #: The sphere types a results folder may hold: one-third octave bands (BB),
 #: 1/12-octave bands (OB12), narrow bands (NB) and pure tones (PT).
 SPHERE_TYPES = ('BB', 'OB12', 'NB', 'PT')

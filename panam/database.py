@@ -34,7 +34,7 @@ from panam import sphere_statistics
 from panam.sphere_io import (AZIMUTH_REFERENCES, KNOT_MPS, load_nc_sphere, mask_missing_levels,
                              POUND_FORCE_NEWTONS, read_run_metadata, read_sphere_frame, _atomic_output,
                              _read_azimuth_reference, _read_doppler_shift_removed, _read_scalar,
-                             read_sphere_type, SPHERE_TYPES)
+                             read_sphere_type, SPHERE_TYPES, read_sphere_vehicle, SPHERE_VEHICLE_FIELDS)
 
 
 #: On-disk format version written into every database as "database_version".
@@ -85,6 +85,28 @@ GROUP_RUN_METADATA_NUMBERS = (
 #: Per-group text attributes alongside them.
 GROUP_RUN_METADATA_TEXT = ('wind_source', 'wind_units', 'wind_reference_direction',
                            'air_density_source', 'source_sphere', 'condition_origin')
+
+
+#: Labels a PSU-WOPWOP sphere carries, written as group attributes only where the
+#: sphere gives them (:func:`sphere_labels`): each number with its units, written
+#: beside it as ``<name>_units``, and the text ones.  sphere_center_xyz_ft is the
+#: sphere's XYZ, recorded when it is off the origin (ignore_sphere_center).
+SPHERE_LABEL_NUMBERS = (
+    ('prediction_radius', 'm'),
+    ('floor_level', 'dB'),
+    ('speed_of_sound', 'm s-1'),
+    ('nb_bandwidth', 'Hz'),
+)
+SPHERE_LABEL_TEXT = ('sphere_type', 'content', 'source_tag', 'sphere_center_xyz_ft')
+
+
+#: The root band_type of a database built from each sphere type.
+BAND_TYPES = {'BB': 'third_octave', 'OB12': 'twelfth_octave', 'NB': 'narrowband', 'PT': 'pure_tone'}
+
+
+#: A prediction radius under this many main rotor radii is warned about: not yet the
+#: far field the database's 1/r spreading from the center assumes.
+FAR_FIELD_ROTOR_RADII = 50.0
 
 
 #: Values of a group's condition_origin.
@@ -677,6 +699,62 @@ def _select_sphere_files(directory_name, spheres=None, exclude=None):
     return [f for f in candidates if f not in excluded], excluded
 
 
+#: How closely (relative) vehicle.cfg and the spheres must agree on the main rotor.
+VEHICLE_AGREEMENT = 1e-3
+
+
+def _build_vehicle(directory_name, file_list):
+    """The vehicle a database is built for: main_rotor_radius_m, main_rotor_tip_speed_mps,
+    vehicle_weight_newtons and air_density_kg_m3 (the nominal weight coefficient's).
+
+    From directory_name's vehicle.cfg where there is one (:func:`read_vehicle_rotor_data`):
+    its weight and density are the nominal ones, a sphere's its run's.  Else from the
+    spheres' vehicle fields (:func:`sphere_io.read_sphere_vehicle`, PSU-WOPWOP's), which
+    must then all give the same rotor, weight and density.  Where both give the main rotor
+    (radius, tip speed, blades), they must agree to :data:`VEHICLE_AGREEMENT`.
+    """
+    names = {key: name for name, key, _ in SPHERE_VEHICLE_FIELDS}
+    per_sphere = [read_sphere_vehicle(f) for f in file_list]
+    cfg = os.path.join(os.path.abspath(os.path.expanduser(str(directory_name))), 'vehicle.cfg')
+    have_cfg = os.path.isfile(cfg)
+
+    def common(key, why, required=True):
+        """The value every sphere gives for key; None if none gives it."""
+        values = np.array([v[key] for v in per_sphere])
+        known = values[np.isfinite(values)]
+        if known.size == 0:
+            if have_cfg or not required:
+                return None
+            raise ValueError('no vehicle.cfg in {}, and the spheres give no {}'.format(directory_name, names[key]))
+        if (known.size < values.size and not have_cfg) or not np.allclose(known, known[0], rtol=1e-6, atol=0.0):
+            raise ValueError('the spheres give different {} ({:.6g} to {:.6g}, or none){}'.format(
+                names[key], known.min(), known.max(), why))
+        return float(known[0])
+
+    rotor = {key: common(key, ': spheres of one rotor only', required=key != 'main_rotor_blades')
+             for key in ('main_rotor_radius_m', 'main_rotor_tip_speed_mps', 'main_rotor_blades')}
+    if not have_cfg:
+        return dict(main_rotor_radius_m=rotor['main_rotor_radius_m'],
+                    main_rotor_tip_speed_mps=rotor['main_rotor_tip_speed_mps'],
+                    vehicle_weight_newtons=common('gross_weight_newtons',
+                                                  '; a weight sweep takes its nominal weight from vehicle.cfg'),
+                    air_density_kg_m3=common('air_density_kg_m3',
+                                             '; a density sweep takes its nominal density from vehicle.cfg'))
+    vehicle = read_vehicle_rotor_data(cfg)
+    config = ConfigParser()
+    config.read(cfg)
+    cfg_rotor = dict(main_rotor_radius_m=vehicle['main_rotor_radius_m'],
+                     main_rotor_tip_speed_mps=vehicle['main_rotor_tip_speed_mps'],
+                     main_rotor_blades=config.getfloat('Main Rotor', 'blades', fallback=None))
+    for key, value in rotor.items():
+        if value is not None and cfg_rotor[key] is not None and \
+                abs(value - cfg_rotor[key]) > VEHICLE_AGREEMENT * abs(cfg_rotor[key]):
+            raise ValueError("the spheres' {} {:.6g} differs from vehicle.cfg's {:.6g} ({})".format(
+                names[key], value, cfg_rotor[key], cfg))
+    return {key: vehicle[key] for key in ('main_rotor_radius_m', 'main_rotor_tip_speed_mps',
+                                          'vehicle_weight_newtons', 'air_density_kg_m3')}
+
+
 def _select_sphere_type(file_list, sphere_type, named):
     """The spheres of file_list that are of sphere_type (see :func:`build_empirical_database`).
 
@@ -798,7 +876,83 @@ def group_run_metadata(filename, main_rotor_area=None, main_rotor_tip_speed=None
     if condition_origin == 'synthesized_hover':
         out.update(wind_along_track=nan, wind_cross_track=nan, advance_ratio_air=nan,
                    wind_source='none', wind_units='', wind_reference_direction='')
+    out['sphere_labels'] = sphere_labels(filename)
     return out
+
+
+def sphere_labels(filename):
+    """The labels of :data:`SPHERE_LABEL_NUMBERS` and :data:`SPHERE_LABEL_TEXT` sphere
+    ``filename`` gives (PSU-WOPWOP's), as {name: value}; a label it lacks is left out.
+
+    PREDICTION_RADIUS is read in m (its unit METER or FEET), floor_level from
+    ``floor_level_dB``, speed_of_sound from ``speed_of_sound_m_s``, nb_bandwidth from
+    ``nb_bandwidth_Hz``; sphere_center_xyz_ft is XYZ as text where it is not zero.
+    """
+    out = {}
+    with Dataset(filename, mode='r') as handle:
+        if 'PREDICTION_RADIUS' in handle.variables:
+            variable = handle.variables['PREDICTION_RADIUS']
+            unit = str(getattr(variable, 'unit', 'METER')).strip().upper()
+            factors = {'METER': 1.0, 'FEET': 0.3048}
+            if unit not in factors:
+                raise ValueError('{}: PREDICTION_RADIUS in unit {!r}; expected METER or FEET'.format(filename, unit))
+            out['prediction_radius'] = _read_scalar(handle, 'PREDICTION_RADIUS') * factors[unit]
+        for name, attribute in (('floor_level', 'floor_level_dB'), ('speed_of_sound', 'speed_of_sound_m_s'),
+                                ('nb_bandwidth', 'nb_bandwidth_Hz')):
+            if attribute in handle.ncattrs():
+                out[name] = float(handle.getncattr(attribute))
+        for name in ('sphere_type', 'content', 'source_tag'):
+            if name in handle.ncattrs():
+                out[name] = str(handle.getncattr(name))
+        center = _sphere_center_ft(handle)
+        if center is not None and np.any(center != 0.0):
+            out['sphere_center_xyz_ft'] = ' '.join('{:g}'.format(v) for v in center)
+    return out
+
+
+def _sphere_center_ft(handle):
+    """An open sphere's XYZ (ft), or None if it has none."""
+    if 'XYZ' not in handle.variables:
+        return None
+    return np.asarray(np.ma.filled(np.ma.asarray(handle.variables['XYZ'][...], dtype=float), np.nan)).ravel()
+
+
+def _check_sphere_centers(file_list, ignore_sphere_center):
+    """Refuse a sphere centered off the vehicle's origin, unless ignore_sphere_center."""
+    if ignore_sphere_center:
+        return
+    for filename in file_list:
+        with Dataset(filename, mode='r') as handle:
+            center = _sphere_center_ft(handle)
+        if center is not None and np.any(center != 0.0):
+            raise ValueError('{} is centered at XYZ = {} ft, but a database holds one source at the '
+                             "vehicle's origin; pass ignore_sphere_center=True (--ignore-sphere-center) "
+                             'to build it as if centered there'.format(
+                                 os.path.basename(filename), ', '.join('{:g}'.format(v) for v in center)))
+
+
+def _resolve_speed_reference(filenames, argument=None):
+    """The speed_reference of a database: what its spheres' ``speed_reference`` says
+    (PSU-WOPWOP's spheres say 'air'), an argument given agreeing; 'ground', PANAM's,
+    where no sphere says.  Spheres that say different things are refused."""
+    if argument is not None and argument not in SPEED_REFERENCES:
+        raise ValueError('speed_reference must be one of {} or None, not {!r}'.format(
+            SPEED_REFERENCES, argument))
+    labelled = {}
+    for filename in filenames:
+        with Dataset(filename, mode='r') as handle:
+            if 'speed_reference' in handle.ncattrs():
+                labelled[filename] = str(handle.getncattr('speed_reference')).strip()
+    values = set(labelled.values())
+    if not values <= set(SPEED_REFERENCES) or len(values) > 1:
+        raise ValueError('the spheres give speed_reference {}; build from spheres of one'.format(sorted(values)))
+    if values and len(labelled) < len(filenames):
+        raise ValueError('{} of {} spheres give speed_reference; build from spheres that all do or '
+                         'none'.format(len(labelled), len(filenames)))
+    if values and argument is not None and argument not in values:
+        raise ValueError('the spheres give speed_reference {!r}, but the build was asked for {!r}'.format(
+            values.pop(), argument))
+    return values.pop() if values else (argument or 'ground')
 
 
 def _merged_run_metadata(rows):
@@ -941,14 +1095,17 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                              level_flight_tolerance=LEVEL_FLIGHT_TOLERANCE,
                              store_spectrum=True, clamp_empty_directions=True,
                              hover_correction=None, hover_source=None,
-                             speed_reference='ground', doppler_shift_removed=None,
+                             speed_reference=None, doppler_shift_removed=None,
                              azimuth_reference=None, spheres=None, exclude=None,
                              absorption_band_method='center', merge_repeats=False,
-                             merge_speed_tolerance=0.0, sphere_frame=None, coherence=None, sphere_type='BB'):
+                             merge_speed_tolerance=0.0, sphere_frame=None, coherence=None, sphere_type='BB',
+                             ignore_sphere_center=False):
     """Build a NICEOPS sphere database from a directory of sphere files.
 
-    directory_name holds vehicle.cfg and, unless ``spheres`` says otherwise,
-    the sphere files: every ``*.nc`` in it.  database_filename is the output,
+    directory_name holds the sphere files (every ``*.nc`` in it, unless ``spheres``
+    says otherwise) and vehicle.cfg, which spheres that carry the vehicle
+    (PSU-WOPWOP's MAIN_ROTOR_*, GROSS_WEIGHT and AIR_DENSITY) do not need; see
+    :func:`_build_vehicle`.  database_filename is the output,
     replaced if it exists.  distance is the propagation distance of the
     broadband EAA, m; infreqs, when given, is the (low, high) band range kept,
     Hz; level_flight_tolerance is in degrees of flight path angle.
@@ -1138,10 +1295,6 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
             [exclude] if isinstance(exclude, (str, os.PathLike)) else exclude))
     # TODO add reinterpolation flag
 
-    if speed_reference not in SPEED_REFERENCES:
-        raise ValueError('speed_reference must be one of {}, not {!r}'.format(
-            SPEED_REFERENCES, speed_reference))
-
     # None means "write the LF=1 reference only, let the reader scale it" --
     # see the docstring.  Every load-factor loop below iterates this instead
     # of the load_factors parameter directly, so add_sphere_group need not
@@ -1149,10 +1302,6 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     # thrust_coefficient == weight_coefficient, which is exactly the reference.
     fixed_load_factor = load_factors is None
     load_factors_to_write = (1.0,) if fixed_load_factor else load_factors
-
-    # Get vehicle attributes
-    (main_rotor_radius, main_rotor_area, main_rotor_tip_speed,
-     _, _, _, _, _, _, weight_coefficient, _, _, _, _) = read_vehicle_data(directory_name)
 
     def run_metadata(filenames, origin='measured'):
         return _merged_run_metadata([group_run_metadata(filename, main_rotor_area,
@@ -1174,6 +1323,32 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     file_list = _select_sphere_type(file_list, sphere_type, named=spheres is not None)
     if not file_list:
         raise ValueError('No sphere files found in ' + str(directory_name))
+    vehicle = _build_vehicle(directory_name, file_list)
+    main_rotor_radius = vehicle['main_rotor_radius_m']
+    main_rotor_tip_speed = vehicle['main_rotor_tip_speed_mps']
+    main_rotor_area = np.pi * main_rotor_radius ** 2
+    weight_coefficient = vehicle['vehicle_weight_newtons'] / (
+        vehicle['air_density_kg_m3'] * main_rotor_area * main_rotor_tip_speed ** 2)
+    speed_reference = _resolve_speed_reference(file_list, speed_reference)
+    # Recorded as resolved, so a build that leaves it to the spheres has the settings of
+    # one that names what they say.
+    settings['speed_reference'] = speed_reference
+    _check_sphere_centers(file_list, ignore_sphere_center)
+    (kind,) = {read_sphere_type(f) for f in file_list}
+    if kind != 'BB' and absorption_band_method != 'center':
+        raise ValueError("absorption_band_method {!r} is for one-third octave bands; {} spheres take "
+                         "'center'".format(absorption_band_method, kind))
+    prediction_radii = {sphere_labels(f).get('prediction_radius', np.nan) for f in file_list}
+    prediction_radius = prediction_radii.pop() if len(prediction_radii) == 1 else None
+    if prediction_radius is not None and not np.isfinite(prediction_radius):
+        prediction_radius = None
+    # 1e-6: a sphere's radii are single precision, and WOPWOP's default is 50 rotor radii exactly.
+    close = sorted(r for r in prediction_radii | {prediction_radius}
+                   if r is not None and r < FAR_FIELD_ROTOR_RADII * main_rotor_radius * (1.0 - 1e-6))
+    if close:
+        warnings.warn('PREDICTION_RADIUS {:g} m is {:.3g} main rotor radii, under {:g}: the spheres '
+                      'are not yet in the far field the database spreads them from'.format(
+                          close[0], close[0] / main_rotor_radius, FAR_FIELD_ROTOR_RADII))
     if not merge_speed_tolerance >= 0.0:
         raise ValueError('merge_speed_tolerance must be at least 0 kt, not {!r}'.format(
             merge_speed_tolerance))
@@ -1205,7 +1380,8 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                              speed_reference=speed_reference, atmosphere=atmosphere,
                              main_rotor_radius=main_rotor_radius,
                              main_rotor_tip_speed=main_rotor_tip_speed,
-                             vehicle_weight_newtons=read_vehicle_weight_newtons(directory_name),
+                             vehicle_weight_newtons=vehicle['vehicle_weight_newtons'],
+                             band_type=BAND_TYPES[kind], prediction_radius=prediction_radius,
                              azimuth_reference=azimuth,
                              # A fixed panam_tool value (docs/file_formats.md): it kept its name when the
                              # function moved here.
@@ -1344,7 +1520,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
 
 def _write_database_root(ncdatabase, *, fixed_load_factor, speed_reference, atmosphere,
                          main_rotor_radius, main_rotor_tip_speed, vehicle_weight_newtons,
-                         azimuth_reference, provenance=None):
+                         azimuth_reference, provenance=None, band_type=None, prediction_radius=None):
     """Write the root flags, build atmosphere and vehicle data every database carries.
 
     Shared by :func:`build_empirical_database` and :func:`norah2.build_database_from_norah2`.
@@ -1402,6 +1578,12 @@ def _write_database_root(ncdatabase, *, fixed_load_factor, speed_reference, atmo
     if vehicle_weight_newtons is not None:
         ncdatabase.createVariable("vehicle_weight_newtons", 'f8')
         ncdatabase['vehicle_weight_newtons'][:] = float(vehicle_weight_newtons)
+    # What the bands are (BAND_TYPES), and the radius, m, the spheres were predicted at.
+    if band_type is not None:
+        ncdatabase.band_type = band_type
+    if prediction_radius is not None:
+        ncdatabase.createVariable("prediction_radius_meters", 'f8')
+        ncdatabase['prediction_radius_meters'][:] = float(prediction_radius)
     _provenance.write_provenance(ncdatabase, provenance)
 
 
@@ -1577,3 +1759,11 @@ def add_sphere_group(ncdatabase, groupname, phi, theta, radius, SPLA, EAA, speed
             this_group.setncattr(name + '_units', str(run_metadata['wind_units']) if units is None else units)
         for name in GROUP_RUN_METADATA_TEXT:
             this_group.setncattr(name, str(run_metadata[name]))
+        labels = run_metadata.get('sphere_labels', {})
+        for name, units in SPHERE_LABEL_NUMBERS:
+            if name in labels:
+                this_group.setncattr(name, np.float64(labels[name]))
+                this_group.setncattr(name + '_units', units)
+        for name in SPHERE_LABEL_TEXT:
+            if name in labels:
+                this_group.setncattr(name, str(labels[name]))
