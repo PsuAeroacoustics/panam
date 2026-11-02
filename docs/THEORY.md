@@ -262,7 +262,11 @@ attribute `sphere_frame`.
   completion does (§7.5).
 - The 2017 build files its spheres level, so a database is built from them without a second
   resampling.
-- The database builder takes a flight-path sphere to level (`repitch_art_levels`). Each level
+- The database builder takes a flight-path sphere to level (`repitch_art_levels`) by default, or,
+  with `database_frame='flight_path'`, keeps it in the flight-path frame and records
+  `sphere_frame = flight_path` at the database's root, so that NICEOPS reads $\theta$ from the
+  velocity and the sphere is resampled once less (a level sphere off $\gamma = 0$ cannot be filed
+  there and is refused). Pitched to level, each level
   grid direction is pitched into the file's frame and read bilinearly in energy over its measured
   cells (§6.3). Where it lands beyond the file's own hemisphere (a band up to $|\gamma|$ wide
   along the horizon, ahead in a descent and aft in a climb), it takes the level of the nearest
@@ -981,10 +985,15 @@ level is copied to those angles at its own speed and every load factor, so that 
 covers steep states; the 2017 release's angles are in [`database_build.md`](database_build.md#the-2017-release-settings). The upper hemisphere, which no ground microphone sees, is completed by
 mirroring through the sphere's horizontal plane (the level frame of §3.2), $\phi' = 180^\circ - \phi$
 wrapped into $[-180^\circ, 180^\circ)$ (`mirror_phi_to_upper_surface`), and carries coverage 0.
+In a flight-path database the same operations act in the flight-path frame: the mirror plane
+contains the flight path, and a sphere copied to another flight path angle turns with the path
+(its directivity about the velocity is kept), where a level database keeps it about the
+horizon. A hover has no flight path, and NICEOPS reads it level either way.
 A full sphere (stored from $-180^\circ$ to $180^\circ$, its $180^\circ$ row a copy of $-180^\circ$, which
 the builder drops) needs no completion: its upper half is measured, with coverage 1.
 Database format version 1 marks files with the corrected mirror (an earlier `-phi` mirror reflected
-the lower hemisphere onto itself) and the energy-averaged hover with recomputed EAA.
+the lower hemisphere onto itself) and the energy-averaged hover with recomputed EAA. A database
+filed in the flight-path frame says so in its root `sphere_frame`; its version stays 1.
 
 ### 7.6 Pure tones and multirotor conditions
 

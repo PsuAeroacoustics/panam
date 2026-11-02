@@ -290,7 +290,7 @@ def extract_SPL(filename, infreqs=None, distance=1000,
 
 def _reduce_sphere_levels(amplitude, phi, theta, frequency, radius, speed, flight_path_angle,
                           infreqs, distance, atmosphere, absorption_band_method, sphere_frame='level',
-                          with_measured=False):
+                          with_measured=False, database_frame='level'):
     """:func:`extract_SPL` from levels already read, as :func:`load_nc_sphere` returns them.
 
     amplitude is dB (phi, theta, frequency), any sentinel or NaN read as no energy;
@@ -313,10 +313,14 @@ def _reduce_sphere_levels(amplitude, phi, theta, frequency, radius, speed, fligh
         frequency_index = (frequency >= infreqs[0]) & (frequency <= infreqs[1])
         amplitude = amplitude[:, :, frequency_index]
         frequency = frequency[frequency_index]
-    if sphere_frame == 'flight_path':
+    gamma = float(np.ravel(flight_path_angle)[0])
+    if sphere_frame == 'flight_path' and database_frame == 'level':
         # AAM's frame: pitched nose-up by the flight path angle (THEORY 3.2).
-        amplitude, measured = repitch_art_levels(amplitude, phi, theta, float(np.ravel(flight_path_angle)[0]))
+        amplitude, measured = repitch_art_levels(amplitude, phi, theta, gamma)
     else:
+        if sphere_frame == 'level' and database_frame == 'flight_path' and gamma != 0.0:
+            raise ValueError('a level sphere at a flight path angle of {:g} deg cannot be filed in a '
+                             "flight_path database; build it with database_frame='level'".format(gamma))
         measured = np.isfinite(amplitude)
     SPLO = power_to_db(np.sum(np.power(10.0, amplitude / 10.0), axis=2))
     # A-weighted OASPL and excess atmospheric attenuation
@@ -856,7 +860,8 @@ def _mask_floor(levels, floor):
 
 
 def _extract_condition_SPL(filenames, infreqs, distance, atmosphere, absorption_band_method,
-                           speed_tolerance_knots=0.0, sphere_frame='level', floor_masking='off'):
+                           speed_tolerance_knots=0.0, sphere_frame='level', floor_masking='off',
+                           database_frame='level'):
     """:func:`extract_SPL` for one condition: one sphere file, or the energy average of several.
 
     Several files are averaged by :func:`sphere_statistics.average_spheres`, a -999
@@ -872,7 +877,7 @@ def _extract_condition_SPL(filenames, infreqs, distance, atmosphere, absorption_
         amplitude, *rest = load_nc_sphere(filenames[0])
         return _reduce_sphere_levels(_mask_floor(amplitude, sphere_floor_db(filenames[0], floor_masking)), *rest,
                                      infreqs, distance, atmosphere, absorption_band_method, sphere_frame,
-                                     with_measured=True)
+                                     with_measured=True, database_frame=database_frame)
     spheres = []
     for filename in filenames:
         sphere = sphere_statistics.read_sphere(filename, 'no_data')
@@ -885,7 +890,7 @@ def _extract_condition_SPL(filenames, infreqs, distance, atmosphere, absorption_
         average['levels_db'], average['phi_deg'], average['theta_deg'], average['frequency_hz'],
         np.asarray(average['radius_ft']), np.asarray(average['speed_knots']),
         np.asarray(average['flight_path_angle_deg']), infreqs, distance, atmosphere,
-        absorption_band_method, sphere_frame, with_measured=True)
+        absorption_band_method, sphere_frame, with_measured=True, database_frame=database_frame)
 
 
 def group_run_metadata(filename, main_rotor_area=None, main_rotor_tip_speed=None,
@@ -1171,7 +1176,8 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                              azimuth_reference=None, spheres=None, exclude=None,
                              absorption_band_method='center', merge_repeats=False,
                              merge_speed_tolerance=0.0, sphere_frame=None, coherence=None, sphere_type='BB',
-                             ignore_sphere_center=False, sphere_levels_lossless=None, floor_masking='auto'):
+                             ignore_sphere_center=False, sphere_levels_lossless=None, floor_masking='auto',
+                             database_frame='level'):
     """Build a NICEOPS sphere database from a directory of sphere files.
 
     directory_name holds the sphere files (every ``*.nc`` in it, unless ``spheres``
@@ -1388,7 +1394,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                 ' and '.join(os.path.basename(f) for f in filenames), ', '.join(sorted(names))))
         return _extract_condition_SPL(filenames, infreqs, distance, atmosphere,
                                       absorption_band_method, merge_speed_tolerance, names.pop(),
-                                      floor_masking)
+                                      floor_masking, database_frame)
 
     # Sorted, so group numbering and hover-sphere ties do not depend on the
     # order the filesystem happens to list the directory in.
@@ -1409,6 +1415,8 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     # Recorded as resolved, so a build that leaves it to the spheres has the settings of
     # one that names what they say.
     settings['speed_reference'] = speed_reference
+    if database_frame not in SPHERE_FRAMES:
+        raise ValueError('database_frame must be one of {}, not {!r}'.format(SPHERE_FRAMES, database_frame))
     _check_sphere_centers(file_list, ignore_sphere_center)
     (kind,) = {read_sphere_type(f) for f in file_list}
     if kind != 'BB' and absorption_band_method != 'center':
@@ -1468,6 +1476,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                              vehicle_weight_newtons=vehicle['vehicle_weight_newtons'],
                              band_type=BAND_TYPES[kind], prediction_radius=prediction_radius,
                              sphere_levels_lossless=lossless, air_density=vehicle['air_density_kg_m3'],
+                             sphere_frame=database_frame,
                              azimuth_reference=azimuth,
                              # A fixed panam_tool value (docs/file_formats.md): it kept its name when the
                              # function moved here.
@@ -1625,7 +1634,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
 def _write_database_root(ncdatabase, *, fixed_load_factor, speed_reference, atmosphere,
                          main_rotor_radius, main_rotor_tip_speed, vehicle_weight_newtons,
                          azimuth_reference, provenance=None, band_type=None, prediction_radius=None,
-                         sphere_levels_lossless=False, air_density=None):
+                         sphere_levels_lossless=False, air_density=None, sphere_frame='level'):
     """Write the root flags, build atmosphere and vehicle data every database carries.
 
     Shared by :func:`build_empirical_database` and :func:`norah2.build_database_from_norah2`.
@@ -1662,8 +1671,11 @@ def _write_database_root(ncdatabase, *, fixed_load_factor, speed_reference, atmo
     # reference unit, as Atmosphere is written), relative humidity in percent.
     ncdatabase.speed_reference = speed_reference
     ncdatabase.azimuth_reference = azimuth_reference
-    # Every database is level: AAM's flight-path spheres are pitched to it as they are read.
-    ncdatabase.sphere_frame = 'level'
+    # The frame the spheres are filed in: level (AAM's flight-path spheres pitched to it as
+    # they are read), or flight_path (kept in it, build_empirical_database's database_frame).
+    if sphere_frame not in SPHERE_FRAMES:
+        raise ValueError('sphere_frame must be one of {}, not {!r}'.format(SPHERE_FRAMES, sphere_frame))
+    ncdatabase.sphere_frame = sphere_frame
     ncdatabase.build_temperature_K = float(atmosphere.temperature)
     ncdatabase.build_pressure_kPa = float(atmosphere.pressure)
     ncdatabase.build_relative_humidity_percent = float(atmosphere.relative_humidity)

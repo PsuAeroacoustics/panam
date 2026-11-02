@@ -132,18 +132,23 @@ def read_run_metadata(filename):
     these existed), the text attributes ('' when absent) and ``azimuth_reference`` (None
     when absent).
     """
+    with Dataset(filename, mode='r') as handle:
+        return _run_metadata_of(handle)
+
+
+def _run_metadata_of(handle):
+    """:func:`read_run_metadata` of an open sphere ``handle``."""
     out = _empty_run_metadata()
     out['azimuth_reference'] = None
-    with Dataset(filename, mode='r') as handle:
-        for name, _, key in RUN_METADATA_VARIABLES:
-            if name in handle.variables:
-                value = _filled(handle.variables[name])
-                out[key] = float(np.ravel(value)[0])
-        for name in RUN_METADATA_ATTRIBUTES:
-            if name in handle.ncattrs():
-                out[name] = str(handle.getncattr(name))
-        if 'azimuth_reference' in handle.ncattrs():
-            out['azimuth_reference'] = str(handle.getncattr('azimuth_reference'))
+    for name, _, key in RUN_METADATA_VARIABLES:
+        if name in handle.variables:
+            value = _filled(handle.variables[name])
+            out[key] = float(np.ravel(value)[0])
+    for name in RUN_METADATA_ATTRIBUTES:
+        if name in handle.ncattrs():
+            out[name] = str(handle.getncattr(name))
+    if 'azimuth_reference' in handle.ncattrs():
+        out['azimuth_reference'] = str(handle.getncattr('azimuth_reference'))
     return out
 
 
@@ -238,14 +243,19 @@ def read_sphere_type(filename):
     one flag set, and an attribute its flags contradict.
     """
     with Dataset(filename, mode='r') as handle:
-        flags = [name for name in ('BB', 'NB', 'PT')
-                 if name in handle.variables and _read_scalar(handle, name) == 1.0]
-        if len(flags) > 1:
-            raise ValueError('{}: AAM type flags {} are all set; a sphere has one type'.format(
-                filename, ' and '.join(flags)))
-        if 'sphere_type' not in handle.ncattrs():
-            return flags[0] if flags else 'BB'
-        kind = str(handle.getncattr('sphere_type')).strip().upper()
+        return _sphere_type_of(handle, filename)
+
+
+def _sphere_type_of(handle, filename):
+    """:func:`read_sphere_type` of an open sphere ``handle``; ``filename`` labels errors."""
+    flags = [name for name in ('BB', 'NB', 'PT')
+             if name in handle.variables and _read_scalar(handle, name) == 1.0]
+    if len(flags) > 1:
+        raise ValueError('{}: AAM type flags {} are all set; a sphere has one type'.format(
+            filename, ' and '.join(flags)))
+    if 'sphere_type' not in handle.ncattrs():
+        return flags[0] if flags else 'BB'
+    kind = str(handle.getncattr('sphere_type')).strip().upper()
     if kind not in SPHERE_TYPES:
         raise ValueError('{}: sphere_type must be one of {}, found {!r}'.format(filename, SPHERE_TYPES, kind))
     if flags and flags[0] != _AAM_TYPE_FLAG[kind]:
@@ -421,6 +431,7 @@ def write_aam_hemisphere_netcdf(
         overwrite: bool = True,
         azimuth_reference: Optional[str] = None,
         sphere_frame: str = 'flight_path',
+        sphere_type: Optional[str] = None,
         run_metadata: Optional[dict] = None,
         art_levels=None,
         extra_variables: Optional[dict] = None,
@@ -487,6 +498,8 @@ def write_aam_hemisphere_netcdf(
             ``sphere_frame``: 'flight_path' (default; AAM's, see above) or 'level'
             (PANAM's own, for spheres a database is built from, which then are not
             resampled twice).  With ``art_levels`` the levels must already be in it.
+        sphere_type: the sphere's type (:data:`SPHERE_TYPES`), written as the text
+            attribute ``sphere_type`` beside the BB/NB/PT flags; None writes nothing.
         run_metadata: optional dict describing the run the sphere was built
             from, written as the scalar variables of :data:`RUN_METADATA_VARIABLES`
             (left out where a key is absent, None or NaN, which
@@ -717,6 +730,8 @@ def write_aam_hemisphere_netcdf(
 
         ds.title = title if title is not None else 'AAM/RNM acoustic hemisphere'
         ds.sphere_frame = sphere_frame
+        if sphere_type is not None:
+            ds.sphere_type = sphere_type
         if azimuth_reference is not None:
             ds.azimuth_reference = azimuth_reference
         if metadata is not None:

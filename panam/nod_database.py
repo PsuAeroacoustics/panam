@@ -31,7 +31,7 @@ from netCDF4 import Dataset
 from panam import provenance
 from panam.acoustics.plotting import acoustic_plot_style
 from panam.spectra import power_to_db
-from panam.geometry import art2umapr
+from panam.geometry import art2umapr, SPHERE_FRAMES
 from panam.sphere_io import AZIMUTH_REFERENCES, band_index, KNOT_MPS
 from panam.database import DATABASE_FORMAT_VERSION, SPEED_REFERENCES
 from panam.directional_coherence import ROTATIONS
@@ -371,7 +371,8 @@ def validate_nod(path):
         if version is not None and (not float(version).is_integer() or not 0 <= version <= top):
             violate('C1', None, f'database_version {version} is not an integer from 0 to {top}')
         for attribute, allowed in (('speed_reference', SPEED_REFERENCES),
-                                   ('azimuth_reference', AZIMUTH_REFERENCES)):
+                                   ('azimuth_reference', AZIMUTH_REFERENCES),
+                                   ('sphere_frame', SPHERE_FRAMES)):
             if attribute in attributes and attributes[attribute] not in allowed:
                 violate('C2', None, f'{attribute} {attributes[attribute]!r} is not one of {allowed}')
         shared = bool(root.get('shared_grid_and_frequency', False))

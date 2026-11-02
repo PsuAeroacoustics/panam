@@ -112,6 +112,10 @@ def make_parser():
     parser.add_argument('--speed-reference', choices=flight_acoustics.SPEED_REFERENCES, default=None,
                         help='what the advance ratio and flight path angle are taken against (default: '
                              "what the spheres say, as PSU-WOPWOP's say air; else ground)")
+    parser.add_argument('--database-frame', choices=SPHERE_FRAMES, default='level',
+                        help="the frame the database files its spheres in: level, pitching flight-path "
+                             "spheres to it, or flight_path, keeping them in AAM's frame for a NICEOPS that "
+                             'reads it (default %(default)s)')
     parser.add_argument('--floor-masking', choices=('auto', 'minimum', 'off'), default='auto',
                         help="how cells at a sphere's floor are read: auto, as no energy where the sphere "
                              "records its floor (PSU-WOPWOP's floor_level_dB); minimum, taking each "
@@ -196,6 +200,7 @@ def build_options(args):
         sphere_type=None if args.sphere_type == 'any' else args.sphere_type,
         ignore_sphere_center=args.ignore_sphere_center,
         floor_masking=args.floor_masking,
+        database_frame=args.database_frame,
         sphere_levels_lossless=None if args.sphere_levels_lossless is None else args.sphere_levels_lossless == 'yes',
     )
     if args.fixed_load_factor:

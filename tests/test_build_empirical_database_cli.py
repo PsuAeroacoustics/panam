@@ -71,7 +71,7 @@ def test_every_option_maps_to_its_keyword(tmp_path):
         '--sphere', 'b.nc', '--exclude', 'c*.nc', '--absorption-band-method', 'arp5534',
         '--merge-repeats', '--merge-speed-tolerance', '1.5', '--coherence', str(record_path),
         '--sphere-type', 'OB12', '--ignore-sphere-center', '--sphere-levels-lossless', 'yes',
-        '--floor-masking', 'minimum'])
+        '--floor-masking', 'minimum', '--database-frame', 'flight_path'])
     options = script.build_options(args)
     coherence = options.pop('coherence')
     assert (coherence.scale_hz_deg, coherence.exponent, coherence.source) == (700.0, 1.8, 'cli')
@@ -85,7 +85,7 @@ def test_every_option_maps_to_its_keyword(tmp_path):
                            spheres=['a.nc', 'b.nc'], exclude=['c*.nc'], absorption_band_method='arp5534',
                            merge_repeats=True, merge_speed_tolerance=1.5, sphere_type='OB12',
                            ignore_sphere_center=True, sphere_levels_lossless=True,
-                           floor_masking='minimum')
+                           floor_masking='minimum', database_frame='flight_path')
 
 
 def test_any_sphere_type_passes_none(tmp_path):

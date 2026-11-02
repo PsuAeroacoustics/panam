@@ -204,6 +204,12 @@ sphere centered off the vehicle's origin (`XYZ` not zero) is refused, since a da
 one source at the origin; `--ignore-sphere-center` builds it as if centered there. Spheres other
 than one-third octave take `--absorption-band-method center` only.
 
+A database files its spheres level by default, pitching flight-path spheres (AAM's,
+PSU-WOPWOP's) to it. `--database-frame flight_path` keeps them in the flight-path frame instead,
+resampled once less, and records it at the root for NICEOPS, which then measures theta from the
+velocity; a level sphere off level flight is refused there. In steady flight the two give the
+same footprint, to the interpolation the pitch adds.
+
 PSU-WOPWOP predicts its spheres in lossless air, where PANAM depropagates a measured sphere
 through the run's atmosphere, so that its levels already hold what the air absorbed inside the
 sphere. A database built from WOPWOP's spheres (`air_density_source = "wopwop"`) carries the root

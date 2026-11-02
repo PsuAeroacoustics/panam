@@ -168,7 +168,7 @@ Variables:
 | --- | --- | --- |
 | `same_grid` (R) | byte | true |
 | `fixed_load_factor` | byte | true: each condition is stored once, at 1 g, and the reader scales it (`load_factors=None`) |
-| `database_version` | i4 | `DATABASE_FORMAT_VERSION` (1) |
+| `database_version` | i4 | `DATABASE_FORMAT_VERSION` (2) |
 | `main_rotor_radius_meters` | f8 | from `vehicle.cfg`, else the spheres' `MAIN_ROTOR_RADIUS`, m |
 | `main_rotor_tip_speed_meters_per_sec` | f8 | from `vehicle.cfg`, else the spheres' `MAIN_ROTOR_TIP_SPEED`, m/s |
 | `vehicle_weight_newtons` | f8 | `vehicle.cfg`'s weight × 9.80665, else the spheres' common `GROSS_WEIGHT`, N |
@@ -186,7 +186,7 @@ Attributes:
 | `speed_reference` | `ground` or `air`: what the advance ratio and flight path angle are taken against; by default the spheres' own (PSU-WOPWOP's say `air`), else `ground` |
 | `band_type` | the bands of the spheres: `third_octave` (BB), `twelfth_octave` (OB12), `narrowband` (NB) or `pure_tone` (PT) |
 | `azimuth_reference` | `track` or `heading` (see [the heading frame](database_build.md#the-heading-frame)); always written |
-| `sphere_frame` | `level`, always: flight-path spheres are pitched to level as they are read. NICEOPS refuses any other value |
+| `sphere_frame` | `level` (the default: flight-path spheres are pitched to level as they are read), or `flight_path` (`database_frame='flight_path'`: kept in AAM's frame, theta from the velocity). NICEOPS reads both from the version that reads `flight_path` on, and refuses any other value |
 | `build_temperature_K`, `build_pressure_kPa`, `build_relative_humidity_percent` | the atmosphere the EAA was computed in (default 293.15 K, 101.325 kPa, 20%) |
 | `hover_correction` | when one was applied: its `description`, or `applied` |
 | `hover_source` | when given: the hover source sphere's file name |
@@ -320,6 +320,8 @@ constants.
   broken directivity.
 - 1: the corrected upper-surface mirror, and the hover averaged fore and aft in energy with
   EAA recomputed from the averaged spectrum.
+- 2: the root `sphere_frame` may be `flight_path`, whose spheres a NICEOPS that predates it
+  refuses.
 
 - 2: a database with pure-tone sources (`pt_database.PT_DATABASE_FORMAT_VERSION`; below).
   One without them stays at 1.
@@ -465,7 +467,7 @@ which the writers keep; a reader may rely on them.
    and `coherence_tonal_fraction` within [0, 1], one per band of the spectra.
 8. **C1.** `database_version`, when present, is an integer from 0 to
    `DATABASE_FORMAT_VERSION`.
-9. **C2.** `speed_reference` and `azimuth_reference`, when present, take the values listed
+9. **C2.** `speed_reference`, `azimuth_reference` and `sphere_frame`, when present, take the values listed
    above.
 10. **C3.** A group with `amplitude` has its band centers, in the group or shared at the
    root. A group's own `phi`, `theta` or `frequency` equals the shared one at the root.
