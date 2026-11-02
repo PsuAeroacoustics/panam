@@ -36,7 +36,7 @@ scalar also has a singleton dimension of its own name, declared in the same orde
 | `PYLON_ANGLE` | f4 scalar | DEGREE | 90 by default |
 | `SPEED` | f4 scalar | KNOTS | the mean ground speed for the 2017 build |
 | `XYZ` | f4 (`XYZ` = 3) | FEET | 0, 0, 0 by default |
-| `PHI` | f4 (`PHI`) | DEGREE | 0 straight down, positive to starboard, -90 to 90 |
+| `PHI` | f4 (`PHI`) | DEGREE | 0 straight down, positive to starboard, -90 to 90 (a full sphere, below: -180 to 180) |
 | `THETA` | f4 (`THETA`) | DEGREE | 0 at the nose, 180 at the tail |
 | `FREQUENCY` | f4 (`FREQUENCY`) | HERTZ | band centers |
 | `AMPLITUDE` | f4 (`PHI`, `THETA`, `FREQUENCY`) | DECIBEL | unweighted band level at `RADIUS`; -999 where missing (below) |
@@ -106,6 +106,13 @@ and a reader may ignore them.
 Each ART point takes the values of the gridded node nearest it in azimuth and in elevation, so
 they describe the neighborhood its `AMPLITUDE` was interpolated from, not that value exactly.
 The definitions are in [THEORY §6.4](THEORY.md#64-node-statistics).
+
+**Full spheres.** A sphere may store the whole circle, `PHI` from -180 to 180, as PSU-WOPWOP
+does with `hemisphere = 'full'`. Its `PHI` = 180 row is then a copy of the -180 row, the
+same azimuth (the upper meridian). The database builder reads the circle once: it drops the
+180 row, since a database keeps `phi` in [-180, 180) ([C13](#checking-a-database)), and refuses
+a sphere whose two seam rows differ (a missing cell matches a missing one, whichever
+convention each uses). A full sphere is not mirrored: its upper half is measured.
 
 **Missing values.** A missing band is stored as -999 (`AAM_MISSING_LEVEL`); see
 [how a bin's state travels](#how-a-bins-state-travels).

@@ -284,6 +284,7 @@ def _reduce_sphere_levels(amplitude, phi, theta, frequency, radius, speed, fligh
     radius = radius * 0.3048
     # Replace masked values with no-energy SPL
     amplitude = mask_missing_levels(amplitude)
+    amplitude, phi = _drop_seam_copy(amplitude, phi)
     # Check frequency range
     if infreqs is not None:
         frequency_index = (frequency >= infreqs[0]) & (frequency <= infreqs[1])
@@ -304,6 +305,34 @@ def _reduce_sphere_levels(amplitude, phi, theta, frequency, radius, speed, fligh
     # quantities (e.g. EAA) after modifying the spectrum.
     out = (azi, elv, phi, theta, radius, SPLO, SPLA, EAA, speed, flight_path_angle, frequency, amplitude)
     return out + (measured,) if with_measured else out
+
+
+def _drop_seam_copy(amplitude, phi):
+    """A full sphere's levels with its seam stored once.
+
+    A full sphere (phi -180..180, as PSU-WOPWOP writes one) stores phi = 180 as a
+    copy of phi = -180: the same azimuth, the upper meridian.  A database keeps
+    phi in [-180, 180) (validate_nod C13), so the copy is dropped.  Two seam rows
+    that differ would be two levels for one direction, and are refused.  Any
+    other phi axis is returned as it is.  amplitude is masked already
+    (:func:`mask_missing_levels`), so a missing cell is -inf in either row,
+    whichever convention the file used.
+    """
+    phi = np.asarray(phi, dtype=float)
+    if phi.size < 2 or not (np.isclose(phi[0], -180.0, rtol=0.0, atol=1e-6)
+                            and np.isclose(phi[-1], 180.0, rtol=0.0, atol=1e-6)):
+        return amplitude, phi
+    if not np.allclose(amplitude[0], amplitude[-1], rtol=0.0, atol=1e-6):
+        raise ValueError('a full sphere stores phi = 180 as a copy of phi = -180 (the same azimuth, '
+                         'the upper meridian), but here the two rows differ')
+    return amplitude[:-1], phi[:-1]
+
+
+def _is_full_circle(phi_list):
+    """True for a full sphere's azimuths (phi from -180, its seam copy dropped):
+    measured all round, so there is no upper half to complete."""
+    phi_list = np.asarray(phi_list, dtype=float)
+    return phi_list.size > 0 and bool(np.isclose(phi_list.min(), -180.0, rtol=0.0, atol=1e-6))
 
 
 def spla_and_eaa_from_spectrum(spectrum, frequency, distance, atmosphere, absorption_band_method='center'):
@@ -396,9 +425,13 @@ def _complete_sphere_with_coverage(phi_list, theta_list, spla, eaa, amplitude, m
     The returned coverage has the completed shape and is True only on source
     rows, where the bin is measured.  The reflected upper surface is never
     measured: it is a symmetry fill, so it is recorded as unmeasured.  Returns
-    None for coverage when ``measured`` is None.
+    None for coverage when ``measured`` is None.  A full sphere (phi from -180)
+    is measured all round and is returned as it is, sorted.
     """
-    mirror_phi, source_index = mirror_phi_to_upper_surface(phi_list)
+    if _is_full_circle(phi_list):
+        mirror_phi, source_index = np.zeros(0), np.zeros(0, dtype=int)
+    else:
+        mirror_phi, source_index = mirror_phi_to_upper_surface(phi_list)
     n_source = len(phi_list)
     phi_full_list = np.concatenate((np.asarray(phi_list, dtype=float), mirror_phi))
     # Rows sorted by phi, so the spectra -- written gridded, without angles of

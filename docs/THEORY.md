@@ -979,6 +979,8 @@ level is copied to those angles at its own speed and every load factor, so that 
 covers steep states; the 2017 release's angles are in [`database_build.md`](database_build.md#the-2017-release-settings). The upper hemisphere, which no ground microphone sees, is completed by
 mirroring through the sphere's horizontal plane (the level frame of §3.2), $\phi' = 180^\circ - \phi$
 wrapped into $[-180^\circ, 180^\circ)$ (`mirror_phi_to_upper_surface`), and carries coverage 0.
+A full sphere (stored from $-180^\circ$ to $180^\circ$, its $180^\circ$ row a copy of $-180^\circ$, which
+the builder drops) needs no completion: its upper half is measured, with coverage 1.
 Database format version 1 marks files with the corrected mirror (an earlier `-phi` mirror reflected
 the lower hemisphere onto itself) and the energy-averaged hover with recomputed EAA.
 
