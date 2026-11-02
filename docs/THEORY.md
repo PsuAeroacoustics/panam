@@ -955,7 +955,9 @@ ladder with rungs between 0 and 1 g scales them. The 2017 release's ladders are 
 ### 7.4 Hover
 
 A hover passes no microphones, so the arrays see it only along a few fixed rings of elevation, and
-the rest of its sphere has to be synthesized. The source is the slowest sphere within 2° of level
+the rest of its sphere has to be synthesized. (A predicted sphere at zero speed, PSU-WOPWOP's, is
+a hover already: it is taken as it is, written at the hover's flight path angles, and none is
+synthesized.) The source is the slowest sphere within 2° of level
 flight (`level_flight_tolerance`), or the slowest overall, with a warning, if none is; or the sphere
 passed as `hover_source`, typically that run rebuilt with `build_sphere(remove_doppler=True)`
 (§3.3). Its spectrum is averaged fore and aft in energy so that it has no direction of flight

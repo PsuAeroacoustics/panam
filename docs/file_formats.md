@@ -52,8 +52,9 @@ Attributes: `title`; `sphere_frame`, the frame `PHI` and `THETA` are filed in: `
 `level` (`build_sphere`'s; PANAM's, NICEOPS's and NORAH2's). A reader takes a sphere without it
 as `level`, with a warning ([THEORY §3.2](THEORY.md#32-directions)). And when known
 `azimuth_reference` (`track` or `heading`; a reader takes a sphere without it as `track`).
-PSU-WOPWOP's spheres also carry `sphere_type` (`BB`, `OB12`, `NB` or `PT`), which must agree
-with the AAM flags; a sphere without it is typed by the flags, and one with neither is `BB`.
+A sphere's type is its `sphere_type` attribute (`BB`, `OB12`, `NB` or `PT`, PSU-WOPWOP's), which
+must agree with the AAM flags; a sphere without it is typed by the flags, and one with neither is
+`BB` ([PSU-WOPWOP spheres](#psu-wopwop-spheres)).
 Every sphere also carries the [provenance stamp](#provenance-stamp).
 
 **Per-run metadata.** When `build_sphere` passes `run_metadata`, the file also carries
@@ -118,6 +119,40 @@ convention each uses). A full sphere is not mirrored: its upper half is measured
 
 **Missing values.** A missing band is stored as -999 (`AAM_MISSING_LEVEL`); see
 [how a bin's state travels](#how-a-bins-state-travels).
+
+### PSU-WOPWOP spheres
+
+PSU-WOPWOP writes AAM spheres predicted in still, lossless air: the layout above, in the
+`flight_path` frame, with `SPEED` the airspeed, then these f4 scalars, each with its `unit`, and
+text attributes. The database builder reads them as described in
+[database_build.md](database_build.md); none needs `vehicle.cfg`.
+
+| variable | `unit` | content |
+| --- | --- | --- |
+| `GROSS_WEIGHT` | POUNDS | the vehicle's weight, when given |
+| `AIR_DENSITY` | KG/M^3 | the air density the sphere was predicted in |
+| `AIRSPEED` | KNOTS | the airspeed, as `SPEED` |
+| `MAIN_ROTOR_RADIUS`, `MAIN_ROTOR_TIP_SPEED`, `MAIN_ROTOR_BLADES` | METER, M/S, (none) | the main rotor, when known |
+| `PREDICTION_RADIUS` | METER | the radius the levels were predicted at, scaled to `RADIUS` by 20 lg |
+| `ROTOR_SHAFT_RATE`, `ROTOR_AZIMUTH` | RAD/S, DEGREE | a per-source sphere's rotor |
+| `TONAL_MAX_FREQUENCY` | HERTZ | the highest tone the sphere holds |
+| `PHASE` | DEGREE | a `PT` sphere's tone phases, (`PHI`, `THETA`, `FREQUENCY`) |
+
+| attribute | content |
+| --- | --- |
+| `sphere_type` | `BB`, `OB12`, `NB` or `PT` |
+| `content` | `discrete frequency`, or `discrete frequency and broadband` |
+| `air_density_source` | `wopwop`: the mark of a PSU-WOPWOP sphere, whose levels hold no atmospheric absorption (the database's `sphere_levels_lossless`) |
+| `speed_reference`, `azimuth_reference` | `air` and `track` |
+| `floor_level_dB` | the level the empty cells were raised to; the builder reads cells at it as missing (`floor_masking`) |
+| `speed_of_sound_m_s` | the sound speed of the prediction |
+| `nb_bandwidth_Hz` | an `NB` sphere's band width |
+| `center_xyz_ft` | the true center, ft, where `XYZ` is a whole-foot label; both in AAM's body axes (aft, starboard, up) |
+| `source_tag`, `center`, `rotor` | a per-source sphere's tag, how its center was set and its rotor |
+
+A full sphere (`hemisphere = 'full'`, WOPWOP's default) is read as above; a sphere at `SPEED` 0 is
+the database's hover; a sphere centered away from the origin (`XYZ` not zero) is refused unless
+`ignore_sphere_center`, since a database holds one source at the origin.
 
 ## The NICEOPS database (`.nod`)
 
@@ -446,29 +481,31 @@ which the writers keep; a reader may rely on them.
 18. **C11.** The groups are named `sphere0` to `sphere<N-1>`.
 19. **C12.** `condition_origin`, when present, is one of the three values above.
 20. **C13.** `phi` is in [-180, 180) deg and `theta` is in [0, 180] deg (ART angles, above).
+21. **C14.** No two groups share a condition (`advance_ratio`, `flight_path_angle`,
+    `thrust_coefficient`).
 
 A database listing `sources` (format 2) also keeps the T rules:
 
-20. **T1.** Every tone is a whole shaft order of its source's `shaft_rate` (1e-5 relative).
-21. **T2.** Every condition holds exactly the sources the root lists.
-22. **T3.** Every source declares `phase_reference` (`rotor_azimuth`, `relative` or `none`),
+21. **T1.** Every tone is a whole shaft order of its source's `shaft_rate` (1e-5 relative).
+22. **T2.** Every condition holds exactly the sources the root lists.
+23. **T3.** Every source declares `phase_reference` (`rotor_azimuth`, `relative` or `none`),
     and has a finite `phase` wherever its `amplitude` is finite (unless `none`).
-23. **T4.** `database_version` is 2 and `band_content` is `broadband` or `total`.
-24. **T5.** `amplitude` and `phase` are over (`PHI`, `THETA`, `tone`), on the condition's grid.
+24. **T4.** `database_version` is 2 and `band_content` is `broadband` or `total`.
+25. **T5.** `amplitude` and `phase` are over (`PHI`, `THETA`, `tone`), on the condition's grid.
 
 C1 then allows `database_version` up to 2.
 
 A database with `condition_axes` also keeps the M rules:
 
-25. **M1.** `condition_axes` is `helicopter` or `multirotor`. A multirotor root gives
+26. **M1.** `condition_axes` is `helicopter` or `multirotor`. A multirotor root gives
     `rotor_count` (a whole number >= 1), `rotor_radius_m` and `hover_thrust_coefficient`,
     all positive.
-26. **M2.** Every multirotor condition carries `inplane_speed_ratio`, `axial_speed_ratio`,
+27. **M2.** Every multirotor condition carries `inplane_speed_ratio`, `axial_speed_ratio`,
     `hover_tip_mach`, `air_density`, `weight_n`, `airspeed` and `climb_rate` (and R2's `radius`
     and `rotor_scale`; the helicopter variables are not required).
-27. **M3.** x v_h is the in-plane part of `airspeed` and z v_h is `climb_rate`, v_h from the
+28. **M3.** x v_h is the in-plane part of `airspeed` and z v_h is `climb_rate`, v_h from the
     group's own weight and density (1e-6 relative).
-28. **M4.** Every source has a positive `speed_ratio`, and |`shaft_rate`| / `speed_ratio` is the
+29. **M4.** Every source has a positive `speed_ratio`, and |`shaft_rate`| / `speed_ratio` is the
     condition's Omega_h (1e-6 relative).
 
 `load_nod` reads a multirotor condition with `advance_ratio` and `thrust_coefficient` NaN,

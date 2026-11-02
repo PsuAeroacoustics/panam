@@ -571,6 +571,11 @@ def _fore_aft_measured(measured):
 HOVER_FLIGHT_PATH_ANGLES = (-12, 0, 12)
 
 
+#: A sphere slower than this, kt, is a real hover (PSU-WOPWOP predicts one at SPEED 0):
+#: the database's hover, written at the hover's flight path angles, none synthesized.
+_REAL_HOVER_KNOTS = 1e-6
+
+
 def _hover_flight_path_angles(extended_flight_path_angles=None):
     """Flight path angles, degrees, a synthesized hover is written at.
 
@@ -814,8 +819,44 @@ def _group_repeat_conditions(filenames, speed_tolerance_knots=0.0):
     return [tuple(filenames[i] for i in sorted(group)) for group in sorted(groups, key=min)]
 
 
+#: How the builder reads cells at a sphere's floor (build_empirical_database's floor_masking).
+FLOOR_MASKINGS = ('auto', 'minimum', 'off')
+
+
+#: A cell within this of its sphere's floor, dB, is at it: the floor is stored as text and
+#: the levels in single precision.
+_FLOOR_TOLERANCE_DB = 1e-4
+
+
+def sphere_floor_db(filename, floor_masking='auto'):
+    """The level, dB, a sphere's empty cells were raised to, or None to mask none.
+
+    'auto': the file's ``floor_level_dB`` (PSU-WOPWOP's), None without it; 'minimum':
+    its lowest finite level; 'off': None.
+    """
+    if floor_masking not in FLOOR_MASKINGS:
+        raise ValueError('floor_masking must be one of {}, not {!r}'.format(FLOOR_MASKINGS, floor_masking))
+    if floor_masking == 'off':
+        return None
+    with Dataset(filename, mode='r') as handle:
+        if floor_masking == 'auto':
+            return float(handle.getncattr('floor_level_dB')) if 'floor_level_dB' in handle.ncattrs() else None
+        levels = mask_missing_levels(np.ma.filled(np.ma.asarray(handle['AMPLITUDE'][...], dtype=float), np.nan))
+    finite = levels[np.isfinite(levels)]
+    return float(finite.min()) if finite.size else None
+
+
+def _mask_floor(levels, floor):
+    """levels with the cells at ``floor`` (dB, None: none) as NaN, no data."""
+    if floor is None:
+        return levels
+    levels = np.array(levels, dtype=float)
+    levels[levels <= floor + _FLOOR_TOLERANCE_DB] = np.nan
+    return levels
+
+
 def _extract_condition_SPL(filenames, infreqs, distance, atmosphere, absorption_band_method,
-                           speed_tolerance_knots=0.0, sphere_frame='level'):
+                           speed_tolerance_knots=0.0, sphere_frame='level', floor_masking='off'):
     """:func:`extract_SPL` for one condition: one sphere file, or the energy average of several.
 
     Several files are averaged by :func:`sphere_statistics.average_spheres`, a -999
@@ -823,14 +864,22 @@ def _extract_condition_SPL(filenames, infreqs, distance, atmosphere, absorption_
     :func:`extract_SPL` reads a -999.  speed_tolerance_knots (kt) is the SPEED
     spread allowed between them.  The speed returned is the runs' mean, kt.
     sphere_frame is the frame the files are filed in; they are averaged in it and
-    the average pitched to level.  Returns :func:`extract_SPL`'s tuple and the
+    the average pitched to level.  Each file's floor cells (:func:`sphere_floor_db`) are
+    read as no data, before any average.  Returns :func:`extract_SPL`'s tuple and the
     ``measured`` mask of :func:`_reduce_sphere_levels`.
     """
     if len(filenames) == 1:
-        return _reduce_sphere_levels(*load_nc_sphere(filenames[0]), infreqs, distance, atmosphere,
-                                     absorption_band_method, sphere_frame, with_measured=True)
+        amplitude, *rest = load_nc_sphere(filenames[0])
+        return _reduce_sphere_levels(_mask_floor(amplitude, sphere_floor_db(filenames[0], floor_masking)), *rest,
+                                     infreqs, distance, atmosphere, absorption_band_method, sphere_frame,
+                                     with_measured=True)
+    spheres = []
+    for filename in filenames:
+        sphere = sphere_statistics.read_sphere(filename, 'no_data')
+        sphere['levels_db'] = _mask_floor(sphere['levels_db'], sphere_floor_db(filename, floor_masking))
+        spheres.append(sphere)
     average = sphere_statistics.average_spheres(
-        filenames, speed_tolerance_knots=max(float(speed_tolerance_knots), 1e-9),
+        spheres, speed_tolerance_knots=max(float(speed_tolerance_knots), 1e-9),
         flight_path_angle_tolerance_deg=1e-9)
     return _reduce_sphere_levels(
         average['levels_db'], average['phi_deg'], average['theta_deg'], average['frequency_hz'],
@@ -1122,7 +1171,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                              azimuth_reference=None, spheres=None, exclude=None,
                              absorption_band_method='center', merge_repeats=False,
                              merge_speed_tolerance=0.0, sphere_frame=None, coherence=None, sphere_type='BB',
-                             ignore_sphere_center=False, sphere_levels_lossless=None):
+                             ignore_sphere_center=False, sphere_levels_lossless=None, floor_masking='auto'):
     """Build a NICEOPS sphere database from a directory of sphere files.
 
     directory_name holds the sphere files (every ``*.nc`` in it, unless ``spheres``
@@ -1338,7 +1387,8 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
             raise ValueError('{} are filed in different frames ({}); merge spheres of one frame only'.format(
                 ' and '.join(os.path.basename(f) for f in filenames), ', '.join(sorted(names))))
         return _extract_condition_SPL(filenames, infreqs, distance, atmosphere,
-                                      absorption_band_method, merge_speed_tolerance, names.pop())
+                                      absorption_band_method, merge_speed_tolerance, names.pop(),
+                                      floor_masking)
 
     # Sorted, so group numbering and hover-sphere ties do not depend on the
     # order the filesystem happens to list the directory in.
@@ -1353,6 +1403,8 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     weight_coefficient = vehicle['vehicle_weight_newtons'] / (
         vehicle['air_density_kg_m3'] * main_rotor_area * main_rotor_tip_speed ** 2)
     speed_reference = _resolve_speed_reference(file_list, speed_reference)
+    if floor_masking not in FLOOR_MASKINGS:
+        raise ValueError('floor_masking must be one of {}, not {!r}'.format(FLOOR_MASKINGS, floor_masking))
     lossless = _resolve_lossless(file_list, sphere_levels_lossless)
     # Recorded as resolved, so a build that leaves it to the spheres has the settings of
     # one that names what they say.
@@ -1390,6 +1442,15 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                              ' and '.join(os.path.basename(f) for f in repeats[0]), speed, angle))
     if repeats:
         inputs['merged_spheres'] = [[os.path.basename(f) for f in files] for files in repeats]
+    # A sphere at zero speed is the hover itself (_REAL_HOVER_KNOTS), and none is synthesized.
+    real_hovers = [files for files in condition_files
+                   if abs(_sphere_condition(files[0])[0]) < _REAL_HOVER_KNOTS]
+    if len(real_hovers) > 1:
+        raise ValueError('{} are each a hover (SPEED 0); a database holds one'.format(
+            ' and '.join(os.path.basename(files[0]) for files in real_hovers)))
+    if real_hovers and (hover_source is not None or hover_correction is not None):
+        raise ValueError('{} is a hover (SPEED 0), which is the database\'s hover; hover_source and '
+                         'hover_correction shape a synthesized one'.format(os.path.basename(real_hovers[0][0])))
     # Settled before the output exists, so a refused mix of sources leaves no
     # half-written database behind.
     doppler = _resolve_doppler_shift_removed(file_list, doppler_shift_removed)
@@ -1430,6 +1491,8 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
         level_conditions = []
         # Each condition's levels, kept for the hover synthesis below.
         condition_inputs = {}
+        # The real hover's completed levels and its own flight path angle, if there is one.
+        real_hover = None
         # Every condition to write, collected rather than written immediately, so
         # that whether phi/theta/frequency can be deduplicated (see
         # _grid_and_frequency_are_shared) is known before the first group is
@@ -1470,36 +1533,52 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
             for load_factor in load_factors_to_write:
                 add(phi_full, theta_full, radius, SPLA_full, EAA_full, speed, flight_path_angle,
                     load_factor, frequency, amplitude_full, coverage_full, measured_metadata)
+            if real_hovers and filenames == real_hovers[0]:
+                real_hover = (phi_full, theta_full, radius, SPLA_full, EAA_full, frequency, amplitude_full,
+                              coverage_full, filenames, float(np.ravel(flight_path_angle)[0]))
 
-        min_speed_files = condition_files[_hover_source_index(source_conditions, level_flight_tolerance)]
-
-        if hover_source is not None:
-            # Its DOPPLER_SHIFT_REMOVED does not enter the database's flag: a hover
-            # has no Doppler shift, so its emitted and received frequencies are one
-            # and the group is received-frame like the flight spheres around it.
-            min_speed_files = (os.path.abspath(os.path.expanduser(hover_source)),)
-            (_, _, phi_list, theta_list, radius, _, _, eaa_source, _, _,
-             frequency, amplitude, in_hemisphere) = condition_levels(
-                min_speed_files, _resolve_sphere_frames(min_speed_files, sphere_frame))
-            measured = in_hemisphere & _measured_bins(amplitude, eaa_source)
+        if real_hover is not None:
+            # The real hover at the other angles a hover is written at, as a
+            # synthesized one would be (it has no flight path to keep).
+            (phi_full, theta_full, radius, SPLA_full, EAA_full, frequency, amplitude_full,
+             coverage_full, filenames, own_angle) = real_hover
+            hover_metadata = run_metadata(filenames, 'extended_flight_path_angle')
+            for flight_path_angle in _hover_flight_path_angles(extended_flight_path_angles):
+                if flight_path_angle == own_angle:
+                    continue
+                for load_factor in load_factors_to_write:
+                    add(phi_full, theta_full, radius, SPLA_full, EAA_full, 0, flight_path_angle,
+                        load_factor, frequency, amplitude_full, coverage_full, hover_metadata)
         else:
-            phi_list, theta_list, radius, frequency, amplitude, measured = condition_inputs[min_speed_files]
-        # Now, adapt the lowest speed sphere to a hover sphere by averaging from fore to aft
-        phi_full, theta_full, SPLA_full, EAA_full, amplitude_full, coverage_full = _synthesized_hover_sphere(
-            phi_list, theta_list, amplitude, measured, frequency,
-            distance, atmosphere, hover_correction=hover_correction,
-            clamp_empty_directions=clamp_empty_directions,
-            absorption_band_method=absorption_band_method)
-        # Set hover conditions.  Hover is a near-level condition, so it is written
-        # at the extended angles as well as level flight.
-        speed = 0
-        flight_path_angles = _hover_flight_path_angles(extended_flight_path_angles)
-        # Augment load factor data
-        hover_metadata = run_metadata(min_speed_files, 'synthesized_hover')
-        for load_factor in load_factors_to_write:
-            for flight_path_angle in flight_path_angles:
-                add(phi_full, theta_full, radius, SPLA_full, EAA_full, speed, flight_path_angle,
-                    load_factor, frequency, amplitude_full, coverage_full, hover_metadata)
+            min_speed_files = condition_files[_hover_source_index(source_conditions, level_flight_tolerance)]
+
+            if hover_source is not None:
+                # Its DOPPLER_SHIFT_REMOVED does not enter the database's flag: a hover
+                # has no Doppler shift, so its emitted and received frequencies are one
+                # and the group is received-frame like the flight spheres around it.
+                min_speed_files = (os.path.abspath(os.path.expanduser(hover_source)),)
+                (_, _, phi_list, theta_list, radius, _, _, eaa_source, _, _,
+                 frequency, amplitude, in_hemisphere) = condition_levels(
+                    min_speed_files, _resolve_sphere_frames(min_speed_files, sphere_frame))
+                measured = in_hemisphere & _measured_bins(amplitude, eaa_source)
+            else:
+                phi_list, theta_list, radius, frequency, amplitude, measured = condition_inputs[min_speed_files]
+            # Now, adapt the lowest speed sphere to a hover sphere by averaging from fore to aft
+            phi_full, theta_full, SPLA_full, EAA_full, amplitude_full, coverage_full = _synthesized_hover_sphere(
+                phi_list, theta_list, amplitude, measured, frequency,
+                distance, atmosphere, hover_correction=hover_correction,
+                clamp_empty_directions=clamp_empty_directions,
+                absorption_band_method=absorption_band_method)
+            # Set hover conditions.  Hover is a near-level condition, so it is written
+            # at the extended angles as well as level flight.
+            speed = 0
+            flight_path_angles = _hover_flight_path_angles(extended_flight_path_angles)
+            # Augment load factor data
+            hover_metadata = run_metadata(min_speed_files, 'synthesized_hover')
+            for load_factor in load_factors_to_write:
+                for flight_path_angle in flight_path_angles:
+                    add(phi_full, theta_full, radius, SPLA_full, EAA_full, speed, flight_path_angle,
+                        load_factor, frequency, amplitude_full, coverage_full, hover_metadata)
 
         # Widen the flight-path-angle envelope: re-emit each near-level condition at
         # the extended angles, keeping its own airspeed and directivity.  Hover is

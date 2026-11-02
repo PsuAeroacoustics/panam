@@ -389,6 +389,7 @@ def validate_nod(path):
 
         sphere_radii = {}
         thrust_coefficients = {}
+        conditions = {}
         doppler_flags = {}
         for name in names:
             group = database.groups[name]
@@ -410,6 +411,10 @@ def validate_nod(path):
                 sphere_radii[name] = _scalar(group, 'radius') * _scalar(group, 'rotor_scale')
             if 'thrust_coefficient' in variables:
                 thrust_coefficients[name] = _scalar(group, 'thrust_coefficient')
+            if all(variable in variables for variable in ('advance_ratio', 'flight_path_angle',
+                                                         'thrust_coefficient')):
+                conditions[name] = tuple(_scalar(group, variable) for variable in
+                                         ('advance_ratio', 'flight_path_angle', 'thrust_coefficient'))
 
             # R3, R6: dBA and EAA over the channels.
             levels = {}
@@ -531,6 +536,14 @@ def validate_nod(path):
             for name, value in sphere_radii.items():
                 if not np.isclose(value, first, rtol=1e-9, atol=0.0):
                     violate('R5', name, f'radius x rotor_scale is {value} m, not {first} m as in {names[0]}')
+        # C14: one group per condition.
+        seen = {}
+        for name, condition in conditions.items():
+            if condition in seen:
+                violate('C14', name, 'the condition (advance ratio, flight path angle, thrust coefficient) {} '
+                        'of {} again'.format(condition, seen[condition]))
+            else:
+                seen[condition] = name
         if root.get('fixed_load_factor') and len(set(thrust_coefficients.values())) > 1:
             violate('C8', None, 'fixed_load_factor is set but thrust_coefficient differs between groups')
         if doppler_flags:

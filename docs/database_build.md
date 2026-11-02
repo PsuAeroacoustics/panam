@@ -211,6 +211,13 @@ flag `sphere_levels_lossless`, and NICEOPS absorbs it over the whole range from 
 of the two is refused; `--sphere-levels-lossless yes` declares other lossless spheres, such as
 AAM's own.
 
+PSU-WOPWOP raises a sphere's empty cells to one floor level per file and records it
+(`floor_level_dB`). Those cells are read as no energy, as a missing (-999) cell is, so that
+NICEOPS drops them from its dB blends rather than blending a level nothing produced
+(`--floor-masking auto`, the default; repeat runs are masked before they are averaged).
+`--floor-masking minimum` takes each sphere's lowest level as its floor, for spheres that do not
+record one; `--floor-masking off` keeps the cells as levels.
+
 NICEOPS takes one sphere per flight condition, so two spheres with the same speed and flight
 path angle are refused. `--merge-repeats` energy-averages such repeat runs into one condition
 instead (`sphere_statistics.average_spheres`), and `--merge-speed-tolerance KT` also merges
@@ -233,7 +240,9 @@ them with their units):
 - no extended flight path angles (`--extended-fpa LO:HI`, deg);
 - a hover synthesized from the slowest sphere within 2° of level flight, as built
   (`--hover-source`, `--level-flight-tolerance`; the `--hover-source` path is taken
-  relative to the current directory, not the sphere directory);
+  relative to the current directory, not the sphere directory), unless a sphere is at
+  SPEED 0 (a PSU-WOPWOP hover): that sphere is the hover, written as it is at the hover's
+  flight path angles, and `--hover-source` is refused beside it;
 - spectra stored (`--no-spectrum` leaves them out);
 - the EAA computed at 1000 m in 293.15 K, 101.325 kPa and 20% relative humidity
   (`--distance`, `--build-temperature`, `--build-pressure`, `--build-humidity`), with each

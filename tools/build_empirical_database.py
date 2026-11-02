@@ -112,6 +112,10 @@ def make_parser():
     parser.add_argument('--speed-reference', choices=flight_acoustics.SPEED_REFERENCES, default=None,
                         help='what the advance ratio and flight path angle are taken against (default: '
                              "what the spheres say, as PSU-WOPWOP's say air; else ground)")
+    parser.add_argument('--floor-masking', choices=('auto', 'minimum', 'off'), default='auto',
+                        help="how cells at a sphere's floor are read: auto, as no energy where the sphere "
+                             "records its floor (PSU-WOPWOP's floor_level_dB); minimum, taking each "
+                             'sphere\'s lowest level as its floor; off, as levels (default %(default)s)')
     parser.add_argument('--sphere-levels-lossless', choices=('yes', 'no'), default=None,
                         help="whether the spheres' levels carry no atmospheric absorption, so NICEOPS "
                              "absorbs from the center (default: yes for PSU-WOPWOP's spheres, else no)")
@@ -191,6 +195,7 @@ def build_options(args):
         coherence=None if args.coherence is None else directional_coherence.load_coherence_record(args.coherence),
         sphere_type=None if args.sphere_type == 'any' else args.sphere_type,
         ignore_sphere_center=args.ignore_sphere_center,
+        floor_masking=args.floor_masking,
         sphere_levels_lossless=None if args.sphere_levels_lossless is None else args.sphere_levels_lossless == 'yes',
     )
     if args.fixed_load_factor:
