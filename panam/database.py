@@ -1467,7 +1467,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                              main_rotor_tip_speed=main_rotor_tip_speed,
                              vehicle_weight_newtons=vehicle['vehicle_weight_newtons'],
                              band_type=BAND_TYPES[kind], prediction_radius=prediction_radius,
-                             sphere_levels_lossless=lossless,
+                             sphere_levels_lossless=lossless, air_density=vehicle['air_density_kg_m3'],
                              azimuth_reference=azimuth,
                              # A fixed panam_tool value (docs/file_formats.md): it kept its name when the
                              # function moved here.
@@ -1625,7 +1625,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
 def _write_database_root(ncdatabase, *, fixed_load_factor, speed_reference, atmosphere,
                          main_rotor_radius, main_rotor_tip_speed, vehicle_weight_newtons,
                          azimuth_reference, provenance=None, band_type=None, prediction_radius=None,
-                         sphere_levels_lossless=False):
+                         sphere_levels_lossless=False, air_density=None):
     """Write the root flags, build atmosphere and vehicle data every database carries.
 
     Shared by :func:`build_empirical_database` and :func:`norah2.build_database_from_norah2`.
@@ -1683,6 +1683,11 @@ def _write_database_root(ncdatabase, *, fixed_load_factor, speed_reference, atmo
     if vehicle_weight_newtons is not None:
         ncdatabase.createVariable("vehicle_weight_newtons", 'f8')
         ncdatabase['vehicle_weight_newtons'][:] = float(vehicle_weight_newtons)
+    # The density, kg/m^3, the weight coefficient is formed with: with the three
+    # above, the whole vehicle, so that NICEOPS needs no vehicle file.
+    if air_density is not None:
+        ncdatabase.createVariable("air_density_kg_m3", 'f8')
+        ncdatabase['air_density_kg_m3'][:] = float(air_density)
     # What the bands are (BAND_TYPES), and the radius, m, the spheres were predicted at.
     if band_type is not None:
         ncdatabase.band_type = band_type

@@ -173,6 +173,7 @@ Variables:
 | `main_rotor_tip_speed_meters_per_sec` | f8 | from `vehicle.cfg`, else the spheres' `MAIN_ROTOR_TIP_SPEED`, m/s |
 | `vehicle_weight_newtons` | f8 | `vehicle.cfg`'s weight × 9.80665, else the spheres' common `GROSS_WEIGHT`, N |
 | `sphere_levels_lossless` | byte | 1 when the spheres' levels carry no atmospheric absorption (PSU-WOPWOP's, or declared with `sphere_levels_lossless=True`): NICEOPS then absorbs over the whole range from the center rather than from the sphere's surface. Left out otherwise |
+| `air_density_kg_m3` | f8 | the air density the weight coefficient is formed with: `vehicle.cfg`'s, else the spheres' common `AIR_DENSITY`, kg/m^3. With the three above, the vehicle NICEOPS takes when it is given no vehicle file |
 | `prediction_radius_meters` | f8 | when every sphere gives the same `PREDICTION_RADIUS` (PSU-WOPWOP's): the radius, m, the levels were predicted at |
 | `shared_grid_and_frequency` | byte | true when every group has the same `phi`, `theta` and `frequency` |
 | `phi`, `theta` | f8 (`channels`) | only when shared |

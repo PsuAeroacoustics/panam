@@ -175,3 +175,13 @@ def test_the_blade_count_is_not_needed(tmp_path):
     fields = _vehicle_fields(blades=None)
     database = _build(_folder(tmp_path / 'spheres', [fields, fields], cfg=False), tmp_path / 'x.nod')
     assert _root(database)['main_rotor_radius_meters'] == pytest.approx(CFG['radius'], rel=1e-12)
+
+
+@pytest.mark.parametrize('cfg', [True, False])
+def test_the_root_records_the_air_density(tmp_path, cfg):
+    # The density the weight coefficient is formed with, so that NICEOPS can take
+    # the whole vehicle from the database.
+    fields = _vehicle_fields(density=1.2) if not cfg else _vehicle_fields()
+    database = _build(_folder(tmp_path / 'spheres', [fields, fields], cfg=cfg), tmp_path / 'x.nod')
+    with Dataset(str(database)) as handle:
+        assert float(handle['air_density_kg_m3'][...]) == (CFG['density'] if cfg else 1.2)
