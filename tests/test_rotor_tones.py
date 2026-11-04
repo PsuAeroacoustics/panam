@@ -181,3 +181,64 @@ def test_orders_solved_in_frequency_groups_are_as_accurate_as_one_joint_solve():
     joint = error(group_gap_hz=1e6)
     assert error() < 1.1 * joint
     assert error(sweeps=1) > 1.05 * error()
+
+
+def _directivity(phi_deg, theta_deg):
+    """A smooth tone directivity (complex Pa): level falling toward the nose and tail, phase turning with phi."""
+    phi, theta = np.radians(phi_deg), np.radians(theta_deg)
+    return (0.2 + np.sin(theta) ** 2) * np.exp(1j * (2.0 * phi + 0.5 * theta))
+
+
+def _passes(rng, n_mics=7):
+    """Samples along straight passes: each microphone a line of theta at its own phi."""
+    phi = np.repeat(np.linspace(-60.0, 60.0, n_mics), 120) + rng.normal(0, 0.5, n_mics * 120)
+    theta = np.tile(np.linspace(20.0, 160.0, 120), n_mics)
+    return phi, theta, np.repeat(np.arange(n_mics), 120)
+
+
+def test_grid_tones_keeps_level_and_phase():
+    rng = np.random.default_rng(5)
+    phi, theta, mic = _passes(rng)
+    a = _directivity(phi, theta)[:, None]
+    grid_phi, grid_theta = np.arange(-50.0, 51.0, 10.0), np.arange(30.0, 151.0, 10.0)
+    g = rt.grid_tones(phi, theta, a, mic, np.full(phi.size, 2.0), grid_phi, grid_theta)
+    gphi, gtheta = np.meshgrid(grid_phi, grid_theta, indexing='ij')
+    truth = _directivity(gphi, gtheta)
+    level = 20 * np.log10(np.abs(truth) / np.sqrt(2) / rt.P_REF)
+    assert not g['gap'].any()
+    assert np.max(np.abs(g['level_db'][..., 0] - level)) < 0.5
+    assert np.max(np.abs(np.angle(np.exp(1j * np.radians(g['phase_deg'][..., 0])) / truth * np.abs(truth),
+                                  deg=True))) < 6.0
+    assert np.min(g['coherence']) > 0.9               # the phase turns across the kernel
+    # phases scattered at random: the energy mean keeps the level; the coherence says the phase is lost
+    scattered = np.abs(a) * np.exp(1j * rng.uniform(-np.pi, np.pi, a.shape))
+    s = rt.grid_tones(phi, theta, scattered, mic, np.full(phi.size, 2.0), grid_phi, grid_theta)
+    assert np.max(np.abs(s['level_db'] - g['level_db'])) < 1e-9
+    assert np.median(s['coherence']) < 0.5
+    # a sample with no value for a tone is left out of that tone only
+    two = np.concatenate([a, a], axis=1)
+    two[::3, 1] = np.nan
+    t = rt.grid_tones(phi, theta, two, mic, np.full(phi.size, 2.0), grid_phi, grid_theta)
+    assert np.allclose(t['level_db'][..., 0], g['level_db'][..., 0])
+    assert np.max(np.abs(t['level_db'][..., 1] - level)) < 0.6
+
+
+def test_clock_offsets_recover_each_runs_timing():
+    """Four runs of one condition and one of another, linked by a run flown at both: each run's tones advanced by
+    k delta; the fit recovers every delta (to 50 us) relative to the reference, whole revolutions apart included."""
+    rng = np.random.default_rng(9)
+    n_cells = 150
+    rates = np.array([h * w for w in (205.0, 214.0, 221.0, 199.0, 230.0, 210.0) for h in (1, 2, 3)])
+    truth = {'a': 0.0, 'b': 0.0031, 'c': -0.0074, 'd': 0.041, 'e': -0.012}
+    directivity = {cond: rng.normal(size=(n_cells, rates.size)) + 1j * rng.normal(size=(n_cells, rates.size))
+                   for cond in ('pass', 'hover')}
+    entries = []
+    for run, cond in (('a', 'pass'), ('b', 'pass'), ('c', 'pass'), ('d', 'pass'), ('d', 'hover'), ('e', 'hover')):
+        a = directivity[cond] * np.exp(1j * rates * truth[run])
+        a = a + 0.3 * (rng.normal(size=a.shape) + 1j * rng.normal(size=a.shape))
+        a[rng.random(n_cells) < 0.3] = np.nan               # cells the run did not reach
+        entries.append({'run': run, 'condition': cond, 'amplitude': a, 'rate': rates})
+    offsets, components = rt.clock_offsets(entries, reference='a')
+    assert components == [['a', 'b', 'c', 'd', 'e']]
+    for run, delta in truth.items():
+        assert abs(offsets[run] - delta) < 5e-5, (run, offsets[run], delta)

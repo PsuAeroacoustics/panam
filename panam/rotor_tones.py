@@ -23,6 +23,8 @@ import numpy as np
 
 from panam import axisymmetric_bem as ab
 from panam import ground_plane as gp
+from panam.geometry import art2umapr
+from panam.gridding import adaptive_idw_weights
 from panam.ground_effect import spherical_reflection_coefficient
 from panam.vold_kalman_filter import vold_kalman_filter
 
@@ -297,3 +299,153 @@ def plate_tone_response(table, frequency_hz, source_height_ft, ground_distance_f
         admittance=gp._ground_admittance(f, sound_speed_ft_s, table['flow_resistance'], table.get('ground')))
     response = np.conj(values[0] + q * values[1])
     return np.where(inside, response, np.nan + 0j)
+
+
+P_REF = 2e-5
+
+
+def grid_tones(phi_deg, theta_deg, amplitude, mic, resolution_deg, grid_phi_deg, grid_theta_deg, **idw):
+    """Tones sampled over directions, put on a sphere's grid with their phase.
+
+    Args:
+        phi_deg, theta_deg: (n,) each sample's direction, ART angles (deg): phi 0 below, positive to starboard;
+            theta 0 at the nose.
+        amplitude: (n, n_tones) complex Pa (peak, e^{+i omega t}) at the sphere radius; NaN where a sample has no
+            value for a tone.
+        mic: (n,) the microphone each sample came from (the gridding brackets a node with several).
+        resolution_deg: (n,) how far one sample smears over the sphere, deg.
+        grid_phi_deg, grid_theta_deg: the grid's axes, ART, deg.
+        idw: passed to :func:`panam.gridding.adaptive_idw_weights` (k, min_mics, kappa, max_radius_deg, ...).
+
+    Each node takes the adaptive Shepard weights of the broadband build.  Its level is the weighted mean square
+    pressure (an energy mean, so a scatter of phases between samples does not pull it down), and its phase is the
+    argument of the weighted complex sum.  The coherence |sum w A| / sqrt(sum w |A|^2), 1 where the samples agree
+    in phase, says how far that phase can be trusted.
+
+    Returns a dict over (n_phi, n_theta, n_tones): 'level_db' (dB re 20 uPa, the tone's rms; -inf at gaps),
+    'phase_deg' (NaN at gaps), 'coherence' (NaN at gaps), and 'gap' (n_phi, n_theta).
+    """
+    a = np.asarray(amplitude)
+    if a.ndim == 1:
+        a = a[:, None]
+    gp_phi, gp_theta = np.meshgrid(np.asarray(grid_phi_deg, float), np.asarray(grid_theta_deg, float),
+                                   indexing='ij')
+    node_az, node_el = art2umapr(np.radians(gp_phi.ravel()), np.radians(gp_theta.ravel()))
+    az, el = art2umapr(np.radians(np.asarray(phi_deg, float)), np.radians(np.asarray(theta_deg, float)))
+    weights, _, gap = adaptive_idw_weights(np.degrees(node_el), np.degrees(node_az), np.degrees(el), np.degrees(az),
+                                           mic, resolution_deg, **idw)
+    valid = np.isfinite(a)
+    filled = np.where(valid, a, 0.0)
+    norm = weights @ valid.astype(float)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        power = (weights @ (np.abs(filled) ** 2 / 2.0)) / norm
+        mean = (weights @ filled) / norm
+        coherence = np.abs(mean) / np.sqrt(2.0 * power)
+        level = 10.0 * np.log10(power / P_REF ** 2)
+    empty = ~(norm > 0)
+    level[empty] = -np.inf
+    phase = np.degrees(np.angle(mean))
+    phase[empty] = np.nan
+    coherence[empty] = np.nan
+    shape = gp_phi.shape + (a.shape[1],)
+    return {'level_db': level.reshape(shape), 'phase_deg': phase.reshape(shape),
+            'coherence': coherence.reshape(shape), 'gap': gap.reshape(gp_phi.shape)}
+
+
+def clock_offsets(entries, *, max_offset_s=0.15, step_s=2e-5, sweeps=4, reference=None):
+    """Each run's timing offset between its rotor angles and its sound, from where runs see the same directions.
+
+    A run whose rotor angles are late by delta against its microphones hears every tone with its phase advanced by
+    k delta, k the tone's own-sense angular rate (harmonic x |shaft rate|, rad/s).  Runs flown at one condition see
+    the same directivity, so delta is what brings their tones into phase.
+
+    Args:
+        entries: a list of dicts, one per run and condition: 'run' (a label), 'condition' (a label: only entries of
+            one condition are compared), 'amplitude' (complex (n_cells, n_tones) on a grid shared by the entries of
+            that condition, NaN where the run has no value), 'rate' ((n_tones,) rad/s, each tone's k for that run).
+        max_offset_s, step_s: the range and step searched, s.  A whole revolution of one rotor is told from another
+            only by the rotors' different speeds, so the range may span several revolutions.
+        sweeps: passes over the runs once all are placed (each run's offset refitted against all the others').
+            Runs are first placed one at a time, each fitted against those already placed only.
+        reference: the run held at 0 in each connected set of runs (runs linked by a shared condition); default
+            the run with most entries.
+
+    The objective is the real part of sum over pairs of entries of one condition, over cells and tones, of
+    A_a conj(A_b) exp(-i k (delta_a - delta_b)): their tones' cross power once both are corrected.
+
+    Returns (offsets, components): {run: delta (s)}, the reference's 0 in each set, and a list of the sets (lists
+    of runs), whose offsets are relative to their own reference only.
+    """
+    runs = sorted({e['run'] for e in entries}, key=str)
+    by_condition = {}
+    for e in entries:
+        by_condition.setdefault(e['condition'], []).append(e)
+    # connected sets of runs
+    parent = {r: r for r in runs}
+
+    def find(r):
+        while parent[r] != r:
+            parent[r] = parent[parent[r]]
+            r = parent[r]
+        return r
+    for group in by_condition.values():
+        for e in group[1:]:
+            parent[find(e['run'])] = find(group[0]['run'])
+    components = {}
+    for r in runs:
+        components.setdefault(find(r), []).append(r)
+    counts = {r: sum(e['run'] == r for e in entries) for r in runs}
+    fixed = set()
+    for members in components.values():
+        if reference is not None and reference in members:
+            fixed.add(reference)
+        else:
+            fixed.add(max(members, key=lambda r: (counts[r], str(r))))
+    offsets = {r: 0.0 for r in runs}
+    trial = np.arange(-max_offset_s, max_offset_s + step_s / 2, step_s)
+
+    def fit(r, against):
+        """The offset of run r that best matches the runs in `against` at their current offsets, or None."""
+        terms_c, terms_k = [], []
+        for group in by_condition.values():
+            others = [e for e in group if e['run'] in against and e['run'] != r]
+            for e in (e for e in group if e['run'] == r):
+                a = np.nan_to_num(np.asarray(e['amplitude']))
+                for o in others:
+                    b = np.nan_to_num(np.asarray(o['amplitude'])) * np.exp(
+                        -1j * np.asarray(o['rate'], float) * offsets[o['run']])
+                    terms_c.append((a * np.conj(b)).sum(axis=0))
+                    terms_k.append(np.asarray(e['rate'], float))
+        if not terms_c:
+            return None
+        c, k = np.concatenate(terms_c), np.concatenate(terms_k)
+        objective = np.real(np.exp(-1j * np.outer(trial, k)) @ c)
+        best = int(np.argmax(objective))
+        delta = trial[best]
+        if 0 < best < trial.size - 1:                  # parabolic refinement
+            y0, y1, y2 = objective[best - 1:best + 2]
+            denominator = y0 - 2 * y1 + y2
+            if denominator < 0:
+                delta += 0.5 * step_s * (y0 - y2) / denominator
+        return float(delta)
+
+    def overlap(r, against):
+        return sum(1 for group in by_condition.values() if any(e['run'] == r for e in group)
+                   for e in group if e['run'] in against and e['run'] != r)
+
+    # Runs join one at a time, each fitted against the runs already placed (the one sharing most with them first),
+    # so that no run is fitted against another's unknown offset; then sweeps refine every run against all others.
+    placed = set(fixed)
+    while len(placed) < len(runs):
+        candidates = [r for r in runs if r not in placed and overlap(r, placed) > 0]
+        r = max(candidates, key=lambda r: (overlap(r, placed), str(r)))
+        delta = fit(r, placed)
+        offsets[r] = 0.0 if delta is None else delta
+        placed.add(r)
+    for _ in range(sweeps):
+        for r in runs:
+            if r not in fixed:
+                delta = fit(r, set(runs))
+                if delta is not None:
+                    offsets[r] = delta
+    return offsets, [sorted(m, key=str) for m in components.values()]
