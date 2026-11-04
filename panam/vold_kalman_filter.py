@@ -102,7 +102,7 @@ def _get_bu_index_cache(n_x, n_ord):
     return row_indices, col_indices, pair_i, pair_j
 
 
-def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None, solver="auto", use_coupling=True):
+def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None, solver="auto", use_coupling=True, phase=None):
     r"""
     Multi-shaft Vold-Kalman filter for extracting acoustic signal components.
 
@@ -160,6 +160,12 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None, solver="auto", use_cou
     use_coupling : bool, optional
         Whether to include cross-order coupling (B_U) terms. Default True.
         Setting False can speed up solves but changes results.
+    phase : ndarray, optional
+        Each order's phase track, rad, shape (n_samples,) or (n_samples,
+        n_orders): the phasor is then exp(i phase) instead of the integral of
+        ``freq``, which may be None.  For orders locked to a measured shaft
+        angle (order times the angle), whose integral of the speed drifts
+        from the angle.  The envelopes are relative to this phasor.
 
     Returns
     -------
@@ -228,20 +234,29 @@ def vold_kalman_filter(x, freq, fs, bandwidth, p, r=None, solver="auto", use_cou
     n_x = len(x)
     x = np.asarray(x)
 
-    # Handle freq as 1D or 2D array
-    freq = np.atleast_1d(freq)
-    if freq.ndim == 1:
-        freq = freq[:, np.newaxis]
+    # The orders' phase: given, or the integral of their frequency
+    track = freq if phase is None else phase
+    if track is None:
+        raise ValueError("freq is required unless phase is given")
+    track = np.atleast_1d(np.asarray(track, dtype=float))
+    if track.ndim == 1:
+        track = track[:, np.newaxis]
 
-    n_f, n_ord = freq.shape
+    n_f, n_ord = track.shape
 
     if n_f != n_x:
-        raise ValueError("The length of frequency vector must be the same as the signal")
+        raise ValueError("The length of the {} vector must be the same as the signal"
+                         .format("frequency" if phase is None else "phase"))
+    if not np.all(np.isfinite(track)):
+        raise ValueError("the {} track must be finite".format("frequency" if phase is None else "phase"))
 
     n_tot = n_x * n_ord
 
     # Creating the Phasor Vector
-    phasor = np.exp(2j * np.pi * np.cumsum(freq, axis=0) * dt)
+    if phase is None:
+        phasor = np.exp(2j * np.pi * np.cumsum(track, axis=0) * dt)
+    else:
+        phasor = np.exp(1j * track)
 
     # Setting the filter order & coefficients
     p_arr = np.atleast_1d(p).astype(int)

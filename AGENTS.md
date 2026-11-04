@@ -60,6 +60,8 @@ Library modules, in `panam/`:
 - `sphere_statistics.py`: energy averaging of repeat-run spheres,
   band-by-band sphere comparison (CLI `tools/sphere_diff.py`) and per-node sample
   statistics (`node_statistics`).
+- `rotor_tones.py`: rotor-locked tones from measured rotor angles (the measured side of format 2):
+  `rotor_azimuth`, `emission_azimuth`, `rotor_locked_tones` (the Vold-Kalman filter on given phase tracks).
 - `pt_database.py`: format 2 databases of pure tones from PSU-WOPWOP's per-rotor PT spheres
   (`build_pt_database`, CLI `tools/build_pt_database.py`): one source per rotor, phase locked to its
   azimuth, nothing done that would damage phase; helicopter or multirotor (momentum-similarity)
