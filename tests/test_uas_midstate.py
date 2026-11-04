@@ -46,8 +46,8 @@ def write_run(path, fs=1000.0, n=50, version='0.4', vehicle=True):
         a.createDimension('mic', 2)
         a.createDimension('sample', n)
         a.sample_rate = fs
-        for name, vals in (('mic', ['mic16', 'mic13']), ('channel', ['M8', 'M13']),
-                           ('mic_mount', ['ground board', 'pole'])):
+        for name, vals in (('mic_id', ['mic16', 'mic13']), ('channel', ['M8', 'M13']),
+                           ('mic_mount', ['inverted ground plane', 'pole (4 ft, Part 36)'])):
             v = a.createVariable(name, str, ('mic',))
             for i, s in enumerate(vals):
                 v[i] = s
@@ -56,6 +56,10 @@ def write_run(path, fs=1000.0, n=50, version='0.4', vehicle=True):
             a.createVariable(name, 'f8', ('mic',))[:] = vals
         a.createVariable('step', 'f8', ('mic',))[:] = step
         a.createVariable('counts', 'i4', ('mic', 'sample'))[:] = counts
+        q = a.createVariable('mic_quality', 'i2', ('mic',))
+        q[:] = [0, 4 | 8]
+        q.flag_masks = np.array([1, 2, 4, 8, 16], dtype='i2')
+        q.flag_meanings = 'clipped dropout in_downwash position_uncertain runlog_note'
         if vehicle:
             v = nc.createGroup('vehicle')
             p = add_series(v, 'position', [0.0, 0.5, 1.0], {
@@ -82,7 +86,8 @@ def test_microphones_and_receiver(tmp_path):
     with um.open_run(path) as run:
         mics = run.microphones()
         assert list(mics['channel']) == ['M8', 'M13']
-        assert list(mics['mic_mount']) == ['ground board', 'pole']
+        assert list(mics['mic_mount']) == ['inverted ground plane', 'pole (4 ft, Part 36)']
+        assert list(mics['mic_id']) == ['mic16', 'mic13']
         assert run.mic_index('M13') == run.mic_index('mic13') == 1
         np.testing.assert_allclose(run.receiver('M8'), [10.0, -20.0, -0.8])
         np.testing.assert_allclose(run.receiver('M8', units='ft'), np.array([10.0, -20.0, -0.8]) / 0.3048)
@@ -285,3 +290,22 @@ def test_close_is_idempotent(tmp_path):
     run.close()
     with pytest.raises(FileNotFoundError):
         um.list_runs(tmp_path / 'nowhere')
+
+
+def test_flags_keep_their_integers(tmp_path):
+    """Flag variables (PX4 states, microphone quality) come back as integers, and quality() decodes them."""
+    path = tmp_path / 'run.nc'
+    write_run(path)
+    with netCDF4.Dataset(path, 'a') as nc:
+        st = add_series(nc['vehicle'], 'status', [0.0, 0.5, 1.0], {'nav_state': [2.0, 3.0, 3.0]})
+        st.renameVariable('nav_state', 'nav_float')
+        v = st.createVariable('nav_state', 'i1', ('time',))
+        v[:] = [2, 3, 3]
+        v.flag_values = np.array([2, 3], dtype='i1')
+        v.flag_meanings = 'posctl auto_mission'
+    with um.open_run(path) as run:
+        nav = run.vehicle('status')['nav_state']
+        assert nav.dtype.kind == 'i' and list(nav) == [2, 3, 3]
+        q = run.microphones()['mic_quality']
+        assert q.dtype.kind == 'i' and list(q) == [0, 12]
+        assert run.quality('M8') == [] and run.quality('mic13') == ['in_downwash', 'position_uncertain']

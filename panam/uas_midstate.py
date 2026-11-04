@@ -3,42 +3,53 @@
 Each run file holds one microphone-array recording and everything measured with it, every time axis in seconds
 after the run's ``time_origin`` (UTC, with the recorder's clock corrected):
 
+``/`` (attributes)
+    run id, vehicle, ``status`` (``flight``, ``flight_no_log`` with ``status_reason``, ``ambient``), the run log's
+    row (text as written, and ``runlog_heights_ft``, ``runlog_speeds`` as numbers), clock corrections, the site
+    origin (``site_origin_lat``, ``site_origin_lon``, ``site_origin_height``) and its datums, ACDD discovery metadata.
 ``/acoustic``
     ``counts`` (mic, sample) int32 and ``step`` (mic) in Pa per count: **pressure = counts x step**. The counts
-    are the recorder's own integers. Sample ``i`` is at ``i / sample_rate`` s. Per microphone: ``mic``
-    (physical microphone id), ``channel`` (recorder channel), ``mic_east``, ``mic_north``, ``mic_up`` (m, site
+    are the recorder's own integers. Sample ``i`` is at ``i / sample_rate`` s. Per microphone: ``mic_id``
+    (physical microphone), ``channel`` (recorder channel), ``mic_east``, ``mic_north``, ``mic_up`` (m, site
     frame), ``mic_x``, ``mic_y``, ``mic_z`` (m, array frame), ``mic_ground_up``, ``mic_height_above_ground``,
     ``mic_lat``, ``mic_lon``, ``mic_pole_offset_east``, ``mic_pole_offset_north``, ``mic_pole_offset_uncertainty``
     (m; a pole's measured offset from its plate, already included in its position; NaN otherwise), ``mic_mount``
-    (ground board or pole), ``survey_point``, ``notes``.
+    (inverted ground plane or pole), ``survey_point``, ``notes``, and ``mic_quality`` (flags: clipped, dropout,
+    in_downwash, position_uncertain, runlog_note; :meth:`RunFile.quality`).
 ``/vehicle/<topic>``
     PX4 state at its own rates: ``position`` (east, north, up and array-frame x, y, z in m; lat, lon, alt AMSL),
-    ``velocity`` (both frames, m/s), ``attitude`` (quaternion, roll, pitch, yaw in rad), ``angular_rate``,
-    ``motor_command``, ``thrust_setpoint``, ``battery``, ``barometer`` (the autopilot's), ``status`` (arming and
-    navigation state), ``land_detector``. Absent when no flight log matched the recording.
+    ``velocity`` (both frames, m/s), ``attitude`` (``q_w`` .. ``q_z``; roll, pitch, yaw in rad), ``angular_rate``
+    (``roll_rate``, ``pitch_rate``, ``yaw_rate``), ``motor_command`` (``command`` (motor, time)),
+    ``thrust_setpoint`` (``thrust_x``, ``thrust_y``, ``thrust_z``), ``battery``, ``barometer`` (the autopilot's),
+    ``status`` (``arming_state``, ``nav_state``: integer flags with ``flag_meanings``), ``land_detector``
+    (``landed``). Absent when no flight log matched the recording.
 ``/rotors/motor<k>``
     onboard rotor ``speed`` (rad/s, negative clockwise seen from above) and, where logged, ``angle`` (rad, the
-    motor controller's own zero). The ``/rotors`` group's attributes give the clock correction, the angle
-    definition and ``prop_aligned_angle`` (per motor, in motor order: the reported angle with the prop along its
-    arm, where that was measured); :meth:`RunFile.rotors` hands each motor its own entry.
+    motor controller's own zero). The ``/rotors`` group's attributes give the angle definition and
+    ``prop_aligned_angle`` (per motor, in motor order: the reported angle with the prop along its arm, where that
+    was measured); :meth:`RunFile.rotors` hands each motor its own entry.
 ``/air_data``
-    the aircraft-mounted air data system: the instrument's own record (``wx150_<n>``, ``trisonica_<n>``) and
-    ``airspeed``, the calibrated airspeed and the wind derived from it, with the calibration in its attributes.
+    the aircraft-mounted air data system. Its instrument's own record (``wx150_<n>``, ``trisonica_<n>``) measures
+    the air moving past the aircraft: ``airspeed_measured`` (uncalibrated), ``airflow_angle``, ``air_pressure``.
+    ``airspeed`` holds the calibrated airspeed and the wind derived from it, with the calibration in its attributes.
 ``/weather/<instrument>_<n>``
-    ground weather stations, each group with its instrument and clock; each variable's units are in its
-    ``units`` attribute (:meth:`RunFile.units`).
+    ground weather stations (``wind_speed``, ``wind_from_direction``, ``station_pressure``, ...), each group with
+    its instrument; each variable's units are in its ``units`` attribute (:meth:`RunFile.units`).
 ``/segments``
     the flight's steady segments: passes, climbs, descents and hovers, with their conditions, the run log's nominal
-    height and speed, and each microphone's closest approach, kept to the recording (vehicle times from
-    ``time_origin`` to its last sample).
+    height and speed (numbers, NaN where none matched), and each microphone's closest approach, kept to the
+    recording (vehicle times from ``time_origin`` to its last sample).
+
+Every group with a time axis, and ``/acoustic``, gives its clock: ``clock`` (words), ``clock_offset_s`` (added to
+the instrument's own time stamps to put them on UTC) and ``clock_offset_uncertainty_s`` (NaN where not assessed).
 
 Positions and velocities are given in the site frame (east, north, up from ``site_origin``) and in the array frame
 (``x`` along runway 16/34, ``y`` lateral to the left, ``z`` up; root attribute ``array_frame``).
 
 Each group's ``time`` is CF (``seconds since <time_origin>``), so xarray decodes it to datetimes unless opened
-with ``decode_times=False``; this module returns the seconds, and refuses a time axis on any other origin. Numbers
-come back as float64 with unwritten cells NaN, strings as object arrays, a group's attributes as ``'@name'``
-entries. Lengths here are in m and speeds in m/s; :meth:`RunFile.track` and :meth:`RunFile.receiver` convert to
+with ``decode_times=False``; this module returns the seconds, and refuses a time axis on any other origin. Integer
+(flag) variables come back as integers, other numbers as float64 with unwritten cells NaN, strings as object
+arrays, a group's attributes as ``'@name'`` entries. Lengths here are in m and speeds in m/s; :meth:`RunFile.track` and :meth:`RunFile.receiver` convert to
 ft for :mod:`panam.order_tracking` and the 2017 pipeline. A missing optional group (``/rotors``, ``/air_data``,
 ``/weather``, ``/segments``) reads as ``{}``; asking for a missing ``/vehicle`` topic raises KeyError. The reader
 reads format 0.4 (:data:`FORMAT_VERSIONS`) and refuses other versions.
@@ -58,10 +69,14 @@ _FRAMES = {'site': ('east', 'north', 'up'), 'array': ('x', 'y', 'z')}
 
 
 def _values(var):
-    """A variable's values: strings as an object array; numbers as float64, with unwritten or fill cells NaN."""
+    """A variable's values: strings as an object array; integers (flags) as integers; other numbers as float64.
+    Unwritten or fill cells are NaN (an integer variable with any becomes float64)."""
     if var.dtype is str:
         return np.array(var[:], dtype=object)
-    return np.ma.filled(np.ma.asarray(var[:], dtype=float), np.nan)
+    data = var[:]
+    if np.issubdtype(var.dtype, np.integer) and not np.ma.is_masked(data):
+        return np.asarray(data)
+    return np.ma.filled(np.ma.asarray(data, dtype=float), np.nan)
 
 
 def _choice(table, key, what):
@@ -152,7 +167,7 @@ class RunFile:
         return len(self._nc['acoustic'].dimensions['sample'])
 
     def microphones(self):
-        """dict of per-microphone arrays, in file order: ``mic`` (id), ``channel``, ``mic_east``, ``mic_north``,
+        """dict of per-microphone arrays, in file order: ``mic_id``, ``channel``, ``mic_quality`` (flags), ``mic_east``, ``mic_north``,
         ``mic_up`` (m, site frame), ``mic_x``, ``mic_y``, ``mic_z`` (m, array frame), ``mic_mount``,
         ``mic_height_above_ground``, ``mic_lat``, ``mic_lon``, ``mic_pole_offset_*``, ``step`` (Pa per count), ...
         Strings as object arrays, numbers as float64 (NaN where not given)."""
@@ -167,11 +182,18 @@ class RunFile:
             if not 0 <= mic < n:
                 raise IndexError(f'microphone index {mic} outside 0..{n - 1} in {self.path}')
             return int(mic)
-        for key in ('mic', 'channel'):
+        for key in ('mic_id', 'channel'):
             names = list(a[key][:])
             if mic in names:
                 return names.index(mic)
         raise KeyError(f'{mic!r} is neither a microphone id nor a channel of {self.path}')
+
+    def quality(self, mic):
+        """Names of the quality flags set for a microphone in this run ([] when none), from ``mic_quality``."""
+        q = self._nc['acoustic']['mic_quality']
+        value = int(q[self.mic_index(mic)])
+        masks, names = np.atleast_1d(q.flag_masks), q.flag_meanings.split()
+        return [n for m, n in zip(masks, names) if value & int(m)]
 
     # ------------------------------------------------------------------------------------------ acoustics
 
