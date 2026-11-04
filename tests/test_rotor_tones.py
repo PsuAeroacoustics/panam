@@ -242,3 +242,15 @@ def test_clock_offsets_recover_each_runs_timing():
     assert components == [['a', 'b', 'c', 'd', 'e']]
     for run, delta in truth.items():
         assert abs(offsets[run] - delta) < 5e-5, (run, offsets[run], delta)
+
+
+def test_clock_offsets_leave_an_unconstrained_run_at_zero():
+    """A run whose cells never meet another's is not constrained: it keeps 0, not the edge of the search."""
+    a = np.full((10, 2), np.nan, dtype=complex)
+    b = a.copy()
+    a[:5] = 1.0
+    b[5:] = 1.0
+    entries = [{'run': 'a', 'condition': 'x', 'amplitude': a, 'rate': np.array([200.0, 400.0])},
+               {'run': 'b', 'condition': 'x', 'amplitude': b, 'rate': np.array([200.0, 400.0])}]
+    offsets, _ = rt.clock_offsets(entries, reference='a')
+    assert offsets == {'a': 0.0, 'b': 0.0}

@@ -376,13 +376,15 @@ def clock_offsets(entries, *, max_offset_s=0.15, step_s=2e-5, sweeps=4, referenc
         sweeps: passes over the runs once all are placed (each run's offset refitted against all the others').
             Runs are first placed one at a time, each fitted against those already placed only.
         reference: the run held at 0 in each connected set of runs (runs linked by a shared condition); default
-            the run with most entries.
+            the run with most entries.  The others join one at a time, the one sharing the most cells and tones with
+            those placed first, each fitted against those placed; then every run is refitted against all.
 
     The objective is the real part of sum over pairs of entries of one condition, over cells and tones, of
     A_a conj(A_b) exp(-i k (delta_a - delta_b)): their tones' cross power once both are corrected.
 
     Returns (offsets, components): {run: delta (s)}, the reference's 0 in each set, and a list of the sets (lists
-    of runs), whose offsets are relative to their own reference only.
+    of runs), whose offsets are relative to their own reference only.  A run that shares no cell with any other
+    keeps 0 (it is not constrained).
     """
     runs = sorted({e['run'] for e in entries}, key=str)
     by_condition = {}
@@ -427,6 +429,8 @@ def clock_offsets(entries, *, max_offset_s=0.15, step_s=2e-5, sweeps=4, referenc
         if not terms_c:
             return None
         c, k = np.concatenate(terms_c), np.concatenate(terms_k)
+        if not np.any(c):
+            return None                                # nothing shared: the offset is not constrained
         objective = np.real(np.exp(-1j * np.outer(trial, k)) @ c)
         best = int(np.argmax(objective))
         delta = trial[best]
@@ -438,14 +442,21 @@ def clock_offsets(entries, *, max_offset_s=0.15, step_s=2e-5, sweeps=4, referenc
         return float(delta)
 
     def overlap(r, against):
-        return sum(1 for group in by_condition.values() if any(e['run'] == r for e in group)
-                   for e in group if e['run'] in against and e['run'] != r)
+        """How much run r shares with the runs in `against`: cells and tones where both have a value."""
+        total = 0
+        for group in by_condition.values():
+            for e in (e for e in group if e['run'] == r):
+                have = np.isfinite(np.asarray(e['amplitude']))
+                total += sum(int(np.sum(have & np.isfinite(np.asarray(o['amplitude'])))) for o in group
+                             if o['run'] in against and o['run'] != r)
+        return total
 
-    # Runs join one at a time, each fitted against the runs already placed (the one sharing most with them first),
+    # Runs join one at a time, each fitted against the runs already placed (the one sharing the most cells and tones
+    # with them first, so that a run is placed through its strongest link),
     # so that no run is fitted against another's unknown offset; then sweeps refine every run against all others.
     placed = set(fixed)
     while len(placed) < len(runs):
-        candidates = [r for r in runs if r not in placed and overlap(r, placed) > 0]
+        candidates = [r for r in runs if r not in placed]
         r = max(candidates, key=lambda r: (overlap(r, placed), str(r)))
         delta = fit(r, placed)
         offsets[r] = 0.0 if delta is None else delta
