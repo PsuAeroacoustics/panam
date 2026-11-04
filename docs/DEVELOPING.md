@@ -81,7 +81,7 @@ The library's modules, in `panam/`:
 | `array_design.py` | Microphone arrays: `linear_array_plan`, the pass, hover and takeoff coverage, `geodetic2array`, `write_kml` |
 | `tracks.py` | NASA track files: `load_NASA_track`, `filter_track` |
 | `ground_effect.py` | `spherical_reflection_coefficient` and the excess ground attenuation `ega` |
-| `uas_midstate.py` | Reads the Mid-State UAS dataset's run files: pressure from counts and steps, microphones, PX4 state, onboard rotor data and weather on one corrected UTC time base (`open_run`, `list_runs`); the format is in [`file_formats.md`](file_formats.md#mid-state-uas-run-file-nc) |
+| `uas_midstate.py` | Reads the Mid-State UAS dataset's run files: pressure from counts and steps, microphones, PX4 state, onboard rotor data, air data, weather and the flight's steady segments on one corrected UTC time base (`open_run`, `list_runs`); the format is in [`file_formats.md`](file_formats.md#mid-state-uas-run-file-nc) |
 | `noise_abatement_2017.py` | The 2017 Noise Abatement build: dataset layout, tracks and the track check, steady windows, atmosphere per run, plate tables, `build_sphere`, `build_all`; its command line is `tools/noise_abatement_2017.py` |
 | `ground_plane.py` | Ground impedance models, pole microphones, co-located pole and board pairs, ground-plate models, the exact half-space Green's function, the two-path fit, `emission_times`. Numba-compiled |
 | `axisymmetric_bem.py` | The axisymmetric BEM of the plate on the ground (`scattering`, `table`, `board_level`, `field`, `write_netcdf` for NICEOPS). Numba-compiled |
