@@ -29,8 +29,8 @@ after the run's ``time_origin`` (UTC, with the recorder's clock corrected):
     ``units`` attribute (:meth:`RunFile.units`).
 ``/segments``
     the flight's steady segments: passes, climbs, descents and hovers, with their conditions, the run log's nominal
-    height and speed, and each microphone's closest approach. They come from the flight log, so a segment can
-    begin before the recording or end after it.
+    height and speed, and each microphone's closest approach, kept to the recording (vehicle times from
+    ``time_origin`` to its last sample).
 
 Positions and velocities are given in the site frame (east, north, up from ``site_origin``) and in the array frame
 (``x`` along runway 16/34, ``y`` lateral to the left, ``z`` up; root attribute ``array_frame``).
@@ -293,8 +293,8 @@ class RunFile:
         """The steady segments of the flight (passes, climbs, descents, hovers): dict of per-segment arrays (``kind``,
         ``start``/``end`` s after time_origin, ``direction``, ``ground_speed``, ``height``, ``airspeed``,
         ``nominal_height_ft`` (a string, '' when none matched), ...) and per segment and microphone
-        (``closest_distance``, ``closest_time``, ``closest_arrival``, columns in ``channel`` order). Segments come
-        from the flight log, so they can begin before the recording or end after it. {} when the run has no
+        (``closest_distance``, ``closest_time``, ``closest_arrival``, columns in ``channel`` order). The writer
+        keeps segments to the recording; :meth:`segment_samples` still checks. {} when the run has no
         /segments group; a run without a flight log has the group with no segments."""
         if 'segments' not in self._nc.groups:
             return {}
