@@ -264,7 +264,8 @@ tag:
 |---|---|
 | `center(xyz)` | The hub, m, in the sphere frame: forward, starboard, up (PSU-WOPWOP's XYZ is aft, starboard, up in ft) |
 | `shaft_rate` | rad/s, positive counterclockwise seen from above (`main_rotor_rotation`) |
-| `harmonic(tone)`, `frequency(tone)` | Shaft orders, and their emission-frame frequencies, Hz |
+| `harmonic(tone)`, `frequency(tone)` | Shaft orders, and their emission-frame frequencies, Hz. A spectrum over N revolutions (bins every 1/N order, N <= 64) keeps its whole orders; the bins between are dropped |
+| `dropped_energy_fraction` | The share of the sphere's energy in those dropped bins (leakage, a loading's slow drift) |
 | `amplitude(PHI, THETA, tone)` | dB re 20 µPa at the sphere radius. Shaft orders at PSU-WOPWOP's floor everywhere are left out; a kept tone's floor cells keep the floor level, since NICE-OPS reads -inf as missing and fills it from the neighbors |
 | `phase(PHI, THETA, tone)` | deg: the cosine phase at emission from the hub, less harmonic × `azimuth` (locked to the rotor) |
 | `azimuth` | deg: the rotor azimuth, in its own sense of rotation, the phase was locked to (ROTOR_AZIMUTH); NICE-OPS's default `--rotor_azimuth` |

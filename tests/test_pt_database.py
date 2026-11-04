@@ -421,3 +421,21 @@ def test_command_line_builds_a_multirotor_database(tmp_path, capsys):
     assert build_pt_database.main(files + ['-o', str(tmp_path / 'bad.nod'), '--weight-newtons', '151',
                                            '--condition-axes', 'multirotor']) == 1
     assert 'rotor_count' in capsys.readouterr().err
+
+
+def test_analysis_over_several_revolutions_keeps_the_whole_orders(tmp_path):
+    # PSU-WOPWOP's spectrum over N revolutions has bins every 1/N shaft order: the tones are the whole orders;
+    # the bins between (leakage, a loading's slow drift) are dropped and their share of the energy recorded.
+    orders = np.arange(1, 37) / 4.0                        # quarter orders, as over 4 revolutions
+    levels = np.full((13, 13, orders.size), 10.0)          # weak everywhere between the tones
+    for k, m in enumerate(orders):
+        if m in (3.0, 6.0, 9.0):
+            levels[:, :, k] = 80.0
+    sphere = write_pt_sphere(tmp_path / 'Q.nc', orders=orders, levels=levels)
+    path = build(tmp_path, [sphere])
+    s = read_source(path)
+    assert list(s['harmonic']) == [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    assert 0 < float(s['dropped_energy_fraction']) < 1e-4
+    off = write_pt_sphere(tmp_path / 'R.nc', orders=(1.0, 2.0, 2.37, 3.0))   # 237/100: no spectrum of <= 64 revolutions
+    with pytest.raises(ValueError, match='shaft order'):
+        build(tmp_path, [off])

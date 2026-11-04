@@ -144,15 +144,40 @@ def _close_seam(sphere):
     return sphere
 
 
+def _revolutions(sphere, shaft_hz, harmonic_tolerance, most=64):
+    """N when every FREQUENCY is a whole multiple of shaft_hz / N (PSU-WOPWOP's spectrum over N revolutions), the
+    smallest such N up to `most`; None when there is none."""
+    for n in range(1, most + 1):
+        bins = np.rint(sphere.frequency * n / shaft_hz)
+        if np.all(np.abs(sphere.frequency - bins * shaft_hz / n) <= harmonic_tolerance * np.maximum(bins * shaft_hz / n,
+                                                                                                     1e-300)):
+            return n
+    return None
+
+
 def _tones(sphere, harmonic_tolerance=1e-5):
     """The sphere's shaft orders that carry energy above its floor: (harmonics, frequencies Hz, amplitude dB with
-    floor cells at -inf, phase deg locked to the rotor azimuth).  Every listed frequency must be a shaft order."""
+    floor cells at -inf, phase deg locked to the rotor azimuth, the share of the energy dropped).  Every listed
+    frequency must be a shaft order, or (a spectrum over N revolutions) a whole multiple of 1/N of one: then only
+    the whole orders are tones, and the bins between them (leakage, a loading's slow drift) are dropped."""
     shaft_hz = abs(sphere.shaft_rate) / (2.0 * math.pi)
-    orders = np.rint(sphere.frequency / shaft_hz).astype(int)
-    off = np.abs(sphere.frequency - orders * shaft_hz) > harmonic_tolerance * np.maximum(orders * shaft_hz, 1e-300)
-    if np.any(off) or np.any(orders < 1):
-        raise ValueError(f'{sphere.path}: FREQUENCY {sphere.frequency[off | (orders < 1)][:3]} Hz is not a whole '
-                         f'shaft order of ROTOR_SHAFT_RATE ({shaft_hz:.6g} Hz)')
+    n_rev = _revolutions(sphere, shaft_hz, harmonic_tolerance)
+    if n_rev is None:
+        orders = np.rint(sphere.frequency / shaft_hz).astype(int)
+        off = np.abs(sphere.frequency - orders * shaft_hz) > harmonic_tolerance * np.maximum(orders * shaft_hz, 1e-300)
+        raise ValueError(f'{sphere.path}: FREQUENCY {sphere.frequency[off][:3]} Hz is not a whole shaft order of '
+                         f'ROTOR_SHAFT_RATE ({shaft_hz:.6g} Hz), nor a whole fraction of one')
+    bins = np.rint(sphere.frequency * n_rev / shaft_hz).astype(int)
+    whole = (bins % n_rev == 0) & (bins > 0)
+    energy = 10.0 ** (np.where(sphere.amplitude > sphere.floor_db + 1e-3, sphere.amplitude, -np.inf) / 10.0)
+    total = energy.sum()
+    dropped = float(energy[:, :, ~whole].sum() / total) if total > 0 else 0.0
+    sphere.dropped_energy_fraction = dropped
+    sphere.revolutions = n_rev
+    sphere.frequency = sphere.frequency[whole]
+    sphere.amplitude = sphere.amplitude[:, :, whole]
+    sphere.phase = sphere.phase[:, :, whole]
+    orders = bins[whole] // n_rev
     # A tone at PSU-WOPWOP's floor (floor_level_dB) everywhere has no energy and is left out.  Where a kept tone is at
     # the floor in some cells, the floor stays: a predicted cell is quiet, not missing, and NICE-OPS drops a -inf
     # entry from its interpolation and renormalizes the rest, which would fill a directivity null with its
@@ -420,6 +445,10 @@ def _write_source(group, sphere, sync_group, speed_ratio=None):
         v[:] = values
         v.units = units
     sub['phase'].description = 'cosine phase at emission from the hub, less harmonic x azimuth (rotor-locked)'
+    v = sub.createVariable('dropped_energy_fraction', 'f8')
+    v[...] = getattr(sphere, 'dropped_energy_fraction', 0.0)
+    v.description = ('the share of the sphere\'s energy in the bins between whole shaft orders, dropped (a '
+                     'spectrum over several revolutions)')
     v = sub.createVariable('azimuth', 'f8')
     v[...] = sphere.azimuth_deg
     v.units = 'degree'
