@@ -254,3 +254,19 @@ def test_clock_offsets_leave_an_unconstrained_run_at_zero():
                {'run': 'b', 'condition': 'x', 'amplitude': b, 'rate': np.array([200.0, 400.0])}]
     offsets, _ = rt.clock_offsets(entries, reference='a')
     assert offsets == {'a': 0.0, 'b': 0.0}
+
+
+def test_tone_noise_is_what_broadband_alone_gives():
+    """White noise through the extraction: the rms |amplitude| it leaves on each order is about tone_noise's estimate,
+    which errs high where neighboring orders share the noise out (a conservative gate), never low by much."""
+    rng = np.random.default_rng(13)
+    t, psi, h, amplitude, _ = _synthetic(rng, harmonics=(2, 4))
+    noise = 0.3 * rng.standard_normal(t.size)
+    y, residual = rt.rotor_locked_tones(noise, FS, psi, h, 3.0)
+    inner = (t > 1.0) & (t < DURATION - 1.0)
+    frequency = rt.received_shaft_rate(psi, FS)[:, :, None] * h[None, None, :] / (2 * np.pi)
+    estimate = rt.tone_noise(residual, FS, frequency[inner], 3.0)
+    measured = np.sqrt(np.mean(np.abs(y[inner]) ** 2, axis=0))
+    ratio = measured / np.mean(estimate, axis=0)
+    assert np.all((ratio > 0.4) & (ratio < 1.3))
+    assert 0.7 < np.median(ratio) < 1.1

@@ -196,6 +196,34 @@ def _frequency_groups(phase, fs, gap_hz):
     return groups
 
 
+def tone_noise(residual, fs, frequency_hz, bandwidth_hz, segment_s=4.0, percentile=75.0):
+    """The noise an extracted order carries: the rms of |amplitude| (:func:`rotor_locked_tones`) that broadband
+    alone would give at each frequency, Pa.
+
+    sqrt(2 G(f) B), with B the envelope's bandwidth (the filter passes a band B wide about the order, and the
+    amplitude is twice the envelope) and G the residual's one-sided power spectral density near f (Welch,
+    ``segment_s`` segments).  The residual is notched at every extracted order, its own included, so G is taken as
+    the ``percentile`` of the density over |f' - f| <= max(15 Hz, 0.15 f), where the notches are a minority.
+    Compare it with |amplitude| to gate tones that are not above the noise.
+
+    Args:
+        residual: (n,) Pa, the pressure less the extracted orders.
+        fs: Hz.
+        frequency_hz: the received frequencies to evaluate at, any shape.
+        bandwidth_hz: the extraction's bandwidth, Hz.
+    """
+    from scipy import signal as sg
+    x = np.asarray(residual, dtype=float)
+    f, g = sg.welch(x, fs, nperseg=min(x.size, int(round(segment_s * fs))))
+    wanted = np.asarray(frequency_hz, dtype=float)
+    centers = np.linspace(max(f[1], np.nanmin(wanted) * 0.9), np.nanmax(wanted) * 1.1, 200)
+    level = np.empty(centers.size)
+    for i, fc in enumerate(centers):
+        near = np.abs(f - fc) <= max(15.0, 0.15 * fc)
+        level[i] = np.percentile(g[near], percentile) if near.any() else np.nan
+    return np.sqrt(2.0 * np.interp(wanted, centers, level) * float(bandwidth_hz))
+
+
 def received_shaft_rate(azimuth_e, fs):
     """The shaft rate as heard, rad/s: the time derivative of the emission-time azimuth (n, ...) sampled at fs (Hz).
     Order h is received at h times this over 2 pi, Hz (the Doppler shift included)."""
