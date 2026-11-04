@@ -21,7 +21,9 @@ Times in s, angles in rad unless named ``_deg``, lengths in m unless named ``_ft
 """
 import numpy as np
 
+from panam import axisymmetric_bem as ab
 from panam import ground_plane as gp
+from panam.ground_effect import spherical_reflection_coefficient
 from panam.vold_kalman_filter import vold_kalman_filter
 
 
@@ -157,3 +159,102 @@ def received_shaft_rate(azimuth_e, fs):
     """The shaft rate as heard, rad/s: the time derivative of the emission-time azimuth (n, ...) sampled at fs (Hz).
     Order h is received at h times this over 2 pi, Hz (the Doppler shift included)."""
     return np.gradient(np.asarray(azimuth_e, dtype=float), 1.0 / fs, axis=0)
+
+
+def depropagate_tones(amplitude, frequency_hz, distance_m, sphere_radius_m, atmosphere=None, response=None,
+                      lossless=True):
+    """Tones heard at a receiver, as they would be at the sphere radius from the hub in free field.
+
+    Args:
+        amplitude: complex Pa, (n, ...): what :func:`rotor_locked_tones` returns, say.
+        frequency_hz: each tone's received frequency, Hz, broadcastable to ``amplitude``.
+        distance_m: (n,) the hub-to-receiver distance at emission, m.
+        sphere_radius_m: the sphere's radius, m.
+        atmosphere: a :class:`panam.acoustics.atmosphere.Atmosphere` for ISO 9613-1 absorption at each tone's
+            frequency, or None for none.
+        response: the receiver's complex response re the direct free-field wave (a plate on the ground,
+            :func:`plate_tone_response`), broadcastable to ``amplitude``, or None for a free-field receiver.
+        lossless: undo the absorption over the whole path (True: a lossless sphere, ``sphere_levels_lossless``,
+            which NICEOPS absorbs from the hub) or only beyond the sphere radius (False).
+
+    Returns amplitude x (distance / radius) x 10^(alpha L / 20) / response: spherical spreading and absorption
+    undone, the receiver's response divided out (its phase too), and the emission phase kept.
+    """
+    a = np.asarray(amplitude)
+    r = np.asarray(distance_m, dtype=float).reshape((-1,) + (1,) * (a.ndim - 1))
+    gain = r / float(sphere_radius_m)
+    if atmosphere is not None:
+        path = r if lossless else r - float(sphere_radius_m)
+        gain = gain * 10.0 ** (atmosphere.attenuation_coefficient(np.asarray(frequency_hz, dtype=float))
+                               * path / 20.0)
+    out = a * gain
+    return out if response is None else out / response
+
+
+def plate_tone_table(frequencies_hz, sound_speed_ft_s, flow_resistance=gp.FLOW_RESISTANCE, ground=None,
+                     **options):
+    """A plate-on-the-ground table for single frequencies (tones), not bands: :func:`axisymmetric_bem.table` with
+    one sub-frequency per entry, so that ``frequencies`` are exactly ``frequencies_hz`` (sorted).  Lengths in ft,
+    speed in ft/s, as there; ``options`` as there (the plate and the microphone).  Space the frequencies closely
+    enough for linear interpolation between them (:func:`plate_tone_response`): the plate's response turns over a
+    few hundred hertz for a plate a few tenths of a meter across."""
+    return ab.table(np.unique(np.asarray(frequencies_hz, dtype=float)), sound_speed_ft_s, flow_resistance, ground,
+                    sub_bands=1, **options)
+
+
+def plate_tone_response(table, frequency_hz, source_height_ft, ground_distance_ft, sound_speed_ft_s,
+                        source_dx_ft=None, source_dy_ft=None, mirror_y=False):
+    """The complex response, re the direct free-field wave, of a microphone on a plate lying on the ground, at each
+    frame's tone frequency and direction, in this module's e^{+i omega t} convention.
+
+    P = P_d + Q P_r as :func:`axisymmetric_bem.board_level` forms it (Q, the spherical-wave reflection coefficient of
+    the table's ground, at the plate's top from each frame's geometry; P_d and P_r bilinear in elevation and
+    azimuth as :func:`ground_plane.table_frames` takes them, and linear in frequency between the table's), then
+    conjugated: PANAM's ground models are e^{-i omega t}.  So |P|^2 is board_level's at a table frequency.
+
+    Args:
+        table: :func:`plate_tone_table`.
+        frequency_hz, source_height_ft, ground_distance_ft: (n,) per frame; the source's height above the ground
+            and horizontal distance from the microphone, ft.
+        sound_speed_ft_s: ft/s.
+        source_dx_ft, source_dy_ft, mirror_y: the source's offset from the microphone in the plate's frame, and the
+            microphone on the plate's other side, as :func:`ground_plane.table_frames`.
+
+    Returns (n,) complex; NaN outside the table's frequencies.
+    """
+    f = np.atleast_1d(np.asarray(frequency_hz, dtype=float))
+    hs = np.broadcast_to(np.asarray(source_height_ft, dtype=float), f.shape)
+    d2 = np.broadcast_to(np.asarray(ground_distance_ft, dtype=float), f.shape)
+    elevation = np.degrees(np.arctan2(hs, d2))
+    if source_dx_ft is None:
+        azimuth = np.zeros_like(f)
+    else:
+        dx = np.broadcast_to(np.asarray(source_dx_ft, dtype=float), f.shape)
+        dy = np.broadcast_to(np.asarray(source_dy_ft, dtype=float), f.shape)
+        azimuth = np.mod(np.degrees(np.arctan2(-dy, -dx)), 360.0)
+    if mirror_y:
+        azimuth = np.mod(-azimuth, 360.0)
+    t_el = np.asarray(table['elevations'], dtype=float)
+    t_az = np.asarray(table['azimuths'], dtype=float)
+    t_f = np.asarray(table['frequencies'], dtype=float)
+    i, ti = gp._grid_interval(t_el, np.clip(elevation, t_el[0], t_el[-1]))
+    j, tj = gp._grid_interval(np.append(t_az, t_az[0] + 360.0), t_az[0] + np.mod(azimuth - t_az[0], 360.0))
+    j1 = (j + 1) % t_az.size
+    inside = (f >= t_f[0]) & (f <= t_f[-1])
+    k, tk = gp._grid_interval(t_f, np.clip(f, t_f[0], t_f[-1]))
+    values = []
+    for key in ('P_d', 'P_r'):
+        grid = np.asarray(table[key])
+        value = np.zeros(f.shape, dtype=complex)
+        for wf, kk in ((1.0 - tk, k), (tk, k + 1)):
+            for w, ii, jj in (((1.0 - ti) * (1.0 - tj), i, j), (ti * (1.0 - tj), i + 1, j),
+                              ((1.0 - ti) * tj, i, j1), (ti * tj, i + 1, j1)):
+                value += wf * w * grid[kk, ii, jj]
+        values.append(value)
+    height = table['thickness']
+    image_range = np.hypot(d2, hs + height)
+    q = spherical_reflection_coefficient(
+        (hs + height) / image_range, image_range, f, sound_speed_ft_s, table['flow_resistance'],
+        admittance=gp._ground_admittance(f, sound_speed_ft_s, table['flow_resistance'], table.get('ground')))
+    response = np.conj(values[0] + q * values[1])
+    return np.where(inside, response, np.nan + 0j)

@@ -116,3 +116,47 @@ def test_emission_azimuth_and_received_rate():
     received = rt.received_shaft_rate(psi_e, FS)
     mach_toward = (v / c) * direction[:, 0]           # the hub's velocity toward the microphone over c
     assert np.allclose(received[5:-5], omega / (1.0 - mach_toward[5:-5]), rtol=1e-4)
+
+
+def test_depropagate_tones_undoes_spreading_absorption_and_the_receiver():
+    from panam.acoustics.atmosphere import Atmosphere
+    air = Atmosphere(temperature=293.15, pressure=101.325, relative_humidity=50.0)
+    rng = np.random.default_rng(1)
+    source = rng.uniform(0.5, 2.0, (5, 2)) * np.exp(1j * rng.uniform(-np.pi, np.pi, (5, 2)))
+    frequency = np.array([[70.0, 140.0]] * 5) * rng.uniform(0.95, 1.05, (5, 1))
+    distance = rng.uniform(10.0, 200.0, 5)
+    response = rng.uniform(1.0, 2.0, (5, 1)) * np.exp(1j * rng.uniform(-1, 1, (5, 1)))
+    alpha = air.attenuation_coefficient(frequency)
+    heard = source * (30.48 / distance[:, None]) * 10 ** (-alpha * distance[:, None] / 20) * response
+    back = rt.depropagate_tones(heard, frequency, distance, 30.48, air, response)
+    assert np.allclose(back, source, rtol=1e-12)
+    beyond = rt.depropagate_tones(heard, frequency, distance, 30.48, air, response, lossless=False)
+    assert np.allclose(np.abs(beyond / back), 10 ** (-alpha * 30.48 / 20), rtol=1e-12)
+    assert np.allclose(np.angle(beyond / back), 0.0)
+
+
+@pytest.fixture(scope='module')
+def small_plate_table():
+    """A coarse plate table (three frequencies, a few directions): enough to pin the conventions."""
+    return rt.plate_tone_table([100.0, 400.0, 1000.0], 1125.0, ground=dict(model='delany_bazley', sigma=75.0),
+                               elevations=np.array([2.0, 10.0, 30.0, 60.0, 90.0]),
+                               azimuths=np.arange(0.0, 360.0, 90.0), radius=8.0 / 12.0,
+                               thickness=0.125 / 12.0, mic=(0.0, 0.75 * 8.0 / 12.0),
+                               mic_height=0.007 / 0.3048)
+
+
+def test_plate_tone_response_is_the_band_model_at_a_table_frequency(small_plate_table):
+    from panam import axisymmetric_bem as ab
+    table = small_plate_table
+    hs = np.array([40.0, 15.0, 120.0, 50.0])
+    d2 = np.array([30.0, 150.0, 5.0, 60.0])
+    dx = np.array([-30.0, 100.0, 3.0, 0.0])
+    dy = np.array([0.0, -111.8, 4.0, 60.0])
+    for f in (100.0, 400.0, 1000.0):
+        p = rt.plate_tone_response(table, np.full(4, f), hs, d2, 1125.0, dx, dy)
+        band = ab.board_level(np.array([f]), hs, d2, 1125.0, table, sub_bands=1, source_dx=dx, source_dy=dy)
+        assert np.allclose(10 * np.log10(np.abs(p) ** 2), band[0], atol=1e-9)
+    # between table frequencies: linear in P_d and P_r, so the response lies between its neighbors' (and is
+    # NaN outside the table)
+    p = rt.plate_tone_response(table, np.array([250.0, 50.0, 2000.0]), 40.0, 30.0, 1125.0)
+    assert np.isfinite(p[0]) and np.isnan(p[1]) and np.isnan(p[2])
