@@ -163,3 +163,21 @@ def test_plate_tone_response_is_the_band_model_at_a_table_frequency(small_plate_
     # NaN outside the table)
     p = rt.plate_tone_response(table, np.array([250.0, 50.0, 2000.0]), 40.0, 30.0, 1125.0)
     assert np.isfinite(p[0]) and np.isnan(p[1]) and np.isnan(p[2])
+
+
+def test_orders_solved_in_frequency_groups_are_as_accurate_as_one_joint_solve():
+    """Each order of the six rotors in its own group, solved in turn on the pressure less the others' fit: three
+    sweeps are as close to the truth as one solve over every order (which costs the cube of the order count); one
+    sweep, leaving the other groups' tones in each group's data, is not."""
+    rng = np.random.default_rng(11)
+    t, psi, h, amplitude, x = _synthetic(rng, harmonics=(1, 2, 3))
+    groups = rt._frequency_groups((psi[:, :, None] * h[None, None, :]).reshape(t.size, -1), FS, 12.0)
+    assert len(groups) == 3
+    inner = (t > 1.0) & (t < DURATION - 1.0)
+
+    def error(**options):
+        y, _ = rt.rotor_locked_tones(x, FS, psi, h, 3.0, **options)
+        return np.median(np.abs(y[inner] - amplitude[None]))
+    joint = error(group_gap_hz=1e6)
+    assert error() < 1.1 * joint
+    assert error(sweeps=1) > 1.05 * error()

@@ -113,7 +113,8 @@ def emission_azimuth(reception_times, hub_position, receiver, sound_speed, azimu
     return t_e, np.interp(t_e, azimuth_time, azimuth), distance, d / distance[:, None]
 
 
-def rotor_locked_tones(pressure, fs, azimuths, harmonics, bandwidth_hz, *, p=2, method='vkf'):
+def rotor_locked_tones(pressure, fs, azimuths, harmonics, bandwidth_hz, *, p=2, method='vkf', group_gap_hz=None,
+                       sweeps=3):
     """Every rotor's shaft orders, phase locked to its own azimuth, from one microphone.
 
     Args:
@@ -128,6 +129,13 @@ def rotor_locked_tones(pressure, fs, azimuths, harmonics, bandwidth_hz, *, p=2, 
         method: ``'vkf'`` (the multi-order Vold-Kalman filter, every rotor and order at once) or ``'demodulate'``
             (each order demodulated by its own phasor and averaged over 1 / bandwidth_hz: no sharing out where two
             orders cross; a check).
+        group_gap_hz: orders whose frequency ranges over the record come within this of each other are solved
+            together (default 4 bandwidths).  One solve over every rotor and order costs about the cube of their
+            number; the same order of six rotors, wandering a few percent apart, is one small group.
+        sweeps: the groups are solved in turn, each on the pressure less the other groups' current fit, this many
+            times over (block Gauss-Seidel on the joint least-squares problem).  One sweep leaves the other groups'
+            tones in each group's data, which costs accuracy (a few hundredths of a pascal on tones of tenths
+            beside them); three reach the joint solve's result.
 
     Returns (amplitude, residual): (n, n_rotors, n_harmonics) complex Pa with
     pressure ~ sum Re{amplitude exp(i h azimuth)}, and the pressure less that sum (Pa, (n,)): the broadband and the
@@ -145,7 +153,17 @@ def rotor_locked_tones(pressure, fs, azimuths, harmonics, bandwidth_hz, *, p=2, 
     n_rotors = psi.shape[1]
     phase = (psi[:, :, None] * h[None, None, :]).reshape(x.size, n_rotors * h.size)
     if method == 'vkf':
-        y, phasor, _ = vold_kalman_filter(x, None, fs, bandwidth_hz, p, phase=phase)
+        gap = 4.0 * float(np.max(bandwidth_hz)) if group_gap_hz is None else float(group_gap_hz)
+        y = np.zeros(phase.shape, dtype=complex)
+        phasor = np.exp(1j * phase)
+        groups = _frequency_groups(phase, fs, gap)
+        fit = np.zeros((len(groups), x.size))
+        for _ in range(sweeps if len(groups) > 1 else 1):
+            for g, members in enumerate(groups):
+                others = fit.sum(axis=0) - fit[g]
+                y[:, members], _, _ = vold_kalman_filter(x - others, None, fs, bandwidth_hz, p,
+                                                         phase=phase[:, members])
+                fit[g] = np.real(y[:, members] * phasor[:, members]).sum(axis=1)
     elif method == 'demodulate':
         phasor = np.exp(1j * phase)
         n_avg = max(1, int(round(fs / bandwidth_hz)))
@@ -156,6 +174,24 @@ def rotor_locked_tones(pressure, fs, azimuths, harmonics, bandwidth_hz, *, p=2, 
         raise ValueError(f"method must be 'vkf' or 'demodulate', not {method!r}")
     residual = x - np.real(y * phasor).sum(axis=1)
     return y.reshape(x.size, n_rotors, h.size), residual
+
+
+def _frequency_groups(phase, fs, gap_hz):
+    """Orders (columns of ``phase``, rad) grouped so that orders whose frequency ranges (the 1st to 99th percentile
+    of the phase's rate over the record, Hz) come within ``gap_hz`` of each other share a group."""
+    rate = np.abs(np.diff(phase, axis=0)) * fs / (2.0 * np.pi)
+    low, high = np.percentile(rate, 1, axis=0) - gap_hz / 2, np.percentile(rate, 99, axis=0) + gap_hz / 2
+    order = np.argsort(low)
+    groups, current, reach = [], [order[0]], high[order[0]]
+    for k in order[1:]:
+        if low[k] <= reach:
+            current.append(k)
+            reach = max(reach, high[k])
+        else:
+            groups.append(np.array(current))
+            current, reach = [k], high[k]
+    groups.append(np.array(current))
+    return groups
 
 
 def received_shaft_rate(azimuth_e, fs):
