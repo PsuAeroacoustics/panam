@@ -276,7 +276,9 @@ def build_pt_database(sphere_files, database_filename, *, weight_newtons=None, s
               'database_filename': _provenance.path_name(database_filename)}
     with fa._atomic_output(database_filename) as temporary, Dataset(temporary, 'w') as database:
         fa._write_database_root(
-            database, fixed_load_factor=True, speed_reference=speed_reference,
+            # Multirotor: not fixed_load_factor (NICEOPS's load-factor law is in C_T, which multirotor axes do not
+            # carry; it refuses the flag there).
+            database, fixed_load_factor=multirotor is None, speed_reference=speed_reference,
             atmosphere=fa.Atmosphere(temperature=293.15, pressure=101.325, relative_humidity=20.0),
             main_rotor_radius=rotor_radius, main_rotor_tip_speed=tip_speed, vehicle_weight_newtons=weight_newtons,
             azimuth_reference=azimuth_references.pop(),

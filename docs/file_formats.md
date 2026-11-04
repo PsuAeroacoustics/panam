@@ -300,7 +300,9 @@ Each condition group carries these over `condition`, in place of `advance_ratio`
 | `air_density`, `weight_n` | rho (kg m-3) and W (N) of the condition |
 | `airspeed`, `climb_rate` | m s-1 |
 
-The thrust axis is taken as vertical (load factor 1, no attitude). Each source also carries
+`fixed_load_factor` is 0: NICE-OPS refuses it in multirotor axes, whose load factor enters
+through v_h and Omega_h rather than a C_T law. The thrust axis is taken as vertical (load factor 1,
+no attitude) when the axes are formed. Each source also carries
 `speed_ratio`, |`shaft_rate`| / Omega_h: its share of the trim at that condition.
 
 ### Checking a database

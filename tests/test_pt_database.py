@@ -319,6 +319,8 @@ def test_multirotor_conditions_are_momentum_similarity_axes(tmp_path):
         assert float(d.rotor_radius_m) == pytest.approx(HEX_R, rel=1e-6)
         assert float(d.hover_thrust_coefficient) == pytest.approx(ct_h, rel=1e-6)
         assert d.thrust_coefficient_density == 'run'
+        # NICEOPS refuses a multirotor database with fixed_load_factor set: its load-factor law is in C_T
+        assert not bool(d['fixed_load_factor'][...])
     v_h = momentum(1.15)
     om_h = math.sqrt(HEX_WEIGHT / (6 * 1.15 * math.pi * HEX_R ** 2 * ct_h)) / HEX_R
     for group, speed in (('sphere0', 0.0), ('sphere1', 8.6898)):
