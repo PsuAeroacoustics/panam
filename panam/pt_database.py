@@ -151,6 +151,60 @@ def read_pt_sphere(path):
     return sphere
 
 
+def measured_pt_sphere(tag, phi_deg, theta_deg, harmonics, level_db, phase_deg, *, radius_m, speed_kt,
+                       flight_path_angle_deg, shaft_rate, center_m, rotor_radius_m, air_density, sound_speed_mps,
+                       speed_reference='ground', phase_reference='rotor_azimuth', name=None, state=None):
+    """A :class:`PTSphere` from measured tones (:func:`panam.rotor_tones.grid_tones`), for :func:`write_pt_database`.
+
+    Args:
+        tag: the source's name (one rotor).
+        phi_deg, theta_deg: the grid, ART angles, deg; phi in [-180, 180), theta in [0, 180].
+        harmonics: the shaft orders, (n_tones,).
+        level_db: (n_phi, n_theta, n_tones) dB re 20 uPa (the tone's rms) at the sphere radius; -inf where the
+            measurement has no value (NICEOPS fills such cells from their neighbors).
+        phase_deg: the same shape: the cosine phase at emission with the rotor's azimuth zero (its blades at their
+            reference); ignored where the level is -inf.
+        radius_m: the sphere radius, m.  speed_kt, flight_path_angle_deg: the condition.
+        shaft_rate: rad/s, positive counterclockwise seen from above (the mean over the condition's runs).
+        center_m: the hub in the sphere frame (forward, starboard, up), m.
+        rotor_radius_m, air_density (kg m-3), sound_speed_mps: the rotor and the air of the condition.
+        speed_reference: 'ground' or 'air': what speed_kt is.
+        phase_reference: 'rotor_azimuth' (the phases are locked to the rotor's measured angle), 'relative' or
+            'none'.
+        name: the source's label in the database (``source_sphere``).
+        state: {variable: (value, units, description)} written beside the source: the rotor's own measured state
+            (a scalar, or a vector over the sphere frame's xyz).
+
+    The azimuth the phases are locked to is 0, and the source records no phase reference time: measured rotors turn
+    free, so no two share a sync group unless one is declared.
+    """
+    level = np.asarray(level_db, dtype=float)
+    phase = np.asarray(phase_deg, dtype=float)
+    phi = np.asarray(phi_deg, dtype=float)
+    theta = np.asarray(theta_deg, dtype=float)
+    harmonics = np.asarray(harmonics, dtype=int)
+    if level.shape != (phi.size, theta.size, harmonics.size) or phase.shape != level.shape:
+        raise ValueError(f'level_db and phase_deg must be (n_phi, n_theta, n_tones) = '
+                         f'({phi.size}, {theta.size}, {harmonics.size}), not {level.shape} and {phase.shape}')
+    if np.any(np.isnan(level)) or np.any(level == np.inf):
+        raise ValueError('level_db must be finite or -inf (no data)')
+    if np.any(~np.isfinite(phase) & np.isfinite(level)):
+        raise ValueError('phase_deg must be finite wherever level_db is')
+    if phase_reference not in ('rotor_azimuth', 'relative', 'none'):
+        raise ValueError(f"phase_reference must be 'rotor_azimuth', 'relative' or 'none', not {phase_reference!r}")
+    shaft_hz = abs(shaft_rate) / (2.0 * math.pi)
+    return PTSphere(
+        path=name or tag, name=name or tag, tag=str(tag), phi=phi, theta=theta,
+        frequency=harmonics * shaft_hz, harmonics=harmonics, amplitude=level,
+        phase=np.where(np.isfinite(level), phase, 0.0), radius_m=float(radius_m), speed_kt=float(speed_kt),
+        flight_path_angle_deg=float(flight_path_angle_deg), shaft_rate=float(shaft_rate), azimuth_deg=0.0,
+        rotor_radius_m=float(rotor_radius_m), tip_speed_mps=abs(float(shaft_rate)) * float(rotor_radius_m),
+        air_density=float(air_density), phase_reference_time_s=float('nan'), azimuth_reference='track',
+        speed_reference=speed_reference, sound_speed_mps=float(sound_speed_mps),
+        center_m=np.asarray(center_m, dtype=float), floor_db=-np.inf, phase_reference=phase_reference,
+        state=dict(state or {}))
+
+
 def _close_seam(sphere):
     """Drop a full sphere's +180 phi row when it repeats the -180 row in level and phase (the database keeps phi in
     [-180, 180)); refuse a +180 row that differs."""
@@ -187,6 +241,16 @@ def _tones(sphere, harmonic_tolerance=1e-5):
     are dropped; their share of the energy is set on the sphere as ``dropped_energy_fraction`` (and the number of
     revolutions as ``revolutions``)."""
     shaft_hz = abs(sphere.shaft_rate) / (2.0 * math.pi)
+    if getattr(sphere, 'harmonics', None) is not None:
+        # Shaft orders given (a measured source): no floor, -inf where a cell has no data; every given order with a
+        # value anywhere is kept.
+        harmonics = np.asarray(sphere.harmonics, dtype=int)
+        keep = np.isfinite(sphere.amplitude).any(axis=(0, 1))
+        harmonics = harmonics[keep]
+        sphere.dropped_energy_fraction = 0.0
+        locked = sphere.phase[:, :, keep] - harmonics[None, None, :] * sphere.azimuth_deg
+        locked = np.where(np.isfinite(locked), (locked + 180.0) % 360.0 - 180.0, np.nan)
+        return harmonics, harmonics * shaft_hz, sphere.amplitude[:, :, keep], locked
     n_rev = _revolutions(sphere, shaft_hz, harmonic_tolerance)
     if n_rev is None:
         orders = np.rint(sphere.frequency / shaft_hz).astype(int)
@@ -296,6 +360,37 @@ def build_pt_database(sphere_files, database_filename, *, weight_newtons=None, s
     spheres = [_close_seam(read_pt_sphere(path)) for path in sphere_files]
     if not spheres:
         raise ValueError('no PT spheres given')
+    return write_pt_database(
+        spheres, database_filename, weight_newtons=weight_newtons, sync_groups=sync_groups, main_rotor=main_rotor,
+        speed_reference=speed_reference, condition_axes=condition_axes, rotor_count=rotor_count,
+        hover_thrust_coefficient=hover_thrust_coefficient, sound_speed_mps=sound_speed_mps,
+        speed_tolerance_kt=speed_tolerance_kt, tool='pt_database.build_pt_database',
+        input_names=[os.path.basename(str(p)) for p in sphere_files])
+
+
+def write_pt_database(spheres, database_filename, *, weight_newtons, sync_groups='shared_rate', main_rotor=None,
+                      speed_reference=None, condition_axes='helicopter', rotor_count=None,
+                      hover_thrust_coefficient=None, sound_speed_mps=None, speed_tolerance_kt=None,
+                      azimuth_label=None, tool='pt_database.write_pt_database', input_names=None):
+    """Write a format 2 database from :class:`PTSphere` sources, one per rotor per condition: what
+    :func:`build_pt_database` does once it has read PSU-WOPWOP's files, open to sources built otherwise (measured
+    ones: :func:`measured_pt_sphere`).  Arguments as :func:`build_pt_database`, and:
+
+        azimuth_label: written as the root's ``azimuth_label`` when given: what the sources' azimuths are relative to
+            (a measured database's ``relative_within_sense``: its common timing offset is unknown, which relabels
+            every rotor's blade angle by the same amount in its own sense of rotation).
+        tool, input_names: the provenance stamp's tool and input names.
+    """
+    if weight_newtons is None or not np.isfinite(weight_newtons) or weight_newtons <= 0:
+        raise ValueError('weight_newtons is required (N, > 0) for the thrust coefficient axis')
+    if condition_axes not in ('helicopter', 'multirotor'):
+        raise ValueError(f"condition_axes must be 'helicopter' or 'multirotor', not {condition_axes!r}")
+    if condition_axes == 'multirotor' and (rotor_count is None or int(rotor_count) != rotor_count or rotor_count < 1):
+        raise ValueError('a multirotor database needs rotor_count (the vehicle\'s number of rotors, >= 1)')
+    spheres = list(spheres)
+    if not spheres:
+        raise ValueError('no PT spheres given')
+    sphere_files = input_names if input_names is not None else [s.name for s in spheres]
     for sphere in spheres:
         sphere.own_speed_kt = sphere.speed_kt
     if speed_tolerance_kt is not None:
@@ -361,7 +456,7 @@ def build_pt_database(sphere_files, database_filename, *, weight_newtons=None, s
         'condition_axes': condition_axes, 'rotor_count': rotor_count,
         'hover_thrust_coefficient': hover_thrust_coefficient, 'sound_speed_mps': sound_speed_mps,
         'speed_tolerance_kt': speed_tolerance_kt}
-    inputs = {'sphere_files': sorted(os.path.basename(str(p)) for p in sphere_files),
+    inputs = {'sphere_files': sorted(str(p) for p in sphere_files),
               'database_filename': _provenance.path_name(database_filename)}
     with _atomic_output(database_filename) as temporary, Dataset(temporary, 'w') as database:
         _write_database_root(
@@ -371,7 +466,7 @@ def build_pt_database(sphere_files, database_filename, *, weight_newtons=None, s
             atmosphere=Atmosphere(temperature=293.15, pressure=101.325, relative_humidity=20.0),
             main_rotor_radius=rotor_radius, main_rotor_tip_speed=tip_speed, vehicle_weight_newtons=weight_newtons,
             azimuth_reference=azimuth_references.pop(),
-            provenance=_provenance.build_provenance('pt_database.build_pt_database', settings, inputs=inputs))
+            provenance=_provenance.build_provenance(tool, settings, inputs=inputs))
         database['database_version'][:] = PT_DATABASE_FORMAT_VERSION
         database.sphere_frame = 'flight_path'
         database.sphere_levels_lossless = np.float64(1.0)
@@ -382,6 +477,8 @@ def build_pt_database(sphere_files, database_filename, *, weight_newtons=None, s
             database.rotor_radius_m = np.float64(multirotor['radius'])
             database.hover_thrust_coefficient = np.float64(multirotor['ct_h'])
         database.thrust_coefficient_density = 'run'
+        if azimuth_label is not None:
+            database.azimuth_label = str(azimuth_label)
         database.sources = ','.join(tags)
         database.main_rotor_source = main
         pending, key_of = [], {}
@@ -551,7 +648,17 @@ def _write_source(group, sphere, sync_group, speed_ratio=None):
         v = sub.createVariable('speed_ratio', 'f8')
         v[...] = speed_ratio
         v.description = '|shaft_rate| over the condition\'s momentum hover speed Omega_h'
-    sub.phase_reference = 'rotor_azimuth'
+    sub.phase_reference = getattr(sphere, 'phase_reference', 'rotor_azimuth')
+    for name, (value, units, description) in getattr(sphere, 'state', {}).items():
+        value = np.asarray(value, dtype=float)
+        if value.ndim == 0:
+            v = sub.createVariable(name, 'f8')
+            v[...] = value
+        else:
+            v = sub.createVariable(name, 'f8', ('xyz',))
+            v[:] = value
+        v.units = units
+        v.description = description
     if sync_group:
         sub.sync_group = sync_group
     sub.source_sphere = sphere.name

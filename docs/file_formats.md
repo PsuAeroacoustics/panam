@@ -282,6 +282,26 @@ record (they must agree), or the builder's argument for spheres that record none
 only when its level and phase repeat the -180° row; one that differs is refused. The groups
 carry no `condition_origin`: a predicted condition is a stored one of its own.
 
+#### Measured sources
+
+`pt_database.write_pt_database` writes the same layout from sources built in memory;
+`pt_database.measured_pt_sphere` builds one from measured tones (`rotor_tones.grid_tones`, the
+tones of each rotor demodulated by its logged angle). A measured source differs from a predicted
+one in these ways:
+
+- its shaft orders are given, and a cell the measurement never reached is -inf (NICEOPS fills it
+  from its neighbors), not a floor level;
+- `azimuth` is 0: the phase is the tone's with the rotor's blades at their reference (a prop along
+  its arm, say), and there is no `phase_reference_time_s` and no `sync_group` unless one is given;
+- `phase_reference` is `rotor_azimuth` where the rotor's angle was logged;
+- the root's `azimuth_label`, when present, says what the azimuths are relative to.
+  `relative_within_sense` means that one timing offset common to every run is unknown. It turns
+  every rotor's blade angle by the same amount in that rotor's own sense of rotation, so rotors of
+  one sense keep their relative azimuths, and the angle between opposite senses is uncertain;
+- the rotor's own measured state may be written beside it, each variable with `units` and a
+  `description` (a scalar, or a vector over `xyz` in the sphere frame): its logged speed, its
+  hub's air velocity, its disk's normal, an estimate of its thrust.
+
 #### Multirotor conditions
 
 With `condition_axes = multirotor` (`--condition-axes multirotor`) the conditions are indexed by

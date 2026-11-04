@@ -586,3 +586,45 @@ def test_command_line_takes_the_speed_tolerance_and_reference(tmp_path):
                                            '--speed-reference', 'ground']) == 0
     with Dataset(str(out)) as d:
         assert list(d.groups) == ['sphere0'] and d.speed_reference == 'ground'
+
+
+def test_measured_sources_write_a_valid_multirotor_database(tmp_path):
+    """Measured tones (orders given, -inf where a cell has no data, per-rotor states) through write_pt_database."""
+    rng = np.random.default_rng(4)
+    phi, theta = np.arange(-90.0, 90.1, 15.0), np.arange(0.0, 180.1, 15.0)
+    harmonics = np.array([1, 2, 4])
+    hubs = {'M1': (0.0, 0.793, 0.0), 'M2': (0.0, -0.793, 0.0)}
+    spheres = []
+    for speed_kt, rates in ((0.0, (-220.0, 230.0)), (10.0, (-226.0, 224.0))):
+        for (tag, hub), rate in zip(hubs.items(), rates):
+            level = rng.uniform(40, 70, (phi.size, theta.size, harmonics.size))
+            level[:, :2, :] = -np.inf                          # never seen: ahead of the nose
+            level[..., 2] = -np.inf if tag == 'M2' and speed_kt else level[..., 2]
+            phase = rng.uniform(-180, 180, level.shape)
+            state = {'measured_shaft_rate': (rate, 'rad s-1', 'mean logged speed'),
+                     'disk_normal': ((0.0, 0.0, 1.0), '1', 'thrust axis, sphere frame'),
+                     'thrust_estimate_n': (27.0, 'N', 'C_Th rho pi R^2 (Omega R)^2')}
+            spheres.append(pt.measured_pt_sphere(
+                tag, phi, theta, harmonics, level, phase, radius_m=30.48, speed_kt=speed_kt,
+                flight_path_angle_deg=0.0, shaft_rate=rate, center_m=hub, rotor_radius_m=0.3556, air_density=1.15,
+                sound_speed_mps=338.0, state=state, name=f'{tag}_{speed_kt:g}kt'))
+    path = tmp_path / 'measured.nod'
+    pt.write_pt_database(spheres, path, weight_newtons=160.0, sync_groups=None, condition_axes='multirotor',
+                         rotor_count=6, hover_thrust_coefficient=0.009, speed_reference='ground',
+                         azimuth_label='relative_within_sense')
+    assert nd.validate_nod(path) == []
+    with Dataset(str(path)) as d:
+        assert d.azimuth_label == 'relative_within_sense'
+        m1 = d.groups['sphere0'].groups['M1']
+        assert m1.phase_reference == 'rotor_azimuth' and 'sync_group' not in m1.ncattrs()
+        assert np.isclose(float(m1['measured_shaft_rate'][...]), -220.0)
+        assert np.allclose(m1['disk_normal'][:], (0.0, 0.0, 1.0))
+        assert np.all(np.isneginf(m1['amplitude'][:, :2, :]))
+        assert list(m1['harmonic'][:]) == [1, 2, 4]
+        assert list(d.groups['sphere1'].groups['M2']['harmonic'][:]) == [1, 2]     # an order never heard is dropped
+        assert float(m1['azimuth'][...]) == 0.0
+    with pytest.raises(ValueError, match='finite wherever'):
+        pt.measured_pt_sphere('M1', phi, theta, harmonics, np.zeros((phi.size, theta.size, 3)),
+                              np.full((phi.size, theta.size, 3), np.nan), radius_m=30.48, speed_kt=0.0,
+                              flight_path_angle_deg=0.0, shaft_rate=200.0, center_m=(0, 0, 0), rotor_radius_m=0.3,
+                              air_density=1.2, sound_speed_mps=340.0)
