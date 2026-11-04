@@ -1,11 +1,11 @@
-"""Format 2 NICE-OPS databases of pure-tone (PT) spheres: one source per rotor, with its phase.
+"""Format 2 NICEOPS databases of pure-tone (PT) spheres: one source per rotor, with its phase.
 
 PSU-WOPWOP writes one PT noise sphere per rotor (``sourceTag``): each shaft order's level and cosine phase over the
 sphere, about the rotor's own hub, in the flight-path frame, with the rotor's shaft rate and its azimuth at the
-phase reference time.  :func:`build_pt_database` turns a set of them into a database NICE-OPS evaluates tone by
+phase reference time.  :func:`build_pt_database` turns a set of them into a database NICEOPS evaluates tone by
 tone (``docs/file_formats.md``, "Format 2: pure-tone sources"):
 
-- every condition group (one per flight condition: SPEED, FLIGHT_PATH_ANGLE) keeps the format 1 fields NICE-OPS
+- every condition group (one per flight condition: SPEED, FLIGHT_PATH_ANGLE) keeps the format 1 fields NICEOPS
   requires, with a band spectrum that holds the broadband only (``band_content = broadband``): empty (no energy)
   unless broadband spheres of the same conditions are given;
 - each condition group holds one subgroup per source (rotor), named by its tag: ``center`` (m, sphere frame:
@@ -29,13 +29,16 @@ from collections import OrderedDict
 import numpy as np
 from netCDF4 import Dataset
 
-from panam import flight_acoustics as fa
+from panam.acoustics.atmosphere import Atmosphere
+from panam.database import (_SphereCondition, _write_database_root, _write_shared_grid_and_frequency,
+                            add_sphere_group)
+from panam.sphere_io import KNOT_MPS, _atomic_output
 from panam import provenance as _provenance
 
 #: Root ``database_version`` of a database with pure-tone sources.
 PT_DATABASE_FORMAT_VERSION = 2
 
-#: A multirotor condition's momentum-similarity axes, in NICE-OPS's order (x, z, M_h), and the fields they follow from.
+#: A multirotor condition's momentum-similarity axes, in NICEOPS's order (x, z, M_h), and the fields they follow from.
 MULTIROTOR_AXES = ('inplane_speed_ratio', 'axial_speed_ratio', 'hover_tip_mach')
 MULTIROTOR_FIELDS = ('air_density', 'weight_n', 'airspeed', 'climb_rate')
 
@@ -111,7 +114,7 @@ def read_pt_sphere(path):
             raise ValueError(f'{path}: sphere_frame is {attributes.get("sphere_frame")!r}; a PT database keeps '
                              'the spheres in their flight_path frame (pitching to level would re-interpolate phase)')
         if 'DOPPLER_SHIFT_REMOVED' not in handle.variables or float(handle['DOPPLER_SHIFT_REMOVED'][...]) != 1.0:
-            raise ValueError(f'{path}: the tones must be in the emission frame (DOPPLER_SHIFT_REMOVED 1): NICE-OPS '
+            raise ValueError(f'{path}: the tones must be in the emission frame (DOPPLER_SHIFT_REMOVED 1): NICEOPS '
                              'Doppler-shifts them itself')
         tag = attributes.get('source_tag')
         if not tag:
@@ -202,7 +205,7 @@ def _tones(sphere, harmonic_tolerance=1e-5):
     sphere.phase = sphere.phase[:, :, whole]
     orders = bins[whole] // n_rev
     # A tone at PSU-WOPWOP's floor (floor_level_dB) everywhere has no energy and is left out.  Where a kept tone is at
-    # the floor in some cells, the floor stays: a predicted cell is quiet, not missing, and NICE-OPS drops a -inf
+    # the floor in some cells, the floor stays: a predicted cell is quiet, not missing, and NICEOPS drops a -inf
     # entry from its interpolation and renormalizes the rest, which would fill a directivity null with its
     # neighbors' level (measured on the tandem: +15 to +33 dB in bands made of such tones).
     lit = sphere.amplitude > sphere.floor_db + 1e-3
@@ -277,7 +280,7 @@ def build_pt_database(sphere_files, database_filename, *, weight_newtons=None, s
             Default: exact (to 1e-6 kt).  For per-rotor predictions of one flight made over different windows.
 
     The database holds every flight condition once, at load factor 1.  A helicopter database whose spheres share one
-    air density has one C_T and is ``fixed_load_factor``: NICE-OPS scales the levels to other load factors.  Spheres
+    air density has one C_T and is ``fixed_load_factor``: NICEOPS scales the levels to other load factors.  Spheres
     predicted in different air give each condition the C_T of its own density, so C_T is an axis there and the
     database is not ``fixed_load_factor`` (one C_T is what that flag promises).  Raises ValueError, before writing anything, for spheres that are not PT, not in
     the flight-path frame, on different grids within a condition, two spheres of one tag at one condition, a
@@ -342,7 +345,7 @@ def build_pt_database(sphere_files, database_filename, *, weight_newtons=None, s
         raise ValueError(f'the spheres record azimuth_reference {sorted(azimuth_references)}; they must agree')
 
     # One air density: one C_T, and the database is fixed_load_factor.  Several: each condition's C_T at its own
-    # density, an axis NICE-OPS interpolates over; fixed_load_factor would promise one C_T (validate_nod's C8).
+    # density, an axis NICEOPS interpolates over; fixed_load_factor would promise one C_T (validate_nod's C8).
     densities = [by_tag[main].air_density for by_tag in conditions.values()]
     one_density = all(np.isclose(rho, densities[0], rtol=1e-9, atol=0.0) for rho in densities)
     multirotor = None
@@ -360,12 +363,12 @@ def build_pt_database(sphere_files, database_filename, *, weight_newtons=None, s
         'speed_tolerance_kt': speed_tolerance_kt}
     inputs = {'sphere_files': sorted(os.path.basename(str(p)) for p in sphere_files),
               'database_filename': _provenance.path_name(database_filename)}
-    with fa._atomic_output(database_filename) as temporary, Dataset(temporary, 'w') as database:
-        fa._write_database_root(
+    with _atomic_output(database_filename) as temporary, Dataset(temporary, 'w') as database:
+        _write_database_root(
             # Multirotor: not fixed_load_factor (NICEOPS's load-factor law is in C_T, which multirotor axes do not
             # carry; it refuses the flag there).
             database, fixed_load_factor=multirotor is None and one_density, speed_reference=speed_reference,
-            atmosphere=fa.Atmosphere(temperature=293.15, pressure=101.325, relative_humidity=20.0),
+            atmosphere=Atmosphere(temperature=293.15, pressure=101.325, relative_humidity=20.0),
             main_rotor_radius=rotor_radius, main_rotor_tip_speed=tip_speed, vehicle_weight_newtons=weight_newtons,
             azimuth_reference=azimuth_references.pop(),
             provenance=_provenance.build_provenance('pt_database.build_pt_database', settings, inputs=inputs))
@@ -386,11 +389,11 @@ def build_pt_database(sphere_files, database_filename, *, weight_newtons=None, s
             key_of['sphere' + str(i)] = key
             s = by_tag[main]
             coverage = np.zeros(empty_bands.shape, dtype=bool)
-            pending.append(fa._SphereCondition(
+            pending.append(_SphereCondition(
                 'sphere' + str(i), phi_grid, theta_grid, s.radius_m, np.full(phi_grid.shape, -np.inf),
                 np.zeros(phi_grid.shape), s.speed_kt, s.flight_path_angle_deg, 1.0, BAND_CENTERS_HZ, empty_bands,
                 coverage, None))
-        shared = fa._write_shared_grid_and_frequency(database, pending)
+        shared = _write_shared_grid_and_frequency(database, pending)
         for condition, by_tag in zip(pending, conditions.values()):
             s = by_tag[main]
             # C_T at the condition's own density (the prediction's), the database's weight: thrust_coefficient_density
@@ -398,17 +401,17 @@ def build_pt_database(sphere_files, database_filename, *, weight_newtons=None, s
             # weight_coefficient.
             weight_coefficient = weight_newtons / (s.air_density * math.pi * rotor_radius ** 2 * tip_speed ** 2)
             axes = multirotor['conditions'][key_of[condition.name]] if multirotor is not None else None
-            fa.add_sphere_group(database, condition.name, condition.phi, condition.theta, condition.radius,
+            add_sphere_group(database, condition.name, condition.phi, condition.theta, condition.radius,
                                 condition.SPLA, condition.EAA, condition.speed, condition.flight_path_angle, 1.0,
                                 rotor_radius, tip_speed, weight_coefficient, condition.frequency,
                                 condition.amplitude, write_grid_and_frequency=not shared, doppler_shift_removed=0,
                                 coverage=condition.coverage,
                                 condition_variables=axes['variables'] if axes is not None else None)
             # DOPPLER_SHIFT_REMOVED applies to the band spectrum, which is empty here (received frame by
-            # convention); the tones are emission-frame shaft orders by definition, and NICE-OPS shifts them.
+            # convention); the tones are emission-frame shaft orders by definition, and NICEOPS shifts them.
             group = database.groups[condition.name]
             # No condition_origin: a predicted condition is a stored condition of its own, as a measured one is
-            # (NICE-OPS reads a group without one so); the root's panam_tool names the prediction build.
+            # (NICEOPS reads a group without one so); the root's panam_tool names the prediction build.
             group.air_density = np.float64(s.air_density)
             group.air_density_units = 'kg m-3'
             for tag in tags:
@@ -500,7 +503,7 @@ def _multirotor_axes(conditions, tags, main, weight, rotor_count, hover_thrust_c
         rho = s.air_density
         v_h = hover_induced_velocity(weight, rho, rotor_count, radius)
         omega_h = hover_shaft_rate(weight, rho, rotor_count, radius, hover_thrust_coefficient)
-        u = s.speed_kt * fa.KNOT_MPS
+        u = s.speed_kt * KNOT_MPS
         gamma = math.radians(s.flight_path_angle_deg)
         inplane, climb = u * math.cos(gamma), u * math.sin(gamma)
         out['conditions'][key] = {

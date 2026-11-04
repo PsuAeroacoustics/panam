@@ -242,7 +242,7 @@ changes, together with a matching change in NICEOPS.
 ### Format 2: pure-tone sources
 
 `pt_database.build_pt_database` (CLI `build_pt_database.py`) writes one from PSU-WOPWOP's
-per-rotor PT spheres, one per rotor (`source_tag`) per flight condition. NICE-OPS evaluates
+per-rotor PT spheres, one per rotor (`source_tag`) per flight condition. NICEOPS evaluates
 every tone at every arrival, with its phase.
 
 Root, beside the format 1 fields:
@@ -251,7 +251,7 @@ Root, beside the format 1 fields:
   tag whose rotor sets the advance ratio, C_T and `rotor_scale`.
 - `sphere_frame = flight_path`: the spheres are not pitched to level, which would re-interpolate
   the phase.
-- `sphere_levels_lossless = 1`: PSU-WOPWOP applies no absorption, so NICE-OPS absorbs from the hub.
+- `sphere_levels_lossless = 1`: PSU-WOPWOP applies no absorption, so NICEOPS absorbs from the hub.
 - `band_content = broadband`: the band spectrum leaves the tones out. With no broadband spheres
   it is empty (-inf, `dBA` -inf, `EAA` 0, coverage 0), and the tones are the whole level.
 - `condition_axes = helicopter` (or `multirotor`, below); `thrust_coefficient_density = run`: C_T
@@ -266,9 +266,9 @@ tag:
 | `shaft_rate` | rad/s, positive counterclockwise seen from above (`main_rotor_rotation`) |
 | `harmonic(tone)`, `frequency(tone)` | Shaft orders, and their emission-frame frequencies, Hz. A spectrum over N revolutions (bins every 1/N order, N <= 64) keeps its whole orders; the bins between are dropped |
 | `dropped_energy_fraction` | The share of the sphere's energy in those dropped bins (leakage, a loading's slow drift) |
-| `amplitude(PHI, THETA, tone)` | dB re 20 µPa at the sphere radius. Shaft orders at PSU-WOPWOP's floor everywhere are left out; a kept tone's floor cells keep the floor level, since NICE-OPS reads -inf as missing and fills it from the neighbors |
+| `amplitude(PHI, THETA, tone)` | dB re 20 µPa at the sphere radius. Shaft orders at PSU-WOPWOP's floor everywhere are left out; a kept tone's floor cells keep the floor level, since NICEOPS reads -inf as missing and fills it from the neighbors |
 | `phase(PHI, THETA, tone)` | deg: the cosine phase at emission from the hub, less harmonic × `azimuth` (locked to the rotor) |
-| `azimuth` | deg: the rotor azimuth, in its own sense of rotation, the phase was locked to (ROTOR_AZIMUTH); NICE-OPS's default `--rotor_azimuth` |
+| `azimuth` | deg: the rotor azimuth, in its own sense of rotation, the phase was locked to (ROTOR_AZIMUTH); NICEOPS's default `--rotor_azimuth` |
 | `phase_reference` | `rotor_azimuth` |
 | `sync_group` | Rotors predicted at one shaft rate and one phase reference time share one (`shaft`, or `shaft_<lowest tag>` when there are several such sets); absent for a free-running rotor, and for one whose sphere records no phase reference time |
 | `source_sphere`, `phase_reference_time_s` | The sphere file, and its phase reference time, s |
@@ -305,7 +305,7 @@ Each condition group carries these over `condition`, in place of `advance_ratio`
 | `air_density`, `weight_n` | rho (kg m-3) and W (N) of the condition |
 | `airspeed`, `climb_rate` | m s-1 |
 
-`fixed_load_factor` is 0: NICE-OPS refuses it in multirotor axes, whose load factor enters
+`fixed_load_factor` is 0: NICEOPS refuses it in multirotor axes, whose load factor enters
 through v_h and Omega_h rather than a C_T law. The thrust axis is taken as vertical (load factor 1,
 no attitude) when the axes are formed. Each source also carries
 `speed_ratio`, |`shaft_rate`| / Omega_h: its share of the trim at that condition.

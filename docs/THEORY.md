@@ -981,7 +981,7 @@ ahead multiplies it by $e^{+im\Delta\psi}$.
 With helicopter axes each condition is labeled as in §7.1, but with $C_T$ formed at the sphere's
 own air density $\rho$ (`thrust_coefficient_density = run`). Spheres that share one density give
 one $C_T$, and the database is `fixed_load_factor` (§7.3). Spheres predicted in different air give
-each condition the $C_T$ of its own density; $C_T$ is then an axis NICE-OPS interpolates over, and
+each condition the $C_T$ of its own density; $C_T$ is then an axis NICEOPS interpolates over, and
 the database is not `fixed_load_factor`, which would promise one $C_T$.
 
 With multirotor axes (`condition_axes = multirotor`) each condition is labeled by momentum
@@ -1006,7 +1006,7 @@ $$
 condition's own. Each source records its speed over the momentum prediction,
 $|\Omega_r|/\Omega_h$ (`speed_ratio`); a multirotor's rotor speed changes with the condition by
 design, so only its radius must agree across conditions. The database is not `fixed_load_factor`
-(NICE-OPS's load-factor law is in $C_T$, which these axes do not carry).
+(NICEOPS's load-factor law is in $C_T$, which these axes do not carry).
 
 Rotors predicted at one $|\Omega|$ and one phase reference time at every condition are one coherent
 group (`sync_group`); a rotor whose sphere records no phase reference time is left free-running.

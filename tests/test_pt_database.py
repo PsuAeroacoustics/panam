@@ -184,7 +184,7 @@ def test_clockwise_rotor_has_a_negative_shaft_rate(tmp_path):
 
 
 def test_floor_cells_stay_quiet_not_empty(tmp_path):
-    # A kept tone's floor cells keep the floor: NICE-OPS reads -inf as missing and fills it from the neighbors.
+    # A kept tone's floor cells keep the floor: NICEOPS reads -inf as missing and fills it from the neighbors.
     files = tandem(tmp_path)
     with Dataset(str(files[0]), 'a') as d:
         a = d['AMPLITUDE'][:]
@@ -461,7 +461,7 @@ def test_spheres_a_hair_apart_in_speed_form_one_condition_when_asked(tmp_path):
 
 def test_conditions_at_different_air_densities_keep_the_thrust_coefficient_as_an_axis(tmp_path):
     # C_T = W / (rho pi R^2 V^2) at each condition's own density differs between conditions predicted in different
-    # air: such a database is not fixed_load_factor (one C_T), or validate_nod's C8 and NICE-OPS refuse it.
+    # air: such a database is not fixed_load_factor (one C_T), or validate_nod's C8 and NICEOPS refuse it.
     files = []
     for i, (speed, fpa, rho) in enumerate(((40.0, -6.0, 1.07), (77.85, -2.86, 1.15), (60.0, 3.0, 1.10))):
         files += tandem_at(tmp_path, f'D{i}', speed_kt=speed, fpa_deg=fpa, air_density=rho)
