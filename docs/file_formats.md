@@ -270,12 +270,15 @@ tag:
 | `phase(PHI, THETA, tone)` | deg: the cosine phase at emission from the hub, less harmonic × `azimuth` (locked to the rotor) |
 | `azimuth` | deg: the rotor azimuth, in its own sense of rotation, the phase was locked to (ROTOR_AZIMUTH); NICE-OPS's default `--rotor_azimuth` |
 | `phase_reference` | `rotor_azimuth` |
-| `sync_group` | Rotors predicted at one shaft rate and one phase reference time share one (`shaft`); absent for a free-running rotor |
+| `sync_group` | Rotors predicted at one shaft rate and one phase reference time share one (`shaft`, or `shaft_<lowest tag>` when there are several such sets); absent for a free-running rotor, and for one whose sphere records no phase reference time |
 | `source_sphere`, `phase_reference_time_s` | The sphere file, and its phase reference time, s |
-| `sphere_speed_kt` | The speed its own sphere was predicted at; with `speed_tolerance_kt`, spheres a hair apart in speed are one condition at their mean |
+| `sphere_speed_kt` | The speed its own sphere was predicted at; with `speed_tolerance_kt`, spheres a hair apart in speed and flight path angle are one condition at their mean |
 
 No upper half is mirrored, no grid is changed, no hover is synthesized and no load-factor
-ladder is written (`fixed_load_factor`). At a full sphere's seam the +180° phi row is dropped
+ladder is written. Spheres that share one air density give one C_T and a `fixed_load_factor`
+database; spheres predicted in different air give each condition the C_T of its own density, and
+the database is not `fixed_load_factor` (C8 would fail). `speed_reference` is what the spheres
+record (they must agree), or the builder's argument for spheres that record none (default `air`). At a full sphere's seam the +180° phi row is dropped
 only when its level and phase repeat the -180° row; one that differs is refused. The groups
 carry no `condition_origin`: a predicted condition is a stored one of its own.
 

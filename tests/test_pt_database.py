@@ -21,7 +21,8 @@ def write_pt_sphere(path, *, tag='Front', xyz_ft=(-19.66, 0.0, 0.98), azimuth_de
                     speed_kt=77.85, fpa_deg=-2.86, phi=None, theta=None, orders=(1, 2, 3, 6, 9),
                     rate=SHAFT_RATE, rotation='counterclockwise', frame='flight_path', doppler_shift_removed=1,
                     levels=None, phase=None, units_speed='KNOTS', rotor_radius=6.579, air_density=1.071778,
-                    speed_of_sound='3.42350006E+02'):
+                    speed_of_sound='3.42350006E+02', speed_reference='air',
+                    phase_reference_time='2.0000000298023224E-01', tip_speed=197.68553):
     """A PSU-WOPWOP-like PT sphere. Orders 3, 6 and 9 carry energy; 1 and 2 sit at the floor (WOPWOP lists every
     shaft order up to its tonal top and floors the empty ones)."""
     phi = np.arange(-90.0, 90.1, 15.0) if phi is None else np.asarray(phi, float)
@@ -40,11 +41,13 @@ def write_pt_sphere(path, *, tag='Front', xyz_ft=(-19.66, 0.0, 0.98), azimuth_de
     with Dataset(str(path), 'w') as d:
         d.sphere_type = 'PT'
         d.sphere_frame = frame
-        d.speed_reference = 'air'
+        if speed_reference is not None:
+            d.speed_reference = speed_reference
         d.azimuth_reference = 'track'
         d.floor_level_dB = repr(FLOOR_DB)
         d.main_rotor_rotation = rotation
-        d.phase_reference_time_s = '2.0000000298023224E-01'
+        if phase_reference_time is not None:
+            d.phase_reference_time_s = phase_reference_time
         d.source_tag = tag
         d.center = 'rotor hub'
         if speed_of_sound is not None:
@@ -80,7 +83,7 @@ def write_pt_sphere(path, *, tag='Front', xyz_ft=(-19.66, 0.0, 0.98), azimuth_de
         scalar('AIR_DENSITY', air_density, 'KG/M^3')
         scalar('AIRSPEED', speed_kt, 'KNOTS')
         scalar('MAIN_ROTOR_RADIUS', rotor_radius, 'METER')
-        scalar('MAIN_ROTOR_TIP_SPEED', 197.68553, 'M/S')
+        scalar('MAIN_ROTOR_TIP_SPEED', tip_speed, 'M/S')
         scalar('MAIN_ROTOR_BLADES', 3.0, '')
         scalar('PREDICTION_RADIUS', 30.48, 'METER')
         scalar('ROTOR_SHAFT_RATE', rate, 'RAD/S')
@@ -452,3 +455,134 @@ def test_spheres_a_hair_apart_in_speed_form_one_condition_when_asked(tmp_path):
         assert list(d.groups) == ['sphere0']
     assert float(read_source(path, tag='Rear')['sphere_speed_kt']) == pytest.approx(8.6785, rel=1e-6)
     assert nd.validate_nod(path) == []
+
+
+# ------------------------------------------------------------------------------------------------ review fixes
+
+def test_conditions_at_different_air_densities_keep_the_thrust_coefficient_as_an_axis(tmp_path):
+    # C_T = W / (rho pi R^2 V^2) at each condition's own density differs between conditions predicted in different
+    # air: such a database is not fixed_load_factor (one C_T), or validate_nod's C8 and NICE-OPS refuse it.
+    files = []
+    for i, (speed, fpa, rho) in enumerate(((40.0, -6.0, 1.07), (77.85, -2.86, 1.15), (60.0, 3.0, 1.10))):
+        files += tandem_at(tmp_path, f'D{i}', speed_kt=speed, fpa_deg=fpa, air_density=rho)
+    path = build(tmp_path, files)
+    with Dataset(str(path)) as d:
+        assert not bool(d['fixed_load_factor'][...])
+        assert d.thrust_coefficient_density == 'run'
+        ct = {round(float(d.groups[g]['air_density'][...] if 'air_density' in d.groups[g].variables
+                          else d.groups[g].air_density), 6): float(d.groups[g]['thrust_coefficient'][:].ravel()[0])
+              for g in d.groups}
+    for rho, value in ct.items():
+        assert value == pytest.approx(1.0e5 / (rho * math.pi * 6.579 ** 2 * 197.68553 ** 2), rel=1e-5)
+    assert nd.validate_nod(path) == []
+    # one density: one C_T, at load factor 1
+    path = build(tmp_path, tandem(tmp_path))
+    with Dataset(str(path)) as d:
+        assert bool(d['fixed_load_factor'][...])
+
+
+def test_niceops_loads_a_database_predicted_in_different_air(tmp_path):
+    from sphere_helpers import executable
+    import subprocess
+    niceops = executable('niceops')
+    if niceops is None:
+        pytest.skip('niceops not configured (local_paths: niceops)')
+    files = []
+    for i, (speed, fpa, rho) in enumerate(((40.0, -6.0, 1.07), (77.85, -2.86, 1.15), (60.0, 3.0, 1.10))):
+        files += tandem_at(tmp_path, f'N{i}', speed_kt=speed, fpa_deg=fpa, air_density=rho)
+    path = build(tmp_path, files)
+    result = subprocess.run([niceops, '-d', str(path), '--self_test', '-l', 'self_test.log'], cwd=tmp_path,
+                            capture_output=True, text=True, timeout=300)
+    assert result.returncode == 0, (tmp_path / 'self_test.log').read_text()[-2000:] + result.stderr
+    assert 'Self test passed' in (tmp_path / 'self_test.log').read_text()
+
+
+def tandem_at(tmp_path, prefix, **condition):
+    return [write_pt_sphere(tmp_path / f'{prefix}F.nc', **condition),
+            write_pt_sphere(tmp_path / f'{prefix}R.nc', tag='Rear', xyz_ft=(19.66, 0.0, 4.26), azimuth_deg=24.3,
+                            **condition)]
+
+
+def test_spheres_a_hair_apart_in_speed_and_angle_form_one_condition_when_asked(tmp_path):
+    files = [write_pt_sphere(tmp_path / 'a.nc', speed_kt=8.6775, fpa_deg=-2.8601),
+             write_pt_sphere(tmp_path / 'b.nc', tag='Rear', xyz_ft=(19.66, 0.0, 4.26), speed_kt=8.6785,
+                             fpa_deg=-2.8603)]
+    path = build(tmp_path, files, speed_tolerance_kt=0.01)
+    with Dataset(str(path)) as d:
+        assert list(d.groups) == ['sphere0']
+        assert float(d.groups['sphere0']['flight_path_angle'][:].ravel()[0]) == pytest.approx(-2.8602, abs=1e-6)
+    assert nd.validate_nod(path) == []
+
+
+def test_multirotor_conditions_may_record_different_tip_speeds(tmp_path):
+    # A multirotor's rotor speed changes with the condition by design: only its radius must agree.
+    files = hexacopter(tmp_path)
+    for f in files[2:]:
+        with Dataset(str(f), 'a') as d:
+            d['MAIN_ROTOR_TIP_SPEED'][...] = 85.0
+    path = build(tmp_path, files, weight_newtons=HEX_WEIGHT, condition_axes='multirotor', rotor_count=6)
+    assert nd.validate_nod(path) == []
+    # a helicopter's main rotor turns at one tip speed
+    heli = tandem(tmp_path) + tandem_at(tmp_path, 'T', speed_kt=40.0, fpa_deg=-6.0, tip_speed=180.0)
+    with pytest.raises(ValueError, match='tip speed'):
+        build(tmp_path, heli)
+
+
+def test_rotors_sharing_a_shaft_are_grouped_whichever_tag_sorts_first(tmp_path):
+    files = tandem(tmp_path) + [write_pt_sphere(tmp_path / 'Aux.nc', tag='Aux', xyz_ft=(0.0, 3.0, 0.0),
+                                                rate=SHAFT_RATE * 1.3)]
+    path = build(tmp_path, files)
+    front, rear, aux = (read_source(path, tag=t) for t in ('Front', 'Rear', 'Aux'))
+    assert front['sync_group'] == rear['sync_group'] != ''
+    assert 'sync_group' not in aux
+
+
+def test_rotors_without_a_phase_reference_time_are_not_grouped(tmp_path):
+    files = [write_pt_sphere(tmp_path / 'F.nc', phase_reference_time=None),
+             write_pt_sphere(tmp_path / 'R.nc', tag='Rear', xyz_ft=(19.66, 0.0, 4.26), phase_reference_time=None)]
+    with pytest.warns(UserWarning, match='phase_reference_time_s'):
+        path = build(tmp_path, files)
+    assert 'sync_group' not in read_source(path, tag='Front')
+    assert 'sync_group' not in read_source(path, tag='Rear')
+
+
+def test_an_unknown_main_rotor_is_refused_by_name(tmp_path, capsys):
+    from tools import build_pt_database
+    files = [str(f) for f in tandem(tmp_path)]
+    with pytest.raises(ValueError, match="'front'.*Front"):
+        build(tmp_path, files, main_rotor='front')
+    assert build_pt_database.main(files + ['-o', str(tmp_path / 'x.nod'), '--weight-newtons', '1e5',
+                                           '--main-rotor', 'front']) == 1
+    err = capsys.readouterr().err
+    assert 'build_pt_database:' in err and 'Front' in err and 'Traceback' not in err
+
+
+def test_speed_reference_must_agree_with_what_the_spheres_record(tmp_path):
+    mixed = [write_pt_sphere(tmp_path / 'F.nc'),
+             write_pt_sphere(tmp_path / 'R.nc', tag='Rear', xyz_ft=(19.66, 0.0, 4.26), speed_reference='ground')]
+    for argument in (None, 'air', 'ground'):
+        with pytest.raises(ValueError, match='speed_reference'):
+            build(tmp_path, mixed, speed_reference=argument)
+    with pytest.raises(ValueError, match='speed_reference'):
+        build(tmp_path, tandem(tmp_path), speed_reference='ground')       # the spheres record air
+    assert build(tmp_path, tandem(tmp_path), speed_reference='air')
+    bare = [write_pt_sphere(tmp_path / 'F0.nc', speed_reference=None),
+            write_pt_sphere(tmp_path / 'R0.nc', tag='Rear', xyz_ft=(19.66, 0.0, 4.26), speed_reference=None)]
+    with Dataset(str(build(tmp_path, bare, speed_reference='ground'))) as d:
+        assert d.speed_reference == 'ground'
+    with Dataset(str(build(tmp_path, bare))) as d:
+        assert d.speed_reference == 'air'                                  # PSU-WOPWOP's convention
+    with pytest.raises(ValueError, match='speed_reference'):
+        build(tmp_path, bare, speed_reference='sideways')
+
+
+def test_command_line_takes_the_speed_tolerance_and_reference(tmp_path):
+    from tools import build_pt_database
+    files = [str(write_pt_sphere(tmp_path / 'a.nc', speed_kt=8.6775, speed_reference=None)),
+             str(write_pt_sphere(tmp_path / 'b.nc', tag='Rear', xyz_ft=(19.66, 0.0, 4.26), speed_kt=8.6785,
+                                 speed_reference=None))]
+    out = tmp_path / 'cli.nod'
+    assert build_pt_database.main(files + ['-o', str(out), '--weight-newtons', '1e5', '--speed-tolerance-kt', '0.01',
+                                           '--speed-reference', 'ground']) == 0
+    with Dataset(str(out)) as d:
+        assert list(d.groups) == ['sphere0'] and d.speed_reference == 'ground'

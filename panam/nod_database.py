@@ -35,14 +35,14 @@ from panam.geometry import art2umapr
 from panam.sphere_io import AZIMUTH_REFERENCES, band_index, KNOT_MPS
 from panam.database import DATABASE_FORMAT_VERSION, SPEED_REFERENCES
 from panam.lambert_plots import plot_lambert_ea
+from panam import pt_database as pt
 
 #: The condition variables every group must carry (R2), each with one value.
 CONDITION_VARIABLES = ('radius', 'rotor_scale', 'advance_ratio', 'flight_path_angle',
                        'thrust_coefficient')
 #: A multirotor database's condition variables (``condition_axes = multirotor``; R2 and M2), in place of
 #: advance_ratio, flight_path_angle and thrust_coefficient.
-MULTIROTOR_CONDITION_VARIABLES = ('radius', 'rotor_scale', 'inplane_speed_ratio', 'axial_speed_ratio',
-                                  'hover_tip_mach', 'air_density', 'weight_n', 'airspeed', 'climb_rate')
+MULTIROTOR_CONDITION_VARIABLES = ('radius', 'rotor_scale') + pt.MULTIROTOR_AXES + pt.MULTIROTOR_FIELDS
 #: The values the root attribute ``condition_axes`` takes.
 CONDITION_AXES = ('helicopter', 'multirotor')
 #: The values the group attribute ``condition_origin`` takes (C12).
@@ -247,8 +247,8 @@ def load_nod(path, weight_coefficient=None):
                 doppler = int(np.asarray(group.variables['DOPPLER_SHIFT_REMOVED'][...]))
             attributes = {key: group.getncattr(key) for key in group.ncattrs()}
             axes = None
-            if 'inplane_speed_ratio' in group.variables:    # multirotor: momentum-similarity axes
-                axes = tuple(_scalar(group, v) for v in ('inplane_speed_ratio', 'axial_speed_ratio', 'hover_tip_mach'))
+            if pt.MULTIROTOR_AXES[0] in group.variables:    # multirotor: momentum-similarity axes
+                axes = tuple(_scalar(group, v) for v in pt.MULTIROTOR_AXES)
                 advance_ratio = thrust_coefficient = np.nan
                 airspeed, climb = _scalar(group, 'airspeed'), _scalar(group, 'climb_rate')
                 speed_kt = airspeed / KNOT_MPS
@@ -484,7 +484,7 @@ def validate_nod(path):
                     violate('C12', name, f'condition_origin {origin!r} is not one of {CONDITION_ORIGINS}')
 
         if 'sources' in attributes:
-            _check_tone_sources(database, root, attributes, names, version, violate)
+            _check_tone_sources(database, attributes, names, version, violate)
         if 'condition_axes' in attributes:
             _check_multirotor(database, attributes, names, violate)
 
@@ -504,15 +504,15 @@ def validate_nod(path):
     return violations
 
 
-#: database_version of a database with pure-tone sources (pt_database.PT_DATABASE_FORMAT_VERSION).
-PT_FORMAT_VERSION = 2
+#: database_version of a database with pure-tone sources.
+PT_FORMAT_VERSION = pt.PT_DATABASE_FORMAT_VERSION
 #: A tone source's phase_reference values (docs/file_formats.md, "Format 2: pure-tone sources").
 PHASE_REFERENCES = ('rotor_azimuth', 'relative', 'none')
 #: band_content values: whether the band spectrum already holds the tones.
 BAND_CONTENTS = ('broadband', 'total')
 
 
-def _check_tone_sources(database, root, attributes, names, version, violate):
+def _check_tone_sources(database, attributes, names, version, violate):
     """The T rules: a format 2 database's pure-tone sources.
 
     T1 every tone a whole shaft order of its source's shaft rate (1e-5 relative); T2 the sources the root lists, in
@@ -611,20 +611,21 @@ def _check_multirotor(database, attributes, names, violate):
         for variable in MULTIROTOR_CONDITION_VARIABLES:
             if variable in group.variables and group.variables[variable].size == 1:
                 values[variable] = float(np.asarray(group.variables[variable][...]).reshape(-1)[0])
-        needed = ('inplane_speed_ratio', 'axial_speed_ratio', 'air_density', 'weight_n', 'airspeed', 'climb_rate')
+        needed = pt.MULTIROTOR_AXES[:2] + pt.MULTIROTOR_FIELDS
         if not all(k in values and np.isfinite(values[k]) for k in needed):
             continue    # M2 reports it
         rho, weight = values['air_density'], values['weight_n']
         if rho <= 0 or weight <= 0:
             violate('M3', name, f'air_density {rho} and weight_n {weight} must be positive')
             continue
-        v_h = np.sqrt(weight / (2.0 * rho * n * np.pi * radius ** 2))
+        v_h = pt.hover_induced_velocity(weight, rho, n, radius)
         inplane = np.sqrt(max(values['airspeed'] ** 2 - values['climb_rate'] ** 2, 0.0))
-        for got, want, what in ((values['inplane_speed_ratio'] * v_h, inplane, 'inplane_speed_ratio x v_h'),
-                                (values['axial_speed_ratio'] * v_h, values['climb_rate'], 'axial_speed_ratio x v_h')):
+        x_name, z_name = pt.MULTIROTOR_AXES[:2]
+        for got, want, what in ((values[x_name] * v_h, inplane, f'{x_name} x v_h'),
+                                (values[z_name] * v_h, values['climb_rate'], f'{z_name} x v_h')):
             if abs(got - want) > 1e-6 * max(abs(want), v_h):
                 violate('M3', name, f'{what} is {got:.6g} m/s, its airspeed and climb rate give {want:.6g} m/s')
-        omega_h = np.sqrt(weight / (n * rho * np.pi * radius ** 2 * ct_h)) / radius
+        omega_h = pt.hover_shaft_rate(weight, rho, n, radius, ct_h)
         for tag, sub in group.groups.items():
             if 'speed_ratio' not in sub.variables or 'shaft_rate' not in sub.variables:
                 violate('M4', f'{name}/{tag}', 'no speed_ratio')

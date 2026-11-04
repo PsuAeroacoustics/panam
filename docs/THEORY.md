@@ -970,6 +970,49 @@ wrapped into $[-180^\circ, 180^\circ)$ (`mirror_phi_to_upper_surface`), and carr
 Database format version 1 marks files with the corrected mirror (an earlier `-phi` mirror reflected
 the lower hemisphere onto itself) and the energy-averaged hover with recomputed EAA.
 
+### 7.6 Pure tones and multirotor conditions
+
+`build_pt_database` writes a format 2 database from PSU-WOPWOP's per-rotor PT spheres
+([`file_formats.md`](file_formats.md), "Format 2: pure-tone sources"): one source per rotor, each
+with its shaft orders' levels and phases. A tone of shaft order $m$ is stored locked to the rotor
+azimuth $\psi$ it was predicted at, $\hat{A}_m = A_m\,e^{-im\psi}$, so a rotor turned $\Delta\psi$
+ahead multiplies it by $e^{+im\Delta\psi}$.
+
+With helicopter axes each condition is labeled as in §7.1, but with $C_T$ formed at the sphere's
+own air density $\rho$ (`thrust_coefficient_density = run`). Spheres that share one density give
+one $C_T$, and the database is `fixed_load_factor` (§7.3). Spheres predicted in different air give
+each condition the $C_T$ of its own density; $C_T$ is then an axis NICE-OPS interpolates over, and
+the database is not `fixed_load_factor`, which would promise one $C_T$.
+
+With multirotor axes (`condition_axes = multirotor`) each condition is labeled by momentum
+similarity. For a vehicle of weight $W$ on $N$ rotors of radius $R$,
+
+$$
+v_h = \sqrt{\frac{W}{2\rho N\pi R^2}}, \qquad
+\Omega_h R = \sqrt{\frac{W}{N\rho\pi R^2 C_{T,h}}},
+$$
+
+with $C_{T,h}$ the hover thrust coefficient per rotor, $T/(\rho\pi R^2(\Omega R)^2)$: given, or
+from the hover condition (speed 0) with each rotor carrying $W/N$ at the rms of the sources' shaft
+rates, $C_{T,h} = W/(N\rho\pi R^2(\Omega_\mathrm{rms}R)^2)$. With $u$ the condition's airspeed and
+$\gamma$ its flight path angle (the thrust axis taken as vertical),
+
+$$
+x = \frac{u\cos\gamma}{v_h}, \qquad z = \frac{u\sin\gamma}{v_h}, \qquad
+M_h = \frac{\Omega_h R}{c},
+$$
+
+(`inplane_speed_ratio`, `axial_speed_ratio`, `hover_tip_mach`), with $\rho$ and $c$ each
+condition's own. Each source records its speed over the momentum prediction,
+$|\Omega_r|/\Omega_h$ (`speed_ratio`); a multirotor's rotor speed changes with the condition by
+design, so only its radius must agree across conditions. The database is not `fixed_load_factor`
+(NICE-OPS's load-factor law is in $C_T$, which these axes do not carry).
+
+Rotors predicted at one $|\Omega|$ and one phase reference time at every condition are one coherent
+group (`sync_group`); a rotor whose sphere records no phase reference time is left free-running.
+Spheres whose speeds and flight path angles lie within `speed_tolerance_kt` and $10^{-3}$° are one
+condition at their mean speed and angle.
+
 ## 8. NORAH2 and AAM interchange
 
 **NORAH2 import** (`build_database_from_norah2`, `tools/norah2_to_nod.py`). A NORAH2 hemisphere (`.hem`)
@@ -1441,6 +1484,7 @@ same module until another module is named. A script is named by its path. Tests 
 | §7.3 Load factor | `database.add_sphere_group` | `test_load_factor_scaling.py`, `test_write_aam_hemisphere_netcdf.py` |
 | §7.4 Hover | `database.average_fore_and_aft`, `_fore_aft_measured`, `_synthesized_hover_sphere`, `_hover_source_index`, `_hover_flight_path_angles` | `test_hover_averaging.py`, `test_sphere_completion_integration.py`, `test_empirical_database_hover_selection.py`, `test_database_provenance.py`, `test_norah2_import.py` |
 | §7.5 Completion | `database.mirror_phi_to_upper_surface`, `_complete_sphere_with_coverage` | `test_mirror_phi.py`, `test_sphere_completion_integration.py` |
+| §7.6 Pure tones, multirotor conditions | `pt_database.build_pt_database`, `read_pt_sphere`, `_tones`, `_multirotor_axes`, `hover_induced_velocity`, `hover_shaft_rate`, `_sync_groups`, `_speed_reference`, `_merge_close_speeds`; `nod_database.validate_nod` (T and M rules) | `test_pt_database.py`, `test_nod_database.py` |
 | §8 NORAH2 | `norah2.build_database_from_norah2`, `norah2_levels_at_radius`, `norah2_speed_knots`, `humid_air_density`, `fill_norah2_empty_cells`, `_norah2_rotor_speed_fraction`, `write_norah2_hemisphere`, `write_norah2_levels`, `write_norah2_triangulation`, `geometry.norah2umapr` | `test_norah2_import.py`, `test_write_norah2_hemisphere.py` |
 | §8 Sphere to NORAH2 | `tools/sphere_to_norah2.py`: `sphere_to_norah2`, `sphere_levels_on_norah2_grid` | `test_sphere_to_norah2.py`, `test_cli_scripts.py` (smoke) |
 | §9 Metrics | `metrics.sound_exposure_level`, `ten_db_down_interval`, `noys`, `perceived_noise_level`, `tone_correction`, `effective_perceived_noise_level`, `mil_std_1474e_nondetectability_distance` | `test_sound_exposure_level.py`, `test_pnl_epnl.py`, `test_mil_std_nondetectability.py` |

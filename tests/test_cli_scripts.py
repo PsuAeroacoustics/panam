@@ -184,6 +184,20 @@ def test_nc_lambert_ea_runs(tmp_path):
     assert (tmp_path / 'lambert.png').stat().st_size > 0
 
 
+def test_build_pt_database_runs(tmp_path):
+    from test_pt_database import write_pt_sphere
+    write_pt_sphere(tmp_path / 'front.nc')
+    write_pt_sphere(tmp_path / 'rear.nc', tag='Rear', xyz_ft=(19.66, 0.0, 4.26), azimuth_deg=24.3)
+    assert 'pure tones' in run_here('tools/build_pt_database.py', '--help', cwd=tmp_path).stdout
+    result = run_here('tools/build_pt_database.py', 'front.nc', 'rear.nc', '-o', 'pt.nod', '--weight-newtons', '1e5',
+                      cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / 'pt.nod').exists()
+    result = run_here('tools/build_pt_database.py', 'front.nc', '-o', 'bad.nod', '--weight-newtons', '1e5',
+                      '--main-rotor', 'Rear', cwd=tmp_path)
+    assert result.returncode == 1 and 'build_pt_database:' in result.stderr
+
+
 def test_build_empirical_database_runs(tmp_path):
     from netCDF4 import Dataset
     hemispheres = []
