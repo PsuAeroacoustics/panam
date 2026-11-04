@@ -233,8 +233,49 @@ constants.
 - 1: the corrected upper-surface mirror, and the hover averaged fore and aft in energy with
   EAA recomputed from the averaged spectrum.
 
+- 2: a database with pure-tone sources (`pt_database.PT_DATABASE_FORMAT_VERSION`; below).
+  One without them stays at 1.
+
 Adding names leaves the version at 1. Bump it when the on-disk meaning of existing data
 changes, together with a matching change in NICEOPS.
+
+### Format 2: pure-tone sources
+
+`pt_database.build_pt_database` (CLI `build_pt_database.py`) writes one from PSU-WOPWOP's
+per-rotor PT spheres, one per rotor (`source_tag`) per flight condition. NICE-OPS evaluates
+every tone at every arrival, with its phase.
+
+Root, beside the format 1 fields:
+
+- `database_version` 2; `sources`, the rotors' tags, comma separated; `main_rotor_source`, the
+  tag whose rotor sets the advance ratio, C_T and `rotor_scale`.
+- `sphere_frame = flight_path`: the spheres are not pitched to level, which would re-interpolate
+  the phase.
+- `sphere_levels_lossless = 1`: PSU-WOPWOP applies no absorption, so NICE-OPS absorbs from the hub.
+- `band_content = broadband`: the band spectrum leaves the tones out. With no broadband spheres
+  it is empty (-inf, `dBA` -inf, `EAA` 0, coverage 0), and the tones are the whole level.
+- `condition_axes = helicopter`; `thrust_coefficient_density = run`: C_T is W / (rho pi R^2
+  V_tip^2) at each condition's own `AIR_DENSITY`, the weight given to the build.
+
+Each condition group keeps its format 1 fields and holds one subgroup per source, named by its
+tag:
+
+| Variable or attribute | Meaning |
+|---|---|
+| `center(xyz)` | The hub, m, in the sphere frame: forward, starboard, up (PSU-WOPWOP's XYZ is aft, starboard, up in ft) |
+| `shaft_rate` | rad/s, positive counterclockwise seen from above (`main_rotor_rotation`) |
+| `harmonic(tone)`, `frequency(tone)` | Shaft orders, and their emission-frame frequencies, Hz |
+| `amplitude(PHI, THETA, tone)` | dB re 20 µPa at the sphere radius. Shaft orders at PSU-WOPWOP's floor everywhere are left out; a kept tone's floor cells keep the floor level, since NICE-OPS reads -inf as missing and fills it from the neighbors |
+| `phase(PHI, THETA, tone)` | deg: the cosine phase at emission from the hub, less harmonic × `azimuth` (locked to the rotor) |
+| `azimuth` | deg: the rotor azimuth, in its own sense of rotation, the phase was locked to (ROTOR_AZIMUTH); NICE-OPS's default `--rotor_azimuth` |
+| `phase_reference` | `rotor_azimuth` |
+| `sync_group` | Rotors predicted at one shaft rate and one phase reference time share one (`shaft`); absent for a free-running rotor |
+| `source_sphere`, `phase_reference_time_s` | The sphere file, and its phase reference time, s |
+
+No upper half is mirrored, no grid is changed, no hover is synthesized and no load-factor
+ladder is written (`fixed_load_factor`). At a full sphere's seam the +180° phi row is dropped
+only when its level and phase repeat the -180° row; one that differs is refused. The groups
+carry no `condition_origin`: a predicted condition is a stored one of its own.
 
 ### Checking a database
 
@@ -269,6 +310,17 @@ which the writers keep; a reader may rely on them.
 17. **C11.** The groups are named `sphere0` to `sphere<N-1>`.
 18. **C12.** `condition_origin`, when present, is one of the three values above.
 19. **C13.** `phi` is in [-180, 180) deg and `theta` is in [0, 180] deg (ART angles, above).
+
+A database listing `sources` (format 2) also keeps the T rules:
+
+20. **T1.** Every tone is a whole shaft order of its source's `shaft_rate` (1e-5 relative).
+21. **T2.** Every condition holds exactly the sources the root lists.
+22. **T3.** Every source declares `phase_reference` (`rotor_azimuth`, `relative` or `none`),
+    and has a finite `phase` wherever its `amplitude` is finite (unless `none`).
+23. **T4.** `database_version` is 2 and `band_content` is `broadband` or `total`.
+24. **T5.** `amplitude` and `phase` are over (`PHI`, `THETA`, `tone`), on the condition's grid.
+
+C1 then allows `database_version` up to 2.
 
 ### Reading a database
 

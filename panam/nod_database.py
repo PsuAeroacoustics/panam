@@ -23,6 +23,8 @@ positive to starboard; theta 0 at the nose).
 from collections import namedtuple
 from dataclasses import dataclass, field
 
+import re
+
 import numpy as np
 from netCDF4 import Dataset
 
@@ -304,10 +306,10 @@ def validate_nod(path):
         elif not root['same_grid']:
             violate('R1', None, 'same_grid is false')
         version = root.get('database_version')
-        if version is not None and (not float(version).is_integer()
-                                    or not 0 <= version <= DATABASE_FORMAT_VERSION):
-            violate('C1', None, f'database_version {version} is not an integer from 0 to '
-                                f'{DATABASE_FORMAT_VERSION}')
+        # Format 2 adds pure-tone sources (pt_database); a database without them is format 1 or older.
+        top = PT_FORMAT_VERSION if 'sources' in attributes else DATABASE_FORMAT_VERSION
+        if version is not None and (not float(version).is_integer() or not 0 <= version <= top):
+            violate('C1', None, f'database_version {version} is not an integer from 0 to {top}')
         for attribute, allowed in (('speed_reference', SPEED_REFERENCES),
                                    ('azimuth_reference', AZIMUTH_REFERENCES)):
             if attribute in attributes and attributes[attribute] not in allowed:
@@ -456,6 +458,9 @@ def validate_nod(path):
                 if origin not in CONDITION_ORIGINS:
                     violate('C12', name, f'condition_origin {origin!r} is not one of {CONDITION_ORIGINS}')
 
+        if 'sources' in attributes:
+            _check_tone_sources(database, root, attributes, names, version, violate)
+
         # Rules across groups.
         if sphere_radii:
             first = next(iter(sphere_radii.values()))
@@ -470,6 +475,76 @@ def validate_nod(path):
             if len(set(doppler_flags.values())) > 1 or len(doppler_flags) != len(names):
                 violate('C9', None, 'DOPPLER_SHIFT_REMOVED is not the same in every group')
     return violations
+
+
+#: database_version of a database with pure-tone sources (pt_database.PT_DATABASE_FORMAT_VERSION).
+PT_FORMAT_VERSION = 2
+#: A tone source's phase_reference values (docs/file_formats.md, "Format 2: pure-tone sources").
+PHASE_REFERENCES = ('rotor_azimuth', 'relative', 'none')
+#: band_content values: whether the band spectrum already holds the tones.
+BAND_CONTENTS = ('broadband', 'total')
+
+
+def _check_tone_sources(database, root, attributes, names, version, violate):
+    """The T rules: a format 2 database's pure-tone sources.
+
+    T1 every tone a whole shaft order of its source's shaft rate (1e-5 relative); T2 the sources the root lists, in
+    every condition, and nothing else; T3 a declared phase_reference, and a phase finite wherever the amplitude is;
+    T4 database_version 2 and a band_content of broadband or total; T5 amplitude and phase over (PHI, THETA, tone) on
+    the condition's grid.
+    """
+    tags = [t for t in re.split(r'[,\s]+', str(attributes['sources']).strip()) if t]
+    if version is None or int(version) != PT_FORMAT_VERSION:
+        violate('T4', None, f'pure-tone sources need database_version {PT_FORMAT_VERSION}, not {version}')
+    if attributes.get('band_content') not in BAND_CONTENTS:
+        violate('T4', None, f"band_content {attributes.get('band_content')!r} is not one of {BAND_CONTENTS}")
+    if not tags or len(set(tags)) != len(tags):
+        violate('T2', None, f"sources {attributes['sources']!r} is empty or lists a source twice")
+    for name in names:
+        group = database.groups[name]
+        if set(group.groups) != set(tags):
+            violate('T2', name, f'holds sources {sorted(group.groups)}, the root lists {tags}')
+        n_phi = len(group.dimensions['PHI']) if 'PHI' in group.dimensions else None
+        n_theta = len(group.dimensions['THETA']) if 'THETA' in group.dimensions else None
+        for tag in tags:
+            if tag not in group.groups:
+                continue
+            sub = group.groups[tag]
+            where = f'{name}/{tag}'
+            if sub.ncattrs() and 'phase_reference' in sub.ncattrs():
+                reference = sub.getncattr('phase_reference')
+                if reference not in PHASE_REFERENCES:
+                    violate('T3', where, f'phase_reference {reference!r} is not one of {PHASE_REFERENCES}')
+            else:
+                violate('T3', where, 'no phase_reference')
+                reference = None
+            variables = sub.variables
+            missing = [v for v in ('center', 'shaft_rate', 'harmonic', 'frequency', 'amplitude') if v not in variables]
+            if missing:
+                violate('T5', where, f'no {", ".join(missing)}')
+                continue
+            rate = float(np.asarray(variables['shaft_rate'][...]).reshape(-1)[0])
+            harmonic = np.asarray(variables['harmonic'][...], dtype=float).reshape(-1)
+            frequency = np.asarray(variables['frequency'][...], dtype=float).reshape(-1)
+            expected = harmonic * abs(rate) / (2.0 * np.pi)
+            if (harmonic.size != frequency.size or np.any(harmonic < 1) or np.any(harmonic != np.round(harmonic))
+                    or not np.all(np.abs(frequency - expected) <= 1e-5 * np.maximum(expected, 1e-300))):
+                violate('T1', where, 'a tone is not a whole shaft order of its shaft_rate')
+            for variable in ('amplitude', 'phase'):
+                if variable not in variables:
+                    if variable == 'phase' and reference != 'none':
+                        violate('T3', where, 'no phase, and phase_reference is not none')
+                    continue
+                if variables[variable].dimensions != ('PHI', 'THETA', 'tone'):
+                    violate('T5', where, f'{variable} is over {variables[variable].dimensions}, '
+                                         "not ('PHI', 'THETA', 'tone')")
+                elif n_phi is not None and variables[variable].shape[:2] != (n_phi, n_theta):
+                    violate('T5', where, f'{variable} is not on the condition\'s {n_phi} x {n_theta} grid')
+            if 'phase' in variables and reference != 'none':
+                amplitude = np.asarray(variables['amplitude'][...], dtype=float)
+                phase = np.asarray(variables['phase'][...], dtype=float)
+                if amplitude.shape == phase.shape and np.any(np.isfinite(amplitude) & ~np.isfinite(phase)):
+                    violate('T3', where, 'a phase is not finite where its amplitude is')
 
 
 @dataclass
