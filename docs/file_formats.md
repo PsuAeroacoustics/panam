@@ -254,8 +254,8 @@ Root, beside the format 1 fields:
 - `sphere_levels_lossless = 1`: PSU-WOPWOP applies no absorption, so NICE-OPS absorbs from the hub.
 - `band_content = broadband`: the band spectrum leaves the tones out. With no broadband spheres
   it is empty (-inf, `dBA` -inf, `EAA` 0, coverage 0), and the tones are the whole level.
-- `condition_axes = helicopter`; `thrust_coefficient_density = run`: C_T is W / (rho pi R^2
-  V_tip^2) at each condition's own `AIR_DENSITY`, the weight given to the build.
+- `condition_axes = helicopter` (or `multirotor`, below); `thrust_coefficient_density = run`: C_T
+  is W / (rho pi R^2 V_tip^2) at each condition's own `AIR_DENSITY`, the weight given to the build.
 
 Each condition group keeps its format 1 fields and holds one subgroup per source, named by its
 tag:
@@ -276,6 +276,32 @@ No upper half is mirrored, no grid is changed, no hover is synthesized and no lo
 ladder is written (`fixed_load_factor`). At a full sphere's seam the +180° phi row is dropped
 only when its level and phase repeat the -180° row; one that differs is refused. The groups
 carry no `condition_origin`: a predicted condition is a stored one of its own.
+
+#### Multirotor conditions
+
+With `condition_axes = multirotor` (`--condition-axes multirotor`) the conditions are indexed by
+momentum similarity instead of advance ratio, flight path angle and C_T. With N rotors of radius R,
+weight W, density rho at the condition and C_Th the hover thrust coefficient per rotor:
+
+    v_h = sqrt(W / (2 rho N pi R^2)),   Omega_h R = sqrt(W / (N rho pi R^2 C_Th))
+
+Root attributes: `rotor_count` (N), `rotor_radius_m` (R, every rotor's sphere must give the same
+MAIN_ROTOR_RADIUS) and `hover_thrust_coefficient` (C_Th, given to the build or taken from its hover
+condition, speed 0, with each rotor carrying W / N at the rms of the sources' shaft rates).
+
+Each condition group carries these over `condition`, in place of `advance_ratio`,
+`flight_path_angle` and `thrust_coefficient`:
+
+| Variable | Meaning |
+|---|---|
+| `inplane_speed_ratio` | x: the air speed's part perpendicular to the thrust axis, over v_h |
+| `axial_speed_ratio` | z: the part along it, over v_h, positive in climb |
+| `hover_tip_mach` | M_h = Omega_h R / c, c the sphere's `speed_of_sound_m_s` |
+| `air_density`, `weight_n` | rho (kg m-3) and W (N) of the condition |
+| `airspeed`, `climb_rate` | m s-1 |
+
+The thrust axis is taken as vertical (load factor 1, no attitude). Each source also carries
+`speed_ratio`, |`shaft_rate`| / Omega_h: its share of the trim at that condition.
 
 ### Checking a database
 
@@ -321,6 +347,23 @@ A database listing `sources` (format 2) also keeps the T rules:
 24. **T5.** `amplitude` and `phase` are over (`PHI`, `THETA`, `tone`), on the condition's grid.
 
 C1 then allows `database_version` up to 2.
+
+A database with `condition_axes` also keeps the M rules:
+
+25. **M1.** `condition_axes` is `helicopter` or `multirotor`. A multirotor root gives
+    `rotor_count` (a whole number >= 1), `rotor_radius_m` and `hover_thrust_coefficient`,
+    all positive.
+26. **M2.** Every multirotor condition carries `inplane_speed_ratio`, `axial_speed_ratio`,
+    `hover_tip_mach`, `air_density`, `weight_n`, `airspeed` and `climb_rate` (and R2's `radius`
+    and `rotor_scale`; the helicopter variables are not required).
+27. **M3.** x v_h is the in-plane part of `airspeed` and z v_h is `climb_rate`, v_h from the
+    group's own weight and density (1e-6 relative).
+28. **M4.** Every source has a positive `speed_ratio`, and |`shaft_rate`| / `speed_ratio` is the
+    condition's Omega_h (1e-6 relative).
+
+`load_nod` reads a multirotor condition with `advance_ratio` and `thrust_coefficient` NaN,
+`speed_kt` from `airspeed`, `flight_path_angle_deg` its climb angle, and `multirotor_axes`
+(x, z, M_h), which is also its `key`.
 
 ### Reading a database
 

@@ -2,10 +2,13 @@
 
 Usage:  python build_pt_database.py SPHERE [SPHERE ...] -o DATABASE.nod --weight-newtons W
             [--sync-groups shared_rate|none] [--main-rotor TAG]
+            [--condition-axes helicopter|multirotor --rotor-count N [--hover-thrust-coefficient CT]
+             [--sound-speed C]]
 
 One PT sphere per rotor (its source_tag) per flight condition, in the flight-path frame. The spheres carry no
 weight, so the vehicle's weight (N) is required for the thrust-coefficient axis. Rotors predicted at one shaft rate
-form one coherent group unless --sync-groups none. See pt_database.build_pt_database and docs/file_formats.md,
+form one coherent group unless --sync-groups none. A multirotor database (--condition-axes multirotor) is indexed
+by momentum similarity and needs the vehicle's rotor count. See pt_database.build_pt_database and docs/file_formats.md,
 "Format 2: pure-tone sources".
 """
 import argparse
@@ -22,6 +25,14 @@ def parse_arguments(argv=None):
     parser.add_argument('--sync-groups', choices=('shared_rate', 'none'), default='shared_rate',
                         help='shared_rate (default): rotors on one shaft rate add coherently; none: all free-running')
     parser.add_argument('--main-rotor', default=None, help="the tag whose rotor sets the advance ratio and C_T")
+    parser.add_argument('--condition-axes', choices=('helicopter', 'multirotor'), default='helicopter',
+                        help='helicopter (advance ratio, flight path angle, C_T; default) or multirotor (momentum '
+                             'similarity: in-plane and axial speed over v_h, hover tip Mach number)')
+    parser.add_argument('--rotor-count', type=int, default=None, help="the vehicle's number of rotors (multirotor)")
+    parser.add_argument('--hover-thrust-coefficient', type=float, default=None,
+                        help='C_Th per rotor (multirotor; default from the hover condition)')
+    parser.add_argument('--sound-speed', type=float, default=None,
+                        help='m/s, for the hover tip Mach number where a sphere records none (multirotor)')
     return parser.parse_args(argv)
 
 
@@ -30,7 +41,10 @@ def main(argv=None):
     try:
         pt_database.build_pt_database(args.spheres, args.output, weight_newtons=args.weight_newtons,
                                       sync_groups=None if args.sync_groups == 'none' else 'shared_rate',
-                                      main_rotor=args.main_rotor)
+                                      main_rotor=args.main_rotor, condition_axes=args.condition_axes,
+                                      rotor_count=args.rotor_count,
+                                      hover_thrust_coefficient=args.hover_thrust_coefficient,
+                                      sound_speed_mps=args.sound_speed)
     except ValueError as error:
         print(f'build_pt_database: {error}', file=sys.stderr)
         return 1

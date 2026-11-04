@@ -39,6 +39,12 @@ from panam.lambert_plots import plot_lambert_ea
 #: The condition variables every group must carry (R2), each with one value.
 CONDITION_VARIABLES = ('radius', 'rotor_scale', 'advance_ratio', 'flight_path_angle',
                        'thrust_coefficient')
+#: A multirotor database's condition variables (``condition_axes = multirotor``; R2 and M2), in place of
+#: advance_ratio, flight_path_angle and thrust_coefficient.
+MULTIROTOR_CONDITION_VARIABLES = ('radius', 'rotor_scale', 'inplane_speed_ratio', 'axial_speed_ratio',
+                                  'hover_tip_mach', 'air_density', 'weight_n', 'airspeed', 'climb_rate')
+#: The values the root attribute ``condition_axes`` takes.
+CONDITION_AXES = ('helicopter', 'multirotor')
 #: The values the group attribute ``condition_origin`` takes (C12).
 CONDITION_ORIGINS = ('measured', 'extended_flight_path_angle', 'synthesized_hover')
 
@@ -71,6 +77,9 @@ class NodCondition:
         doppler_shift_removed: 0 or 1, or None when the group does not say.
         condition_origin: the group attribute, or None.
         attributes: every group attribute, by name.
+        multirotor_axes: (inplane_speed_ratio, axial_speed_ratio, hover_tip_mach) in a multirotor database
+            (``condition_axes = multirotor``), else None. There advance_ratio and thrust_coefficient are NaN, speed_kt
+            is the group's airspeed and flight_path_angle_deg its climb angle.
     """
     name: str
     speed_kt: float
@@ -90,6 +99,7 @@ class NodCondition:
     doppler_shift_removed: int = None
     condition_origin: str = None
     attributes: dict = field(default_factory=dict)
+    multirotor_axes: tuple = None
 
     @property
     def measured_amplitude(self):
@@ -110,7 +120,10 @@ class NodCondition:
     @property
     def key(self):
         """(advance_ratio, flight_path_angle_deg, thrust_coefficient), rounded to 9, 6
-        and 9 decimals: what :func:`compare_databases` matches conditions by."""
+        and 9 decimals: what :func:`compare_databases` matches conditions by.  A multirotor condition's is
+        ('multirotor', inplane_speed_ratio, axial_speed_ratio, hover_tip_mach), each rounded to 9."""
+        if self.multirotor_axes is not None:
+            return ('multirotor',) + tuple(round(float(v), 9) for v in self.multirotor_axes)
         return (round(float(self.advance_ratio), 9), round(float(self.flight_path_angle_deg), 6),
                 round(float(self.thrust_coefficient), 9))
 
@@ -233,8 +246,18 @@ def load_nod(path, weight_coefficient=None):
             if 'DOPPLER_SHIFT_REMOVED' in group.variables:
                 doppler = int(np.asarray(group.variables['DOPPLER_SHIFT_REMOVED'][...]))
             attributes = {key: group.getncattr(key) for key in group.ncattrs()}
-            advance_ratio = _scalar(group, 'advance_ratio')
-            thrust_coefficient = _scalar(group, 'thrust_coefficient')
+            axes = None
+            if 'inplane_speed_ratio' in group.variables:    # multirotor: momentum-similarity axes
+                axes = tuple(_scalar(group, v) for v in ('inplane_speed_ratio', 'axial_speed_ratio', 'hover_tip_mach'))
+                advance_ratio = thrust_coefficient = np.nan
+                airspeed, climb = _scalar(group, 'airspeed'), _scalar(group, 'climb_rate')
+                speed_kt = airspeed / KNOT_MPS
+                fpa = float(np.degrees(np.arctan2(climb, np.sqrt(max(airspeed ** 2 - climb ** 2, 0.0)))))
+            else:
+                advance_ratio = _scalar(group, 'advance_ratio')
+                thrust_coefficient = _scalar(group, 'thrust_coefficient')
+                speed_kt = advance_ratio * tip_speed / KNOT_MPS
+                fpa = _scalar(group, 'flight_path_angle')
             if fixed:
                 load_factor = 1.0
             elif weight_coefficient:
@@ -247,9 +270,9 @@ def load_nod(path, weight_coefficient=None):
             dba, eaa = array('dBA', False), array('EAA', False)
             conditions.append(NodCondition(
                 name=name,
-                speed_kt=advance_ratio * tip_speed / KNOT_MPS,
+                speed_kt=speed_kt,
                 advance_ratio=advance_ratio,
-                flight_path_angle_deg=_scalar(group, 'flight_path_angle'),
+                flight_path_angle_deg=fpa,
                 thrust_coefficient=thrust_coefficient,
                 load_factor=load_factor,
                 radius_m=_scalar(group, 'radius') * rotor_scale,
@@ -263,7 +286,8 @@ def load_nod(path, weight_coefficient=None):
                 coverage=coverage,
                 doppler_shift_removed=doppler,
                 condition_origin=attributes.get('condition_origin'),
-                attributes=attributes))
+                attributes=attributes,
+                multirotor_axes=axes))
     return NodDatabase(str(path), conditions, root_variables, root_attributes)
 
 
@@ -334,10 +358,11 @@ def validate_nod(path):
             variables = group.variables
             n_channels = len(group.dimensions['channels']) if 'channels' in group.dimensions else None
 
-            # R2: one finite value of each condition variable.
-            for variable in CONDITION_VARIABLES:
+            # R2: one finite value of each condition variable (M2 for a multirotor's own).
+            multirotor = attributes.get('condition_axes') == 'multirotor'
+            for variable in (MULTIROTOR_CONDITION_VARIABLES if multirotor else CONDITION_VARIABLES):
                 if variable not in variables:
-                    violate('R2', name, f'no {variable}')
+                    violate('M2' if variable not in CONDITION_VARIABLES else 'R2', name, f'no {variable}')
                     continue
                 values = np.asarray(variables[variable][...], dtype=float).reshape(-1)
                 if values.size != 1:
@@ -460,6 +485,8 @@ def validate_nod(path):
 
         if 'sources' in attributes:
             _check_tone_sources(database, root, attributes, names, version, violate)
+        if 'condition_axes' in attributes:
+            _check_multirotor(database, attributes, names, violate)
 
         # Rules across groups.
         if sphere_radii:
@@ -545,6 +572,68 @@ def _check_tone_sources(database, root, attributes, names, version, violate):
                 phase = np.asarray(variables['phase'][...], dtype=float)
                 if amplitude.shape == phase.shape and np.any(np.isfinite(amplitude) & ~np.isfinite(phase)):
                     violate('T3', where, 'a phase is not finite where its amplitude is')
+
+
+def _check_multirotor(database, attributes, names, violate):
+    """The M rules: a multirotor database's momentum-similarity axes (``pt_database``).
+
+    M1 condition_axes is helicopter or multirotor; a multirotor root gives rotor_count (a whole number >= 1),
+    rotor_radius_m and hover_thrust_coefficient (> 0). M2 every condition carries the multirotor variables (with R2).
+    M3 each condition's axes follow from its own fields: inplane_speed_ratio x v_h is the in-plane part of airspeed
+    and axial_speed_ratio x v_h is climb_rate, with v_h = sqrt(weight_n / (2 air_density N pi R^2)) (1e-6
+    relative). M4 every source carries a positive speed_ratio, and |shaft_rate| / speed_ratio is the condition's
+    Omega_h = sqrt(weight_n / (N air_density pi R^2 C_Th)) / R for each (1e-6 relative).
+    """
+    axes = attributes.get('condition_axes')
+    if axes not in CONDITION_AXES:
+        violate('M1', None, f'condition_axes {axes!r} is not one of {CONDITION_AXES}')
+        return
+    if axes != 'multirotor':
+        return
+    def number(name):
+        try:
+            value = float(np.asarray(attributes[name]).reshape(-1)[0])
+        except (KeyError, TypeError, ValueError, IndexError):
+            violate('M1', None, f'no {name} (a number) at the root')
+            return None
+        if not np.isfinite(value) or value <= 0:
+            violate('M1', None, f'{name} is {value}, not positive')
+            return None
+        return value
+    n, radius, ct_h = number('rotor_count'), number('rotor_radius_m'), number('hover_thrust_coefficient')
+    if n is not None and not float(n).is_integer():
+        violate('M1', None, f'rotor_count {n} is not a whole number')
+    if None in (n, radius, ct_h):
+        return
+    for name in names:
+        group = database.groups[name]
+        values = {}
+        for variable in MULTIROTOR_CONDITION_VARIABLES:
+            if variable in group.variables and group.variables[variable].size == 1:
+                values[variable] = float(np.asarray(group.variables[variable][...]).reshape(-1)[0])
+        needed = ('inplane_speed_ratio', 'axial_speed_ratio', 'air_density', 'weight_n', 'airspeed', 'climb_rate')
+        if not all(k in values and np.isfinite(values[k]) for k in needed):
+            continue    # M2 reports it
+        rho, weight = values['air_density'], values['weight_n']
+        if rho <= 0 or weight <= 0:
+            violate('M3', name, f'air_density {rho} and weight_n {weight} must be positive')
+            continue
+        v_h = np.sqrt(weight / (2.0 * rho * n * np.pi * radius ** 2))
+        inplane = np.sqrt(max(values['airspeed'] ** 2 - values['climb_rate'] ** 2, 0.0))
+        for got, want, what in ((values['inplane_speed_ratio'] * v_h, inplane, 'inplane_speed_ratio x v_h'),
+                                (values['axial_speed_ratio'] * v_h, values['climb_rate'], 'axial_speed_ratio x v_h')):
+            if abs(got - want) > 1e-6 * max(abs(want), v_h):
+                violate('M3', name, f'{what} is {got:.6g} m/s, its airspeed and climb rate give {want:.6g} m/s')
+        omega_h = np.sqrt(weight / (n * rho * np.pi * radius ** 2 * ct_h)) / radius
+        for tag, sub in group.groups.items():
+            if 'speed_ratio' not in sub.variables or 'shaft_rate' not in sub.variables:
+                violate('M4', f'{name}/{tag}', 'no speed_ratio')
+                continue
+            ratio = float(np.asarray(sub['speed_ratio'][...]).reshape(-1)[0])
+            rate = abs(float(np.asarray(sub['shaft_rate'][...]).reshape(-1)[0]))
+            if not np.isfinite(ratio) or ratio <= 0 or abs(rate / ratio - omega_h) > 1e-6 * omega_h:
+                violate('M4', f'{name}/{tag}', f'|shaft_rate| / speed_ratio is {rate / ratio if ratio else np.inf:.6g} '
+                                               f'rad/s, not the condition\'s Omega_h {omega_h:.6g} rad/s')
 
 
 @dataclass

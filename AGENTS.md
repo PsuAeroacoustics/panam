@@ -62,7 +62,8 @@ Library modules, in `panam/`:
   statistics (`node_statistics`).
 - `pt_database.py`: format 2 databases of pure tones from PSU-WOPWOP's per-rotor PT spheres
   (`build_pt_database`, CLI `tools/build_pt_database.py`): one source per rotor, phase locked to its
-  azimuth, nothing done that would damage phase.
+  azimuth, nothing done that would damage phase; helicopter or multirotor (momentum-similarity)
+  condition axes.
 - `nod_database.py`: reads `.nod` databases: `load_nod`, `validate_nod`,
   `compare_databases`, `to_frame`, and the maps and summaries of
   `tools/nod_tool.py` (`plot_condition`, `plot_envelope`).

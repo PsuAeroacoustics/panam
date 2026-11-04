@@ -20,7 +20,8 @@ FLOOR_DB = -23.4575
 def write_pt_sphere(path, *, tag='Front', xyz_ft=(-19.66, 0.0, 0.98), azimuth_deg=344.3, phase_offset_deg=0.0,
                     speed_kt=77.85, fpa_deg=-2.86, phi=None, theta=None, orders=(1, 2, 3, 6, 9),
                     rate=SHAFT_RATE, rotation='counterclockwise', frame='flight_path', doppler_shift_removed=1,
-                    levels=None, phase=None, units_speed='KNOTS'):
+                    levels=None, phase=None, units_speed='KNOTS', rotor_radius=6.579, air_density=1.071778,
+                    speed_of_sound='3.42350006E+02'):
     """A PSU-WOPWOP-like PT sphere. Orders 3, 6 and 9 carry energy; 1 and 2 sit at the floor (WOPWOP lists every
     shaft order up to its tonal top and floors the empty ones)."""
     phi = np.arange(-90.0, 90.1, 15.0) if phi is None else np.asarray(phi, float)
@@ -46,7 +47,8 @@ def write_pt_sphere(path, *, tag='Front', xyz_ft=(-19.66, 0.0, 0.98), azimuth_de
         d.phase_reference_time_s = '2.0000000298023224E-01'
         d.source_tag = tag
         d.center = 'rotor hub'
-        d.speed_of_sound_m_s = '3.42350006E+02'
+        if speed_of_sound is not None:
+            d.speed_of_sound_m_s = speed_of_sound
 
         def scalar(name, value, unit):
             v = d.createVariable(name, 'f4')
@@ -75,9 +77,9 @@ def write_pt_sphere(path, *, tag='Front', xyz_ft=(-19.66, 0.0, 0.98), azimuth_de
             v = d.createVariable(name, 'f4', ('PHI', 'THETA', 'FREQUENCY'))
             v[:] = values
             v.unit = unit
-        scalar('AIR_DENSITY', 1.071778, 'KG/M^3')
+        scalar('AIR_DENSITY', air_density, 'KG/M^3')
         scalar('AIRSPEED', speed_kt, 'KNOTS')
-        scalar('MAIN_ROTOR_RADIUS', 6.579, 'METER')
+        scalar('MAIN_ROTOR_RADIUS', rotor_radius, 'METER')
         scalar('MAIN_ROTOR_TIP_SPEED', 197.68553, 'M/S')
         scalar('MAIN_ROTOR_BLADES', 3.0, '')
         scalar('PREDICTION_RADIUS', 30.48, 'METER')
@@ -275,3 +277,145 @@ def test_command_line_builds_and_refuses(tmp_path, capsys):
     assert nd.validate_nod(tmp_path / 'cli.nod') == []
     assert build_pt_database.main(files[:1] * 2 + ['-o', str(tmp_path / 'bad.nod'), '--weight-newtons', '1e5']) == 1
     assert 'one source per rotor' in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------------------- multirotor conditions
+
+HEX_R = 0.3556          # m, a 28 in prop
+HEX_WEIGHT = 151.2      # N
+KNOT = 0.514444
+
+
+def hexacopter(tmp_path, conditions=((0.0, 0.0), (8.6898, 0.0)), rates=(-200.0, 240.0), prefix='H'):
+    """Two of a hexacopter's rotors (one each way) at each (speed kt, flight path angle deg) condition."""
+    files = []
+    for i, (speed, fpa) in enumerate(conditions):
+        for tag, rate, x in (('M1', rates[0], (0.0, 2.6, 0.0)), ('M2', rates[1], (0.0, -2.6, 0.0))):
+            files.append(write_pt_sphere(tmp_path / f'{prefix}{i}{tag}.nc', tag=tag, xyz_ft=x, speed_kt=speed,
+                                         fpa_deg=fpa, rate=abs(rate), rotor_radius=HEX_R, air_density=1.15,
+                                         rotation='counterclockwise' if rate > 0 else 'clockwise'))
+    return files
+
+
+def momentum(rho, weight=HEX_WEIGHT, n=6, r=HEX_R):
+    return math.sqrt(weight / (2 * rho * n * math.pi * r ** 2))
+
+
+def read_group(path, group):
+    with Dataset(str(path)) as d:
+        g = d.groups[group]
+        return {name: np.array(v[...], float).reshape(-1)[0] for name, v in g.variables.items()
+                if v.size == 1 and name not in ('DOPPLER_SHIFT_REMOVED',)}, set(g.variables)
+
+
+def test_multirotor_conditions_are_momentum_similarity_axes(tmp_path):
+    path = build(tmp_path, hexacopter(tmp_path), weight_newtons=HEX_WEIGHT, condition_axes='multirotor',
+                 rotor_count=6)
+    om_rms = math.sqrt((200.0 ** 2 + 240.0 ** 2) / 2)
+    ct_h = HEX_WEIGHT / (6 * 1.15 * math.pi * HEX_R ** 2 * (om_rms * HEX_R) ** 2)
+    with Dataset(str(path)) as d:
+        assert d.condition_axes == 'multirotor'
+        assert int(d.rotor_count) == 6
+        assert float(d.rotor_radius_m) == pytest.approx(HEX_R, rel=1e-6)
+        assert float(d.hover_thrust_coefficient) == pytest.approx(ct_h, rel=1e-6)
+        assert d.thrust_coefficient_density == 'run'
+    v_h = momentum(1.15)
+    om_h = math.sqrt(HEX_WEIGHT / (6 * 1.15 * math.pi * HEX_R ** 2 * ct_h)) / HEX_R
+    for group, speed in (('sphere0', 0.0), ('sphere1', 8.6898)):
+        values, names = read_group(path, group)
+        assert not names & {'advance_ratio', 'flight_path_angle', 'thrust_coefficient'}
+        assert values['inplane_speed_ratio'] == pytest.approx(speed * KNOT / v_h, rel=1e-6, abs=1e-12)
+        assert values['axial_speed_ratio'] == pytest.approx(0.0, abs=1e-12)
+        assert values['hover_tip_mach'] == pytest.approx(om_h * HEX_R / 342.35, rel=1e-6)
+        assert values['air_density'] == pytest.approx(1.15, rel=1e-6)
+        assert values['weight_n'] == pytest.approx(HEX_WEIGHT)
+        assert values['airspeed'] == pytest.approx(speed * KNOT, rel=1e-6, abs=1e-12)
+        assert values['climb_rate'] == pytest.approx(0.0, abs=1e-12)
+        for tag, rate in (('M1', 200.0), ('M2', 240.0)):
+            assert float(read_source(path, group, tag)['speed_ratio']) == pytest.approx(rate / om_h, rel=1e-6)
+    assert nd.validate_nod(path) == []
+
+
+def test_multirotor_climb_is_positive_axial_speed(tmp_path):
+    files = hexacopter(tmp_path, conditions=((0.0, 0.0), (8.6898, 6.0)))
+    path = build(tmp_path, files, weight_newtons=HEX_WEIGHT, condition_axes='multirotor', rotor_count=6)
+    values, _ = read_group(path, 'sphere1')
+    u, v_h = 8.6898 * KNOT, momentum(1.15)
+    assert values['axial_speed_ratio'] == pytest.approx(u * math.sin(math.radians(6.0)) / v_h, rel=1e-5)
+    assert values['inplane_speed_ratio'] == pytest.approx(u * math.cos(math.radians(6.0)) / v_h, rel=1e-5)
+    assert values['climb_rate'] == pytest.approx(u * math.sin(math.radians(6.0)), rel=1e-5)
+    assert nd.validate_nod(path) == []
+
+
+def test_multirotor_hover_thrust_coefficient_can_be_given(tmp_path):
+    files = hexacopter(tmp_path, conditions=((8.6898, 0.0),))
+    with pytest.raises(ValueError, match='hover'):
+        build(tmp_path, files, weight_newtons=HEX_WEIGHT, condition_axes='multirotor', rotor_count=6)
+    path = build(tmp_path, files, weight_newtons=HEX_WEIGHT, condition_axes='multirotor', rotor_count=6,
+                 hover_thrust_coefficient=0.009)
+    with Dataset(str(path)) as d:
+        assert float(d.hover_thrust_coefficient) == pytest.approx(0.009)
+    assert nd.validate_nod(path) == []
+
+
+def test_multirotor_refusals(tmp_path):
+    files = hexacopter(tmp_path)
+    with pytest.raises(ValueError, match='rotor_count'):
+        build(tmp_path, files, weight_newtons=HEX_WEIGHT, condition_axes='multirotor')
+    with pytest.raises(ValueError, match='condition_axes'):
+        build(tmp_path, files, weight_newtons=HEX_WEIGHT, condition_axes='quadcopter', rotor_count=6)
+    odd = hexacopter(tmp_path, prefix='O')
+    with Dataset(str(odd[1]), 'a') as d:
+        d['MAIN_ROTOR_RADIUS'][...] = 0.4
+    with pytest.raises(ValueError, match='radius'):
+        build(tmp_path, odd, weight_newtons=HEX_WEIGHT, condition_axes='multirotor', rotor_count=6)
+    quiet = [write_pt_sphere(tmp_path / f'S{k}.nc', tag=t, speed_kt=0.0, fpa_deg=0.0, rate=220.0, rotor_radius=HEX_R,
+                             speed_of_sound=None) for k, t in enumerate(('M1', 'M2'))]
+    with pytest.raises(ValueError, match='speed of sound'):
+        build(tmp_path, quiet, weight_newtons=HEX_WEIGHT, condition_axes='multirotor', rotor_count=6)
+
+
+def test_validate_nod_checks_the_multirotor_fields(tmp_path):
+    path = build(tmp_path, hexacopter(tmp_path), weight_newtons=HEX_WEIGHT, condition_axes='multirotor',
+                 rotor_count=6)
+    with Dataset(str(path), 'a') as d:
+        d.groups['sphere1'].groups['M2']['speed_ratio'][...] = 2.0
+    assert 'M4' in {v.rule for v in nd.validate_nod(path)}
+    path = build(tmp_path, hexacopter(tmp_path), weight_newtons=HEX_WEIGHT, condition_axes='multirotor',
+                 rotor_count=6)
+    with Dataset(str(path), 'a') as d:
+        d.groups['sphere1']['inplane_speed_ratio'][:] = 9.0
+    assert 'M3' in {v.rule for v in nd.validate_nod(path)}
+    path = build(tmp_path, hexacopter(tmp_path), weight_newtons=HEX_WEIGHT, condition_axes='multirotor',
+                 rotor_count=6)
+    with Dataset(str(path), 'a') as d:
+        d.delncattr('hover_thrust_coefficient')
+    assert 'M1' in {v.rule for v in nd.validate_nod(path)}
+
+
+def test_load_nod_reads_a_multirotor_database(tmp_path):
+    files = hexacopter(tmp_path, conditions=((0.0, 0.0), (8.6898, 6.0)))
+    path = build(tmp_path, files, weight_newtons=HEX_WEIGHT, condition_axes='multirotor', rotor_count=6)
+    db = nd.load_nod(path)
+    assert len(db) == 2
+    hover, climb = db.conditions
+    assert hover.speed_kt == pytest.approx(0.0, abs=1e-9)
+    assert climb.speed_kt == pytest.approx(8.6898, rel=1e-6)
+    assert climb.flight_path_angle_deg == pytest.approx(6.0, rel=1e-6)
+    assert np.isnan(climb.advance_ratio) and np.isnan(climb.thrust_coefficient)
+    x, z, m = climb.multirotor_axes
+    u, v_h = 8.6898 * KNOT, momentum(1.15)
+    assert z == pytest.approx(u * math.sin(math.radians(6.0)) / v_h, rel=1e-5)
+    assert hover.key != climb.key and climb.key[0] == 'multirotor'
+
+
+def test_command_line_builds_a_multirotor_database(tmp_path, capsys):
+    from tools import build_pt_database
+    files = [str(f) for f in hexacopter(tmp_path)]
+    out = tmp_path / 'hex.nod'
+    assert build_pt_database.main(files + ['-o', str(out), '--weight-newtons', str(HEX_WEIGHT),
+                                           '--condition-axes', 'multirotor', '--rotor-count', '6']) == 0
+    assert nd.validate_nod(out) == []
+    assert build_pt_database.main(files + ['-o', str(tmp_path / 'bad.nod'), '--weight-newtons', '151',
+                                           '--condition-axes', 'multirotor']) == 1
+    assert 'rotor_count' in capsys.readouterr().err

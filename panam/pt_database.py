@@ -113,7 +113,9 @@ def read_pt_sphere(path):
             air_density=float(_value(handle, 'AIR_DENSITY', path)),
             phase_reference_time_s=float(attributes.get('phase_reference_time_s', 'nan')),
             azimuth_reference=str(attributes.get('azimuth_reference', 'track')),
-            speed_reference=str(attributes.get('speed_reference', 'air')))
+            speed_reference=str(attributes.get('speed_reference', 'air')),
+            sound_speed_mps=float(attributes['speed_of_sound_m_s']) if 'speed_of_sound_m_s' in attributes
+            else float('nan'))
         xyz = _value(handle, 'XYZ', path).reshape(-1)
         # AAM body axes of the flight-path frame (aft, starboard, up; ft) to the database's forward, starboard, up (m).
         sphere.center_m = np.array([-xyz[0], xyz[1], xyz[2]]) * FOOT_M
@@ -171,7 +173,8 @@ def _condition_key(sphere):
 
 
 def build_pt_database(sphere_files, database_filename, *, weight_newtons=None, sync_groups='shared_rate',
-                      main_rotor=None, speed_reference=None):
+                      main_rotor=None, speed_reference=None, condition_axes='helicopter', rotor_count=None,
+                      hover_thrust_coefficient=None, sound_speed_mps=None):
     """Build a format 2 database from PSU-WOPWOP PT spheres, one per rotor per flight condition.
 
     Args:
@@ -187,6 +190,17 @@ def build_pt_database(sphere_files, database_filename, *, weight_newtons=None, s
         main_rotor: the tag whose MAIN_ROTOR_* define the database's rotor (advance ratio, C_T, sphere radius
             scale); default the largest radius (the first tag on a tie).
         speed_reference: 'air' or 'ground'; default what the spheres record (PSU-WOPWOP: air).
+        condition_axes: ``'helicopter'`` (advance ratio, flight path angle, thrust coefficient) or ``'multirotor'``:
+            momentum similarity, with v_h = sqrt(W / (2 rho N pi R^2)) and
+            Omega_h R = sqrt(W / (N rho pi R^2 C_Th)), each condition at in-plane and axial air speed over v_h
+            (``inplane_speed_ratio``, ``axial_speed_ratio``, the thrust axis taken as vertical) and the hover tip
+            Mach number Omega_h R / c (``hover_tip_mach``), with ``air_density``, ``weight_n``, ``airspeed`` and
+            ``climb_rate``; each source's ``speed_ratio`` = |shaft_rate| / Omega_h.  Every rotor's sphere must give
+            one rotor radius.
+        rotor_count: N, the vehicle's rotors (multirotor; the database may hold fewer sources).
+        hover_thrust_coefficient: C_Th per rotor (multirotor).  Default: from the hover condition (speed 0), with
+            each rotor carrying W / N at the rms of the sources' shaft rates.
+        sound_speed_mps: c for hover_tip_mach where a sphere does not record ``speed_of_sound_m_s``.
 
     The database holds every flight condition once, at load factor 1 (``fixed_load_factor``): NICE-OPS scales the
     levels to other load factors.  Raises ValueError, before writing anything, for spheres that are not PT, not in
@@ -196,6 +210,10 @@ def build_pt_database(sphere_files, database_filename, *, weight_newtons=None, s
     if weight_newtons is None or not np.isfinite(weight_newtons) or weight_newtons <= 0:
         raise ValueError('weight_newtons is required (N, > 0): PSU-WOPWOP spheres carry no vehicle weight, and the '
                          'thrust coefficient axis needs one')
+    if condition_axes not in ('helicopter', 'multirotor'):
+        raise ValueError(f"condition_axes must be 'helicopter' or 'multirotor', not {condition_axes!r}")
+    if condition_axes == 'multirotor' and (rotor_count is None or int(rotor_count) != rotor_count or rotor_count < 1):
+        raise ValueError('a multirotor database needs rotor_count (the vehicle\'s number of rotors, >= 1)')
     spheres = [_close_seam(read_pt_sphere(path)) for path in sphere_files]
     if not spheres:
         raise ValueError('no PT spheres given')
@@ -242,12 +260,18 @@ def build_pt_database(sphere_files, database_filename, *, weight_newtons=None, s
     if len(azimuth_references) != 1:
         raise ValueError(f'the spheres record azimuth_reference {sorted(azimuth_references)}; they must agree')
 
+    multirotor = None
+    if condition_axes == 'multirotor':
+        multirotor = _multirotor_axes(conditions, tags, main, float(weight_newtons), int(rotor_count),
+                                      hover_thrust_coefficient, sound_speed_mps)
     group_of = _sync_groups(conditions, tags, sync_groups)
     phi_grid, theta_grid = np.meshgrid(first.phi, first.theta, indexing='ij')
     n_bands = BAND_CENTERS_HZ.size
     empty_bands = np.full(phi_grid.shape + (n_bands,), -np.inf)
     settings = {'weight_newtons': float(weight_newtons), 'sync_groups': sync_groups if not isinstance(
-        sync_groups, dict) else dict(sync_groups), 'main_rotor': main, 'speed_reference': speed_reference}
+        sync_groups, dict) else dict(sync_groups), 'main_rotor': main, 'speed_reference': speed_reference,
+        'condition_axes': condition_axes, 'rotor_count': rotor_count,
+        'hover_thrust_coefficient': hover_thrust_coefficient, 'sound_speed_mps': sound_speed_mps}
     inputs = {'sphere_files': sorted(os.path.basename(str(p)) for p in sphere_files),
               'database_filename': _provenance.path_name(database_filename)}
     with fa._atomic_output(database_filename) as temporary, Dataset(temporary, 'w') as database:
@@ -261,12 +285,17 @@ def build_pt_database(sphere_files, database_filename, *, weight_newtons=None, s
         database.sphere_frame = 'flight_path'
         database.sphere_levels_lossless = np.float64(1.0)
         database.band_content = 'broadband'
-        database.condition_axes = 'helicopter'
+        database.condition_axes = condition_axes
+        if multirotor is not None:
+            database.rotor_count = np.int32(rotor_count)
+            database.rotor_radius_m = np.float64(multirotor['radius'])
+            database.hover_thrust_coefficient = np.float64(multirotor['ct_h'])
         database.thrust_coefficient_density = 'run'
         database.sources = ','.join(tags)
         database.main_rotor_source = main
-        pending = []
+        pending, key_of = [], {}
         for i, (key, by_tag) in enumerate(conditions.items()):
+            key_of['sphere' + str(i)] = key
             s = by_tag[main]
             coverage = np.zeros(empty_bands.shape, dtype=bool)
             pending.append(fa._SphereCondition(
@@ -279,11 +308,13 @@ def build_pt_database(sphere_files, database_filename, *, weight_newtons=None, s
             # C_T at the condition's own density (the prediction's), the database's weight: thrust_coefficient_density
             # run.  add_sphere_group writes load_factor x weight_coefficient.
             weight_coefficient = weight_newtons / (s.air_density * math.pi * rotor_radius ** 2 * tip_speed ** 2)
+            axes = multirotor['conditions'][key_of[condition.name]] if multirotor is not None else None
             fa.add_sphere_group(database, condition.name, condition.phi, condition.theta, condition.radius,
                                 condition.SPLA, condition.EAA, condition.speed, condition.flight_path_angle, 1.0,
                                 rotor_radius, tip_speed, weight_coefficient, condition.frequency,
                                 condition.amplitude, write_grid_and_frequency=not shared, doppler_shift_removed=0,
-                                coverage=condition.coverage)
+                                coverage=condition.coverage,
+                                condition_variables=axes['variables'] if axes is not None else None)
             # DOPPLER_SHIFT_REMOVED applies to the band spectrum, which is empty here (received frame by
             # convention); the tones are emission-frame shaft orders by definition, and NICE-OPS shifts them.
             group = database.groups[condition.name]
@@ -292,7 +323,8 @@ def build_pt_database(sphere_files, database_filename, *, weight_newtons=None, s
             group.air_density = np.float64(s.air_density)
             group.air_density_units = 'kg m-3'
             for tag in tags:
-                _write_source(group, by_tag[tag], group_of.get(tag, ''))
+                _write_source(group, by_tag[tag], group_of.get(tag, ''),
+                              speed_ratio=axes['speed_ratio'][tag] if axes is not None else None)
 
 
 def _sync_groups(conditions, tags, sync_groups):
@@ -316,7 +348,52 @@ def _sync_groups(conditions, tags, sync_groups):
     return {tag: 'shaft' for tag in together}
 
 
-def _write_source(group, sphere, sync_group):
+def _multirotor_axes(conditions, tags, main, weight, rotor_count, hover_thrust_coefficient, sound_speed_mps):
+    """Momentum-similarity axes of every condition (see :func:`build_pt_database`): {'radius', 'ct_h',
+    'conditions': {key: {'variables': {name: (value, units)}, 'speed_ratio': {tag: |shaft_rate| / Omega_h}}}}."""
+    radii = {round(by_tag[t].rotor_radius_m, 9) for by_tag in conditions.values() for t in tags}
+    if len(radii) != 1:
+        raise ValueError(f'the rotors\' spheres give MAIN_ROTOR_RADIUS {sorted(radii)} m: a multirotor database has one '
+                         'rotor radius')
+    radius = radii.pop()
+    if hover_thrust_coefficient is None:
+        hovers = [by_tag for key, by_tag in conditions.items() if abs(key[0]) < 1e-9]
+        if not hovers:
+            raise ValueError('no hover condition (speed 0) to take the hover thrust coefficient from; give '
+                             'hover_thrust_coefficient')
+        by_tag = hovers[0]
+        rms = math.sqrt(np.mean([by_tag[t].shaft_rate ** 2 for t in tags]))
+        rho = by_tag[main].air_density
+        hover_thrust_coefficient = weight / (rotor_count * rho * math.pi * radius ** 2 * (rms * radius) ** 2)
+    if not np.isfinite(hover_thrust_coefficient) or hover_thrust_coefficient <= 0:
+        raise ValueError(f'hover_thrust_coefficient {hover_thrust_coefficient} is not positive')
+    out = {'radius': radius, 'ct_h': float(hover_thrust_coefficient), 'conditions': {}}
+    for key, by_tag in conditions.items():
+        s = by_tag[main]
+        c = s.sound_speed_mps if np.isfinite(s.sound_speed_mps) else sound_speed_mps
+        if c is None or not np.isfinite(c) or c <= 0:
+            raise ValueError(f'{s.name} records no speed of sound (speed_of_sound_m_s) for the hover tip Mach number; '
+                             'give sound_speed_mps')
+        rho = s.air_density
+        v_h = math.sqrt(weight / (2.0 * rho * rotor_count * math.pi * radius ** 2))
+        omega_h = math.sqrt(weight / (rotor_count * rho * math.pi * radius ** 2 * hover_thrust_coefficient)) / radius
+        u = s.speed_kt * fa.KNOT_MPS
+        gamma = math.radians(s.flight_path_angle_deg)
+        inplane, climb = u * math.cos(gamma), u * math.sin(gamma)
+        out['conditions'][key] = {
+            'variables': OrderedDict((
+                ('inplane_speed_ratio', (inplane / v_h, '1')),
+                ('axial_speed_ratio', (climb / v_h, '1')),
+                ('hover_tip_mach', (omega_h * radius / c, '1')),
+                ('air_density', (rho, 'kg m-3')),
+                ('weight_n', (weight, 'N')),
+                ('airspeed', (u, 'm s-1')),
+                ('climb_rate', (climb, 'm s-1')))),
+            'speed_ratio': {t: abs(by_tag[t].shaft_rate) / omega_h for t in tags}}
+    return out
+
+
+def _write_source(group, sphere, sync_group, speed_ratio=None):
     harmonics, frequencies, amplitude, phase = _tones(sphere)
     sub = group.createGroup(sphere.tag)
     sub.createDimension('tone', harmonics.size)
@@ -345,6 +422,10 @@ def _write_source(group, sphere, sync_group):
     v[...] = sphere.azimuth_deg
     v.units = 'degree'
     v.description = 'the rotor azimuth (its own sense of rotation) the phase was locked to'
+    if speed_ratio is not None:
+        v = sub.createVariable('speed_ratio', 'f8')
+        v[...] = speed_ratio
+        v.description = '|shaft_rate| over the condition\'s momentum hover speed Omega_h'
     sub.phase_reference = 'rotor_azimuth'
     if sync_group:
         sub.sync_group = sync_group

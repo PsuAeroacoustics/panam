@@ -1371,8 +1371,13 @@ def _grid_and_frequency_are_shared(pending_groups):
 def add_sphere_group(ncdatabase, groupname, phi, theta, radius, SPLA, EAA, speed, flight_path_angle, load_factor,
                      main_rotor_radius, main_rotor_tip_speed, weight_coefficient, frequency=None, amplitude=None,
                      write_grid_and_frequency=True, doppler_shift_removed=None, coverage=None,
-                     run_metadata=None):
+                     run_metadata=None, condition_variables=None):
     """Write one condition group.
+
+    condition_variables, when given, is an ordered {name: (value, units)} dict written as the group's condition
+    scalars over ("condition",) in place of advance_ratio, flight_path_angle and thrust_coefficient (a multirotor's
+    momentum-similarity axes, ``pt_database``); speed, flight_path_angle, main_rotor_tip_speed and
+    weight_coefficient are then not written (load_factor still scales the levels).
 
     run_metadata, when given, is a dict as :func:`group_run_metadata` returns: each
     of :data:`GROUP_RUN_METADATA_NUMBERS` is written as an f8 attribute of the group
@@ -1400,12 +1405,18 @@ def add_sphere_group(ncdatabase, groupname, phi, theta, radius, SPLA, EAA, speed
     this_group.createVariable("rotor_scale", 'f8', ("condition",))
     this_group.variables['rotor_scale'][:] = main_rotor_radius
     # Define flight condition
-    this_group.createVariable("advance_ratio", 'f8', ("condition",))
-    this_group.variables['advance_ratio'][:] = KNOT_MPS * speed / main_rotor_tip_speed
-    this_group.createVariable("flight_path_angle", 'f8', ("condition",))
-    this_group.variables['flight_path_angle'][:] = flight_path_angle
-    this_group.createVariable("thrust_coefficient", 'f8', ("condition",))
-    this_group.variables['thrust_coefficient'][:] = load_factor * weight_coefficient
+    if condition_variables is not None:
+        for name, (value, units) in condition_variables.items():
+            variable = this_group.createVariable(name, 'f8', ("condition",))
+            variable[:] = value
+            variable.units = units
+    else:
+        this_group.createVariable("advance_ratio", 'f8', ("condition",))
+        this_group.variables['advance_ratio'][:] = KNOT_MPS * speed / main_rotor_tip_speed
+        this_group.createVariable("flight_path_angle", 'f8', ("condition",))
+        this_group.variables['flight_path_angle'][:] = flight_path_angle
+        this_group.createVariable("thrust_coefficient", 'f8', ("condition",))
+        this_group.variables['thrust_coefficient'][:] = load_factor * weight_coefficient
     # Define acoustic data.  "channels" is defined locally in every group
     # regardless of write_grid_and_frequency -- netCDF4/HDF5 charges real
     # space to *share* a dimension across many groups (each group's variable
