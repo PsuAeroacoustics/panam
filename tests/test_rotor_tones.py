@@ -59,7 +59,10 @@ def test_rotor_azimuth_from_a_scattered_quantized_log():
     error = np.angle(np.exp(1j * (azimuth[inner] - np.interp(grid[inner], t, psi_true))))
     assert np.degrees(np.sqrt(np.mean(error ** 2))) < 8.0
     assert 20.0 < diag['scatter_deg'] < 45.0
-    with pytest.raises(ValueError, match='changes sign'):
+    stopped = speed.copy()
+    stopped[:5] = 0.5                                   # a stopped rotor's noise: accepted
+    assert rt.rotor_azimuth(log_t, logged, stopped)[2]['sense'] == -1
+    with pytest.raises(ValueError, match='turns the other way'):
         rt.rotor_azimuth(log_t, logged, np.where(log_t > 4, -speed, speed))
 
 

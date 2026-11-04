@@ -34,7 +34,9 @@ def rotor_azimuth(time, angle, speed, *, aligned_angle=0.0, step_s=1e-3, window_
         time: the log's sample times, s, increasing.
         angle: the logged mechanical angle, rad, wrapped any way; it advances with the signed ``speed``.  Repeated
             values (a controller that updates the angle less often than the log's rows) are dropped.
-        speed: the logged shaft speed, rad/s, signed by the sense of rotation the angle advances in.
+        speed: the logged shaft speed, rad/s, signed by the sense of rotation the angle advances in.  Samples of the
+            other sign are taken as they are if they are small (a stopped rotor's noise, under a tenth of the median
+            speed).
         aligned_angle: the logged angle at which the blades are at the azimuth's zero (a prop set's alignment with
             its arm, say), rad.
         step_s: the output grid's spacing, s.
@@ -46,10 +48,10 @@ def rotor_azimuth(time, angle, speed, *, aligned_angle=0.0, step_s=1e-3, window_
     scatter tens of degrees about it; the speed carries the fast part and the angle only the drift.
 
     Returns (grid, azimuth, diagnostics): the grid's times (s, every ``step_s`` over the log), the azimuth there
-    (rad, increasing whatever the sense: the signed angle times the sign of the mean speed, less the aligned
-    angle), and {'sense': +1 or -1 (the sign of the mean speed), 'window_coherence': the median mean resultant
+    (rad, increasing whatever the sense: the signed angle less the aligned angle, times the sign of the median
+    speed), and {'sense': +1 or -1 (the sign of the median speed), 'window_coherence': the median mean resultant
     length of the windows, 'scatter_deg': the rms of the samples about the result}.  Raises ValueError for a log
-    with no usable window or a speed of either sign.
+    with no usable window or a speed that turns the other way.
     """
     t = np.asarray(time, dtype=float)
     a = np.asarray(angle, dtype=float)
@@ -61,9 +63,10 @@ def rotor_azimuth(time, angle, speed, *, aligned_angle=0.0, step_s=1e-3, window_
     finite_w = np.isfinite(w)
     if not finite_w.any():
         raise ValueError('the speed has no finite sample')
-    sense = 1.0 if np.mean(w[finite_w]) > 0 else -1.0
-    if np.any(np.sign(w[finite_w]) == -sense):
-        raise ValueError('the speed changes sign: a rotor turns one way')
+    typical = float(np.median(w[finite_w]))
+    sense = 1.0 if typical > 0 else -1.0
+    if np.any(sense * w[finite_w] < -0.1 * abs(typical)):
+        raise ValueError('the speed turns the other way (by more than a tenth of its median): a rotor turns one way')
     keep = np.isfinite(a) & np.r_[True, np.diff(a) != 0]
     ta, aa = t[keep], a[keep]
     grid = np.arange(t[0], t[-1], step_s)
