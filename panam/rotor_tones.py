@@ -232,15 +232,23 @@ def depropagate_tones(amplitude, frequency_hz, distance_m, sphere_radius_m, atmo
     return out if response is None else out / response
 
 
-def plate_tone_table(frequencies_hz, sound_speed_ft_s, flow_resistance=gp.FLOW_RESISTANCE, ground=None,
+def plate_tone_table(frequencies_hz, sound_speed_ft_s, flow_resistance=gp.FLOW_RESISTANCE, ground=None, chunk=8,
                      **options):
     """A plate-on-the-ground table for single frequencies (tones), not bands: :func:`axisymmetric_bem.table` with
     one sub-frequency per entry, so that ``frequencies`` are exactly ``frequencies_hz`` (sorted).  Lengths in ft,
     speed in ft/s, as there; ``options`` as there (the plate and the microphone).  Space the frequencies closely
     enough for linear interpolation between them (:func:`plate_tone_response`): the plate's response turns over a
-    few hundred hertz for a plate a few tenths of a meter across."""
-    return ab.table(np.unique(np.asarray(frequencies_hz, dtype=float)), sound_speed_ft_s, flow_resistance, ground,
-                    sub_bands=1, **options)
+    few hundred hertz for a plate a few tenths of a meter across.  Computed ``chunk`` frequencies at a time: the
+    solver's working arrays grow with the frequencies it is given at once (all 240 of a 5 Hz grid to 1.2 kHz took
+    over 15 GB)."""
+    frequencies = np.unique(np.asarray(frequencies_hz, dtype=float))
+    parts = [ab.table(frequencies[i:i + chunk], sound_speed_ft_s, flow_resistance, ground, sub_bands=1, **options)
+             for i in range(0, frequencies.size, chunk)]
+    table = dict(parts[0])
+    for key in ('frequencies', 'P_d', 'P_r'):
+        table[key] = np.concatenate([part[key] for part in parts], axis=0)
+    table['bands'] = frequencies
+    return table
 
 
 def plate_tone_response(table, frequency_hz, source_height_ft, ground_distance_ft, sound_speed_ft_s,
