@@ -193,13 +193,30 @@ def _tones(sphere, harmonic_tolerance=1e-5):
     return harmonics, harmonics * shaft_hz, amplitude, locked
 
 
+def _merge_close_speeds(spheres, tolerance_kt):
+    """Put spheres whose speeds are within tolerance_kt of a cluster's first (sorted by speed), at one flight path
+    angle (1e-3 deg), at the cluster's mean speed."""
+    clusters = []
+    for sphere in sorted(spheres, key=lambda s: (round(s.flight_path_angle_deg, 3), s.speed_kt)):
+        c = clusters[-1] if clusters else None
+        if c and abs(sphere.flight_path_angle_deg - c[0].flight_path_angle_deg) <= 1e-3 \
+                and sphere.speed_kt - c[0].speed_kt <= tolerance_kt:
+            c.append(sphere)
+        else:
+            clusters.append([sphere])
+    for c in clusters:
+        mean = float(np.mean([s.speed_kt for s in c]))
+        for s in c:
+            s.speed_kt = mean
+
+
 def _condition_key(sphere):
     return round(sphere.speed_kt, 6), round(sphere.flight_path_angle_deg, 6)
 
 
 def build_pt_database(sphere_files, database_filename, *, weight_newtons=None, sync_groups='shared_rate',
                       main_rotor=None, speed_reference=None, condition_axes='helicopter', rotor_count=None,
-                      hover_thrust_coefficient=None, sound_speed_mps=None):
+                      hover_thrust_coefficient=None, sound_speed_mps=None, speed_tolerance_kt=None):
     """Build a format 2 database from PSU-WOPWOP PT spheres, one per rotor per flight condition.
 
     Args:
@@ -226,6 +243,9 @@ def build_pt_database(sphere_files, database_filename, *, weight_newtons=None, s
         hover_thrust_coefficient: C_Th per rotor (multirotor).  Default: from the hover condition (speed 0), with
             each rotor carrying W / N at the rms of the sources' shaft rates.
         sound_speed_mps: c for hover_tip_mach where a sphere does not record ``speed_of_sound_m_s``.
+        speed_tolerance_kt: spheres whose speeds lie within this of each other (and flight path angles within 1e-3 deg)
+            are one condition, at their mean speed; each source records its own sphere's (``sphere_speed_kt``).
+            Default: exact (to 1e-6 kt).  For per-rotor predictions of one flight made over different windows.
 
     The database holds every flight condition once, at load factor 1 (``fixed_load_factor``): NICE-OPS scales the
     levels to other load factors.  Raises ValueError, before writing anything, for spheres that are not PT, not in
@@ -242,6 +262,10 @@ def build_pt_database(sphere_files, database_filename, *, weight_newtons=None, s
     spheres = [_close_seam(read_pt_sphere(path)) for path in sphere_files]
     if not spheres:
         raise ValueError('no PT spheres given')
+    for sphere in spheres:
+        sphere.own_speed_kt = sphere.speed_kt
+    if speed_tolerance_kt is not None:
+        _merge_close_speeds(spheres, float(speed_tolerance_kt))
     conditions = OrderedDict()
     for sphere in sorted(spheres, key=lambda s: (_condition_key(s), s.tag)):
         by_tag = conditions.setdefault(_condition_key(sphere), OrderedDict())
@@ -296,7 +320,8 @@ def build_pt_database(sphere_files, database_filename, *, weight_newtons=None, s
     settings = {'weight_newtons': float(weight_newtons), 'sync_groups': sync_groups if not isinstance(
         sync_groups, dict) else dict(sync_groups), 'main_rotor': main, 'speed_reference': speed_reference,
         'condition_axes': condition_axes, 'rotor_count': rotor_count,
-        'hover_thrust_coefficient': hover_thrust_coefficient, 'sound_speed_mps': sound_speed_mps}
+        'hover_thrust_coefficient': hover_thrust_coefficient, 'sound_speed_mps': sound_speed_mps,
+        'speed_tolerance_kt': speed_tolerance_kt}
     inputs = {'sphere_files': sorted(os.path.basename(str(p)) for p in sphere_files),
               'database_filename': _provenance.path_name(database_filename)}
     with fa._atomic_output(database_filename) as temporary, Dataset(temporary, 'w') as database:
@@ -461,4 +486,7 @@ def _write_source(group, sphere, sync_group, speed_ratio=None):
     if sync_group:
         sub.sync_group = sync_group
     sub.source_sphere = sphere.name
+    v = sub.createVariable('sphere_speed_kt', 'f8')
+    v[...] = getattr(sphere, 'own_speed_kt', sphere.speed_kt)
+    v.description = 'the speed its own sphere was predicted at (the condition may be the mean of several)'
     sub.phase_reference_time_s = np.float64(sphere.phase_reference_time_s)

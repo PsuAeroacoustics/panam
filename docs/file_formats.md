@@ -272,6 +272,7 @@ tag:
 | `phase_reference` | `rotor_azimuth` |
 | `sync_group` | Rotors predicted at one shaft rate and one phase reference time share one (`shaft`); absent for a free-running rotor |
 | `source_sphere`, `phase_reference_time_s` | The sphere file, and its phase reference time, s |
+| `sphere_speed_kt` | The speed its own sphere was predicted at; with `speed_tolerance_kt`, spheres a hair apart in speed are one condition at their mean |
 
 No upper half is mirrored, no grid is changed, no hover is synthesized and no load-factor
 ladder is written (`fixed_load_factor`). At a full sphere's seam the +180° phi row is dropped

@@ -439,3 +439,16 @@ def test_analysis_over_several_revolutions_keeps_the_whole_orders(tmp_path):
     off = write_pt_sphere(tmp_path / 'R.nc', orders=(1.0, 2.0, 2.37, 3.0))   # 237/100: no spectrum of <= 64 revolutions
     with pytest.raises(ValueError, match='shaft order'):
         build(tmp_path, [off])
+
+
+def test_spheres_a_hair_apart_in_speed_form_one_condition_when_asked(tmp_path):
+    # Per-rotor predictions of one pass, each over its own steadiest window, record speeds 1e-4 apart.
+    files = [write_pt_sphere(tmp_path / 'a.nc', speed_kt=8.6775),
+             write_pt_sphere(tmp_path / 'b.nc', tag='Rear', xyz_ft=(19.66, 0.0, 4.26), speed_kt=8.6785)]
+    with pytest.raises(ValueError, match='every condition'):
+        build(tmp_path, files)
+    path = build(tmp_path, files, speed_tolerance_kt=0.01)
+    with Dataset(str(path)) as d:
+        assert list(d.groups) == ['sphere0']
+    assert float(read_source(path, tag='Rear')['sphere_speed_kt']) == pytest.approx(8.6785, rel=1e-6)
+    assert nd.validate_nod(path) == []
