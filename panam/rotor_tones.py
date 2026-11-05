@@ -672,11 +672,13 @@ def fit_summed_directivities(problems, *, degree=4, smoothing=1e-2, max_offset_s
             offsets shared by all: 'sources' (R), 'blocks' (a list of dicts, one per microphone and segment: 'z'
             (n,) complex Pa; 'gain', 'carrier' (rad), 'rate' (rad/s), 'phi', 'theta' (deg, ART): (n, R);
             'weight' (n,): 1 / the noise variance, say; 'run': a label), and optionally 'azimuthal_orders': (R,)
-            each source's one azimuthal order k (or None for all).  A rotor in hover radiates a field that turns
-            with it and does not otherwise change: its tone of shaft order m is a function of the polar angle about
-            the shaft times exp(i k azimuth), k = +-m by its sense of rotation (Valente, Greenwood and Johnson's
-            phase compensation).  Only the harmonics Y_l^k of that k are then fitted, and the fit predicts every
-            azimuth from the ones measured.
+            each source's azimuthal order k, or a set of them (or None for all).  A rotor in hover radiates a field
+            that turns with it and does not otherwise change: its tone of shaft order m is a function of the polar
+            angle about the shaft times exp(i k azimuth), k = +-m by its sense of rotation (Valente, Greenwood and
+            Johnson's phase compensation).  Only the harmonics Y_l^k of those k are then fitted, and the fit
+            predicts every azimuth from the ones measured.  A disturbance fixed in the vehicle under the rotor (an
+            arm the blades pass over) adds the orders k +- 1, k +- 2, ... (rotor-stator interaction with one
+            stator), weakening away from k: a set of a few orders about k.
         degree, smoothing, max_offset_s, step_s, iterations, reference, offsets, robust: as
             :func:`fit_directivities` (here each run is fitted against its problems' fits without it).
 
@@ -692,10 +694,11 @@ def fit_summed_directivities(problems, *, degree=4, smoothing=1e-2, max_offset_s
         if orders is None:
             p['_keep'] = np.ones(p['sources'] * nb, bool)
         else:
-            if len(orders) != p['sources'] or any(k is not None and abs(k) > degree for k in orders):
-                raise ValueError(f'azimuthal_orders must give one order per source, each within the degree '
-                                 f'({degree}): {orders}')
-            p['_keep'] = np.concatenate([np.ones(nb, bool) if k is None else ks == k for k in orders])
+            sets = [None if k is None else np.atleast_1d(np.asarray(k, int)) for k in orders]
+            if len(orders) != p['sources'] or any(k is not None and np.any(np.abs(k) > degree) for k in sets):
+                raise ValueError(f'azimuthal_orders must give one order (or a set) per source, each within the '
+                                 f'degree ({degree}): {orders}')
+            p['_keep'] = np.concatenate([np.ones(nb, bool) if k is None else np.isin(ks, k) for k in sets])
     runs = sorted({b['run'] for p in problems for b in p['blocks']}, key=str)
     if reference is None:
         mass = {r: sum(float(np.sum(b['weight'])) for p in problems for b in p['blocks'] if b['run'] == r)
