@@ -270,3 +270,48 @@ def test_tone_noise_is_what_broadband_alone_gives():
     ratio = measured / np.mean(estimate, axis=0)
     assert np.all((ratio > 0.4) & (ratio < 1.3))
     assert 0.7 < np.median(ratio) < 1.1
+
+
+def _harmonic_truth(degree=3, seed=21):
+    rng = np.random.default_rng(seed)
+    n = (degree + 1) ** 2
+    c = (rng.normal(size=n) + 1j * rng.normal(size=n)) / (1 + np.repeat(np.arange(degree + 1), 2 * np.arange(degree + 1) + 1))
+    return c
+
+
+def test_fit_directivities_recovers_the_field_and_each_runs_timing():
+    """Three rotors' orders 2 and 4 seen on three runs, each run late by its own delta (shared by its six tones): the
+    fit gives each run's delta (to 50 us) and each tone's field (to a few degrees of phase where it is loud).  One
+    run's tone with a phase of its own does not move that run's delta, and shows in its consistency."""
+    rng = np.random.default_rng(17)
+    deltas = {'a': 0.0, 'b': 0.0013, 'c': -0.0021}
+    keys = [(rotor, order) for rotor in range(3) for order in (2, 4)]
+    truth = {key: _harmonic_truth(3, 30 + i) for i, key in enumerate(keys)}
+    speeds = {0: 215.0, 1: 224.0, 2: 207.0}
+    tones = []
+    for rotor, order in keys:
+        phi, theta, run, a, rate = [], [], [], [], []
+        for r, delta in deltas.items():
+            p, t, _ = _passes(rng, n_mics=5)
+            field = rt.evaluate_directivity(truth[(rotor, order)], 3, p, t)
+            k = np.full(p.size, order * speeds[rotor])
+            heard = field * np.exp(1j * k * delta)
+            if (r, rotor, order) == ('c', 2, 4):
+                heard = heard * np.exp(1j * np.radians(120.0))         # this run's tone is not the others'
+            noise = 0.03 * np.mean(np.abs(field)) * (rng.normal(size=p.size) + 1j * rng.normal(size=p.size))
+            phi.append(p); theta.append(t); run.append(np.full(p.size, r)); a.append(heard + noise); rate.append(k)
+        tones.append({'phi': np.concatenate(phi), 'theta': np.concatenate(theta), 'run': np.concatenate(run),
+                      'amplitude': np.concatenate(a), 'rate': np.concatenate(rate),
+                      'weight': np.ones(sum(x.size for x in phi))})
+    fit = rt.fit_directivities(tones, degree=3, smoothing=1e-6, reference='a', max_offset_s=0.004, iterations=6)
+    for r, delta in deltas.items():
+        assert abs(fit['offsets'][r] - delta) < 5e-5, (r, fit['offsets'][r], delta)
+    gp, gt = np.meshgrid(np.arange(-50.0, 51.0, 10.0), np.arange(30.0, 151.0, 10.0), indexing='ij')
+    for i, key in enumerate(keys):
+        model = rt.evaluate_directivity(fit['coefficients'][i], 3, gp, gt)
+        true = rt.evaluate_directivity(truth[key], 3, gp, gt)
+        loud = np.abs(true) > 0.3 * np.abs(true).max()
+        assert np.max(np.abs(np.angle(model[loud] / true[loud], deg=True))) < 5.0, key
+    bad = keys.index((2, 4))
+    assert fit['consistency'][(bad, 'c')] < 0.6
+    assert min(v for (i, r), v in fit['consistency'].items() if (i, r) != (bad, 'c')) > 0.97

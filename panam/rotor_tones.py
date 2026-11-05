@@ -496,3 +496,154 @@ def clock_offsets(entries, *, max_offset_s=0.15, step_s=2e-5, sweeps=4, referenc
                 if delta is not None:
                     offsets[r] = delta
     return offsets, [sorted(m, key=str) for m in components.values()]
+
+
+def axis_angles(phi_deg, theta_deg):
+    """ART directions (phi from below toward starboard, theta from the nose; deg) as angles about a vertical shaft
+    in the sphere frame: the polar angle from the down axis and the azimuth about it from the nose toward starboard,
+    rad."""
+    p, t = np.radians(np.asarray(phi_deg, float)), np.radians(np.asarray(theta_deg, float))
+    forward, starboard, down = np.cos(t), np.sin(t) * np.sin(p), np.sin(t) * np.cos(p)
+    return np.arccos(np.clip(down, -1.0, 1.0)), np.arctan2(starboard, forward)
+
+
+def harmonic_basis(polar, azimuth, degree):
+    """Spherical harmonics Y_l^k (orthonormal, complex), l <= degree, at (polar, azimuth) rad: (n, (degree + 1)^2),
+    columns in (l, k) order, k from -l to l."""
+    from scipy import special
+    columns = []
+    for l in range(degree + 1):
+        for k in range(-l, l + 1):
+            if hasattr(special, 'sph_harm_y'):
+                columns.append(special.sph_harm_y(l, k, polar, azimuth))
+            else:                                                       # scipy < 1.15
+                columns.append(special.sph_harm(k, l, azimuth, polar))
+    return np.stack(columns, axis=-1)
+
+
+def fit_directivities(tones, *, degree=4, smoothing=1e-2, max_offset_s=0.01, step_s=2e-5, iterations=4,
+                      reference=None, offsets=None, robust=4.0):
+    """Smooth complex directivities of measured tones, with each run's timing offset fitted against them.
+
+    Each tone (a rotor's shaft order) is a sum of spherical harmonics about the rotor's shaft (taken as the sphere
+    frame's vertical) up to ``degree``, fitted by weighted least squares to its samples, with a penalty
+    ``smoothing`` x l^2 (l + 1)^2 (relative to the mean diagonal of the normal equations) on each coefficient that
+    keeps it smooth where the samples are sparse.  A run's timing offset delta advances every one of its tones by k delta (k the
+    tone's own-sense angular rate, rad/s), so the runs' offsets are shared by all the tones: they are refitted, each
+    run against the current directivities, between fits (``iterations`` times), the reference run held at its
+    given offset.
+
+    Args:
+        tones: a list of dicts, one per tone: 'phi', 'theta' (deg, ART, (n,)), 'amplitude' (complex (n,), the
+            depropagated samples), 'weight' ((n,), e.g. the samples' signal-to-noise power, capped), 'run' ((n,)
+            labels), 'rate' ((n,) rad/s: harmonic x |shaft rate| at each sample).
+        degree, smoothing: the expansion's degree and its smoothness penalty.
+        max_offset_s, step_s: how far each run's offset may move from its starting value, and the search step, s.
+        iterations: fit, refit offsets, fit again ... this many times.
+        reference: the run held fixed (default the run with the most weight).
+        offsets: starting offsets {run: s} (default 0): from :func:`clock_offsets`, say.
+        robust: after each fit, a run's samples of a tone are weighted by its consistency with the fit to this
+            power (0: not at all), so that one run whose tone does not agree with the others' (a different angle
+            reference, a different source) does not pull the fit or the other runs' offsets.
+
+    Returns a dict: 'coefficients' (list, one (n_basis,) complex array per tone), 'degree', 'offsets' {run: s},
+    'reference', and 'consistency' {(tone index, run): Re(sum w A conj(M)) / sqrt(sum w |A|^2 sum w |M|^2)}, 1 where
+    a run's samples of a tone agree in phase with the fit (corrected by its offset), low or negative where its phase
+    is not the others' (a whole-run rotation included), and 'gain' {(tone, run):
+    sum w |A|^2 / sum w |M|^2}, its level against the fit's.
+    """
+    runs = sorted({r for t in tones for r in np.asarray(t['run'])}, key=str)
+    if reference is None:
+        mass = {r: sum(float(np.sum(np.asarray(t['weight'])[np.asarray(t['run']) == r])) for t in tones) for r in runs}
+        reference = max(runs, key=lambda r: (mass[r], str(r)))
+    offsets = {r: float((offsets or {}).get(r, 0.0)) for r in runs}
+    start = dict(offsets)
+    prepared = []
+    for t in tones:
+        polar, azimuth = axis_angles(t['phi'], t['theta'])
+        a = np.asarray(t['amplitude'], complex)
+        w = np.asarray(t['weight'], float)
+        ok = np.isfinite(a) & np.isfinite(w) & (w > 0)
+        prepared.append({'basis': harmonic_basis(polar[ok], azimuth[ok], degree), 'a': a[ok], 'w': w[ok],
+                         'run': np.asarray(t['run'])[ok], 'rate': np.asarray(t['rate'], float)[ok]})
+    ls = np.concatenate([np.full(2 * l + 1, l) for l in range(degree + 1)])
+    penalty = (ls * (ls + 1.0)) ** 2
+
+    def corrected(p):
+        shift = np.array([offsets[r] for r in p['run']])
+        return p['a'] * np.exp(-1j * p['rate'] * shift)
+
+    def agreement(i, p):
+        """{run: consistency} of tone i's runs with its current fit."""
+        model = p['basis'] @ coefficients[i]
+        a = corrected(p)
+        out = {}
+        for r in np.unique(p['run']):
+            m = p['run'] == r
+            w = p['w'][m]
+            den = np.sqrt(np.sum(w * np.abs(a[m]) ** 2) * np.sum(w * np.abs(model[m]) ** 2))
+            out[r] = float(np.real(np.sum(w * a[m] * np.conj(model[m]))) / den) if den > 0 else float('nan')
+        return out
+
+    def solve(p, keep=None):
+        """Tone p's coefficients from its samples (those in `keep` only, when given), weighted by w_fit."""
+        b, w = p['basis'], p['w_fit']
+        a = corrected(p)
+        if keep is not None:
+            b, w, a = b[keep], w[keep], a[keep]
+        if not np.any(w > 0):
+            return None
+        normal = (b.conj().T * w) @ b
+        normal += smoothing * np.mean(np.real(np.diag(normal))) * np.diag(penalty)
+        return np.linalg.solve(normal, (b.conj().T * w) @ a)
+
+    coefficients = [None] * len(prepared)
+    for p in prepared:
+        p['w_fit'] = p['w'].copy()
+    for iteration in range(iterations + 1):
+        for i, p in enumerate(prepared):
+            coefficients[i] = solve(p)
+        if iteration == iterations:
+            break
+        if robust:
+            for i, p in enumerate(prepared):
+                agree = agreement(i, p)
+                factor = np.array([max(agree[r], 0.0) ** robust if np.isfinite(agree[r]) else 0.0 for r in p['run']])
+                p['w_fit'] = p['w'] * factor
+        # Each run against the fit of the others (its own samples, still misaligned, would hold the fit back).
+        new_offsets = dict(offsets)
+        for r in runs:
+            if r == reference:
+                continue
+            trial = start[r] + np.arange(-max_offset_s, max_offset_s + step_s / 2, step_s)
+            total = np.zeros(trial.size)
+            for p in prepared:
+                m = p['run'] == r
+                if not m.any():
+                    continue
+                others = solve(p, ~m)
+                if others is None:
+                    continue
+                cross = p['w_fit'][m] * p['a'][m] * np.conj(p['basis'][m] @ others)
+                total += np.real(np.exp(-1j * np.outer(trial, p['rate'][m])) @ cross)
+            if np.any(total):
+                new_offsets[r] = float(trial[int(np.argmax(total))])
+        offsets.update(new_offsets)
+    consistency, gain = {}, {}
+    for i, p in enumerate(prepared):
+        model = p['basis'] @ coefficients[i]
+        a = corrected(p)
+        for r, value in agreement(i, p).items():
+            m = p['run'] == r
+            w = p['w'][m]
+            consistency[(i, r)] = value
+            gain[(i, r)] = float(np.sum(w * np.abs(a[m]) ** 2) / max(np.sum(w * np.abs(model[m]) ** 2), 1e-300))
+    return {'coefficients': coefficients, 'degree': degree, 'offsets': offsets, 'reference': reference,
+            'consistency': consistency, 'gain': gain}
+
+
+def evaluate_directivity(coefficients, degree, phi_deg, theta_deg):
+    """A fitted directivity (:func:`fit_directivities`) at ART directions (deg): complex, the shape of phi_deg."""
+    polar, azimuth = axis_angles(phi_deg, theta_deg)
+    shape = np.shape(polar)
+    return (harmonic_basis(np.ravel(polar), np.ravel(azimuth), degree) @ coefficients).reshape(shape)

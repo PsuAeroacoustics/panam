@@ -63,7 +63,9 @@ Library modules, in `panam/`:
 - `rotor_tones.py`: rotor-locked tones from measured rotor angles (the measured side of format 2):
   `rotor_azimuth`, `emission_azimuth`, `rotor_locked_tones` (the Vold-Kalman filter on given phase tracks),
   `depropagate_tones`, `plate_tone_table`, `plate_tone_response` (complex, e^{+i omega t}), `grid_tones`
-  (energy-mean level, phase of the weighted sum), `clock_offsets` (each run's timing from its tone phases).
+  (energy-mean level, phase of the weighted sum), `clock_offsets` (each run's timing from its tone phases),
+  `tone_noise`, `fit_directivities` and `evaluate_directivity` (smooth complex directivities about each shaft, in
+  spherical harmonics, with run offsets fitted against them).
 - `pt_database.py`: format 2 databases of pure tones from PSU-WOPWOP's per-rotor PT spheres
   (`build_pt_database`, CLI `tools/build_pt_database.py`): one source per rotor, phase locked to its
   azimuth, nothing done that would damage phase; helicopter or multirotor (momentum-similarity)
