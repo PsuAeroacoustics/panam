@@ -302,6 +302,22 @@ one in these ways:
   `description` (a scalar, or a vector over `xyz` in the sphere frame): its logged speed, its
   hub's air velocity, its disk's normal, an estimate of its thrust.
 
+`pt_database.fitted_pt_sphere` builds a measured source from fitted directivities instead
+(`rotor_tones.fit_directivities` or `fit_summed_directivities`: spherical harmonics about the
+shaft, spinning modes of azimuthal order k). The grid holds the expansion's level and phase, and
+the coefficients are kept beside it as provenance:
+
+- `directivity_real`, `directivity_imag` (`tone`, `coefficient`), Pa: the complex peak pressure at
+  the sphere radius is the sum over l <= `degree` and k = -l..l, in that order, of c_lk Y_l^k
+  (orthonormal complex spherical harmonics; polar angle from the down axis, azimuth from the nose
+  toward starboard). `directivity_real` carries `degree` and, when the fit restricted them, the
+  azimuthal orders fitted for each shaft order (`azimuthal_orders`, `"2: 1,2,3; 4: 3,4,5"`);
+- `shaft_rate` is the speed the fit refers to. With the root's `tone_speed_exponent` (nu, given to
+  `write_pt_database`), NICEOPS scales each tone's pressure by the run's shaft rate over it to the
+  power nu where a run turns the rotor at another speed (nu = 3: the level as rpm to the sixth).
+
+NICEOPS reads the grid only.
+
 #### Multirotor conditions
 
 With `condition_axes = multirotor` (`--condition-axes multirotor`) the conditions are indexed by

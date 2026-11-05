@@ -628,3 +628,53 @@ def test_measured_sources_write_a_valid_multirotor_database(tmp_path):
                               np.full((phi.size, theta.size, 3), np.nan), radius_m=30.48, speed_kt=0.0,
                               flight_path_angle_deg=0.0, shaft_rate=200.0, center_m=(0, 0, 0), rotor_radius_m=0.3,
                               air_density=1.2, sound_speed_mps=340.0)
+
+
+def test_fitted_directivities_are_evaluated_on_the_grid_and_kept_as_provenance(tmp_path):
+    """fitted_pt_sphere: the grid holds the expansion's level (rms) and phase, the coefficients ride along, and the
+    root carries tone_speed_exponent."""
+    from panam import rotor_tones as rt
+    rng = np.random.default_rng(5)
+    phi, theta = np.arange(-180.0, 180.0, 15.0), np.arange(0.0, 180.1, 15.0)
+    degree = 6
+    n = (degree + 1) ** 2
+    ks = np.concatenate([np.arange(-l, l + 1) for l in range(degree + 1)])
+    hubs = {'M1': ((0.0, 0.793, 0.0), 1), 'M2': ((0.0, -0.793, 0.0), -1)}
+    spheres, given = [], {}
+    for tag, (hub, sense) in hubs.items():
+        model = {m: [m * sense + j for j in (-1, 0, 1)] for m in (2, 4)}
+        directivities = {m: np.where(np.isin(ks, model[m]), rng.normal(size=n) + 1j * rng.normal(size=n), 0.0)
+                         for m in (2, 4)}
+        given[tag] = directivities
+        spheres.append(pt.fitted_pt_sphere(
+            tag, phi, theta, directivities, degree=degree, shaft_rate=220.0 * sense, model=model, radius_m=1.0,
+            speed_kt=0.0, flight_path_angle_deg=0.0, center_m=hub, rotor_radius_m=0.3556, air_density=1.15,
+            sound_speed_mps=338.0))
+    path = tmp_path / 'fitted.nod'
+    pt.write_pt_database(spheres, path, weight_newtons=160.0, sync_groups=None, condition_axes='multirotor',
+                         rotor_count=6, hover_thrust_coefficient=0.009, speed_reference='ground',
+                         azimuth_label='relative_within_sense', tone_speed_exponent=3.0)
+    assert nd.validate_nod(path) == []
+    gp, gt = np.meshgrid(phi, theta, indexing='ij')
+    with Dataset(str(path)) as d:
+        assert float(d.tone_speed_exponent) == 3.0
+        for tag in hubs:
+            src = d.groups['sphere0'].groups[tag]
+            assert list(src['harmonic'][:]) == [2, 4]
+            c = src['directivity_real'][:] + 1j * src['directivity_imag'][:]
+            assert int(src['directivity_real'].degree) == degree
+            for i, m in enumerate((2, 4)):
+                assert np.array_equal(c[i], given[tag][m])
+                a = rt.evaluate_directivity(c[i], degree, gp, gt)
+                stored = 10.0 ** (src['amplitude'][:, :, i] / 20.0) * np.sqrt(2.0) * rt.P_REF \
+                    * np.exp(1j * np.radians(src['phase'][:, :, i]))
+                assert np.allclose(stored, a, rtol=1e-9, atol=1e-12 * np.abs(a).max())
+            assert src['directivity_real'].azimuthal_orders.startswith('2: ')
+    with pytest.raises(ValueError, match='tone_speed_exponent'):
+        pt.write_pt_database(spheres, tmp_path / 'bad.nod', weight_newtons=160.0, sync_groups=None,
+                             condition_axes='multirotor', rotor_count=6, hover_thrust_coefficient=0.009,
+                             speed_reference='ground', tone_speed_exponent=-1.0)
+    with pytest.raises(ValueError, match='coefficients'):
+        pt.fitted_pt_sphere('M1', phi, theta, {2: np.zeros(n - 1)}, degree=degree, shaft_rate=220.0, radius_m=1.0,
+                            speed_kt=0.0, flight_path_angle_deg=0.0, center_m=(0, 0, 0), rotor_radius_m=0.3,
+                            air_density=1.2, sound_speed_mps=340.0)

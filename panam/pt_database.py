@@ -205,6 +205,46 @@ def measured_pt_sphere(tag, phi_deg, theta_deg, harmonics, level_db, phase_deg, 
         state=dict(state or {}))
 
 
+def fitted_pt_sphere(tag, phi_deg, theta_deg, directivities, *, degree, shaft_rate, model=None, **kwargs):
+    """A :class:`PTSphere` from fitted spherical-harmonic directivities (:func:`panam.rotor_tones.fit_directivities`
+    or :func:`~panam.rotor_tones.fit_summed_directivities`), evaluated on the grid, for :func:`write_pt_database`.
+
+    Args:
+        tag: the source's name (one rotor).
+        phi_deg, theta_deg: the grid, ART angles, deg.
+        directivities: {shaft order m: ((degree + 1)^2,) complex coefficients}: the tone's complex pressure
+            amplitude (peak, Pa) at the sphere radius, in :func:`~panam.rotor_tones.harmonic_basis` about the
+            sphere frame's vertical (:func:`~panam.rotor_tones.axis_angles`), its phase locked to the rotor's azimuth.
+        degree: the expansion's degree.
+        shaft_rate: rad/s, positive counterclockwise seen from above: the speed the directivities refer to.  A
+            database written with ``tone_speed_exponent`` scales each tone with the run's speed over this one.
+        model: {shaft order m: azimuthal orders k fitted (a list)}, or a description (str), kept beside the
+            coefficients; optional.
+        kwargs: as :func:`measured_pt_sphere` (radius_m, speed_kt, flight_path_angle_deg, center_m,
+            rotor_radius_m, air_density, sound_speed_mps, ...).
+
+    The coefficients are written beside the grid (``directivity_real``, ``directivity_imag``) as the source's
+    provenance: the grid is what NICEOPS evaluates.  A direction where the expansion is exactly zero is -inf dB.
+    """
+    from panam import rotor_tones as rt
+    harmonics = np.array(sorted(directivities), dtype=int)
+    n = (int(degree) + 1) ** 2
+    coefficients = np.array([np.asarray(directivities[m], dtype=complex) for m in harmonics])
+    if coefficients.shape != (harmonics.size, n):
+        raise ValueError(f'each directivity must hold (degree + 1)^2 = {n} coefficients, not {coefficients.shape[1:]}')
+    if not np.all(np.isfinite(coefficients)):
+        raise ValueError('the directivity coefficients must be finite')
+    gp, gt = np.meshgrid(np.asarray(phi_deg, float), np.asarray(theta_deg, float), indexing='ij')
+    values = np.stack([rt.evaluate_directivity(c, degree, gp, gt) for c in coefficients], axis=-1)
+    with np.errstate(divide='ignore'):
+        level = 20.0 * np.log10(np.abs(values) / math.sqrt(2.0) / rt.P_REF)
+    phase = np.degrees(np.angle(values))
+    sphere = measured_pt_sphere(tag, phi_deg, theta_deg, harmonics, level, phase, shaft_rate=shaft_rate, **kwargs)
+    sphere.directivity = {'harmonics': harmonics, 'coefficients': coefficients, 'degree': int(degree),
+                          'model': model}
+    return sphere
+
+
 def _close_seam(sphere):
     """Drop a full sphere's +180 phi row when it repeats the -180 row in level and phase (the database keeps phi in
     [-180, 180)); refuse a +180 row that differs."""
@@ -371,7 +411,8 @@ def build_pt_database(sphere_files, database_filename, *, weight_newtons=None, s
 def write_pt_database(spheres, database_filename, *, weight_newtons, sync_groups='shared_rate', main_rotor=None,
                       speed_reference=None, condition_axes='helicopter', rotor_count=None,
                       hover_thrust_coefficient=None, sound_speed_mps=None, speed_tolerance_kt=None,
-                      azimuth_label=None, tool='pt_database.write_pt_database', input_names=None):
+                      azimuth_label=None, tool='pt_database.write_pt_database', input_names=None,
+                      tone_speed_exponent=None):
     """Write a format 2 database from :class:`PTSphere` sources, one per rotor per condition: what
     :func:`build_pt_database` does once it has read PSU-WOPWOP's files, open to sources built otherwise (measured
     ones: :func:`measured_pt_sphere`).  Arguments as :func:`build_pt_database`, and:
@@ -380,9 +421,14 @@ def write_pt_database(spheres, database_filename, *, weight_newtons, sync_groups
             (a measured database's ``relative_within_sense``: its common timing offset is unknown, which relabels
             every rotor's blade angle by the same amount in its own sense of rotation).
         tool, input_names: the provenance stamp's tool and input names.
+        tone_speed_exponent: written as the root's ``tone_speed_exponent`` when given (>= 0): NICEOPS scales each
+            tone's pressure by the run's shaft rate over the source's ``shaft_rate`` to this power (3: the level as
+            rpm to the sixth), where a run turns a rotor at another speed (a replayed history, a sync group).
     """
     if weight_newtons is None or not np.isfinite(weight_newtons) or weight_newtons <= 0:
         raise ValueError('weight_newtons is required (N, > 0) for the thrust coefficient axis')
+    if tone_speed_exponent is not None and not (np.isfinite(tone_speed_exponent) and tone_speed_exponent >= 0):
+        raise ValueError(f'tone_speed_exponent must be finite and >= 0, not {tone_speed_exponent}')
     if condition_axes not in ('helicopter', 'multirotor'):
         raise ValueError(f"condition_axes must be 'helicopter' or 'multirotor', not {condition_axes!r}")
     if condition_axes == 'multirotor' and (rotor_count is None or int(rotor_count) != rotor_count or rotor_count < 1):
@@ -455,7 +501,7 @@ def write_pt_database(spheres, database_filename, *, weight_newtons, sync_groups
         sync_groups, dict) else dict(sync_groups), 'main_rotor': main, 'speed_reference': speed_reference,
         'condition_axes': condition_axes, 'rotor_count': rotor_count,
         'hover_thrust_coefficient': hover_thrust_coefficient, 'sound_speed_mps': sound_speed_mps,
-        'speed_tolerance_kt': speed_tolerance_kt}
+        'speed_tolerance_kt': speed_tolerance_kt, 'tone_speed_exponent': tone_speed_exponent}
     inputs = {'sphere_files': sorted(str(p) for p in sphere_files),
               'database_filename': _provenance.path_name(database_filename)}
     with _atomic_output(database_filename) as temporary, Dataset(temporary, 'w') as database:
@@ -479,6 +525,8 @@ def write_pt_database(spheres, database_filename, *, weight_newtons, sync_groups
         database.thrust_coefficient_density = 'run'
         if azimuth_label is not None:
             database.azimuth_label = str(azimuth_label)
+        if tone_speed_exponent is not None:
+            database.tone_speed_exponent = np.float64(tone_speed_exponent)
         database.sources = ','.join(tags)
         database.main_rotor_source = main
         pending, key_of = [], {}
@@ -659,6 +707,27 @@ def _write_source(group, sphere, sync_group, speed_ratio=None):
             v[:] = value
         v.units = units
         v.description = description
+    directivity = getattr(sphere, 'directivity', None)
+    if directivity is not None:
+        rows = [int(np.flatnonzero(directivity['harmonics'] == m)[0]) for m in harmonics]
+        coefficients = directivity['coefficients'][rows]
+        sub.createDimension('coefficient', coefficients.shape[1])
+        for part, values in (('real', coefficients.real), ('imag', coefficients.imag)):
+            v = sub.createVariable('directivity_' + part, 'f8', ('tone', 'coefficient'))
+            v[:] = values
+            v.units = 'Pa'
+        sub['directivity_real'].description = (
+            'the fitted directivity the amplitude and phase were evaluated from (provenance): the complex peak '
+            'pressure at the sphere radius, sum over l <= degree, k = -l..l (in that order) of c_lk Y_l^k(polar, '
+            'azimuth), Y orthonormal complex spherical harmonics, polar from the down axis, azimuth from the nose '
+            'toward starboard')
+        sub['directivity_real'].degree = np.int32(directivity['degree'])
+        model = directivity.get('model')
+        if isinstance(model, dict):
+            sub['directivity_real'].azimuthal_orders = '; '.join(
+                f'{m}: ' + ','.join(str(int(k)) for k in model[m]) for m in harmonics if m in model)
+        elif model:
+            sub['directivity_real'].model = str(model)
     if sync_group:
         sub.sync_group = sync_group
     sub.source_sphere = sphere.name
