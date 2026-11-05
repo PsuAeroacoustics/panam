@@ -205,7 +205,8 @@ def measured_pt_sphere(tag, phi_deg, theta_deg, harmonics, level_db, phase_deg, 
         state=dict(state or {}))
 
 
-def fitted_pt_sphere(tag, phi_deg, theta_deg, directivities, *, degree, shaft_rate, model=None, **kwargs):
+def fitted_pt_sphere(tag, phi_deg, theta_deg, directivities, *, degree, shaft_rate, model=None, incoherent=None,
+                     incoherent_knots_deg=None, **kwargs):
     """A :class:`PTSphere` from fitted spherical-harmonic directivities (:func:`panam.rotor_tones.fit_directivities`
     or :func:`~panam.rotor_tones.fit_summed_directivities`), evaluated on the grid, for :func:`write_pt_database`.
 
@@ -220,6 +221,10 @@ def fitted_pt_sphere(tag, phi_deg, theta_deg, directivities, *, degree, shaft_ra
             database written with ``tone_speed_exponent`` scales each tone with the run's speed over this one.
         model: {shaft order m: azimuthal orders k fitted (a list)}, or a description (str), kept beside the
             coefficients; optional.
+        incoherent, incoherent_knots_deg: {shaft order m: (n_knots,) energy coefficients, Pa^2} and their knots
+            (:func:`panam.rotor_tones.fit_incoherent_directivities`): each tone's part without a stable phase,
+            written as ``incoherent_amplitude`` (dB rms, -inf where it is zero) with the coefficients beside it
+            (``incoherent_energy``).  Optional; an order it does not name has none.
         kwargs: as :func:`measured_pt_sphere` (radius_m, speed_kt, flight_path_angle_deg, center_m,
             rotor_radius_m, air_density, sound_speed_mps, ...).
 
@@ -242,6 +247,23 @@ def fitted_pt_sphere(tag, phi_deg, theta_deg, directivities, *, degree, shaft_ra
     sphere = measured_pt_sphere(tag, phi_deg, theta_deg, harmonics, level, phase, shaft_rate=shaft_rate, **kwargs)
     sphere.directivity = {'harmonics': harmonics, 'coefficients': coefficients, 'degree': int(degree),
                           'model': model}
+    if incoherent:
+        if incoherent_knots_deg is None:
+            raise ValueError('incoherent needs incoherent_knots_deg')
+        knots = np.asarray(incoherent_knots_deg, dtype=float)
+        if set(incoherent) - set(int(m) for m in harmonics):
+            raise ValueError(f'incoherent names orders {sorted(set(incoherent) - set(harmonics))} that the '
+                             'directivities do not')
+        energy = np.zeros((harmonics.size, knots.size))
+        for i, m in enumerate(harmonics):
+            if m in incoherent:
+                energy[i] = np.asarray(incoherent[m], dtype=float)
+        if energy.shape[1] != knots.size or np.any(~np.isfinite(energy)) or np.any(energy < 0):
+            raise ValueError('each incoherent energy directivity must hold one finite value >= 0 per knot')
+        mean_square = np.stack([rt.evaluate_energy_directivity(e, knots, gp, gt) for e in energy], axis=-1)
+        with np.errstate(divide='ignore'):
+            sphere.incoherent_db = 10.0 * np.log10(mean_square / 2.0 / rt.P_REF ** 2)
+        sphere.incoherent = {'harmonics': harmonics, 'energy': energy, 'knots_deg': knots}
     return sphere
 
 
@@ -707,6 +729,22 @@ def _write_source(group, sphere, sync_group, speed_ratio=None):
             v[:] = value
         v.units = units
         v.description = description
+    incoherent = getattr(sphere, 'incoherent', None)
+    if incoherent is not None:
+        rows = [int(np.flatnonzero(incoherent['harmonics'] == m)[0]) for m in harmonics]
+        v = sub.createVariable('incoherent_amplitude', 'f8', ('PHI', 'THETA', 'tone'))
+        v[:] = sphere.incoherent_db[:, :, rows]
+        v.units = 'dB re 20 uPa at the sphere radius'
+        v.description = ('rms level of what the rotor radiates at the shaft order without a stable phase; added in '
+                         'energy, each source alone; -inf where none')
+        sub.createDimension('knot', incoherent['knots_deg'].size)
+        v = sub.createVariable('incoherent_energy', 'f8', ('tone', 'knot'))
+        v[:] = incoherent['energy'][rows]
+        v.units = 'Pa2'
+        v.description = ('the fitted energy directivity incoherent_amplitude was evaluated from (provenance): mean '
+                         'square peak pressure at the sphere radius, piecewise linear in the polar angle from the down '
+                         'axis between the knots (knots_deg), flat beyond them')
+        v.knots_deg = incoherent['knots_deg']
     directivity = getattr(sphere, 'directivity', None)
     if directivity is not None:
         rows = [int(np.flatnonzero(directivity['harmonics'] == m)[0]) for m in harmonics]

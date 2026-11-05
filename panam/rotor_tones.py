@@ -792,6 +792,89 @@ def fit_summed_directivities(problems, *, degree=4, smoothing=1e-2, max_offset_s
             'explained': explained}
 
 
+def energy_basis(polar, knots_rad):
+    """Piecewise-linear hats in the polar angle (rad) about the knots (rad, increasing): (n, n_knots), a partition of
+    unity, flat beyond the end knots.  A combination with coefficients >= 0 is >= 0 everywhere."""
+    polar = np.clip(np.asarray(polar, float), knots_rad[0], knots_rad[-1])
+    eye = np.eye(len(knots_rad))
+    return np.stack([np.interp(polar, knots_rad, eye[k]) for k in range(len(knots_rad))], axis=-1)
+
+
+def evaluate_energy_directivity(coefficients, knots_deg, phi_deg, theta_deg):
+    """A fitted energy directivity (:func:`fit_incoherent_directivities`) at ART directions (deg): the mean square of
+    the tone's incoherent part (peak amplitude squared, Pa^2, at the sphere radius), the shape of phi_deg."""
+    polar, _ = axis_angles(phi_deg, theta_deg)
+    shape = np.shape(polar)
+    return (energy_basis(np.ravel(polar), np.radians(knots_deg)) @ np.asarray(coefficients, float)).reshape(shape)
+
+
+def fit_incoherent_directivities(problems, fit, *, knots_deg=np.arange(0.0, 181.0, 15.0), shared=False,
+                                 smoothing=1e-2, iterations=4):
+    """Each source's energy directivity of what its order radiates without a stable phase: the part of the order sum
+    that :func:`fit_summed_directivities` leaves.
+
+    A tone whose phase wanders against the rotor's azimuth (unsteady loading, the rotor's own turbulence) averages
+    out of the phase-locked fit, but its energy still reaches the microphones.  Taken as independent between
+    sources, its mean square at a sample is
+
+        E|z - z_fit|^2 = sum_r |gain_r|^2 I_r(n_r),
+
+    I_r the source's mean-square peak amplitude at its sphere radius in direction n_r, axisymmetric about its
+    shaft: piecewise linear in the polar angle (:func:`energy_basis`, the knots), each coefficient >= 0, so I_r >= 0.
+    Fitted by non-negative least squares on the residual power, reweighted by the model's own mean (the residual
+    power of a random phasor is exponentially distributed: its spread is its mean), with a second-difference
+    penalty ``smoothing`` (relative to the normal equations' mean diagonal) along each source's knots.
+
+    Args:
+        problems: as :func:`fit_summed_directivities`.
+        fit: its result for these problems (the coefficients, degree and offsets the residuals are taken from).
+        knots_deg: the polar angles of the hats, deg from the down axis.
+        shared: one directivity for every source of a problem (the rotors alike) instead of one each.
+        smoothing, iterations: the penalty, and the reweighting passes.
+
+    Returns a dict: 'coefficients' (list, one (R, n_knots) array per problem, Pa^2), 'knots_deg', and 'fraction'
+    (list: the share of each problem's measured power that the incoherent part carries, sum I-model / sum |z|^2).
+    """
+    from scipy.optimize import nnls
+    knots = np.radians(np.asarray(knots_deg, float))
+    nk = knots.size
+    out, fraction = [], []
+    for i, p in enumerate(problems):
+        R = p['sources']
+        rows, targets, total = [], [], 0.0
+        for b in p['blocks']:
+            delta = fit['offsets'].get(b['run'], 0.0)
+            z_fit = np.zeros(b['z'].size, complex)
+            design = np.zeros((b['z'].size, R * nk))
+            for r in range(R):
+                polar, azimuth = axis_angles(b['phi'][:, r], b['theta'][:, r])
+                z_fit += b['gain'][:, r] * (harmonic_basis(polar, azimuth, fit['degree']) @ fit['coefficients'][i][r]) \
+                    * np.exp(1j * (b['carrier'][:, r] + b['rate'][:, r] * delta))
+                design[:, r * nk:(r + 1) * nk] = np.abs(b['gain'][:, r])[:, None] ** 2 * energy_basis(polar, knots)
+            rows.append(design)
+            targets.append(np.abs(b['z'] - z_fit) ** 2)
+            total += float(np.sum(np.abs(b['z']) ** 2))
+        A, e = np.concatenate(rows), np.concatenate(targets)
+        if shared:
+            A = A.reshape(A.shape[0], R, nk).sum(axis=1)
+        groups = 1 if shared else R
+        d2 = np.diff(np.eye(nk), 2, axis=0)
+        penalty = np.kron(np.eye(groups), d2)
+        weight = np.full(e.size, 1.0 / max(np.mean(e), 1e-300) ** 2)
+        for _ in range(iterations):
+            sw = np.sqrt(weight)
+            normal_scale = np.mean(np.sum((A * sw[:, None]) ** 2, axis=0))
+            lhs = np.vstack([A * sw[:, None], np.sqrt(smoothing * normal_scale) * penalty])
+            rhs = np.concatenate([e * sw, np.zeros(penalty.shape[0])])
+            a, _ = nnls(lhs, rhs, maxiter=50 * lhs.shape[1])
+            model = A @ a
+            weight = 1.0 / np.maximum(model, 1e-3 * max(np.mean(e), 1e-300)) ** 2
+        coefficients = np.tile(a, (R, 1)) if shared else a.reshape(R, nk)
+        out.append(coefficients)
+        fraction.append(float(np.sum(A @ a) / total) if total > 0 else 0.0)
+    return {'coefficients': out, 'knots_deg': np.asarray(knots_deg, float), 'fraction': fraction}
+
+
 def _summed_agreement(problems, coefficients, design, offsets):
     agreement, explained = {}, {}
     sums = {}

@@ -640,6 +640,8 @@ def test_fitted_directivities_are_evaluated_on_the_grid_and_kept_as_provenance(t
     n = (degree + 1) ** 2
     ks = np.concatenate([np.arange(-l, l + 1) for l in range(degree + 1)])
     hubs = {'M1': ((0.0, 0.793, 0.0), 1), 'M2': ((0.0, -0.793, 0.0), -1)}
+    knots = np.arange(0.0, 181.0, 30.0)
+    knots_energy = np.array([4.0, 3.0, 2.0, 1.0, 0.0, 0.0, 0.0])
     spheres, given = [], {}
     for tag, (hub, sense) in hubs.items():
         model = {m: [m * sense + j for j in (-1, 0, 1)] for m in (2, 4)}
@@ -647,7 +649,8 @@ def test_fitted_directivities_are_evaluated_on_the_grid_and_kept_as_provenance(t
                          for m in (2, 4)}
         given[tag] = directivities
         spheres.append(pt.fitted_pt_sphere(
-            tag, phi, theta, directivities, degree=degree, shaft_rate=220.0 * sense, model=model, radius_m=1.0,
+            tag, phi, theta, directivities, degree=degree, shaft_rate=220.0 * sense, model=model,
+            incoherent={4: knots_energy}, incoherent_knots_deg=knots, radius_m=1.0,
             speed_kt=0.0, flight_path_angle_deg=0.0, center_m=hub, rotor_radius_m=0.3556, air_density=1.15,
             sound_speed_mps=338.0))
     path = tmp_path / 'fitted.nod'
@@ -670,6 +673,13 @@ def test_fitted_directivities_are_evaluated_on_the_grid_and_kept_as_provenance(t
                     * np.exp(1j * np.radians(src['phase'][:, :, i]))
                 assert np.allclose(stored, a, rtol=1e-9, atol=1e-12 * np.abs(a).max())
             assert src['directivity_real'].azimuthal_orders.startswith('2: ')
+            inc = src['incoherent_amplitude'][:]
+            assert np.all(np.isneginf(inc[:, :, 0]))                  # order 2 has none
+            polar, _ = rt.axis_angles(gp, gt)
+            want = 10 * np.log10(np.interp(polar, np.radians(knots), knots_energy) / 2 / rt.P_REF ** 2 + 1e-300)
+            lit = np.isfinite(inc[:, :, 1])
+            assert lit.any() and np.allclose(inc[:, :, 1][lit], want[lit], atol=1e-9)
+            assert np.array_equal(src['incoherent_energy'][1], knots_energy)
     with pytest.raises(ValueError, match='tone_speed_exponent'):
         pt.write_pt_database(spheres, tmp_path / 'bad.nod', weight_newtons=160.0, sync_groups=None,
                              condition_axes='multirotor', rotor_count=6, hover_thrust_coefficient=0.009,

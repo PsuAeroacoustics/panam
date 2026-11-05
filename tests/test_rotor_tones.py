@@ -407,3 +407,38 @@ def test_rotating_fields_predict_azimuths_never_measured():
         assert np.median(np.abs(free[loud] - true[loud]) / np.abs(true[loud])) > 0.3, r
     with pytest.raises(ValueError, match='azimuthal_orders'):
         rt.fit_summed_directivities([{'sources': 3, 'blocks': train, 'azimuthal_orders': [2, -2]}], degree=degree)
+
+
+def test_incoherent_directivities_recover_random_phase_energy():
+    """Sources radiating at random phase (each sample's phase drawn afresh) over a known axisymmetric energy
+    directivity: the fit to what the phase-locked fit leaves recovers each source's I(polar), and a source without
+    one comes back with none."""
+    rng = np.random.default_rng(11)
+    R, n = 3, 40000
+    knots = np.arange(0.0, 181.0, 15.0)
+    truth = [lambda p: 2.0 + np.cos(p) ** 2, lambda p: 1.0 + 0.0 * p, lambda p: 0.0 * p]
+    polar = rng.uniform(0.0, np.radians(80.0), (n, R))
+    azimuth = rng.uniform(-np.pi, np.pi, (n, R))
+    # the ART angles of each sample's direction from each source (axis_angles inverted)
+    forward, starboard, down = np.sin(polar) * np.cos(azimuth), np.sin(polar) * np.sin(azimuth), np.cos(polar)
+    theta = np.degrees(np.arccos(forward))
+    phi = np.degrees(np.arctan2(starboard, down))
+    gain = rng.uniform(0.5, 2.0, (n, R)) * np.exp(1j * rng.uniform(0, 2 * np.pi, (n, R)))
+    z = np.zeros(n, complex)
+    for r in range(R):
+        z += gain[:, r] * np.sqrt(truth[r](polar[:, r])) * np.exp(1j * rng.uniform(0, 2 * np.pi, n))
+    blocks = [{'z': z[i::4], 'gain': gain[i::4], 'carrier': np.zeros((n // 4, R)), 'rate': np.ones((n // 4, R)),
+               'phi': phi[i::4], 'theta': theta[i::4], 'weight': np.ones(n // 4), 'run': 'a'} for i in range(4)]
+    problems = [{'sources': R, 'blocks': blocks}]
+    degree = 2
+    fit = {'coefficients': [np.zeros((R, (degree + 1) ** 2), complex)], 'degree': degree, 'offsets': {'a': 0.0}}
+    result = rt.fit_incoherent_directivities(problems, fit, knots_deg=knots)
+    sample = np.radians(np.arange(5.0, 80.0, 10.0))
+    for r in range(R):
+        got = rt.energy_basis(sample, np.radians(knots)) @ result['coefficients'][0][r]
+        want = truth[r](sample)
+        assert np.all(got >= 0.0)
+        assert np.max(np.abs(got - want)) < 0.25 * max(want.max(), 1.0), (r, got, want)
+    assert result['fraction'][0] == pytest.approx(1.0, abs=0.05)
+    level = rt.evaluate_energy_directivity(result['coefficients'][0][0], knots, phi[:5, 0], theta[:5, 0])
+    assert np.allclose(level, rt.energy_basis(polar[:5, 0], np.radians(knots)) @ result['coefficients'][0][0])
