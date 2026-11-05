@@ -316,8 +316,9 @@ the coefficients are kept beside it as provenance:
   `write_pt_database`), NICEOPS scales each tone's pressure by the run's shaft rate over it to the
   power nu where a run turns the rotor at another speed (nu = 3: the level as rpm to the sixth).
 
-- `incoherent_amplitude` (`PHI`, `THETA`, `tone`), dB re 20 uPa rms at the sphere radius, -inf
-  where none: what the rotor radiates at that shaft order without a stable phase
+- `incoherent_amplitude` (`PHI`, `THETA`, `tone`), dB re 20 uPa rms at the sphere radius; where
+  the fit is zero, 100 dB below the tone's peak (quiet, which NICEOPS keeps, not -inf, which it
+  fills from the neighboring cells), and -inf throughout for an order without one: what the rotor radiates at that shaft order without a stable phase
   (`rotor_tones.fit_incoherent_directivities`, fitted to what the phase-locked fit leaves). NICEOPS
   adds it in energy, each source alone. The fit beside it is `incoherent_energy` (`tone`, `knot`),
   Pa^2: the mean-square peak pressure, piecewise linear in the polar angle from the down axis

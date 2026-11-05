@@ -205,6 +205,10 @@ def measured_pt_sphere(tag, phi_deg, theta_deg, harmonics, level_db, phase_deg, 
         state=dict(state or {}))
 
 
+#: How far below its peak a tone's incoherent part is written where its fit is zero, dB.
+INCOHERENT_FLOOR_DB = -100.0
+
+
 def fitted_pt_sphere(tag, phi_deg, theta_deg, directivities, *, degree, shaft_rate, model=None, incoherent=None,
                      incoherent_knots_deg=None, **kwargs):
     """A :class:`PTSphere` from fitted spherical-harmonic directivities (:func:`panam.rotor_tones.fit_directivities`
@@ -223,7 +227,8 @@ def fitted_pt_sphere(tag, phi_deg, theta_deg, directivities, *, degree, shaft_ra
             coefficients; optional.
         incoherent, incoherent_knots_deg: {shaft order m: (n_knots,) energy coefficients, Pa^2} and their knots
             (:func:`panam.rotor_tones.fit_incoherent_directivities`): each tone's part without a stable phase,
-            written as ``incoherent_amplitude`` (dB rms, -inf where it is zero) with the coefficients beside it
+            written as ``incoherent_amplitude`` (dB rms; INCOHERENT_FLOOR_DB below its peak where the fit is zero,
+            quiet rather than missing; -inf throughout for an order without one) with the coefficients beside it
             (``incoherent_energy``).  Optional; an order it does not name has none.
         kwargs: as :func:`measured_pt_sphere` (radius_m, speed_kt, flight_path_angle_deg, center_m,
             rotor_radius_m, air_density, sound_speed_mps, ...).
@@ -261,8 +266,13 @@ def fitted_pt_sphere(tag, phi_deg, theta_deg, directivities, *, degree, shaft_ra
         if energy.shape[1] != knots.size or np.any(~np.isfinite(energy)) or np.any(energy < 0):
             raise ValueError('each incoherent energy directivity must hold one finite value >= 0 per knot')
         mean_square = np.stack([rt.evaluate_energy_directivity(e, knots, gp, gt) for e in energy], axis=-1)
+        # Where the fit is exactly zero (a non-negative fit sets whole ranges of knots to 0) the part is quiet, not
+        # missing: NICEOPS fills a -inf cell from its neighbors, which would put energy where the fit has none.
+        # Such cells take INCOHERENT_FLOOR_DB below the tone's peak; a tone with none at all stays -inf.
+        peak = mean_square.max(axis=(0, 1), keepdims=True)
+        floored = np.where(peak > 0, np.maximum(mean_square, peak * 10.0 ** (INCOHERENT_FLOOR_DB / 10.0)), 0.0)
         with np.errstate(divide='ignore'):
-            sphere.incoherent_db = 10.0 * np.log10(mean_square / 2.0 / rt.P_REF ** 2)
+            sphere.incoherent_db = 10.0 * np.log10(floored / 2.0 / rt.P_REF ** 2)
         sphere.incoherent = {'harmonics': harmonics, 'energy': energy, 'knots_deg': knots}
     return sphere
 

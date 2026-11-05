@@ -677,8 +677,12 @@ def test_fitted_directivities_are_evaluated_on_the_grid_and_kept_as_provenance(t
             assert np.all(np.isneginf(inc[:, :, 0]))                  # order 2 has none
             polar, _ = rt.axis_angles(gp, gt)
             want = 10 * np.log10(np.interp(polar, np.radians(knots), knots_energy) / 2 / rt.P_REF ** 2 + 1e-300)
-            lit = np.isfinite(inc[:, :, 1])
-            assert lit.any() and np.allclose(inc[:, :, 1][lit], want[lit], atol=1e-9)
+            # zero above the 120 deg knot: written as the floor, quiet rather than missing
+            assert np.all(np.isfinite(inc[:, :, 1]))
+            peak = 10 * np.log10(knots_energy.max() / 2 / rt.P_REF ** 2)
+            lit = want > peak + pt.INCOHERENT_FLOOR_DB
+            assert lit.any() and (~lit).any() and np.allclose(inc[:, :, 1][lit], want[lit], atol=1e-9)
+            assert np.allclose(inc[:, :, 1][~lit], peak + pt.INCOHERENT_FLOOR_DB, atol=1e-9)
             assert np.array_equal(src['incoherent_energy'][1], knots_energy)
     with pytest.raises(ValueError, match='tone_speed_exponent'):
         pt.write_pt_database(spheres, tmp_path / 'bad.nod', weight_newtons=160.0, sync_groups=None,
