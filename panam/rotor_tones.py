@@ -718,16 +718,22 @@ def fit_summed_directivities(problems, *, degree=4, smoothing=1e-2, max_offset_s
         return out
 
     def solve(normal, rhs):
+        """The coefficients, or None where no sample carries weight (every run weighted out)."""
+        if np.isscalar(normal):
+            return None
         penalty = np.tile((ls * (ls + 1.0)) ** 2, normal.shape[0] // nb)
         scale = np.mean(np.real(np.diag(normal)))
+        if not scale > 0:
+            return None
         return np.linalg.solve(normal + smoothing * scale * np.diag(penalty), rhs)
 
     weights = [{} for _ in problems]
     coefficients = [None] * len(problems)
     for iteration in range(iterations + 1):
         parts = [partial(p, weights[i]) for i, p in enumerate(problems)]
-        for i, part in enumerate(parts):
-            coefficients[i] = solve(sum(n_ for n_, _ in part.values()), sum(y_ for _, y_ in part.values()))
+        for i, (p, part) in enumerate(zip(problems, parts)):
+            c = solve(sum(n_ for n_, _ in part.values()), sum(y_ for _, y_ in part.values()))
+            coefficients[i] = c if c is not None else np.zeros(p['sources'] * nb, dtype=complex)
         if iteration == iterations:
             break
         stats = _summed_agreement(problems, coefficients, design, offsets)
@@ -747,6 +753,8 @@ def fit_summed_directivities(problems, *, degree=4, smoothing=1e-2, max_offset_s
                 if not others:
                     continue
                 c = solve(sum(part[o][0] for o in others), sum(part[o][1] for o in others))
+                if c is None:
+                    continue
                 for b in (b for b in p['blocks'] if b['run'] == r):
                     # each source's term without its offset, and its rate: the fit at delta is their sum
                     terms = (b['_columns'] * c[None, :]).reshape(b['_z'].size, p['sources'], nb).sum(axis=2)
