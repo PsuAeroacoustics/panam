@@ -647,3 +647,133 @@ def evaluate_directivity(coefficients, degree, phi_deg, theta_deg):
     polar, azimuth = axis_angles(phi_deg, theta_deg)
     shape = np.shape(polar)
     return (harmonic_basis(np.ravel(polar), np.ravel(azimuth), degree) @ coefficients).reshape(shape)
+
+
+def fit_summed_directivities(problems, *, degree=4, smoothing=1e-2, max_offset_s=0.01, step_s=2e-5, iterations=4,
+                             reference=None, offsets=None, robust=4.0):
+    """Each source's smooth directivity of one shaft order, fitted to what the microphones hear of all the sources
+    together, with each run's timing.
+
+    Rotors turning within a fraction of a hertz of each other cannot be told apart at one microphone over the
+    envelope's few tenths of a second, so their separately extracted tones (:func:`rotor_locked_tones`) share
+    their energy out arbitrarily.  Their sum at the microphone is well determined.  So each source's directivity
+    (spherical harmonics about its shaft, as :func:`fit_directivities`) is fitted to that sum, over every
+    microphone and every second of every run at once:
+
+        z = sum_r gain_r B(n_r) c_r exp(i (carrier_r + rate_r delta_run)),
+
+    z the order's sum as heard, gain_r each source's propagation from its sphere to the microphone, n_r its
+    direction, carrier_r = m psi_r its order's phase from the source's azimuth, rate_r = m |Omega_r| and delta_run
+    the run's timing offset.  The sources' relative phases drift as their speeds differ, which is what tells them
+    apart.
+
+    Args:
+        problems: a list of dicts, each with its own coefficients (one order at one condition, say) and the run
+            offsets shared by all: 'sources' (R), 'blocks' (a list of dicts, one per microphone and segment: 'z'
+            (n,) complex Pa; 'gain', 'carrier' (rad), 'rate' (rad/s), 'phi', 'theta' (deg, ART): (n, R);
+            'weight' (n,): 1 / the noise variance, say; 'run': a label).
+        degree, smoothing, max_offset_s, step_s, iterations, reference, offsets, robust: as
+            :func:`fit_directivities` (here each run is fitted against its problems' fits without it).
+
+    Returns a dict: 'coefficients' (list, one (R, n_basis) array per problem), 'degree', 'offsets', 'reference',
+    'agreement' {(problem, run): Re(sum w z conj(z_fit)) / sqrt(sum w |z|^2 sum w |z_fit|^2)} and 'explained'
+    {(problem, run): 1 - sum w |z - z_fit|^2 / sum w |z|^2}, each run's z against the fit including it.
+    """
+    nb = (degree + 1) ** 2
+    ls = np.concatenate([np.full(2 * l + 1, l) for l in range(degree + 1)])
+    runs = sorted({b['run'] for p in problems for b in p['blocks']}, key=str)
+    if reference is None:
+        mass = {r: sum(float(np.sum(b['weight'])) for p in problems for b in p['blocks'] if b['run'] == r)
+                for r in runs}
+        reference = max(runs, key=lambda r: (mass[r], str(r)))
+    offsets = {r: float((offsets or {}).get(r, 0.0)) for r in runs}
+    start = dict(offsets)
+    # each block's columns without the offset: gain B exp(i carrier), (n, R * nb)
+    for p in problems:
+        for b in p['blocks']:
+            columns = []
+            for r in range(p['sources']):
+                polar, azimuth = axis_angles(b['phi'][:, r], b['theta'][:, r])
+                columns.append(harmonic_basis(polar, azimuth, degree)
+                               * (np.asarray(b['gain'])[:, r] * np.exp(1j * np.asarray(b['carrier'])[:, r]))[:, None])
+            b['_columns'] = np.concatenate(columns, axis=1)
+            b['_w'] = np.asarray(b['weight'], float).copy()
+            ok = np.isfinite(b['z']) & np.all(np.isfinite(b['_columns']), axis=1) & (b['_w'] > 0)
+            b['_w'][~ok] = 0.0
+            b['_z'] = np.where(ok, b['z'], 0.0)
+            b['_columns'][~ok] = 0.0
+
+    def design(b, delta):
+        shift = np.exp(1j * np.asarray(b['rate'], float) * delta)              # (n, R)
+        return b['_columns'] * np.repeat(shift, nb, axis=1)
+
+    def partial(p, robust_w):
+        """{run: (N_run, y_run)}: each run's normal equations at the current offsets."""
+        out = {}
+        for b in p['blocks']:
+            a = design(b, offsets[b['run']])
+            w = b['_w'] * robust_w.get(b['run'], 1.0)
+            n_, y_ = out.get(b['run'], (0.0, 0.0))
+            out[b['run']] = (n_ + (a.conj().T * w) @ a, y_ + (a.conj().T * w) @ b['_z'])
+        return out
+
+    def solve(normal, rhs):
+        penalty = np.tile((ls * (ls + 1.0)) ** 2, normal.shape[0] // nb)
+        scale = np.mean(np.real(np.diag(normal)))
+        return np.linalg.solve(normal + smoothing * scale * np.diag(penalty), rhs)
+
+    weights = [{} for _ in problems]
+    coefficients = [None] * len(problems)
+    for iteration in range(iterations + 1):
+        parts = [partial(p, weights[i]) for i, p in enumerate(problems)]
+        for i, part in enumerate(parts):
+            coefficients[i] = solve(sum(n_ for n_, _ in part.values()), sum(y_ for _, y_ in part.values()))
+        if iteration == iterations:
+            break
+        stats = _summed_agreement(problems, coefficients, design, offsets)
+        if robust:
+            for i in range(len(problems)):
+                weights[i] = {r: max(stats[0].get((i, r), 0.0), 0.0) ** robust for r in runs}
+        new_offsets = dict(offsets)
+        for r in runs:
+            if r == reference:
+                continue
+            trial = start[r] + np.arange(-max_offset_s, max_offset_s + step_s / 2, step_s)
+            total = np.zeros(trial.size)
+            for i, (p, part) in enumerate(zip(problems, parts)):
+                if r not in part:
+                    continue
+                others = [run for run in part if run != r]
+                if not others:
+                    continue
+                c = solve(sum(part[o][0] for o in others), sum(part[o][1] for o in others))
+                for b in (b for b in p['blocks'] if b['run'] == r):
+                    # each source's term without its offset, and its rate: the fit at delta is their sum
+                    terms = (b['_columns'] * c[None, :]).reshape(b['_z'].size, p['sources'], nb).sum(axis=2)
+                    cross = (b['_w'] * weights[i].get(r, 1.0))[:, None] * np.conj(terms) * b['_z'][:, None]
+                    for k in range(p['sources']):
+                        total += np.real(np.exp(-1j * np.outer(trial, np.asarray(b['rate'])[:, k])) @ cross[:, k])
+            if np.any(total):
+                new_offsets[r] = float(trial[int(np.argmax(total))])
+        offsets.update(new_offsets)
+    agreement, explained = _summed_agreement(problems, coefficients, design, offsets)
+    return {'coefficients': [c.reshape(p['sources'], nb) for c, p in zip(coefficients, problems)],
+            'degree': degree, 'offsets': offsets, 'reference': reference, 'agreement': agreement,
+            'explained': explained}
+
+
+def _summed_agreement(problems, coefficients, design, offsets):
+    agreement, explained = {}, {}
+    sums = {}
+    for i, (p, c) in enumerate(zip(problems, coefficients)):
+        for b in p['blocks']:
+            fit = design(b, offsets[b['run']]) @ c
+            w, z = b['_w'], b['_z']
+            s = sums.setdefault((i, b['run']), np.zeros(4, dtype=complex))
+            s += [np.sum(w * z * np.conj(fit)), np.sum(w * np.abs(z) ** 2), np.sum(w * np.abs(fit) ** 2),
+                  np.sum(w * np.abs(z - fit) ** 2)]
+    for key, (cross, zz, ff, rr) in sums.items():
+        den = np.sqrt(np.real(zz) * np.real(ff))
+        agreement[key] = float(np.real(cross) / den) if den > 0 else float('nan')
+        explained[key] = float(1.0 - np.real(rr) / np.real(zz)) if np.real(zz) > 0 else float('nan')
+    return agreement, explained

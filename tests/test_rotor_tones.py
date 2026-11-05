@@ -315,3 +315,41 @@ def test_fit_directivities_recovers_the_field_and_each_runs_timing():
     bad = keys.index((2, 4))
     assert fit['consistency'][(bad, 'c')] < 0.6
     assert min(v for (i, r), v in fit['consistency'].items() if (i, r) != (bad, 'c')) > 0.97
+
+
+def test_summed_directivities_separate_rotors_a_fraction_of_a_hertz_apart():
+    """Three rotors, two of them 0.5 % apart in speed (0.3 Hz at order 2), heard only as their sum: the fit gives
+    each rotor's directivity (to a few degrees of phase where it is loud) and each run's timing, because their
+    relative phases drift over a pass."""
+    rng = np.random.default_rng(23)
+    speeds = np.array([215.0, 216.1, 231.0])
+    truth = [_harmonic_truth(3, 40 + r) for r in range(3)]
+    deltas = {'a': 0.0, 'b': 0.0011, 'c': -0.0017}
+    order = 2
+    blocks = []
+    for run, delta in deltas.items():
+        p, t, mic = _passes(rng, n_mics=5)
+        for m in np.unique(mic):
+            sel = mic == m
+            n = sel.sum()
+            time = np.linspace(0.0, 30.0, n)
+            psi = speeds[None, :] * time[:, None] + rng.uniform(0, 2 * np.pi, 3)
+            phi, theta = np.repeat(p[sel, None], 3, axis=1), np.repeat(t[sel, None], 3, axis=1)
+            rate = np.repeat(order * speeds[None, :], n, axis=0)
+            z = sum(rt.evaluate_directivity(truth[r], 3, phi[:, r], theta[:, r])
+                    * np.exp(1j * (order * psi[:, r] + rate[:, r] * delta)) for r in range(3))
+            z = z + 0.02 * (rng.normal(size=n) + 1j * rng.normal(size=n))
+            blocks.append({'z': z, 'gain': np.ones((n, 3)), 'carrier': order * psi, 'rate': rate, 'phi': phi,
+                           'theta': theta, 'weight': np.ones(n), 'run': run})
+    fit = rt.fit_summed_directivities([{'sources': 3, 'blocks': blocks}], degree=3, smoothing=1e-6, reference='a',
+                                      max_offset_s=0.004, iterations=6)
+    for run, delta in deltas.items():
+        assert abs(fit['offsets'][run] - delta) < 5e-5, (run, fit['offsets'][run], delta)
+    gp, gt = np.meshgrid(np.arange(-50.0, 51.0, 10.0), np.arange(30.0, 151.0, 10.0), indexing='ij')
+    for r in range(3):
+        model = rt.evaluate_directivity(fit['coefficients'][0][r], 3, gp, gt)
+        true = rt.evaluate_directivity(truth[r], 3, gp, gt)
+        loud = np.abs(true) > 0.3 * np.abs(true).max()
+        assert np.max(np.abs(np.angle(model[loud] / true[loud], deg=True))) < 5.0, r
+        assert np.max(np.abs(20 * np.log10(np.abs(model[loud] / true[loud])))) < 0.5, r
+    assert min(fit['explained'].values()) > 0.99
