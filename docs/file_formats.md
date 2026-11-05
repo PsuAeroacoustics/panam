@@ -296,8 +296,10 @@ one in these ways:
 - `phase_reference` is `rotor_azimuth` where the rotor's angle was logged;
 - the root's `azimuth_label`, when present, says what the azimuths are relative to.
   `relative_within_sense` means that one timing offset common to every run is unknown. It turns
-  every rotor's blade angle by the same amount in that rotor's own sense of rotation, so rotors of
-  one sense keep their relative azimuths, and the angle between opposite senses is uncertain;
+  every rotor's blade angle by the same amount in that rotor's own sense of rotation. For rotors at
+  one speed that is a common phase, so relative azimuths in these labels (what a controller reading
+  the same angles commands) predict the field as measured; only the physical angle between blades
+  of opposite senses is uncertain;
 - the rotor's own measured state may be written beside it, each variable with `units` and a
   `description` (a scalar, or a vector over `xyz` in the sphere frame): its logged speed, its
   hub's air velocity, its disk's normal, an estimate of its thrust.
