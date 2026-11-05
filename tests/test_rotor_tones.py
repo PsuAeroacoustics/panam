@@ -353,3 +353,57 @@ def test_summed_directivities_separate_rotors_a_fraction_of_a_hertz_apart():
         assert np.max(np.abs(np.angle(model[loud] / true[loud], deg=True))) < 5.0, r
         assert np.max(np.abs(20 * np.log10(np.abs(model[loud] / true[loud])))) < 0.5, r
     assert min(fit['explained'].values()) > 0.99
+
+
+def _rotating_field(order, k, degree, seed):
+    """A hover rotor's tone: Y_l^k only (a field that turns with the rotor), random polar shape."""
+    rng = np.random.default_rng(seed)
+    nb = (degree + 1) ** 2
+    ks = np.concatenate([np.arange(-l, l + 1) for l in range(degree + 1)])
+    c = np.zeros(nb, dtype=complex)
+    c[ks == k] = rng.normal(size=(ks == k).sum()) + 1j * rng.normal(size=(ks == k).sum())
+    return c
+
+
+def test_rotating_fields_predict_azimuths_never_measured():
+    """Three hover rotors (two 0.5 % apart, opposite senses), heard as one order-2 sum at microphones on one side
+    only (phi 10 to 60 deg) at several polar angles: with each rotor's one azimuthal order the fit predicts the other
+    side (phi -60 to -10 deg) and ahead and behind, where the free fit cannot."""
+    rng = np.random.default_rng(29)
+    degree, order = 6, 2
+    senses = (1, -1, 1)
+    speeds = np.array([215.0, 216.1, 231.0])
+    truth = [_rotating_field(order, order * s, degree, 50 + r) for r, s in enumerate(senses)]
+
+    def blocks(phi_range, theta_range, n_mics, run):
+        out = []
+        for phi in np.linspace(*phi_range, n_mics):
+            theta = np.linspace(*theta_range, 150)
+            n = theta.size
+            ph = np.full((n, 3), phi)
+            th = np.repeat(theta[:, None], 3, axis=1)
+            psi = speeds[None, :] * np.linspace(0.0, 30.0, n)[:, None] + rng.uniform(0, 2 * np.pi, 3)
+            z = sum(rt.evaluate_directivity(truth[r], degree, ph[:, r], th[:, r]) * np.exp(1j * order * psi[:, r])
+                    for r in range(3))
+            out.append({'z': z + 0.02 * (rng.normal(size=n) + 1j * rng.normal(size=n)), 'gain': np.ones((n, 3)),
+                        'carrier': order * psi, 'rate': np.repeat(order * speeds[None, :], n, axis=0), 'phi': ph,
+                        'theta': th, 'weight': np.ones(n), 'run': run})
+        return out
+    train = blocks((10.0, 60.0), (40.0, 140.0), 6, 'a')
+    fits = {}
+    for label, orders in (('rotating', [order * s for s in senses]), ('free', None)):
+        problem = {'sources': 3, 'blocks': [dict(b) for b in train]}
+        if orders is not None:
+            problem['azimuthal_orders'] = orders
+        fits[label] = rt.fit_summed_directivities([problem], degree=degree, smoothing=1e-6, iterations=0, robust=0)
+    gp, gt = np.meshgrid(np.arange(-60.0, -9.0, 10.0), np.arange(50.0, 131.0, 10.0), indexing='ij')
+    for r in range(3):
+        true = rt.evaluate_directivity(truth[r], degree, gp, gt)
+        rot = rt.evaluate_directivity(fits['rotating']['coefficients'][0][r], degree, gp, gt)
+        free = rt.evaluate_directivity(fits['free']['coefficients'][0][r], degree, gp, gt)
+        loud = np.abs(true) > 0.3 * np.abs(true).max()
+        assert np.max(np.abs(np.angle(rot[loud] / true[loud], deg=True))) < 5.0, r
+        assert np.max(np.abs(20 * np.log10(np.abs(rot[loud] / true[loud])))) < 0.5, r
+        assert np.median(np.abs(free[loud] - true[loud]) / np.abs(true[loud])) > 0.3, r
+    with pytest.raises(ValueError, match='azimuthal_orders'):
+        rt.fit_summed_directivities([{'sources': 3, 'blocks': train, 'azimuthal_orders': [2, -2]}], degree=degree)

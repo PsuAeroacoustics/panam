@@ -671,7 +671,12 @@ def fit_summed_directivities(problems, *, degree=4, smoothing=1e-2, max_offset_s
         problems: a list of dicts, each with its own coefficients (one order at one condition, say) and the run
             offsets shared by all: 'sources' (R), 'blocks' (a list of dicts, one per microphone and segment: 'z'
             (n,) complex Pa; 'gain', 'carrier' (rad), 'rate' (rad/s), 'phi', 'theta' (deg, ART): (n, R);
-            'weight' (n,): 1 / the noise variance, say; 'run': a label).
+            'weight' (n,): 1 / the noise variance, say; 'run': a label), and optionally 'azimuthal_orders': (R,)
+            each source's one azimuthal order k (or None for all).  A rotor in hover radiates a field that turns
+            with it and does not otherwise change: its tone of shaft order m is a function of the polar angle about
+            the shaft times exp(i k azimuth), k = +-m by its sense of rotation (Valente, Greenwood and Johnson's
+            phase compensation).  Only the harmonics Y_l^k of that k are then fitted, and the fit predicts every
+            azimuth from the ones measured.
         degree, smoothing, max_offset_s, step_s, iterations, reference, offsets, robust: as
             :func:`fit_directivities` (here each run is fitted against its problems' fits without it).
 
@@ -681,6 +686,16 @@ def fit_summed_directivities(problems, *, degree=4, smoothing=1e-2, max_offset_s
     """
     nb = (degree + 1) ** 2
     ls = np.concatenate([np.full(2 * l + 1, l) for l in range(degree + 1)])
+    ks = np.concatenate([np.arange(-l, l + 1) for l in range(degree + 1)])
+    for p in problems:
+        orders = p.get('azimuthal_orders')
+        if orders is None:
+            p['_keep'] = np.ones(p['sources'] * nb, bool)
+        else:
+            if len(orders) != p['sources'] or any(k is not None and abs(k) > degree for k in orders):
+                raise ValueError(f'azimuthal_orders must give one order per source, each within the degree '
+                                 f'({degree}): {orders}')
+            p['_keep'] = np.concatenate([np.ones(nb, bool) if k is None else ks == k for k in orders])
     runs = sorted({b['run'] for p in problems for b in p['blocks']}, key=str)
     if reference is None:
         mass = {r: sum(float(np.sum(b['weight'])) for p in problems for b in p['blocks'] if b['run'] == r)
@@ -717,22 +732,26 @@ def fit_summed_directivities(problems, *, degree=4, smoothing=1e-2, max_offset_s
             out[b['run']] = (n_ + (a.conj().T * w) @ a, y_ + (a.conj().T * w) @ b['_z'])
         return out
 
-    def solve(normal, rhs):
-        """The coefficients, or None where no sample carries weight (every run weighted out)."""
+    def solve(normal, rhs, keep):
+        """The coefficients (zero outside `keep`, the harmonics fitted), or None where no sample carries weight
+        (every run weighted out)."""
         if np.isscalar(normal):
             return None
-        penalty = np.tile((ls * (ls + 1.0)) ** 2, normal.shape[0] // nb)
-        scale = np.mean(np.real(np.diag(normal)))
+        penalty = np.tile((ls * (ls + 1.0)) ** 2, normal.shape[0] // nb)[keep]
+        sub = normal[np.ix_(keep, keep)]
+        scale = np.mean(np.real(np.diag(sub)))
         if not scale > 0:
             return None
-        return np.linalg.solve(normal + smoothing * scale * np.diag(penalty), rhs)
+        out = np.zeros(normal.shape[0], dtype=complex)
+        out[keep] = np.linalg.solve(sub + smoothing * scale * np.diag(penalty), rhs[keep])
+        return out
 
     weights = [{} for _ in problems]
     coefficients = [None] * len(problems)
     for iteration in range(iterations + 1):
         parts = [partial(p, weights[i]) for i, p in enumerate(problems)]
         for i, (p, part) in enumerate(zip(problems, parts)):
-            c = solve(sum(n_ for n_, _ in part.values()), sum(y_ for _, y_ in part.values()))
+            c = solve(sum(n_ for n_, _ in part.values()), sum(y_ for _, y_ in part.values()), p['_keep'])
             coefficients[i] = c if c is not None else np.zeros(p['sources'] * nb, dtype=complex)
         if iteration == iterations:
             break
@@ -752,7 +771,7 @@ def fit_summed_directivities(problems, *, degree=4, smoothing=1e-2, max_offset_s
                 others = [run for run in part if run != r]
                 if not others:
                     continue
-                c = solve(sum(part[o][0] for o in others), sum(part[o][1] for o in others))
+                c = solve(sum(part[o][0] for o in others), sum(part[o][1] for o in others), p['_keep'])
                 if c is None:
                     continue
                 for b in (b for b in p['blocks'] if b['run'] == r):
