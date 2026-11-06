@@ -224,8 +224,10 @@ sweep (spheres of one vehicle at several gross weights or air densities, as PSU-
 them) takes `--thrust-from sphere`: each sphere's condition is then its run's own thrust
 coefficient, `GROSS_WEIGHT` / (`AIR_DENSITY` π R² V_tip²), spheres at one speed and angle but
 different thrust coefficients are separate conditions, and `--merge-repeats` merges only runs at
-one thrust coefficient. Without `--load-factors` each condition is written once; the database is
-`fixed_load_factor` only while every run has the same thrust coefficient.
+one thrust coefficient. A sweep may hold a hover (SPEED 0) at each thrust coefficient, each written
+at the hover's flight path angles; two hovers at one thrust coefficient are refused. Without
+`--load-factors` each condition is written once; the database is `fixed_load_factor` only while
+every run has the same thrust coefficient.
 
 `tools/aam_sphere_set.py FOLDER ...` checks a vehicle's spheres before AAM reads them: spheres
 of one AAM type on one grid (radius, angles, bands, PT tone count), whole-foot centers, at most

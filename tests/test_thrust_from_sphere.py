@@ -118,3 +118,28 @@ def test_a_hover_source_without_its_weight_is_refused(tmp_path):
     with pytest.raises(ValueError, match='GROSS_WEIGHT'):
         fa.build_empirical_database(str(folder), str(tmp_path / 'x.nod'), load_factors=None,
                                     thrust_from='sphere', hover_source=str(other / 'SWEEP000.nc'))
+
+
+def test_a_weight_sweep_holds_a_hover_at_each_weight(tmp_path):
+    """A sweep with a hover at each weight files each at its own C_T, at every hover angle, and
+    synthesizes none; two hovers at one weight are still two hovers of one condition."""
+    runs = ((0.0, 4000.0), (0.0, 5500.0), (40.0, 4000.0), (40.0, 5500.0))
+    database = tmp_path / 'hovers.nod'
+    fa.build_empirical_database(str(_folder(tmp_path / 's', runs)), str(database), load_factors=None,
+                                thrust_from='sphere')
+    assert validate_nod(str(database)) == []
+    with Dataset(str(database)) as handle:
+        hovers = [(float(g['flight_path_angle'][0]), float(g['thrust_coefficient'][0]), g.condition_origin)
+                  for g in handle.groups.values() if float(g['advance_ratio'][0]) == 0.0]
+    assert 'synthesized_hover' not in {origin for _, _, origin in hovers}
+    for weight in (4000.0, 5500.0):
+        angles = sorted(gamma for gamma, ct, _ in hovers if math.isclose(ct, _run_ct(weight), rel_tol=1e-6))
+        assert angles == [-12.0, 0.0, 12.0]
+    # Two hovers at one weight filed at different flight path angles are not repeats of one
+    # condition, but are still two hovers at one thrust.
+    folder = _folder(tmp_path / 't', ((0.0, 4000.0), (40.0, 4000.0)))
+    levels = np.full((PHI.size, THETA.size, BANDS.size), 70.0)
+    sphere_helpers.write_wopwop_sphere(folder / 'SWEEP009.nc', levels, PHI, THETA, BANDS, speed=0.0,
+                                       flight_path_angle=5.0, gross_weight_lb=4000.0, floor=-60.0)
+    with pytest.raises(ValueError, match='one hover per thrust'):
+        fa.build_empirical_database(str(folder), str(tmp_path / 'x.nod'), load_factors=None, thrust_from='sphere')

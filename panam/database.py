@@ -1488,9 +1488,15 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     # A sphere at zero speed is the hover itself (_REAL_HOVER_KNOTS), and none is synthesized.
     real_hovers = [files for files in condition_files
                    if abs(_sphere_condition(files[0])[0]) < _REAL_HOVER_KNOTS]
-    if len(real_hovers) > 1:
-        raise ValueError('{} are each a hover (SPEED 0); a database holds one'.format(
-            ' and '.join(os.path.basename(files[0]) for files in real_hovers)))
+    # One hover per thrust: a weight or density sweep (thrust_from='sphere') may hold a hover at
+    # each of its C_T, each its own condition; two at one thrust are two hovers of one condition.
+    for i, first in enumerate(real_hovers):
+        for second in real_hovers[i + 1:]:
+            if run_thrust is None or abs(run_thrust[first[0]] - run_thrust[second[0]]) <= 1e-6 * abs(
+                    run_thrust[first[0]]):
+                raise ValueError('{} and {} are each a hover (SPEED 0) at one thrust; a database holds one '
+                                 'hover per thrust coefficient'.format(os.path.basename(first[0]),
+                                                                       os.path.basename(second[0])))
     if real_hovers and (hover_source is not None or hover_correction is not None):
         raise ValueError('{} is a hover (SPEED 0), which is the database\'s hover; hover_source and '
                          'hover_correction shape a synthesized one'.format(os.path.basename(real_hovers[0][0])))
@@ -1536,7 +1542,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
         # Each condition's levels, kept for the hover synthesis below.
         condition_inputs = {}
         # The real hover's completed levels and its own flight path angle, if there is one.
-        real_hover = None
+        real_hover_levels = []
         # Every condition to write, collected rather than written immediately, so
         # that whether phi/theta/frequency can be deduplicated (see
         # _grid_and_frequency_are_shared) is known before the first group is
@@ -1599,12 +1605,13 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
             for load_factor in load_factors_to_write:
                 add(phi_full, theta_full, radius, SPLA_full, EAA_full, speed, flight_path_angle,
                     load_factor, frequency, amplitude_full, coverage_full, measured_metadata)
-            if real_hovers and filenames == real_hovers[0]:
-                real_hover = (phi_full, theta_full, radius, SPLA_full, EAA_full, frequency, amplitude_full,
-                              coverage_full, filenames, float(np.ravel(flight_path_angle)[0]))
+            if filenames in real_hovers:
+                real_hover_levels.append((phi_full, theta_full, radius, SPLA_full, EAA_full, frequency,
+                                          amplitude_full, coverage_full, filenames,
+                                          float(np.ravel(flight_path_angle)[0])))
 
-        if real_hover is not None:
-            # The real hover at the other angles a hover is written at, as a
+        for real_hover in real_hover_levels:
+            # Each real hover at the other angles a hover is written at, as a
             # synthesized one would be (it has no flight path to keep).
             (phi_full, theta_full, radius, SPLA_full, EAA_full, frequency, amplitude_full,
              coverage_full, filenames, own_angle) = real_hover
@@ -1615,7 +1622,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                 for load_factor in load_factors_to_write:
                     add_hover(phi_full, theta_full, radius, SPLA_full, EAA_full, flight_path_angle,
                               load_factor, frequency, amplitude_full, coverage_full, hover_metadata)
-        else:
+        if not real_hover_levels:
             min_speed_files = condition_files[_hover_source_index(source_conditions, level_flight_tolerance)]
 
             if hover_source is not None:
