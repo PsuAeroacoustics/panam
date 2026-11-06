@@ -1025,6 +1025,83 @@ group (`sync_group`); a rotor whose sphere records no phase reference time is le
 Spheres whose speeds and flight path angles lie within `speed_tolerance_kt` and $10^{-3}$° are one
 condition at their mean speed and angle.
 
+### 7.7 Measured rotor tones
+
+`rotor_tones` builds a measured source (§7.6) from microphones and each rotor's logged blade angle.
+Phases are $e^{+i\omega t}$ throughout, and a rotor's azimuth $\psi_r$ grows in its own sense of
+rotation.
+
+**Azimuth.** From a logged angle and shaft rate $\Omega_r$ (`rotor_azimuth`),
+$\psi_r(t) = s_r\int\Omega_r\,dt + \Delta\psi_r(t)$, $s_r = \operatorname{sign}\Omega_r$: the rate carries
+the fast part, and $\Delta\psi_r$ is the circular mean, over 0.25 s windows, of the logged angle less
+that integral, so single angle samples, which scatter by tens of degrees, set only its drift.
+
+**Emission.** A sample received at $t$ by a microphone at $\mathbf{x}_m$ left the hub
+$\mathbf{x}_h$ at $t_e$, with $\lvert\mathbf{x}_m - \mathbf{x}_h(t_e)\rvert = c\,(t - t_e)$ (straight rays,
+`emission_azimuth`); its direction and the azimuth $\psi_r(t_e)$ are taken there. Order $h$ is
+received at $h\,\dot\psi_r(t_e)/2\pi$ Hz, the Doppler shift included.
+
+**Extraction.** Each rotor's orders are tracked on their own phase (`rotor_locked_tones`): the
+Vold–Kalman filter of §10 with $\Theta_{rh}(n) = e^{\,ih\psi_r(t_e(n))}$, every rotor's orders at
+once, so that rotors a fraction of a hertz apart share out the pressure by least squares. Orders
+whose frequencies come within `group_gap_hz` are solved together and the groups in turn, each on the
+pressure less the others' fit (block Gauss–Seidel, `sweeps` passes). The noise an order carries is
+$\sqrt{2G(f)B}$ (`tone_noise`): $G$ the residual's one-sided spectral density near $f$ and $B$ the
+envelope's bandwidth.
+
+**Depropagation.** Each sample is carried to the sphere radius $R_s$ in free field with its phase
+(`depropagate_tones`):
+
+$$
+A_s = A\,\frac{L}{R_s}\,10^{\alpha(f)\,\ell/20}\,\frac{1}{P(f)}, \qquad \ell = L\ (\text{lossless})\ \text{or}\ L - R_s,
+$$
+
+$L$ the distance at emission, $\alpha$ ISO 9613-1 at the tone's frequency, and $P$ the receiver's
+complex response re the direct wave: for a plate on the ground, the conjugate of
+$P_d + Q P_r$ (§4.5), because the ground models are $e^{-i\omega t}$ (`plate_tone_response`).
+
+**Gridding.** A node takes the adaptive Shepard weights $w_i$ of the broadband build (§6)
+(`grid_tones`). Its level is the energy mean $\sum w_i\lvert A_i\rvert^2/\sum w_i$, which a scatter of
+phases does not pull down; its phase is $\arg\sum w_iA_i$; and
+$\lvert\sum w_iA_i\rvert/\sqrt{\sum w_i\sum w_i\lvert A_i\rvert^2}$ (1 where the samples agree) says how far
+that phase can be trusted.
+
+**Clock offsets.** A run whose angles are late by $\delta$ against its sound hears each tone advanced
+by $k\delta$, $k = h\lvert\Omega_r\rvert$. Runs flown at one condition see one directivity, so their
+offsets maximize $\mathrm{Re}\sum A_a\,\overline{A_b}\,e^{-ik(\delta_a - \delta_b)}$ over pairs of runs,
+cells and tones (`clock_offsets`), one run held at 0 in each connected set. One offset common to every
+run stays unknown: it turns every rotor's azimuth by the same $\lvert\Omega\rvert\delta$, a common phase
+for rotors at one speed (`azimuth_label = relative_within_sense`).
+
+**Directivity fits.** A tone's directivity about its rotor's shaft is a sum of spherical harmonics,
+$D(\vartheta,\varphi) = \sum_{l\le L}\sum_{k=-l}^{l}c_{lk}Y_l^k(\vartheta,\varphi)$, $\vartheta$ the polar
+angle from the down axis and $\varphi$ the azimuth from the nose toward starboard (`axis_angles`,
+`harmonic_basis`). `fit_directivities` fits each tone to its samples by weighted least squares with
+the penalty $\lambda\,\overline{N}\,[l(l+1)]^2$ on $c_{lk}$, $\overline{N}$ the mean diagonal of the
+normal equations, refitting each run's $\delta$ between fits. Where one microphone hears several
+rotors at nearly one frequency, `fit_summed_directivities` fits every rotor's $D_r$ to the order's sum
+over rotors at each sample,
+
+$$
+z = \sum_r g_r\,D_r(\mathbf{n}_r)\,e^{\,i(h\psi_r + k_r\delta_\mathrm{run})},
+$$
+
+$g_r$ the propagation from the sphere to the microphone (as in depropagation, inverted). `azimuthal_orders` keeps only some
+$k$: a hover rotor's field turns with it, so its order $h$ is $k = h s_r$ alone [55], and an arm the
+blades pass over adds $k = h s_r \pm 1, \pm 2, \ldots$ (rotor–stator interaction with one stator).
+
+**Incoherent part.** What has no stable phase averages out of the fit but still reaches the
+microphones. Taken as independent between rotors (`fit_incoherent_directivities`),
+
+$$
+E\lvert z - \hat z\rvert^2 = \sum_r \lvert g_r\rvert^2 I_r(\vartheta_r),
+$$
+
+$I_r$ each rotor's mean-square amplitude at $R_s$, axisymmetric and piecewise linear in $\vartheta$ with
+coefficients $\ge 0$, fitted by non-negative least squares with a second-difference penalty and
+weights $1/\hat E^2$ refitted from the model (a random phasor's power is exponentially distributed,
+its spread its mean). `fitted_pt_sphere` writes $D_r$ and $I_r$ onto the grid (§7.6).
+
 ## 8. NORAH2 and AAM interchange
 
 **NORAH2 import** (`build_database_from_norah2`, `tools/norah2_to_nod.py`). A NORAH2 hemisphere (`.hem`)
@@ -1499,6 +1576,7 @@ same module until another module is named. A script is named by its path. Tests 
 | §7.4 Hover | `database.average_fore_and_aft`, `_fore_aft_measured`, `_synthesized_hover_sphere`, `_hover_source_index`, `_hover_flight_path_angles` | `test_hover_averaging.py`, `test_sphere_completion_integration.py`, `test_empirical_database_hover_selection.py`, `test_database_provenance.py`, `test_norah2_import.py` |
 | §7.5 Completion | `database.mirror_phi_to_upper_surface`, `_complete_sphere_with_coverage` | `test_mirror_phi.py`, `test_sphere_completion_integration.py` |
 | §7.6 Pure tones, multirotor conditions | `pt_database.build_pt_database`, `write_pt_database`, `measured_pt_sphere`, `fitted_pt_sphere`, `read_pt_sphere`, `_tones`, `_multirotor_axes`, `hover_induced_velocity`, `hover_shaft_rate`, `_sync_groups`, `_speed_reference`, `_merge_close_speeds`; `nod_database.validate_nod` (T and M rules) | `test_pt_database.py`, `test_nod_database.py` |
+| §7.7 Measured rotor tones | `rotor_tones.rotor_azimuth`, `emission_azimuth`, `received_shaft_rate`, `rotor_locked_tones`, `tone_noise`, `depropagate_tones`, `plate_tone_table`, `plate_tone_response`, `grid_tones`, `clock_offsets`, `axis_angles`, `harmonic_basis`, `fit_directivities`, `evaluate_directivity`, `fit_summed_directivities`, `fit_incoherent_directivities`, `evaluate_energy_directivity`, `energy_basis`; `vold_kalman_filter` (`phase`) | `test_rotor_tones.py`, `test_vold_kalman_filter.py` |
 | §8 NORAH2 | `norah2.build_database_from_norah2`, `norah2_levels_at_radius`, `norah2_speed_knots`, `humid_air_density`, `fill_norah2_empty_cells`, `_norah2_rotor_speed_fraction`, `write_norah2_hemisphere`, `write_norah2_levels`, `write_norah2_triangulation`, `geometry.norah2umapr` | `test_norah2_import.py`, `test_write_norah2_hemisphere.py` |
 | §8 Sphere to NORAH2 | `tools/sphere_to_norah2.py`: `sphere_to_norah2`, `sphere_levels_on_norah2_grid` | `test_sphere_to_norah2.py`, `test_cli_scripts.py` (smoke) |
 | §9 Metrics | `metrics.sound_exposure_level`, `ten_db_down_interval`, `noys`, `perceived_noise_level`, `tone_correction`, `effective_perceived_noise_level`, `mil_std_1474e_nondetectability_distance` | `test_sound_exposure_level.py`, `test_pnl_epnl.py`, `test_mil_std_nondetectability.py` |
@@ -1569,3 +1647,4 @@ same module until another module is named. A script is named by its path. Tests 
 52. Boulanger, P., Waters-Fuller, T., Attenborough, K., and Li, K. M., "Models and Measurements of Sound Propagation from a Point Source over Mixed Impedance Ground," *Journal of the Acoustical Society of America*, Vol. 102, No. 3, 1997, pp. 1432–1442. https://doi.org/10.1121/1.420101
 53. de Jong, B. A., Moerkerken, A., and van der Toorn, J. D., "Propagation of Sound over Grassland and over an Earth Barrier," *Journal of Sound and Vibration*, Vol. 86, No. 1, 1983, pp. 23–46. https://doi.org/10.1016/0022-460X(83)90941-0
 54. Lam, Y. W., and Monazzam, M. R., "On the Modeling of Sound Propagation over Multi-Impedance Discontinuities Using a Semiempirical Diffraction Formulation," *Journal of the Acoustical Society of America*, Vol. 120, No. 2, 2006, pp. 686–698. https://doi.org/10.1121/1.2216905
+55. Valente, V. T., "Multiple Rotor Acoustic Control," Ph.D. Dissertation, Department of Aerospace Engineering, The Pennsylvania State University, University Park, PA, 2024.
