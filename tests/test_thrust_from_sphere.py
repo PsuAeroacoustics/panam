@@ -108,3 +108,13 @@ def test_thrusts_that_agree_are_grouped_by_speed_from_the_slowest(tmp_path):
     thrusts = {fast: 0.01, slow: 0.01 * (1.0 + 1e-9)}
     assert _group_repeat_conditions([fast, slow], 0.0, thrusts) == [(fast,), (slow,)]
     assert len(_group_repeat_conditions([fast, slow], 60.0, thrusts)) == 1
+
+
+def test_a_hover_source_without_its_weight_is_refused(tmp_path):
+    """The synthesized hovers take the hover source's own C_T under thrust_from='sphere', so a
+    hover source that records no GROSS_WEIGHT is refused rather than written at NaN."""
+    folder = _folder(tmp_path / 's', ((40.0, 4000.0), (80.0, 4000.0)))
+    other = _folder(tmp_path / 'h', ((20.0, None),))
+    with pytest.raises(ValueError, match='GROSS_WEIGHT'):
+        fa.build_empirical_database(str(folder), str(tmp_path / 'x.nod'), load_factors=None,
+                                    thrust_from='sphere', hover_source=str(other / 'SWEEP000.nc'))

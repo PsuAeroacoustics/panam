@@ -1439,14 +1439,17 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     run_thrust = None
     if thrust_from == 'sphere':
         run_thrust = {}
-        for f in file_list:
+        # The hover source's synthesized hovers take its run's C_T too, so it must record one.
+        hover_file = [] if hover_source is None else [os.path.abspath(os.path.expanduser(hover_source))]
+        for f in list(file_list) + hover_file:
             run = read_run_metadata(f)
             ct = run['gross_weight_lb'] * POUND_FORCE_NEWTONS / (
                 run['air_density_kg_m3'] * main_rotor_area * main_rotor_tip_speed ** 2)
             if not np.isfinite(ct):
                 raise ValueError("{} records no GROSS_WEIGHT or AIR_DENSITY, which thrust_from='sphere' forms "
                                  'its thrust coefficient from'.format(os.path.basename(f)))
-            run_thrust[f] = float(ct)
+            if f in file_list:
+                run_thrust[f] = float(ct)
         # One fixed law only while every run has one C_T.
         fixed_load_factor = fixed_load_factor and np.ptp(list(run_thrust.values())) <= 1e-6 * max(run_thrust.values())
     _check_sphere_centers(file_list, ignore_sphere_center)
