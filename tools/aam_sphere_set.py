@@ -23,7 +23,7 @@ errors (exit status 1):
   index       one file name in two folders (merge them with --merge, which renumbers)
 
 warnings:
-  spacing     neighbouring speeds more than --speed-gap kt apart at one flight path
+  spacing     neighboring speeds more than --speed-gap kt apart at one flight path
               angle, or flight path angles more than --angle-gap deg apart at one speed
               (the spacing AAM interpolates across, Table 2-7, p.33)
   hemisphere  a lower hemisphere off level flight, where part of the ground lies above it
@@ -230,7 +230,7 @@ def check_set(spheres, speed_gap_kt=20.0, angle_gap_deg=5.0):
 
 
 def _spacing(spheres, vehicle, aam_type, speed_gap, angle_gap, add):
-    """Neighbouring conditions further apart than AAM interpolates across."""
+    """Neighboring conditions further apart than AAM interpolates across."""
     def groups(key, tolerance):
         out = []
         for sphere in sorted(spheres, key=key):
@@ -313,9 +313,9 @@ def main(argv=None):
     parser.add_argument('--merge', default=None, metavar='OUT',
                         help='copy the spheres into the new folder OUT, renumbering any whose name is taken')
     parser.add_argument('--speed-gap', type=float, default=20.0, metavar='KT',
-                        help='warn where neighbouring speeds are further apart (default %(default)g)')
+                        help='warn where neighboring speeds are further apart (default %(default)g)')
     parser.add_argument('--angle-gap', type=float, default=5.0, metavar='DEG',
-                        help='warn where neighbouring flight path angles are further apart (default %(default)g)')
+                        help='warn where neighboring flight path angles are further apart (default %(default)g)')
     args = parser.parse_args(argv)
     spheres = read_set(args.folders)
     if not spheres:

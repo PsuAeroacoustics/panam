@@ -213,7 +213,7 @@ adds rays that leave the source in different directions with a model of how cohe
 is between two directions theta degrees apart, in a band at f Hz
 (`directional_coherence`, whose docstring has it in full): a mean coherency
 exp(-(f theta / `coherence_scale_Hz_deg`)^`coherence_exponent`), with the main rotor's delay
-(its azimuth difference about the shaft over its rotation rate) in the bands centred up to
+(its azimuth difference about the shaft over its rotation rate) in the bands centered up to
 `coherence_rotation_limit_Hz`, and a spread about it from the coherence
 T + (1 - T) exp(-(f theta / `coherence_spread_scale_Hz_deg`)^`coherence_spread_exponent`), T the
 band's `coherence_tonal_fraction`. Every attribute is optional. A database that records any of
@@ -230,7 +230,7 @@ speed over radius otherwise.
 | --- | --- |
 | `main_rotor_blades` | f8, the main rotor's blade count |
 | `main_rotor_rotation` | `counterclockwise` or `clockwise`, seen from above |
-| `coherence_rotation_limit_Hz` | f8, the band centre up to which the rotor's delay holds (default 4.5 blade-passage frequencies) |
+| `coherence_rotation_limit_Hz` | f8, the band center up to which the rotor's delay holds (default 4.5 blade-passage frequencies) |
 | `coherence_scale_Hz_deg`, `coherence_exponent` | f8, the mean coherency's decay; together |
 | `coherence_spread_scale_Hz_deg`, `coherence_spread_exponent` | f8, the coherence's decay; together |
 | `coherence_tonal_fraction` | f8 array, T, one per band of the database's spectra, within [0, 1] |
@@ -299,7 +299,7 @@ source any run named in `wind_source`, and the first run's other text values) an
   but not the wind or `advance_ratio_air`, which describe a flight condition the hover is
   not.
 
-**Sphere labels.** A group built from a PSU-WOPWOP sphere also carries what it is labelled
+**Sphere labels.** A group built from a PSU-WOPWOP sphere also carries what it is labeled
 with, each only where the sphere gives it: `prediction_radius` (m), `floor_level` (dB, the
 level its empty cells were raised to), `speed_of_sound` (m s-1) and `nb_bandwidth` (Hz), each
 with its `<name>_units`, and the text attributes `sphere_type`, `content`, `source_tag` and,

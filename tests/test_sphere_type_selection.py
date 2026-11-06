@@ -1,7 +1,7 @@
 """Sphere-type selection: a database is built from spheres of one type.
 
 A PSU-WOPWOP results folder holds a sphere of each type it was asked for (BB,
-OB12, NB, PT) at every condition, each file labelled with a ``sphere_type``
+OB12, NB, PT) at every condition, each file labeled with a ``sphere_type``
 attribute as well as AAM's BB/NB/PT flags.  The builder takes the BB spheres by
 default and leaves the others out; a database never mixes types.
 """

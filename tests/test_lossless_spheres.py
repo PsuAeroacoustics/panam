@@ -65,7 +65,7 @@ def test_a_mix_is_refused(tmp_path):
 
 
 def test_lossless_spheres_of_another_source_can_be_declared(tmp_path):
-    # AAM's own spheres, say: lossless, but not labelled so.
+    # AAM's own spheres, say: lossless, but not labeled so.
     database = _build(_folder(tmp_path / 's', (False, False)), tmp_path / 'x.nod', sphere_levels_lossless=True)
     assert _flag(database) == 1
 

@@ -1031,17 +1031,17 @@ def _resolve_speed_reference(filenames, argument=None):
     if argument is not None and argument not in SPEED_REFERENCES:
         raise ValueError('speed_reference must be one of {} or None, not {!r}'.format(
             SPEED_REFERENCES, argument))
-    labelled = {}
+    labeled = {}
     for filename in filenames:
         with Dataset(filename, mode='r') as handle:
             if 'speed_reference' in handle.ncattrs():
-                labelled[filename] = str(handle.getncattr('speed_reference')).strip()
-    values = set(labelled.values())
+                labeled[filename] = str(handle.getncattr('speed_reference')).strip()
+    values = set(labeled.values())
     if not values <= set(SPEED_REFERENCES) or len(values) > 1:
         raise ValueError('the spheres give speed_reference {}; build from spheres of one'.format(sorted(values)))
-    if values and len(labelled) < len(filenames):
+    if values and len(labeled) < len(filenames):
         raise ValueError('{} of {} spheres give speed_reference; build from spheres that all do or '
-                         'none'.format(len(labelled), len(filenames)))
+                         'none'.format(len(labeled), len(filenames)))
     if values and argument is not None and argument not in values:
         raise ValueError('the spheres give speed_reference {!r}, but the build was asked for {!r}'.format(
             values.pop(), argument))

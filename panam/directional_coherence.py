@@ -5,7 +5,7 @@ source in different directions (its point-source urban model, ``niceops --buildi
 weights each pair's cross term by how coherent the source is between their two launch
 directions. For two directions theta degrees apart, in a band at f Hz:
 
-- the mean coherency is g = exp(-(f theta / scale)^exponent), times, in bands centred up to
+- the mean coherency is g = exp(-(f theta / scale)^exponent), times, in bands centered up to
   ``rotation_limit``, the delay a pattern turning with the main rotor puts between them:
   sense x (their azimuth difference about the shaft, wrapped to +-pi) / Omega;
 - the coherence is gamma^2 = T + (1 - T) exp(-(f theta / spread_scale)^spread_exponent),
@@ -52,7 +52,7 @@ class CoherenceRecord:
 
     Every field is optional (None, or empty). ``blades`` and ``rotation``
     ('counterclockwise' or 'clockwise', seen from above) give NICEOPS the main rotor's
-    delay, at the database's rotor speed; ``rotation_limit_hz`` the band centre up to which
+    delay, at the database's rotor speed; ``rotation_limit_hz`` the band center up to which
     it holds. The fits are the ones the record's own rotor implies: with the delay removed
     where it gives the blades and the rotation, without it otherwise; NICEOPS applies the
     rotor's delay from a record only. ``tonal_fraction`` is T per
@@ -85,7 +85,7 @@ def _check(record):
     fraction = np.asarray(record.tonal_fraction, dtype=float)
     bands = np.asarray(record.tonal_fraction_bands, dtype=float)
     if fraction.shape != bands.shape:
-        raise ValueError('tonal_fraction needs one band centre per value in tonal_fraction_bands')
+        raise ValueError('tonal_fraction needs one band center per value in tonal_fraction_bands')
     if fraction.size and not np.all((fraction >= 0) & (fraction <= 1)):
         raise ValueError('tonal_fraction is a fraction, within [0, 1]')
     if bands.size and not (np.all(bands > 0) and np.all(np.diff(bands) > 0)):
@@ -199,7 +199,7 @@ def band_coherency(signals, emission_time, fs, track_time, track_position, micro
         track_time, track_position: the source's track, s and (n, 3) in the microphones'
             frame (z up).
         microphones: (microphones, 3) positions.
-        bands: third-octave band centres, Hz.
+        bands: third-octave band centers, Hz.
         window: s of emission time per estimate; max_range: microphones farther from the
             source at a window's middle are left out of it (the frame's length unit).
         rotation: (Omega rad/s, sense), sense +1 counterclockwise seen from above along
@@ -238,13 +238,13 @@ def band_coherency(signals, emission_time, fs, track_time, track_position, micro
         nseg = 2 * int(round(0.5 * fs * np.clip(16.0 / fc, 1 / 16, 0.5)))
         if nseg >= signals.shape[1]:
             continue
-        spectra, centres, finite = _segments(signals, fs, nseg)
+        spectra, centers, finite = _segments(signals, fs, nseg)
         freqs = np.fft.rfftfreq(nseg, 1.0 / fs)
         inband = (freqs >= f1) & (freqs < f2)
         if not inband.any():
             continue
         X, fb = spectra[:, :, inband], freqs[inband]
-        times = emission_time[centres]
+        times = emission_time[centers]
         source = np.column_stack([np.interp(times, track_time, track_position[:, k]) for k in range(3)])
         d = microphones[:, None, :] - source[None, :, :]
         distance = np.linalg.norm(d, axis=2)
@@ -302,15 +302,15 @@ def fit_coherence(records, bands, rotation_rate=None, blades=None, rotation=None
     passes and hovers as two cases.
 
     With ``rotation_rate`` (rad/s), ``blades`` and ``rotation``, the records must have been
-    made with that rotation; the delay is then applied in the bands centred up to
+    made with that rotation; the delay is then applied in the bands centered up to
     ``rotation_harmonics`` blade-passage frequencies, and the record carries the rotor.
     Without them the fit is the one without the delay.
 
     - ``scale_hz_deg``, ``exponent``: least squares of rho - g(f theta) x (delay or zero
-      phase), f the band's centre: each case's mean over its pair-windows, averaged;
+      phase), f the band's center: each case's mean over its pair-windows, averaged;
     - ``tonal_fraction``: per band and case, the mean of |rho|^2 - 1 / n_eff over the pairs
       at least ``far`` degrees apart, held to [0, 1], averaged over the cases with 20 such
-      pairs or more; a band none has takes its neighbours' by interpolation (or NICEOPS's
+      pairs or more; a band none has takes its neighbors' by interpolation (or NICEOPS's
       default law where no band has any);
     - ``spread_scale_hz_deg``, ``spread_exponent``: least squares of T + (1 - T)
       exp(-(f theta / scale)^exponent) against the bins' mean |rho|^2 - 1 / n_eff, bins of
