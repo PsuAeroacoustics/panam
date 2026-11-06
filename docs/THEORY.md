@@ -513,7 +513,12 @@ steps, in this order:
    the mean power over the frames of a separate ambient recording (`ambient_pressure`; the 2017
    build uses the measured ambient run on the same layout), the mean over a quiet window of the
    run itself (`ambient_time_range`), or a low percentile of the run's own spectrogram
-   (`ambient_percentile`).
+   (`ambient_percentile`). With `gate_mode='band'` (FFT third-octave bands only) the ambient is
+   subtracted from every bin, and a band $b$ whose measured power at the microphone is below
+   $A_b\,10^{L_G/10}$ is missing at that sample (unknown, not zero), so the gridding leaves it out.
+   `gate_window_s` judges each sample on the band's mean power over that much reception time
+   around it instead of its own, so that a band near the threshold is not kept only when it
+   fluctuates upward.
 2. **Receiver response.** $P \leftarrow P\cdot10^{-T_\mathrm{board}/10}$ (§4.5), each bin divided
    by its band's value. A cap (`max_response_correction_db`) discards bands whose correction would
    exceed it.
@@ -827,6 +832,13 @@ by only one or two microphones, and their count is reported as `relaxed` in the 
 - **Kernel** (`kernel`, default `'shepard'`): `'biweight'` replaces the Shepard weight with
   $w_i = \left(1 - (d_{g,i}/R_n)^2\right)^2$, finite everywhere, which averages its neighborhood
   instead of nearly interpolating.
+
+The radius is the node's in every band. Where a band is missing at some of its samples (the SNR
+gate, the response and absorption caps), the node's weights are renormalized over the samples left,
+$P_n = \sum_{i \in V} w_i P_i / \sum_{i \in V} w_i$ over the valid set $V$. With
+`min_valid_weight` $m$ (default 0) the node is missing in that band when $\sum_{i \in V} w_i < m$:
+near the horizon the gated samples are the node's own, and the valid ones left are steeper and
+louder, so renormalizing onto them states a level no measurement at the node supports.
 
 The 2017 release's kernel, aspect and floor are in
 [`database_build.md`](database_build.md#the-2017-release-settings).

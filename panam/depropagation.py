@@ -26,7 +26,8 @@ from panam.spectra import (BASE2_BAND_CENTERS, dBAw, frame_length, P_REF, power_
                            _tone_aware_bands, _within_quarter_band)
 from panam.geometry import finite_difference_velocity, hemigen
 from panam.absorption import path_absorption_db, _check_band_method
-from panam.gridding import adaptive_idw_weights, ADAPTIVE_INTERPOLATION, shepIDW_apply, shepIDW_weights
+from panam.gridding import (adaptive_idw_weights, ADAPTIVE_INTERPOLATION, renormalized_apply, shepIDW_apply,
+                             shepIDW_weights)
 
 
 _AIR_RELATIVE_DOPPLER_RAYS = ('air_relative_doppler needs a ray model that returns emission_direction '
@@ -162,6 +163,8 @@ def depropagate_hemisphere(
         ambient_time=None,
         ambient_percentile=None,
         band_snr_gate_db=3.0,
+        gate_mode='bin',
+        gate_window_s=None,
         max_absorption_correction_db=None,
         max_response_correction_db=None,
         receiver_response_db=None,
@@ -247,6 +250,22 @@ def depropagate_hemisphere(
     usable signal), and the ambient power is subtracted from the bins that
     pass.
 
+    ``gate_mode='band'`` (FFT third-octave bands only) gates bands instead: the
+    ambient is subtracted from every bin, and a band whose measured power at the
+    microphone is less than ``band_snr_gate_db`` above the ambient's in that band
+    is missing at that sample -- not a valid measurement of the source, so
+    unknown, not zero.  Zeroing says "measured, no energy": where most of a
+    direction's samples are gated (near the horizon, at low frequencies), the
+    zeros become empty cells that the sphere writer and the averaging of repeat
+    runs leave out, and the samples that cleared the gate -- the upward noise
+    fluctuations -- are what remain.  Missing samples leave the gridding to
+    decide (``interpolation`` ``min_valid_weight``).  The default, ``'bin'``, is
+    the per-bin gate above.  Judged sample by sample, a band near the threshold
+    is kept only when its fluctuation is upward, so what is kept there is biased
+    high; ``gate_window_s`` (s) judges each sample on the band's mean power over
+    that much reception time around it instead, so a band is kept or rejected by
+    its expected level.
+
     An SNR gate alone is not sufficient, because it bounds the *relative*
     error of a bin but says nothing about how far the absorption correction
     extrapolates. At 10 kHz on a warm day alpha is around 90 dB/km, so an
@@ -315,8 +334,14 @@ def depropagate_hemisphere(
     resolution is the arc its analysis window smears over, the source's motion
     across the line of sight in ``window_time`` plus ``source_extent`` (a length,
     e.g. the rotor diameter), over the range.  Nodes beyond the cap are left NaN
-    and counted in ``out['interpolation']['gaps']``.  Without it the fixed
-    ``rmax`` gridding is unchanged.
+    and counted in ``out['interpolation']['gaps']``.  The radius is the node's in
+    every band, so where a band is missing at some of its samples (the SNR gate,
+    the response and absorption caps) the node is renormalized over the rest;
+    ``min_valid_weight`` (a share, 0 to 1) leaves the node missing in that band
+    instead when the samples left carry less of its weight
+    (:func:`gridding.renormalized_apply`).  Near the horizon the gated samples are
+    the node's own and the ones left steeper and louder.  Without ``interpolation``
+    the fixed ``rmax`` gridding is unchanged.
 
     Notes on conventions
     --------------------
@@ -653,6 +678,13 @@ def depropagate_hemisphere(
     narrowband_stride = int(narrowband_stride)
     if narrowband_stride < 1:
         raise ValueError('narrowband_stride must be >= 1')
+    if gate_mode not in ('bin', 'band'):
+        raise ValueError("gate_mode must be 'bin' or 'band', not {!r}".format(gate_mode))
+    if gate_mode == 'band' and (use_filter_bank or not third_octave):
+        raise ValueError("gate_mode 'band' gates third-octave bands formed from the FFT "
+                         "(third_octave=True, third_octave_method='fft')")
+    if gate_window_s is not None and (gate_mode != 'band' or not gate_window_s >= 0.0):
+        raise ValueError("gate_window_s (s, at least 0) goes with gate_mode 'band'")
 
     # Adaptive interpolation settings
     interp_settings = None
@@ -733,9 +765,11 @@ def depropagate_hemisphere(
             r_path = r_v
         # Ambient gating and background subtraction have to happen before
         # spreading and absorption depropagation, or an ambient-limited band
-        # gets amplified by both.
+        # gets amplified by both.  gate_mode 'band' only subtracts here; the
+        # gate is then a band's (missing below it), applied where bands form.
         if amb is not None:
-            lin = gate_ambient(lin, amb, band_snr_gate_db)
+            lin = (np.maximum(lin - amb[:, None], 0.0) if gate_mode == 'band'
+                   else gate_ambient(lin, amb, band_snr_gate_db))
 
         # The installation's response, as a power ratio to divide out.
         if response is not None:
@@ -909,6 +943,31 @@ def depropagate_hemisphere(
         delta_bins = None
         if absorption_profile is not None:
             delta_bins = _absorption_delta(f_sel, 'center', path_v, source_z_v, mic_z)
+        # gate_mode 'band': a band is missing at a sample whose measured band power is
+        # less than band_snr_gate_db above the ambient's in that band -- not a valid
+        # measurement of the source, so unknown rather than zero -- judged on the
+        # power at the microphone, before anything is subtracted or depropagated.
+        band_gated = None
+        if gate_mode == 'band' and amb_lin is not None:
+            lower_g, upper_g = third_octave_band_edges(band_centers)
+            in_band = (f_sel[None, :] >= lower_g[:, None]) & (f_sel[None, :] < upper_g[:, None])
+            raw_band = in_band.astype(float) @ psd_v_lin
+            if gate_window_s:
+                # Judged on the band's mean over gate_window_s of reception time
+                # around the sample, not the sample's own power: gating a noisy
+                # sample on its own value keeps it only when its fluctuation is
+                # upward, and so biases what is kept high near the threshold.
+                order = np.argsort(tobs_v)
+                t_sorted = tobs_v[order]
+                running = np.concatenate((np.zeros((raw_band.shape[0], 1)),
+                                          np.cumsum(raw_band[:, order], axis=1)), axis=1)
+                lo = np.searchsorted(t_sorted, t_sorted - 0.5 * gate_window_s, side='left')
+                hi = np.searchsorted(t_sorted, t_sorted + 0.5 * gate_window_s, side='right')
+                smoothed = np.empty_like(raw_band)
+                smoothed[:, order] = (running[:, hi] - running[:, lo]) / (hi - lo)
+                raw_band = smoothed
+            amb_band_power = in_band.astype(float) @ amb_lin
+            band_gated = raw_band < amb_band_power[:, None] * 10.0 ** (band_snr_gate_db / 10.0)
         psd_v_lin = _depropagate(psd_v_lin, amb_lin, spread_v, alpha_db_per_m, response_bins, path_v,
                                  delta_bins)
 
@@ -968,6 +1027,8 @@ def depropagate_hemisphere(
                 # where its Doppler-scaled edges leave the selected bins.
                 psd_kept = np.where(dropped, 0.0, psd_v_lin) if dropped.any() else psd_v_lin
                 missing = _bands_missing(dropped, f_sel, band_lower, band_upper, d_v)
+                if band_gated is not None:
+                    missing = missing | band_gated
                 if tone_aware:
                     powers, tonal, broadband = _tone_aware_bands(psd_kept, f_sel, band_lower, band_upper,
                                                                  doppler=d_v, parts=decompose_tonal)
@@ -992,6 +1053,8 @@ def depropagate_hemisphere(
                         # Keep shape/point counts consistent even if a band is empty at the
                         # selected frequency resolution/range. This band will evaluate to -inf dB.
                         band_power = np.zeros(tobs_v.size, dtype=float)
+                    if band_gated is not None:
+                        band_power = np.where(band_gated[ib], np.nan, band_power)
                     band_power_lists[ib].append(band_power)
 
     if len(oaspl_power_list) == 0:
@@ -1026,15 +1089,9 @@ def depropagate_hemisphere(
 
         def grid_power(power_pts):
             # Missing (NaN) samples carry no weight: a node's weights are renormalized
-            # over the samples it has, and a node with none left is a gap.
-            power_pts = np.asarray(power_pts, dtype=float)
-            missing = np.isnan(power_pts)
-            g = np.asarray(weights @ np.where(missing, 0.0, power_pts))
-            if missing.any():
-                kept = np.asarray(weights @ (~missing).astype(float))
-                reweight = np.asarray(weights @ missing.astype(float)) > 0.0
-                with np.errstate(invalid='ignore', divide='ignore'):
-                    g = np.where(reweight, np.where(kept > 0.0, g / kept, np.nan), g)
+            # over the samples it has, and a node with none left -- or, with
+            # min_valid_weight, too few -- is a gap (gridding.renormalized_apply).
+            g = renormalized_apply(weights, power_pts, interp_settings['min_valid_weight'])
             return np.where(node_gap, np.nan, g.reshape(ELV_GRID.shape))
 
         def count_nodes(flags):

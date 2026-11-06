@@ -258,3 +258,23 @@ def test_the_azimuth_stretch_divides_the_part_of_the_geodesic_distance_elevation
 def test_aspect_must_be_positive():
     with pytest.raises(ValueError, match='aspect'):
         adaptive_idw_weights([10.0], [0.0], [10.0, 20.0], [0.0, 0.0], [0, 1], [1.0, 1.0], aspect=0.0)
+
+
+def test_min_valid_weight_leaves_a_mostly_gated_node_missing():
+    # A node whose own samples are gated in a band is renormalized onto the few left, which
+    # state their level there; with min_valid_weight it is missing in that band instead.
+    from scipy import sparse
+    from panam.gridding import renormalized_apply
+    w = sparse.csr_matrix(np.array([[0.7, 0.2, 0.1, 0.0],     # node 0: mostly sample 0
+                                    [0.0, 0.0, 0.5, 0.5]]))    # node 1: samples 2 and 3
+    values = np.array([np.nan, np.nan, 100.0, 4.0])            # samples 0 and 1 gated
+    plain = renormalized_apply(w, values)
+    assert plain[0] == pytest.approx(100.0)                    # node 0 takes sample 2's level whole
+    assert plain[1] == pytest.approx(52.0)
+    ruled = renormalized_apply(w, values, min_valid_weight=0.5)
+    assert np.isnan(ruled[0])                                  # 0.1 of its weight left: missing
+    assert ruled[1] == pytest.approx(52.0)                     # nothing gated: unchanged
+    # the default is the plain renormalization, to the bit
+    full = np.array([1.0, 2.0, 3.0, 4.0])
+    assert np.array_equal(renormalized_apply(w, full, 0.5), renormalized_apply(w, full))
+    assert np.array_equal(renormalized_apply(w, values, 0.0), plain, equal_nan=True)

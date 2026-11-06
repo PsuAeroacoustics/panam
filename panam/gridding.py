@@ -270,9 +270,34 @@ def _sample_hemisphere_levels(hemisphere, mode, azi_q_deg, elv_q_deg, minimum_le
 #: 2017 B407 sphere this gives about 3-5 deg at the rim, where samples crowd, 10-20 deg at
 #: 10-40 deg below the horizon, and 30-50 deg overhead, where they are sparse and one window
 #: spans a wide arc; 60 deg is the most a node may borrow from before it counts as a gap.
+#: min_valid_weight: the share of a node's weight its valid samples must carry for the node to take a value in a
+#: field (a band) some of its samples are missing in (gated, capped); below it the node is missing there instead of
+#: renormalized onto the few valid samples left, which may lie far from it (see renormalized_apply).  0: no rule.
 ADAPTIVE_INTERPOLATION = dict(k=8, min_mics=3, kappa=1.3, resolution_factor=0.5, max_radius_deg=60.0,
                               relax_min_mics=True, kernel='shepard', aspect=1.0,
-                              shepard_floor=0.0, source_extent=0.0)
+                              shepard_floor=0.0, source_extent=0.0, min_valid_weight=0.0)
+
+
+def renormalized_apply(weights, values, min_valid_weight=0.0):
+    """Interpolate ``values`` (samples,) with ``weights`` (nodes x samples, rows summing to one), NaN samples left out.
+
+    A node's weights are renormalized over the samples it has; a node with none left is NaN.  With
+    ``min_valid_weight`` > 0 a node whose valid samples carry less than that share of its weight is NaN too: a field
+    gated at most of a node's own samples is not measured there, and renormalizing onto the rest would state the
+    level of the few samples that survived, often far from the node (near the horizon, steeper and louder ones).
+    At 0 (the default) the result is exactly the renormalized interpolation.
+    """
+    values = np.asarray(values, dtype=float)
+    missing = np.isnan(values)
+    g = np.asarray(weights @ np.where(missing, 0.0, values))
+    if missing.any():
+        kept = np.asarray(weights @ (~missing).astype(float))
+        reweight = np.asarray(weights @ missing.astype(float)) > 0.0
+        with np.errstate(invalid='ignore', divide='ignore'):
+            g = np.where(reweight, np.where(kept > 0.0, g / kept, np.nan), g)
+        if min_valid_weight > 0.0:
+            g = np.where(reweight & (kept < min_valid_weight), np.nan, g)
+    return g
 
 
 def adaptive_idw_weights(ielv, iazi, felv, fazi, mic, resolution_deg, *, k=8, min_mics=3, kappa=1.3,

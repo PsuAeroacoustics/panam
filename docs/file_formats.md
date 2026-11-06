@@ -566,7 +566,8 @@ drag = 0.82
 ```
 
 `ConfigParser` does not strip inline comments, so keep values bare. Comments go on lines of
-their own. A database build needs every key above. It forms the weight coefficient as
+their own. A database build needs every key above but the `[Tail Rotor]` section, which a vehicle
+without a tail rotor (a multirotor) leaves out; its entries are then None. It forms the weight coefficient as
 weight × 9.80665 / (density π radius² tip speed²). `tools/norah2_to_nod.py` needs only
 `[Main Rotor]` radius and tip speed, `[Vehicle]` weight and `[Atmosphere]` density.
 

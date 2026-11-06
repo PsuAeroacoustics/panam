@@ -154,8 +154,9 @@ def read_vehicle_data(directory_name, runs=None, speeds=None, flight_path_angles
 
     Returns: a 14-tuple (main rotor radius m, main rotor area m^2, main rotor tip speed m/s,
         main rotor blade count, tail rotor radius m, tail rotor area m^2, tail rotor tip speed
-        m/s, tail rotor blade count, advance ratios, weight coefficients, hover tip Mach numbers,
-        alphas deg, nondimensional flat-plate drag, speeds kt).  With an ``[Option]`` reflist
+        m/s, tail rotor blade count (the four None without a ``[Tail Rotor]`` section), advance
+        ratios, weight coefficients, hover tip Mach numbers, alphas deg, nondimensional
+        flat-plate drag, speeds kt).  With an ``[Option]`` reflist
         and ``runs``, the rotor radii, areas and tail tip speed are None and the main rotor tip
         speed is the mean of the reflist's airspeeds over its advance ratios.  Otherwise the
         advance ratios and alphas are None without ``speeds``.  Alphas are None without
@@ -167,7 +168,9 @@ def read_vehicle_data(directory_name, runs=None, speeds=None, flight_path_angles
     config = ConfigParser()
     config.read(abs_config)
     number_of_main_rotor_blades = float(config['Main Rotor']['blades'])
-    number_of_tail_rotor_blades = float(config['Tail Rotor']['blades'])
+    # A vehicle without a tail rotor (a multirotor) leaves the section out: its entries are None.
+    tail = config['Tail Rotor'] if config.has_section('Tail Rotor') else None
+    number_of_tail_rotor_blades = float(tail['blades']) if tail is not None else None
     if config.has_section('Option') and runs is not None:
         # read drag value and then open Excel reflist file for individual conditions
         nondimensional_flat_plate_drag = float(config['Option']['fbar'])
@@ -211,9 +214,9 @@ def read_vehicle_data(directory_name, runs=None, speeds=None, flight_path_angles
         main_rotor_radius = np.array(float(config['Main Rotor']['radius']))
         main_rotor_area = np.pi * main_rotor_radius ** 2
         main_rotor_tip_speed = np.array(float(config['Main Rotor']['tip speed']))
-        tail_rotor_radius = np.array(float(config['Tail Rotor']['radius']))
-        tail_rotor_area = np.pi * tail_rotor_radius ** 2
-        tail_rotor_tip_speed = np.array(float(config['Tail Rotor']['tip speed']))
+        tail_rotor_radius = np.array(float(tail['radius'])) if tail is not None else None
+        tail_rotor_area = np.pi * tail_rotor_radius ** 2 if tail is not None else None
+        tail_rotor_tip_speed = np.array(float(tail['tip speed'])) if tail is not None else None
         ambient_temperature = np.array(float(config['Atmosphere']['temperature']))
         speed_of_sound = 20.05 * np.sqrt(ambient_temperature)
         ambient_density = np.array(float(config['Atmosphere']['density']))
