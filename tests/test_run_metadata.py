@@ -372,3 +372,20 @@ def test_wind_carried_rays_need_a_wind(tmp_path):
         na.build_sphere(test, '289108', str(tmp_path / 'x.nc'), board_correction='flat', ray_model='bent')
     with pytest.raises(SystemExit):
         na_cli.main(['AS350B3', str(tmp_path / 'out'), '--root', str(tmp_path), '--ray-model', 'wind'])
+
+
+def test_a_gross_weight_in_newtons_reads_back_in_pounds(tmp_path):
+    """PSU-WOPWOP may write GROSS_WEIGHT in NEWTON; run metadata reads it in pounds, as the
+    vehicle reader converts it to newtons, so a C_T formed from either agrees."""
+    path = str(tmp_path / 'sphere.nc')
+    fa.write_aam_hemisphere_netcdf(path, _hemisphere(), mode='third_octave', run_metadata=METADATA)
+    with Dataset(path, 'a') as sphere:
+        sphere['GROSS_WEIGHT'][...] = 15591.0
+        sphere['GROSS_WEIGHT'].unit = 'NEWTON'
+    assert fa.read_run_metadata(path)['gross_weight_lb'] == pytest.approx(15591.0 / fa.POUND_FORCE_NEWTONS)
+    from panam.sphere_io import read_sphere_vehicle
+    assert read_sphere_vehicle(path)['gross_weight_newtons'] == pytest.approx(15591.0)
+    with Dataset(path, 'a') as sphere:
+        sphere['GROSS_WEIGHT'].unit = 'TONNES'
+    with pytest.raises(ValueError, match='GROSS_WEIGHT'):
+        fa.read_run_metadata(path)

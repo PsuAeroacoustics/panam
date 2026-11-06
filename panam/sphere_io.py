@@ -144,6 +144,14 @@ def _run_metadata_of(handle):
         if name in handle.variables:
             value = _filled(handle.variables[name])
             out[key] = float(np.ravel(value)[0])
+    # GROSS_WEIGHT is read back in pounds whatever unit the file names (PSU-WOPWOP may write
+    # NEWTON); an unknown unit is refused, as read_sphere_vehicle does.
+    if 'GROSS_WEIGHT' in handle.variables and 'unit' in handle.variables['GROSS_WEIGHT'].ncattrs():
+        unit = str(handle.variables['GROSS_WEIGHT'].getncattr('unit')).strip().upper()
+        to_pounds = {'POUNDS': 1.0, 'NEWTON': 1.0 / POUND_FORCE_NEWTONS}
+        if unit not in to_pounds:
+            raise ValueError('GROSS_WEIGHT in unit {!r}; expected one of {}'.format(unit, list(to_pounds)))
+        out['gross_weight_lb'] *= to_pounds[unit]
     for name in RUN_METADATA_ATTRIBUTES:
         if name in handle.ncattrs():
             out[name] = str(handle.getncattr(name))
