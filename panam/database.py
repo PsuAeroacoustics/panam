@@ -1551,6 +1551,28 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                 frequency if store_spectrum else None,
                 amplitude if store_spectrum else None, coverage, metadata))
 
+        def add_hover(phi, theta, radius, spla, eaa, flight_path_angle, load_factor, frequency, amplitude,
+                      coverage, metadata):
+            # A hover has no flight path: its levels are level.  A flight-path database
+            # files every group in the frame pitched by its flight path angle, and NICEOPS
+            # reads a slow state there in that frame, so a hover written at a nonzero
+            # angle is the level hover re-expressed in that frame (repitched by -angle);
+            # a level database, and the copy at 0, keep it as it is.
+            if database_frame == 'flight_path' and flight_path_angle != 0.0:
+                # phi and theta are per channel; the amplitude is over their grid.
+                phi_axis, theta_axis = np.unique(phi), np.unique(theta)
+                if amplitude.shape[:2] != (phi_axis.size, theta_axis.size):
+                    raise ValueError('a hover filed in the flight-path frame needs its sphere on a full '
+                                     '(phi, theta) grid; this one is {}'.format(amplitude.shape[:2]))
+                pitched, read = repitch_art_levels(amplitude, phi_axis, theta_axis, -flight_path_angle)
+                spla, eaa = spla_and_eaa_from_spectrum(pitched, frequency, distance, atmosphere,
+                                                       absorption_band_method)
+                if clamp_empty_directions:
+                    spla, eaa = _finite_sphere_levels(spla, eaa)
+                amplitude, coverage = pitched, (None if coverage is None else coverage & read)
+            add(phi, theta, radius, spla, eaa, 0, flight_path_angle, load_factor, frequency, amplitude,
+                coverage, metadata)
+
         for filenames in condition_files:
             # Load the sphere data (the energy average of repeat runs, when merged)
             (_, _, phi_list, theta_list, radius, _, SPLA, EAA, speed, flight_path_angle,
@@ -1591,8 +1613,8 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                 if flight_path_angle == own_angle:
                     continue
                 for load_factor in load_factors_to_write:
-                    add(phi_full, theta_full, radius, SPLA_full, EAA_full, 0, flight_path_angle,
-                        load_factor, frequency, amplitude_full, coverage_full, hover_metadata)
+                    add_hover(phi_full, theta_full, radius, SPLA_full, EAA_full, flight_path_angle,
+                              load_factor, frequency, amplitude_full, coverage_full, hover_metadata)
         else:
             min_speed_files = condition_files[_hover_source_index(source_conditions, level_flight_tolerance)]
 
@@ -1621,8 +1643,8 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
             hover_metadata = run_metadata(min_speed_files, 'synthesized_hover')
             for load_factor in load_factors_to_write:
                 for flight_path_angle in flight_path_angles:
-                    add(phi_full, theta_full, radius, SPLA_full, EAA_full, speed, flight_path_angle,
-                        load_factor, frequency, amplitude_full, coverage_full, hover_metadata)
+                    add_hover(phi_full, theta_full, radius, SPLA_full, EAA_full, flight_path_angle,
+                              load_factor, frequency, amplitude_full, coverage_full, hover_metadata)
 
         # Widen the flight-path-angle envelope: re-emit each near-level condition at
         # the extended angles, keeping its own airspeed and directivity.  Hover is

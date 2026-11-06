@@ -988,7 +988,10 @@ wrapped into $[-180^\circ, 180^\circ)$ (`mirror_phi_to_upper_surface`), and carr
 In a flight-path database the same operations act in the flight-path frame: the mirror plane
 contains the flight path, and a sphere copied to another flight path angle turns with the path
 (its directivity about the velocity is kept), where a level database keeps it about the
-horizon. A hover has no flight path, and NICEOPS reads it level either way.
+horizon. A hover has no flight path, so its levels are level: a flight-path database writes each
+hover copy at $\gamma \ne 0$ as the level hover re-expressed in the frame pitched by $\gamma$
+(`repitch_art_levels` by $-\gamma$), which NICEOPS, reading a slow state at $\gamma$ in that frame,
+hears level; a level database copies it as it is.
 A full sphere (stored from $-180^\circ$ to $180^\circ$, its $180^\circ$ row a copy of $-180^\circ$, which
 the builder drops) needs no completion: its upper half is measured, with coverage 1.
 Database format version 1 marks files with the corrected mirror (an earlier `-phi` mirror reflected

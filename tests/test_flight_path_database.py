@@ -115,6 +115,41 @@ def test_an_averaged_sphere_keeps_its_type_and_run(tmp_path):
         assert float(handle['AIR_DENSITY'][...]) == pytest.approx(1.07, rel=1e-6)
 
 
+def _hovers(database):
+    """{flight path angle: amplitude} of the hover groups (advance ratio 0), at load factor 1."""
+    out = {}
+    with Dataset(str(database)) as handle:
+        for group in handle.groups.values():
+            if float(group['advance_ratio'][0]) == 0.0:
+                grid = group if 'phi' in group.variables else handle      # a shared grid is at the root
+                out[round(float(group['flight_path_angle'][0]), 6)] = (np.array(group['amplitude'][:]),
+                                                                       np.array(grid['phi'][:]),
+                                                                       np.array(grid['theta'][:]))
+    return out
+
+
+def test_a_flight_path_database_files_its_hover_level_at_every_angle(tmp_path):
+    """A hover has no flight path.  The copies a database writes at other angles keep the
+    condition hull from clamping a slow, steep state, and a flight-path database files each
+    group in the frame pitched by its angle, so there the copy is the level hover re-expressed
+    in that frame: NICEOPS, reading a slow state at that angle in that frame, hears the hover
+    level.  A level database keeps every copy as it is."""
+    from panam.gridding import repitch_art_levels
+    directory = _folder(tmp_path / 'spheres')
+    flight = _hovers(_build(directory, tmp_path / 'flight.nod', database_frame='flight_path'))
+    level = _hovers(_build(directory, tmp_path / 'level.nod'))
+    assert 0.0 in flight and len(flight) > 1
+    hover, phi, theta = flight[0.0]
+    np.testing.assert_allclose(level[0.0][0], hover, atol=1e-9)
+    for angle, (amplitude, _, _) in flight.items():
+        np.testing.assert_allclose(level[angle][0], hover, atol=1e-9)      # level: copied as it is
+        if angle == 0.0:
+            continue
+        expected, _ = repitch_art_levels(hover, np.unique(phi), np.unique(theta), -angle)
+        np.testing.assert_allclose(amplitude, expected, atol=1e-6)
+        assert np.abs(amplitude - hover)[np.isfinite(hover)].max() > 0.1   # the pitch shows
+
+
 # ---- NICEOPS: the same footprint from either frame --------------------------------------------
 
 NICEOPS, NICEOPS_SKIP = sphere_helpers.niceops()
