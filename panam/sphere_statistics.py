@@ -185,6 +185,11 @@ def average_spheres(paths_or_datasets, min_runs=1, missing='no_data', speed_tole
     if len(kinds) > 1:
         raise ValueError('sphere_type differs between the spheres: {}'.format(
             ', '.join('{} ({})'.format(s['name'], s.get('sphere_type', 'BB')) for s in spheres)))
+    if kinds == {'PT'}:
+        # A PT sphere's tones carry phases (PHASE), which an energy average neither
+        # keeps nor can form: its result would be a PT sphere without them.
+        raise ValueError('{} are PT spheres, whose tone phases an energy average does not keep; '
+                         'average band spheres only'.format(', '.join(s['name'] for s in spheres)))
     dopplers = [s['doppler_shift_removed'] for s in spheres]
     if len({0 if d is None else d for d in dopplers}) > 1:
         raise ValueError('DOPPLER_SHIFT_REMOVED differs between the spheres: {}'.format(

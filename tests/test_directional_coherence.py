@@ -174,3 +174,28 @@ def test_cases_count_equally_however_many_pairs_they_hold():
     assert dc.fit_coherence([large, small], bands).scale_hz_deg == pytest.approx(by_case.scale_hz_deg, rel=1e-6)
     # Pooled, the large case outweighs the small one.
     assert abs(dc.fit_coherence(pooled, bands).scale_hz_deg - 600.0) < abs(by_case.scale_hz_deg - 600.0)
+
+
+def test_a_microphone_with_no_energy_in_a_band_makes_no_coherency():
+    """A finite signal can hold no energy in a band: its pairs have no coherency to measure,
+    and are left out rather than recorded as NaN for the fit to take."""
+    signals, time, fs, track_time, track, microphones = _turning_pattern(sense=1)
+    signals = np.array(signals, dtype=float)
+    signals[0] = 0.0
+    records = dc.band_coherency(signals, time, fs, track_time, track, microphones, [1000.0, 2000.0], window=2.0,
+                                rotation=(400.0, 1))
+    assert records['rho'].size > 0
+    for name in ('rho', 'rho_turned', 'delay', 'coherent'):
+        assert np.all(np.isfinite(records[name])), name
+
+
+def test_validate_nod_reports_a_tonal_fraction_that_is_not_numbers(tmp_path):
+    spheres = write_sphere_directory(tmp_path / 'spheres', [(minimal_hemisphere(), 60.0, 0.0),
+                                                            (minimal_hemisphere(), 80.0, -6.0)])
+    database = tmp_path / 'database.nod'
+    fa.build_empirical_database(str(spheres), str(database))
+    with Dataset(database, 'a') as nc:
+        nc.coherence_scale_Hz_deg = 800.0
+        nc.coherence_exponent = 1.5
+        nc.coherence_tonal_fraction = 'half'
+    assert [v.rule for v in nd.validate_nod(database)] == ['R7']

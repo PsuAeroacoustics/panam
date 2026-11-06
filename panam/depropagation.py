@@ -986,6 +986,10 @@ def depropagate_hemisphere(
                     out[:, order] = (total[:, hi] - total[:, lo]) / (hi - lo)
                     return out
                 raw_band, raw_overall = windowed(raw_band), windowed(raw_overall)
+                if amb_band_power.shape[1] > 1:
+                    # Doppler-scaled edges move from sample to sample, and with them the
+                    # ambient's band power: judged over the same window as the measured one.
+                    amb_band_power = windowed(amb_band_power)
             threshold = 10.0 ** (band_snr_gate_db / 10.0)
             band_gated = raw_band < amb_band_power * threshold
             overall_gated = raw_overall < amb_overall * threshold

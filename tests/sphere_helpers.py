@@ -37,7 +37,7 @@ def niceops():
         return None, 'niceops not configured (local_paths: niceops)'
     try:
         version = subprocess.run([path, '--version'], capture_output=True, text=True, timeout=60).stdout.strip()
-    except OSError as error:
+    except (OSError, subprocess.TimeoutExpired) as error:
         return None, 'niceops {} does not run: {}'.format(path, error)
     if os.environ.get('PANAM_NICEOPS_ANY_VERSION') or version.split('-')[0].startswith(NICEOPS_PIN[:7]):
         return path, ''

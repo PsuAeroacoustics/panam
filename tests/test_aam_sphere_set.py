@@ -151,3 +151,24 @@ def test_the_command_line_fails_on_an_error(tmp_path, capsys):
     _write(directory / 'VEHIC010.nc', speed=80.0, xyz=(-12.4, 0.0, 7.0))
     assert tool.main([str(directory)]) == 1
     assert 'center' in capsys.readouterr().out
+
+
+def test_pt_spheres_whose_tones_move_with_the_rotor_are_one_grid(tmp_path):
+    """A PT set needs its tone count alike, not its frequencies: the tones move with the rotor
+    speed from one condition to the next."""
+    directory = _clean_set(tmp_path / 'set')
+    pt = tool.read_set([directory])
+    count = next(s for s in pt if s.aam_type == 'PT').frequency.size
+    _write(directory / 'VEHIC010.nc', 'PT', speed=40.0, frequency=np.arange(1.0, count + 1.0) * 23.0)
+    assert 'grid' not in _rules(tool.check_set(tool.read_set([directory])), 'error')
+
+
+def test_merge_takes_the_lowest_free_index(tmp_path):
+    """Two folders each holding VEHIC999: the second copy takes a free index below it, rather
+    than finding none above 999."""
+    first, second = tmp_path / 'first', tmp_path / 'second'
+    for folder, speed in ((first, 60.0), (second, 100.0)):
+        folder.mkdir()
+        _write(folder / 'VEHIC999.nc', speed=speed)
+    merged = tool.merge(tool.read_set([first, second]), tmp_path / 'merged')
+    assert sorted(m[1].name for m in merged) == ['VEHIC000.nc', 'VEHIC999.nc']

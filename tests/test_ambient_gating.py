@@ -506,3 +506,22 @@ def test_band_gate_judges_a_band_on_its_doppler_scaled_edges():
         k = int(np.argmin(np.abs(np.asarray(out['band_centers_hz']) - 200.0)))
         measured[mode] = int(np.isfinite(out['bands_db'][..., k]).sum())
     assert measured['bin'] > 0 and measured['band'] >= 0.5 * measured['bin']
+
+
+def test_a_windowed_band_gate_with_doppler_windows_the_ambient_too():
+    """With remove_doppler each sample's band edges move, and the ambient's band power with
+    them: an ambient hum near a band edge is in a band at some samples and out at others.
+    gate_window_s judges the measured power over a window, and so the ambient's too; a run
+    of that ambient alone then leaves every band unknown."""
+    hum = lambda t: 0.5 * P_REF * np.sin(2 * np.pi * 240.0 * t)
+    scenario = _scenario(noise_only=True, seed=21)
+    nt = scenario['track_time'].size
+    scenario['track_position'] = np.column_stack([np.linspace(-600.0, 600.0, nt), np.zeros(nt),
+                                                  300.0 * np.ones(nt)])
+    scenario['track_velocity'] = np.tile([1200.0 / scenario['track_time'][-1], 0.0, 0.0], (nt, 1))
+    scenario['pressure'] = scenario['pressure'] + hum(scenario['time'])[None, :]
+    ambient = _scenario(noise_only=True, seed=22)
+    ambient = ambient['pressure'] + hum(ambient['time'])[None, :]
+    out = _run(scenario, ambient_pressure=ambient, band_snr_gate_db=3.0, gate_mode='band', remove_doppler=True,
+               gate_window_s=1.0, window_time=0.5)
+    assert np.isnan(out['third_octave']['bands_db']).all()

@@ -262,9 +262,16 @@ def band_coherency(signals, emission_time, fs, track_time, track_position, micro
                 continue
             a, c = np.triu_indices(len(keep), 1)
             a, c = keep[a], keep[c]
-            cross = np.conj(X[a][:, segs, :]) * X[c][:, segs, :]
             pa, pc = auto[a][:, segs], auto[c][:, segs]
             norm = np.sqrt(pa.sum(axis=1) * pc.sum(axis=1))
+            # A finite signal can still hold no energy in the band: such a pair has no
+            # coherency to measure (its norm is zero), and is left out, not made NaN.
+            usable = np.isfinite(norm) & (norm > 0.0)
+            if not usable.all():
+                a, c, pa, pc, norm = a[usable], c[usable], pa[usable], pc[usable], norm[usable]
+            if len(a) == 0:
+                continue
+            cross = np.conj(X[a][:, segs, :]) * X[c][:, segs, :]
             scale = np.sqrt(pa * pc)
             weight = scale / np.maximum(scale.sum(axis=1, keepdims=True), 1e-300)
             separation = np.degrees(np.arccos(np.clip(np.sum(u[a][:, segs] * u[c][:, segs], axis=2), -1, 1)))

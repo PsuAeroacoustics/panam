@@ -223,8 +223,13 @@ def _check_coherence(database, root, attributes, names, shared, violate):
         if (a in attributes) != (b in attributes):
             violate('R7', None, f'{a} and {b} come together')
     if 'coherence_tonal_fraction' in attributes:
-        fraction = np.asarray(attributes['coherence_tonal_fraction'], dtype=float).reshape(-1)
-        if not np.all((fraction >= 0) & (fraction <= 1)):
+        try:
+            fraction = np.asarray(attributes['coherence_tonal_fraction'], dtype=float).reshape(-1)
+        except (TypeError, ValueError):
+            fraction = None
+            violate('R7', None, 'coherence_tonal_fraction is {!r}, not numbers'.format(
+                attributes['coherence_tonal_fraction']))
+        if fraction is not None and not np.all((fraction >= 0) & (fraction <= 1)):
             violate('R7', None, 'coherence_tonal_fraction is not within [0, 1]')
         if shared and 'frequency' in root:
             bands = np.size(root['frequency'])
@@ -232,7 +237,7 @@ def _check_coherence(database, root, attributes, names, shared, violate):
             bands = database.groups[names[0]].variables['frequency'].size
         else:
             bands = 0
-        if fraction.size != bands:
+        if fraction is not None and fraction.size != bands:
             violate('R7', None, f'coherence_tonal_fraction holds {fraction.size} values for {bands} bands')
 
 

@@ -184,7 +184,10 @@ def check_set(spheres, speed_gap_kt=20.0, angle_gap_deg=5.0):
             for sphere in group[1:]:
                 for what in ('radius', 'phi', 'theta', 'frequency'):
                     a, b = np.atleast_1d(getattr(first, what)), np.atleast_1d(getattr(sphere, what))
-                    if a.shape != b.shape or not np.allclose(a, b, rtol=1e-6, atol=1e-6):
+                    # A PT sphere's tones move with the rotor speed: AAM needs their count alike,
+                    # not their frequencies.
+                    count_only = aam_type == 'PT' and what == 'frequency'
+                    if a.shape != b.shape or (not count_only and not np.allclose(a, b, rtol=1e-6, atol=1e-6)):
                         add('error', 'grid', '{} and {}: {} {} spheres differ in {}'.format(
                             first.path.name, sphere.path.name, vehicle, aam_type, what.upper()), first, sphere)
                         break
@@ -284,24 +287,28 @@ def deck_values(spheres):
 
 def merge(spheres, out):
     """Copy ``spheres`` into the new folder ``out``, giving a file whose name is taken the
-    vehicle's next free index.  Returns [(source, destination)]."""
+    vehicle's lowest free index.  Every name is settled before the folder is made, so a set
+    with no free index left writes nothing.  Returns [(source, destination)]."""
     out = Path(out)
     if out.exists():
         raise ValueError('{} exists'.format(out))
-    out.mkdir(parents=True)
     used = defaultdict(set)
     for sphere in spheres:
         used[sphere.vehicle].add(sphere.index)
-    taken, copies = set(), []
+    taken, plan = set(), []
     for sphere in spheres:
         name = sphere.path.name
         if name in taken:
-            index = max(used[sphere.vehicle]) + 1
-            if index > 999:
+            index = next((i for i in range(1000) if i not in used[sphere.vehicle]), None)
+            if index is None:
                 raise ValueError('{}: no free index left'.format(sphere.vehicle))
             used[sphere.vehicle].add(index)
             name = '{}{:03d}.nc'.format(sphere.vehicle, index)
         taken.add(name)
+        plan.append((sphere, name))
+    out.mkdir(parents=True)
+    copies = []
+    for sphere, name in plan:
         shutil.copy2(sphere.path, out / name)
         copies.append((sphere.path, out / name))
     return copies
