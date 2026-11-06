@@ -138,8 +138,10 @@ def _descent_track(path, speed_kt=80.0, angle_deg=-6.0, seconds=60.0, step=0.5):
 
 def _footprint(database, track, cwd, name):
     output = cwd / (name + '.csv')
+    # The run takes the database's vehicle (no -v), whose build humidity NICEOPS does not assume.
     result = subprocess.run([NICEOPS, '-d', str(database), '-t', str(track), '-o', str(output),
-                             '--speed_reference', 'ground', '--no-ground_effect', '-l', name + '.log'],
+                             '--speed_reference', 'ground', '--no-ground_effect', '--humidity', '70',
+                             '-l', name + '.log'],
                             cwd=cwd, capture_output=True, text=True, timeout=600)
     assert result.returncode == 0, (cwd / (name + '.log')).read_text()[-2000:] + result.stderr
     # A header line, the x row, the y row, then the levels (x across, y down).
