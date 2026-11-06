@@ -97,3 +97,14 @@ def test_a_sphere_without_its_weight_is_refused(tmp_path):
 def test_the_cli_takes_thrust_from(tmp_path):
     args = script.parse_arguments([str(tmp_path), str(tmp_path / 'db.nod'), '--thrust-from', 'sphere'])
     assert script.build_options(args)['thrust_from'] == 'sphere'
+
+
+def test_thrusts_that_agree_are_grouped_by_speed_from_the_slowest(tmp_path):
+    """C_T that agree to 1e-6 are one thrust, and a group is then speeds from its slowest:
+    a faster sphere at a C_T a hair below a slower one's is not merged into it."""
+    from panam.database import _group_repeat_conditions
+    folder = _folder(tmp_path / 's', ((100.0, 4000.0), (50.0, 4000.0)))
+    fast, slow = str(folder / 'SWEEP000.nc'), str(folder / 'SWEEP001.nc')
+    thrusts = {fast: 0.01, slow: 0.01 * (1.0 + 1e-9)}
+    assert _group_repeat_conditions([fast, slow], 0.0, thrusts) == [(fast,), (slow,)]
+    assert len(_group_repeat_conditions([fast, slow], 60.0, thrusts)) == 1

@@ -810,14 +810,21 @@ def _group_repeat_conditions(filenames, speed_tolerance_knots=0.0, thrust_coeffi
     """
     conditions = [_sphere_condition(f) for f in filenames]
     ct = [None if thrust_coefficients is None else thrust_coefficients[f] for f in filenames]
+    # C_T that agree to 1e-6 are one thrust: cluster them first, so that the sort below is by
+    # angle, thrust and then speed, and a group's first file is its slowest.
+    cluster = [0] * len(filenames)
+    if thrust_coefficients is not None:
+        by_ct = sorted(range(len(filenames)), key=lambda i: ct[i])
+        for previous, i in zip(by_ct, by_ct[1:]):
+            cluster[i] = cluster[previous] + (abs(ct[i] - ct[previous]) > 1e-6 * abs(ct[i]))
     order = sorted(range(len(filenames)),
-                   key=lambda i: (round(conditions[i][1], 9), 0.0 if ct[i] is None else ct[i], conditions[i][0], i))
+                   key=lambda i: (round(conditions[i][1], 9), cluster[i], conditions[i][0], i))
     groups = []
     for i in order:
         speed, angle = conditions[i]
         if groups:
             first_speed, first_angle = conditions[groups[-1][0]]
-            same_thrust = ct[i] is None or abs(ct[i] - ct[groups[-1][0]]) <= 1e-6 * abs(ct[i])
+            same_thrust = cluster[i] == cluster[groups[-1][0]]
             if round(angle, 9) == round(first_angle, 9) and same_thrust and (
                     round(speed, 9) == round(first_speed, 9)
                     or speed - first_speed <= speed_tolerance_knots):
