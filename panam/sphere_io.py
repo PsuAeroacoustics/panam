@@ -13,6 +13,8 @@ all.
 """
 
 import contextlib
+import copy
+import functools
 import os
 import shutil
 from typing import Optional
@@ -57,7 +59,7 @@ def load_nc_sphere(filename):
     def read(variable):
         return np.ma.filled(np.ma.asarray(variable[:], dtype=float), np.nan)
 
-    with Dataset(filename, mode='r') as file_handle:
+    with read_dataset(filename) as file_handle:
         # Noise spheres sometimes contain NaN, which netCDF4's masking compares
         # against; they are handled downstream, so do not warn about them.
         with np.errstate(invalid='ignore'):
@@ -87,6 +89,67 @@ WIND_SPEED_UNITS = {'kt': KNOT_MPS, 'm/s': 1.0, 'ft/s': 0.3048, 'mph': 0.44704}
 #: Where a run's wind at the aircraft came from.  Several may be joined with '+', e.g.
 #: 'lidar+balloon' for a profile pieced together from both.
 WIND_SOURCES = ('lidar', 'balloon', 'station', 'none')
+
+
+#: While a database build runs (:func:`per_file_cache`), the metadata each sphere file was asked
+#: for, keyed by reader, path and arguments; None otherwise.
+_FILE_CACHE = None
+
+
+@contextlib.contextmanager
+def per_file_cache():
+    """Within it, each :func:`_per_file` reader opens a file once for a question asked again.
+
+    A build asks every sphere its type, vehicle, labels, condition and flags several times
+    over, and each was a netCDF open (about 20 a file), which tells on cloud storage.  The
+    cache lives only as long as the outermost block, in which the spheres are not written;
+    nested blocks share it.
+    """
+    global _FILE_CACHE
+    outer = _FILE_CACHE is not None
+    if not outer:
+        _FILE_CACHE = {}
+    try:
+        yield
+    finally:
+        if not outer:
+            cache, _FILE_CACHE = _FILE_CACHE, None
+            for key, value in cache.items():
+                if key[0] == _DATASET and value.isopen():
+                    value.close()
+
+
+_DATASET = 'dataset'
+
+
+@contextlib.contextmanager
+def read_dataset(filename):
+    """``Dataset(filename, mode='r')``, one handle per file inside :func:`per_file_cache` (closed
+    when it ends), so the metadata readers of a build open each sphere once; outside one, opened
+    and closed here."""
+    if _FILE_CACHE is None or not isinstance(filename, (str, os.PathLike)):
+        with Dataset(filename, mode='r') as handle:
+            yield handle
+        return
+    key = (_DATASET, os.path.abspath(os.fspath(filename)))
+    handle = _FILE_CACHE.get(key)
+    if handle is None or not handle.isopen():
+        handle = _FILE_CACHE[key] = Dataset(filename, mode='r')
+    yield handle
+
+
+def _per_file(reader):
+    """``reader(filename, ...)`` remembered inside :func:`per_file_cache`, each call given its
+    own copy (callers may change what they get).  Outside one, or for an open dataset, it reads."""
+    @functools.wraps(reader)
+    def cached(filename, *args, **kwargs):
+        if _FILE_CACHE is None or not isinstance(filename, (str, os.PathLike)):
+            return reader(filename, *args, **kwargs)
+        key = (reader.__qualname__, os.path.abspath(os.fspath(filename)), args, tuple(sorted(kwargs.items())))
+        if key not in _FILE_CACHE:
+            _FILE_CACHE[key] = reader(filename, *args, **kwargs)
+        return copy.deepcopy(_FILE_CACHE[key])
+    return cached
 
 
 #: Pounds-force to newtons.
@@ -125,6 +188,7 @@ def _empty_run_metadata():
     return out
 
 
+@_per_file
 def read_run_metadata(filename):
     """The per-run metadata a sphere file carries (see :data:`RUN_METADATA_VARIABLES`).
 
@@ -132,7 +196,7 @@ def read_run_metadata(filename):
     these existed), the text attributes ('' when absent) and ``azimuth_reference`` (None
     when absent).
     """
-    with Dataset(filename, mode='r') as handle:
+    with read_dataset(filename) as handle:
         return _run_metadata_of(handle)
 
 
@@ -160,9 +224,10 @@ def _run_metadata_of(handle):
     return out
 
 
+@_per_file
 def _read_azimuth_reference(filename):
     """The azimuth_reference a sphere file carries, or None if it has none."""
-    with Dataset(filename, mode='r') as handle:
+    with read_dataset(filename) as handle:
         return _azimuth_reference_of(handle, filename)
 
 
@@ -177,6 +242,7 @@ def _azimuth_reference_of(handle, name):
     return value
 
 
+@_per_file
 def read_sphere_frame(filename):
     """The sphere_frame a sphere file records (one of :data:`geometry.SPHERE_FRAMES`), or None.
 
@@ -184,7 +250,7 @@ def read_sphere_frame(filename):
     existed is level, and AAM's own are in the flight-path frame of a deck flown
     with AOA 0.
     """
-    with Dataset(filename, mode='r') as handle:
+    with read_dataset(filename) as handle:
         return _sphere_frame_of(handle, filename)
 
 
@@ -210,6 +276,7 @@ SPHERE_VEHICLE_FIELDS = (
 )
 
 
+@_per_file
 def read_sphere_vehicle(filename):
     """The vehicle fields of a sphere file (:data:`SPHERE_VEHICLE_FIELDS`) in SI units.
 
@@ -219,7 +286,7 @@ def read_sphere_vehicle(filename):
     refused.
     """
     out = {}
-    with Dataset(filename, mode='r') as handle:
+    with read_dataset(filename) as handle:
         for name, key, units in SPHERE_VEHICLE_FIELDS:
             out[key] = float('nan')
             if name not in handle.variables:
@@ -242,6 +309,7 @@ SPHERE_TYPES = ('BB', 'OB12', 'NB', 'PT')
 _AAM_TYPE_FLAG = {'BB': 'BB', 'OB12': 'NB', 'NB': 'NB', 'PT': 'PT'}
 
 
+@_per_file
 def read_sphere_type(filename):
     """The type of a sphere file, one of :data:`SPHERE_TYPES`.
 
@@ -250,7 +318,7 @@ def read_sphere_type(filename):
     every sphere PANAM measured is.  Refused: an unknown attribute, more than
     one flag set, and an attribute its flags contradict.
     """
-    with Dataset(filename, mode='r') as handle:
+    with read_dataset(filename) as handle:
         return _sphere_type_of(handle, filename)
 
 
@@ -271,13 +339,14 @@ def _sphere_type_of(handle, filename):
     return kind
 
 
+@_per_file
 def _read_doppler_shift_removed(filename):
     """The DOPPLER_SHIFT_REMOVED flag a sphere file carries, or None if it has none.
 
     0 means received-frame spheres (the normal case), 1 de-Dopplerized
     (stationary-frame) ones.  :func:`write_aam_hemisphere_netcdf` writes it.
     """
-    with Dataset(filename, mode='r') as file_handle:
+    with read_dataset(filename) as file_handle:
         return _doppler_shift_removed_of(file_handle, filename)
 
 

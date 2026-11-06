@@ -14,6 +14,7 @@ Databases are metric; sphere files keep ft and knots.
 
 import fnmatch
 import json
+import functools
 import os
 import warnings
 from collections import namedtuple
@@ -31,7 +32,8 @@ from panam.geometry import art2umapr, SPHERE_FRAMES
 from panam.gridding import repitch_art_levels
 from panam.absorption import _band_attenuation_db
 from panam import sphere_statistics
-from panam.sphere_io import (AZIMUTH_REFERENCES, KNOT_MPS, load_nc_sphere, mask_missing_levels,
+from panam.sphere_io import (AZIMUTH_REFERENCES, KNOT_MPS, _per_file, per_file_cache, read_dataset, load_nc_sphere,
+                             mask_missing_levels,
                              POUND_FORCE_NEWTONS, read_run_metadata, read_sphere_frame, _atomic_output,
                              _read_azimuth_reference, _read_doppler_shift_removed, _read_scalar,
                              read_sphere_type, SPHERE_TYPES, read_sphere_vehicle, SPHERE_VEHICLE_FIELDS)
@@ -791,9 +793,10 @@ def _select_sphere_type(file_list, sphere_type, named):
     return used
 
 
+@_per_file
 def _sphere_condition(filename):
     """The (SPEED kt, FLIGHT_PATH_ANGLE deg) a sphere file records, NaN where unreadable."""
-    with Dataset(filename, mode='r') as handle:
+    with read_dataset(filename) as handle:
         return _read_scalar(handle, 'SPEED'), _read_scalar(handle, 'FLIGHT_PATH_ANGLE')
 
 
@@ -848,6 +851,7 @@ FLOOR_MASKINGS = ('auto', 'minimum', 'off')
 _FLOOR_TOLERANCE_DB = 1e-4
 
 
+@_per_file
 def sphere_floor_db(filename, floor_masking='auto'):
     """The level, dB, a sphere's empty cells were raised to, or None to mask none.
 
@@ -858,7 +862,7 @@ def sphere_floor_db(filename, floor_masking='auto'):
         raise ValueError('floor_masking must be one of {}, not {!r}'.format(FLOOR_MASKINGS, floor_masking))
     if floor_masking == 'off':
         return None
-    with Dataset(filename, mode='r') as handle:
+    with read_dataset(filename) as handle:
         if floor_masking == 'auto':
             return float(handle.getncattr('floor_level_dB')) if 'floor_level_dB' in handle.ncattrs() else None
         levels = mask_missing_levels(np.ma.filled(np.ma.asarray(handle['AMPLITUDE'][...], dtype=float), np.nan))
@@ -950,6 +954,7 @@ def group_run_metadata(filename, main_rotor_area=None, main_rotor_tip_speed=None
     return out
 
 
+@_per_file
 def sphere_labels(filename):
     """The labels of :data:`SPHERE_LABEL_NUMBERS` and :data:`SPHERE_LABEL_TEXT` sphere
     ``filename`` gives (PSU-WOPWOP's), as {name: value}; a label it lacks is left out.
@@ -959,7 +964,7 @@ def sphere_labels(filename):
     ``nb_bandwidth_Hz``; sphere_center_xyz_ft is XYZ as text where it is not zero.
     """
     out = {}
-    with Dataset(filename, mode='r') as handle:
+    with read_dataset(filename) as handle:
         if 'PREDICTION_RADIUS' in handle.variables:
             variable = handle.variables['PREDICTION_RADIUS']
             unit = str(getattr(variable, 'unit', 'METER')).strip().upper()
@@ -992,7 +997,7 @@ def _check_sphere_centers(file_list, ignore_sphere_center):
     if ignore_sphere_center:
         return
     for filename in file_list:
-        with Dataset(filename, mode='r') as handle:
+        with read_dataset(filename) as handle:
             center = _sphere_center_ft(handle)
         if center is not None and np.any(center != 0.0):
             raise ValueError('{} is centered at XYZ = {} ft, but a database holds one source at the '
@@ -1019,8 +1024,9 @@ def _resolve_lossless(filenames, argument=None):
     return bool(argument) or all(wopwop)
 
 
+@_per_file
 def _air_density_source(filename):
-    with Dataset(filename, mode='r') as handle:
+    with read_dataset(filename) as handle:
         return str(getattr(handle, 'air_density_source', '')).strip().lower()
 
 
@@ -1033,7 +1039,7 @@ def _resolve_speed_reference(filenames, argument=None):
             SPEED_REFERENCES, argument))
     labeled = {}
     for filename in filenames:
-        with Dataset(filename, mode='r') as handle:
+        with read_dataset(filename) as handle:
             if 'speed_reference' in handle.ncattrs():
                 labeled[filename] = str(handle.getncattr('speed_reference')).strip()
     values = set(labeled.values())
@@ -1180,6 +1186,16 @@ def _resolve_azimuth_reference(filenames, argument=None):
 
 # ---- Building a database ----
 
+def _in_per_file_cache(build):
+    """``build`` run inside :func:`sphere_io.per_file_cache`: each sphere is asked its metadata once."""
+    @functools.wraps(build)
+    def cached(*args, **kwargs):
+        with per_file_cache():
+            return build(*args, **kwargs)
+    return cached
+
+
+@_in_per_file_cache
 def build_empirical_database(directory_name, database_filename, load_factors=np.linspace(0.7, 2.3, 5), infreqs=None,
                              distance=1000,
                              atmosphere=Atmosphere(temperature=293.15, pressure=101.325,
