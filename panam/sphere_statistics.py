@@ -234,14 +234,17 @@ def average_spheres(paths_or_datasets, min_runs=1, missing='no_data', speed_tole
 
 
 def _mean_run_metadata(runs):
-    """The runs' metadata as one: the mean of each number (NaN if any run's is),
-    the first run's text; None for no runs."""
+    """The runs' metadata as one: the mean of each number (NaN if any run's is, and for
+    the winds if the runs declare different wind units or reference directions, as
+    database._merged_run_metadata), the first run's text; None for no runs."""
     if not runs:
         return None
     out = dict(runs[0])
     out.pop('azimuth_reference', None)          # written as its own attribute
     for _, _, key in RUN_METADATA_VARIABLES:
         out[key] = float(np.mean([run[key] for run in runs]))
+    if any(len({run.get(key, '') for run in runs}) > 1 for key in ('wind_units', 'wind_reference_direction')):
+        out.update(wind_along_track=float('nan'), wind_cross_track=float('nan'))
     return out
 
 
