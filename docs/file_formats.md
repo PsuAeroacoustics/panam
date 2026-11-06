@@ -5,7 +5,8 @@ This page describes the files PANAM writes and reads at its boundaries:
 - the AAM source sphere (`.nc`), which `build_sphere` writes and `build_empirical_database`
   reads;
 - the NICEOPS database (`.nod`), which `build_empirical_database` and
-  `build_database_from_norah2` write;
+  `build_database_from_norah2` write (format 1), and `pt_database.build_pt_database` and
+  `write_pt_database` (format 2, pure tones);
 - `vehicle.cfg`, which the user writes (`example_data/vehicle.cfg` is an example);
 - the Mid-State UAS run file (`.nc`), which `uas_midstate` reads.
 
@@ -252,8 +253,8 @@ Root, beside the format 1 fields:
 - `sphere_frame = flight_path`: the spheres are not pitched to level, which would re-interpolate
   the phase.
 - `sphere_levels_lossless = 1`: PSU-WOPWOP applies no absorption, so NICEOPS absorbs from the hub.
-- `band_content = broadband`: the band spectrum leaves the tones out. With no broadband spheres
-  it is empty (-inf, `dBA` -inf, `EAA` 0, coverage 0), and the tones are the whole level.
+- `band_content = broadband`: the band spectrum leaves the tones out. PANAM writes it empty
+  (-inf, `dBA` -inf, `EAA` 0, coverage 0), so the tones are the whole level.
 - `condition_axes = helicopter` (or `multirotor`, below); `thrust_coefficient_density = run`: C_T
   is W / (rho pi R^2 V_tip^2) at each condition's own `AIR_DENSITY`, the weight given to the build.
 
@@ -292,8 +293,9 @@ one in these ways:
 - its shaft orders are given, and a cell the measurement never reached is -inf (NICEOPS fills it
   from its neighbors), not a floor level;
 - `azimuth` is 0: the phase is the tone's with the rotor's blades at their reference (a prop along
-  its arm, say), and there is no `phase_reference_time_s` and no `sync_group` unless one is given;
-- `phase_reference` is `rotor_azimuth` where the rotor's angle was logged;
+  its arm, say); `phase_reference_time_s` is NaN, and there is no `sync_group` unless one is given;
+- `phase_reference` is `rotor_azimuth` where the rotor's angle was logged, else `relative` or `none`;
+- an order with no value anywhere is left out, and `speed_reference` defaults to `ground`;
 - the root's `azimuth_label`, when present, says what the azimuths are relative to.
   `relative_within_sense` means that one timing offset common to every run is unknown. It turns
   every rotor's blade angle by the same amount in that rotor's own sense of rotation. For rotors at
@@ -313,14 +315,15 @@ the coefficients are kept beside it as provenance:
   the sphere radius is the sum over l <= `degree` and k = -l..l, in that order, of c_lk Y_l^k
   (orthonormal complex spherical harmonics; polar angle from the down axis, azimuth from the nose
   toward starboard). `directivity_real` carries `degree` and, when the fit restricted them, the
-  azimuthal orders fitted for each shaft order (`azimuthal_orders`, `"2: 1,2,3; 4: 3,4,5"`);
+  azimuthal orders fitted for each shaft order (`azimuthal_orders`, `"2: 1,2,3; 4: 3,4,5"`), or
+  `model`, a description, when the fit's model was given as text;
 - `shaft_rate` is the speed the fit refers to. With the root's `tone_speed_exponent` (nu, given to
   `write_pt_database`), NICEOPS scales each tone's pressure by the run's shaft rate over it to the
   power nu where a run turns the rotor at another speed (nu = 3: the level as rpm to the sixth).
-
-- `incoherent_amplitude` (`PHI`, `THETA`, `tone`), dB re 20 uPa rms at the sphere radius; where
-  the fit is zero, 100 dB below the tone's peak (quiet, which NICEOPS keeps, not -inf, which it
-  fills from the neighboring cells), and -inf throughout for an order without one: what the rotor radiates at that shaft order without a stable phase
+- `incoherent_amplitude` (`PHI`, `THETA`, `tone`), dB re 20 µPa rms at the sphere radius: what
+  the rotor radiates at that shaft order without a stable phase. Anywhere more than 100 dB below
+  the tone's peak (where the fit is zero, say) it is 100 dB below it: quiet, which NICEOPS keeps,
+  not -inf, which it fills from the neighboring cells. An order without one is -inf throughout
   (`rotor_tones.fit_incoherent_directivities`, fitted to what the phase-locked fit leaves). NICEOPS
   adds it in energy, each source alone. The fit beside it is `incoherent_energy` (`tone`, `knot`),
   Pa^2: the mean-square peak pressure, piecewise linear in the polar angle from the down axis
@@ -610,7 +613,7 @@ along runway 16/34 toward 156 deg true, `y` lateral to the left, `z` up; root at
 | `/` (attributes) | `Conventions`, `dataset`, `format_version`, `title`, `id`, `run_id`, `summary`, `source`, `processing_level`, `date`, `date_created`, `vehicle`, `array_configuration`, `array_table`, `status`, `status_reason`, `time_origin`, `time_coverage_start`, `time_coverage_end`, `time_coverage_duration`, `time_coverage_resolution`, `geospatial_*`, `site_origin_lat`, `site_origin_lon`, `site_origin_height`, `site_origin_source`, `horizontal_datum`, `vertical_datum`, `geoid_offset`, `frame`, `array_frame`, `array_frame_x_bearing_deg`, `runlog_*`, `daq_hour_offset`, `daq_hour_offset_source`, `daq_offset_s`, `daq_offset_uncertainty_s`, `daq_offset_method`, `clock_check_*`, `clock_note` (where a run's clocks disagree), `history`, `institution`, `project`, `creator_name`, `license`, `acknowledgment`, `references`, `keywords` | `status`: `flight`, `flight_no_log` (a flight recording with no flight log; `status_reason` says why) or `ambient`. The run log's row: `runlog_matched` (1 if the run log has a row for the recording), its text as written (`runlog_type`, `runlog_altitude_text`, `runlog_speed_text`, `runlog_comments`, `runlog_onboard`, `runlog_ulog`; '' where blank) and the values it lists as numbers (`runlog_heights_ft`, `runlog_speeds` in `runlog_speed_unit`) |
 | `/acoustic` | attributes `sample_rate`, `source_file`, `source_sha256`, `source_start_time` (the recorder's own label); `counts` (mic, sample) int32; `step` (mic) Pa; `mic_id`, `channel`, `mic_mount`, `survey_point`, `notes` (mic) strings; `mic_quality` (mic) flags; `mic_east`, `mic_north`, `mic_up`, `mic_ground_up`, `mic_height_above_ground`, `mic_lat`, `mic_lon`, `mic_x`, `mic_y`, `mic_z`, `mic_pole_offset_east`, `mic_pole_offset_north`, `mic_pole_offset_uncertainty` (mic) | **pressure (Pa) = counts × step**; sample `i` at `i / sample_rate` s. A pole's position already includes its measured offset from its plate (`mic_pole_offset_*`, NaN for plates and undetermined offsets). The counts are the recorder's integers, so the original float32 export is reproduced to within its own rounding. `mic_id` is the physical microphone (from its calibration step), `channel` the recorder's channel name. `mic_quality` (CF `flag_masks`): `clipped` (1), `dropout` (2), `in_downwash` (4), `position_uncertain` (8), `runlog_note` (16); `RunFile.quality` names the flags set |
 | `/vehicle/<topic>` | `time` and fields | absent when no flight log matched the recording. PX4 at native rates: `position` (east, north, up m; lat, lon, alt AMSL), `velocity` (m/s), `attitude` (`q_w`, `q_x`, `q_y`, `q_z`: body FRD to NED; roll, pitch, yaw rad), `angular_rate` (`roll_rate`, `pitch_rate`, `yaw_rate` about the FRD axes), `motor_command` (`command` (motor, time): 0-1, or PWM µs on the X8), `thrust_setpoint` (`thrust_x`, `thrust_y`, `thrust_z`), `battery`, `barometer`, `status` (`arming_state`, `nav_state`: CF flags with the PX4 release's meanings), `land_detector` (`landed`: flag, `airborne` 0, `landed` 1); positions and velocities also in the array frame (`x`, `y`, `z`) |
-| `/rotors/motor<k>` | `time`, `speed` (rad/s, negative clockwise seen from above), `angle` (rad, where logged) | onboard logger, PX4 motor numbering; group attributes: `clock` (its correction), `source`, `motor_order`, `blades`, `angle_definition`, `correction` (where logs were relabeled), `prop_aligned_angle` (in motor order, the reported angle with the prop along its arm, where measured) and `prop_aligned_angle_source`. `RunFile.rotors` gives each motor these attributes, with its own `prop_aligned_angle` entry |
+| `/rotors/motor<k>` | `time`, `speed` (rad/s, negative clockwise seen from above), `angle` (rad, where logged) | onboard logger, PX4 motor numbering; attributes of `/rotors`: `clock` (its correction), `source`, `motor_order`, `blades`, `angle_definition`, `correction` (where logs were relabeled), `prop_aligned_angle` (in motor order, the reported angle with the prop along its arm, where measured) and `prop_aligned_angle_source`. `RunFile.rotors` gives each motor these attributes, with its own `prop_aligned_angle` entry |
 | `/air_data/<instrument>_<n>` | `time` and the aircraft-mounted instrument's fields, which measure the air moving past the aircraft: `airspeed_measured` (m/s, uncalibrated), `airflow_angle` (deg, the direction the air comes from relative to the instrument's bow, positive to starboard), `temperature`, `relative_humidity`, `air_pressure`, `heading_magnetic`, `pitch`, `roll`; a 3-D sonic's `air_velocity_u/v/w`, `airspeed_3d`, `airspeed_2d`, `airflow_direction` | attributes give the instrument, mounting and source file; a `comment` counts rows merged at repeated times |
 | `/air_data/airspeed` | `time`, `airspeed_measured`, `airspeed` (calibrated), `airspeed_forward`, `airspeed_right`, `air_velocity_east/north`, `wind_east/north`, `wind_x/y`, `wind_speed`, `wind_from_direction` | derived: the wind is the ground velocity less the air velocity; attributes give the calibration C (measured = C x true), its flights, validation and caveats |
 | `/segments` | per segment: `kind` (pass, climb, descent, hover, vertical climb, vertical descent), `start`, `end`, `duration`, `direction` (+x/-x), `heading_deg`, `ground_speed`, `vertical_speed`, `flight_path_angle_deg`, `height` (above takeoff), `x_start`, `x_end`, `y_mean`, `yaw_mean_deg`, `yaw_rate_deg_s`, `airspeed`, `wind_along`, `wind_cross`, `nominal_height_ft`, `nominal_speed` (in the run log's unit, its `units`; both NaN where none matched); per segment and microphone: `closest_distance`, `closest_time`, `closest_arrival` (`channel` and `mic_id` name the microphones) | steady portions only (attribute `method`); also tabulated in the dataset's `segments.csv`. Kept to the recording (vehicle times from `time_origin` to its last sample); `RunFile.segment_samples` still clips a segment that runs past either end and refuses one wholly outside. A run without a flight log has the group with no segments |

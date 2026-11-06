@@ -3,7 +3,9 @@
 PANAM is a Python toolkit for rotorcraft aeroacoustics. It turns flight-test
 microphone recordings into source noise spheres, builds the sphere databases
 (`.nod`) that the NICEOPS footprint model reads, converts NORAH2 hemispheres
-to the same format, and plots spheres, footprints and spectrograms.
+to the same format, and plots spheres, footprints and spectrograms. It also
+builds pure-tone databases with phase, one source per rotor, from PSU-WOPWOP
+predictions or from rotor tones measured against each rotor's logged angle.
 
 ## Install
 
@@ -186,7 +188,8 @@ cloud drive.
   database from the 2017 flight test, step by step, and the table of the 2017
   release settings.
 - [`docs/file_formats.md`](docs/file_formats.md): the sphere netCDF file, the
-  `.nod` database contract and `vehicle.cfg`.
+  `.nod` database contract (format 1, and format 2's per-rotor pure tones),
+  `vehicle.cfg` and the Mid-State UAS run file.
 - [`docs/norah2_import.md`](docs/norah2_import.md): converting NORAH2
   hemispheres to a NICEOPS database.
 - [`docs/DEVELOPING.md`](docs/DEVELOPING.md): for developers: code layout,

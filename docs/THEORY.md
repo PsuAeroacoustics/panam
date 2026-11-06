@@ -1319,7 +1319,9 @@ These are in PANAM but not used to build the databases.
   $$
 
   The function returns $y_j = 2a_j$, so $\lvert y_j\rvert$ is the order's amplitude and its
-  waveform is $\mathrm{Re}(y_j\Theta_j)$. `use_coupling=False` drops the cross-order terms.
+  waveform is $\mathrm{Re}(y_j\Theta_j)$. `use_coupling=False` drops the cross-order terms. With
+  `phase` given (an order locked to a measured shaft angle), $\Theta_j(n) = e^{i\phi_j(n)}$ and `freq`
+  may be None.
 - **Doppler-predicted order tracks** (`panam/order_tracking.py`). A shaft turning at $f(t)$
   revolutions per second emits order $k$ at $k f(t_e)$. A fixed microphone at $\mathbf{x}_m$
   hears it at $t_r = t_e + \lvert\mathbf{x}_m - \mathbf{x}_s(t_e)\rvert/c$, with $t_e(t_r)$ solved
@@ -1484,7 +1486,7 @@ same module until another module is named. A script is named by its path. Tests 
 | §7.3 Load factor | `database.add_sphere_group` | `test_load_factor_scaling.py`, `test_write_aam_hemisphere_netcdf.py` |
 | §7.4 Hover | `database.average_fore_and_aft`, `_fore_aft_measured`, `_synthesized_hover_sphere`, `_hover_source_index`, `_hover_flight_path_angles` | `test_hover_averaging.py`, `test_sphere_completion_integration.py`, `test_empirical_database_hover_selection.py`, `test_database_provenance.py`, `test_norah2_import.py` |
 | §7.5 Completion | `database.mirror_phi_to_upper_surface`, `_complete_sphere_with_coverage` | `test_mirror_phi.py`, `test_sphere_completion_integration.py` |
-| §7.6 Pure tones, multirotor conditions | `pt_database.build_pt_database`, `read_pt_sphere`, `_tones`, `_multirotor_axes`, `hover_induced_velocity`, `hover_shaft_rate`, `_sync_groups`, `_speed_reference`, `_merge_close_speeds`; `nod_database.validate_nod` (T and M rules) | `test_pt_database.py`, `test_nod_database.py` |
+| §7.6 Pure tones, multirotor conditions | `pt_database.build_pt_database`, `write_pt_database`, `measured_pt_sphere`, `fitted_pt_sphere`, `read_pt_sphere`, `_tones`, `_multirotor_axes`, `hover_induced_velocity`, `hover_shaft_rate`, `_sync_groups`, `_speed_reference`, `_merge_close_speeds`; `nod_database.validate_nod` (T and M rules) | `test_pt_database.py`, `test_nod_database.py` |
 | §8 NORAH2 | `norah2.build_database_from_norah2`, `norah2_levels_at_radius`, `norah2_speed_knots`, `humid_air_density`, `fill_norah2_empty_cells`, `_norah2_rotor_speed_fraction`, `write_norah2_hemisphere`, `write_norah2_levels`, `write_norah2_triangulation`, `geometry.norah2umapr` | `test_norah2_import.py`, `test_write_norah2_hemisphere.py` |
 | §8 Sphere to NORAH2 | `tools/sphere_to_norah2.py`: `sphere_to_norah2`, `sphere_levels_on_norah2_grid` | `test_sphere_to_norah2.py`, `test_cli_scripts.py` (smoke) |
 | §9 Metrics | `metrics.sound_exposure_level`, `ten_db_down_interval`, `noys`, `perceived_noise_level`, `tone_correction`, `effective_perceived_noise_level`, `mil_std_1474e_nondetectability_distance` | `test_sound_exposure_level.py`, `test_pnl_epnl.py`, `test_mil_std_nondetectability.py` |
