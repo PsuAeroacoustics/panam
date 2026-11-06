@@ -8,7 +8,8 @@ Usage:  python build_pt_database.py SPHERE [SPHERE ...] -o DATABASE.nod --weight
 
 One PT sphere per rotor (its source_tag) per flight condition, in the flight-path frame. The spheres carry no
 weight, so the vehicle's weight (N) is required for the thrust-coefficient axis. Rotors predicted at one shaft rate
-form one coherent group unless --sync-groups none. A multirotor database (--condition-axes multirotor) is indexed
+and one phase reference time form one coherent group (a rotor without a phase reference time runs free) unless
+--sync-groups none. A multirotor database (--condition-axes multirotor) is indexed
 by momentum similarity and needs the vehicle's rotor count. See pt_database.build_pt_database and docs/file_formats.md,
 "Format 2: pure-tone sources".
 """
@@ -24,7 +25,8 @@ def parse_arguments(argv=None):
     parser.add_argument('-o', '--output', required=True, help='output NICEOPS database (.nod); replaced if it exists')
     parser.add_argument('--weight-newtons', type=float, required=True, help="the vehicle's weight, N (required)")
     parser.add_argument('--sync-groups', choices=('shared_rate', 'none'), default='shared_rate',
-                        help='shared_rate (default): rotors on one shaft rate add coherently; none: all free-running')
+                        help='shared_rate (default): rotors predicted at one shaft rate and one phase reference time add '
+                             'coherently, and a rotor without one runs free; none: all free-running')
     parser.add_argument('--main-rotor', default=None,
                         help='the source tag whose rotor sets the advance ratio and C_T (default: the largest rotor '
                              'radius, the first tag on a tie)')

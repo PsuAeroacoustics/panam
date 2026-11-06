@@ -675,7 +675,8 @@ def fit_summed_directivities(problems, *, degree=4, smoothing=1e-2, max_offset_s
             each source's azimuthal order k, or a set of them (or None for all).  A rotor in hover radiates a field
             that turns with it and does not otherwise change: its tone of shaft order m is a function of the polar
             angle about the shaft times exp(i k azimuth), k = +-m by its sense of rotation (Valente, Greenwood and
-            Johnson's phase compensation).  Only the harmonics Y_l^k of those k are then fitted, and the fit
+            Johnson's phase compensation; V. T. Valente, "Multiple Rotor Acoustic Control," Ph.D. dissertation,
+            The Pennsylvania State University, 2024).  Only the harmonics Y_l^k of those k are then fitted, and the fit
             predicts every azimuth from the ones measured.  A disturbance fixed in the vehicle under the rotor (an
             arm the blades pass over) adds the orders k +- 1, k +- 2, ... (rotor-stator interaction with one
             stator), weakening away from k: a set of a few orders about k.

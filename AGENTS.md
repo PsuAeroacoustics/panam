@@ -67,9 +67,11 @@ Library modules, in `panam/`:
   `tone_noise`, `fit_directivities` and `evaluate_directivity` (smooth complex directivities about each shaft, in
   spherical harmonics, with run offsets fitted against them), `fit_summed_directivities` (each rotor's
   directivity fitted to the order's sum over all rotors: separates rotors a fraction of a hertz apart; with
-  `azimuthal_orders`, a hover rotor's field that turns with it, which predicts azimuths never measured).
+  `azimuthal_orders`, a hover rotor's field that turns with it, which predicts azimuths never measured),
+  `fit_incoherent_directivities`, `evaluate_energy_directivity` and `energy_basis` (each rotor's energy
+  directivity of what has no stable phase).
 - `pt_database.py`: format 2 databases of pure tones from PSU-WOPWOP's per-rotor PT spheres
-  (`build_pt_database`, CLI `tools/build_pt_database.py`): one source per rotor, phase locked to its
+  (`build_pt_database`, `read_pt_sphere`, CLI `tools/build_pt_database.py`): one source per rotor, phase locked to its
   azimuth, nothing done that would damage phase; helicopter or multirotor (momentum-similarity)
   condition axes; `write_pt_database`, `measured_pt_sphere` and `fitted_pt_sphere` take sources built
   in memory (measured ones, or fitted directivities evaluated on the grid).

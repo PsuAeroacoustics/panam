@@ -88,6 +88,8 @@ The library's modules, in `panam/`:
 | `refracted_rays.py` | The ray-model interface for depropagation: `straight_ray_model`, `uniform_wind_ray_model`, and `external_ray_model`, which runs NICEOPS's `niceops_ray_geometry` |
 | `vold_kalman_filter.py` | The multi-shaft Vold-Kalman order-tracking filter |
 | `sphere_statistics.py` | Energy averaging of repeat-run spheres (`average_spheres`, `write_averaged_sphere`) and band-by-band sphere comparison (`compare_spheres`, `plot_sphere_difference`), and the per-node sample statistics of a depropagated sphere (`node_statistics`, `node_statistics_variables`) |
+| `rotor_tones.py` | Measured rotor tones: each rotor's shaft orders phase-locked to its logged angle (`rotor_azimuth`, `rotor_locked_tones`), depropagated with their phase (`depropagate_tones`, `plate_tone_table`, `plate_tone_response`), gridded (`grid_tones`), each run's clock (`clock_offsets`), and smooth directivities in spherical harmonics about each shaft (`fit_directivities`, `fit_summed_directivities` with `azimuthal_orders`, `fit_incoherent_directivities`) |
+| `pt_database.py` | Format 2 databases of pure tones (`build_pt_database` from PSU-WOPWOP's per-rotor PT spheres; `write_pt_database` with `measured_pt_sphere` or `fitted_pt_sphere` for measured sources); the format is in [`file_formats.md`](file_formats.md) |
 | `nod_database.py` | Reading NICEOPS databases: `load_nod`, `validate_nod` (the rules of [file_formats.md](file_formats.md#checking-a-database)), `compare_databases`, `to_frame` (needs pandas), and the inspection behind `tools/nod_tool.py`: `summarize_condition`, `select_condition`, `plot_condition` (Lambert map of dBA, EAA, a band or coverage), `plot_envelope` |
 | `synthetic_flyover.py` | Synthetic recordings of a straight, level pass of a source of known directivity (`synthesize_pass`), its true level at the reference radius (`source_level_db`), and the recovered-minus-true Lambert map (`plot_level_difference`). The golden results and the depropagation tutorial use it |
 | `synthesis.py` | Forward synthesis of microphone band-level histories from a hemisphere (`synthesize_band_histories`, the inverse of `depropagate_hemisphere`), the Doppler band shift (`doppler_shift_band_power`), measured band histories (`measured_band_histories`), and the leave-microphones-out check of the gridding settings (`leave_mics_out`, `residual_statistics`) |
@@ -101,7 +103,7 @@ The library's modules, in `panam/`:
 | `data/` | `mil_std_1474e_table_c1_full.csv`, the MIL-STD-1474E Table C-1 (`metrics.MIL_STD_1474E_TABLE_C1_FILE`) that `load_mil_std_1474e_table_c1` reads |
 
 The tools, in `tools/`: `noise_abatement_2017.py` (the main pipeline),
-`build_empirical_database.py`, `norah2_to_nod.py`, `sphere_to_norah2.py`,
+`build_empirical_database.py`, `build_pt_database.py`, `norah2_to_nod.py`, `sphere_to_norah2.py`,
 `compare_databases.py`, `nod_tool.py`, `array_planner.py`, `sphere_diff.py`,
 and the plotting scripts `nc_lambert_ea.py`, `plot_projection.py`,
 `fried_egg_plot.py`, `spectrogram_plot.py`, `atmomap.py`, `ega_plot.py` and

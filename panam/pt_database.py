@@ -6,8 +6,8 @@ phase reference time.  :func:`build_pt_database` turns a set of them into a data
 tone (``docs/file_formats.md``, "Format 2: pure-tone sources"):
 
 - every condition group (one per flight condition: SPEED, FLIGHT_PATH_ANGLE) keeps the format 1 fields NICEOPS
-  requires, with a band spectrum that holds the broadband only (``band_content = broadband``): empty (no energy)
-  unless broadband spheres of the same conditions are given;
+  requires, with a band spectrum that holds the broadband only (``band_content = broadband``), written empty (no
+  energy), so the tones are the whole level;
 - each condition group holds one subgroup per source (rotor), named by its tag: ``center`` (m, sphere frame:
   forward, starboard, up), ``shaft_rate`` (rad/s, positive counterclockwise seen from above), ``harmonic`` (shaft
   orders), ``frequency`` (Hz, emission frame), ``amplitude`` (dB at the sphere radius, over PHI, THETA, tone; PSU-WOPWOP's floor level where a tone is quieter
@@ -99,7 +99,7 @@ def read_pt_sphere(path):
     Returns a :class:`PTSphere` with phi, theta (deg), frequency (Hz, emission frame), amplitude (dB, (phi, theta,
     frequency)), phase (deg), radius_m, speed_kt, flight_path_angle_deg, center_m (forward, starboard, up),
     shaft_rate (rad/s, signed: positive counterclockwise), azimuth_deg, tag, rotor_radius_m, tip_speed_mps,
-    air_density, floor_db, phase_reference_time_s, azimuth_reference.  Refuses a sphere that is not PT, not in the
+    air_density, floor_db, phase_reference_time_s, azimuth_reference, speed_reference, sound_speed_mps.  Refuses a sphere that is not PT, not in the
     flight-path frame, not in the emission frame (DOPPLER_SHIFT_REMOVED 1), or in units it does not know.
     """
     path = str(path)

@@ -314,7 +314,7 @@ class RunFile:
     def segments(self):
         """The steady segments of the flight (passes, climbs, descents, hovers): dict of per-segment arrays (``kind``,
         ``start``/``end`` s after time_origin, ``direction``, ``ground_speed``, ``height``, ``airspeed``,
-        ``nominal_height_ft`` (a string, '' when none matched), ...) and per segment and microphone
+        ``nominal_height_ft`` (a number, NaN when none matched), ...) and per segment and microphone
         (``closest_distance``, ``closest_time``, ``closest_arrival``, columns in ``channel`` order). The writer
         keeps segments to the recording; :meth:`segment_samples` still checks. {} when the run has no
         /segments group; a run without a flight log has the group with no segments."""
