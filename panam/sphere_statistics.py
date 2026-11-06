@@ -29,7 +29,8 @@ from panam.acoustics.plotting import acoustic_plot_style
 from panam.geometry import art2umapr
 from panam.sphere_io import (AAM_DEFAULT_PHI_DEG, AAM_DEFAULT_THETA_DEG, band_index, missing_level_sentinel,
                              write_aam_hemisphere_netcdf, _azimuth_reference_of, _doppler_shift_removed_of,
-                             _read_scalar, _sphere_frame_of)
+                             _read_scalar, _sphere_frame_of, _sphere_type_of, _run_metadata_of,
+                             RUN_METADATA_VARIABLES)
 from panam.lambert_plots import plot_lambert_ea
 
 #: How a sphere file's -999 (or >1e34) cell is read: left out, or zero power.
@@ -52,6 +53,8 @@ def _read_handle(handle, name, missing):
     doppler = _doppler_shift_removed_of(handle, name)
     reference = _azimuth_reference_of(handle, name)
     frame = _sphere_frame_of(handle, name)
+    kind = _sphere_type_of(handle, name)
+    run = _run_metadata_of(handle)
     weight = sum(scalar(n, 0.0) for n in ('EMPTY_WEIGHT', 'FUEL_WEIGHT', 'LOAD_WEIGHT'))
     return dict(
         name=name,
@@ -66,6 +69,8 @@ def _read_handle(handle, name, missing):
         doppler_shift_removed=doppler,
         azimuth_reference=reference,
         sphere_frame=frame,
+        sphere_type=kind,
+        run_metadata=run,
     )
 
 
@@ -176,6 +181,15 @@ def average_spheres(paths_or_datasets, min_runs=1, missing='no_data', speed_tole
     if len({'level' if f is None else f for f in frames}) > 1:
         raise ValueError('sphere_frame differs between the spheres: {}'.format(
             ', '.join('{} ({})'.format(s['name'], s.get('sphere_frame')) for s in spheres)))
+    kinds = {s.get('sphere_type', 'BB') for s in spheres}
+    if len(kinds) > 1:
+        raise ValueError('sphere_type differs between the spheres: {}'.format(
+            ', '.join('{} ({})'.format(s['name'], s.get('sphere_type', 'BB')) for s in spheres)))
+    if kinds == {'PT'}:
+        # A PT sphere's tones carry phases (PHASE), which an energy average neither
+        # keeps nor can form: its result would be a PT sphere without them.
+        raise ValueError('{} are PT spheres, whose tone phases an energy average does not keep; '
+                         'average band spheres only'.format(', '.join(s['name'] for s in spheres)))
     dopplers = [s['doppler_shift_removed'] for s in spheres]
     if len({0 if d is None else d for d in dopplers}) > 1:
         raise ValueError('DOPPLER_SHIFT_REMOVED differs between the spheres: {}'.format(
@@ -215,11 +229,28 @@ def average_spheres(paths_or_datasets, min_runs=1, missing='no_data', speed_tole
         doppler_shift_removed=flags[0] if flags else None,
         azimuth_reference=labeled[0] if labeled else None,
         sphere_frame=next((f for f in frames if f is not None), None),
+        sphere_type=kinds.pop(),
+        run_metadata=_mean_run_metadata([s['run_metadata'] for s in spheres if s.get('run_metadata')]),
         sources=[s['name'] for s in spheres],
         settings=dict(min_runs=min_runs, missing=missing,
                       speed_tolerance_knots=float(speed_tolerance_knots),
                       flight_path_angle_tolerance_deg=float(flight_path_angle_tolerance_deg)),
     )
+
+
+def _mean_run_metadata(runs):
+    """The runs' metadata as one: the mean of each number (NaN if any run's is, and for
+    the winds if the runs declare different wind units or reference directions, as
+    database._merged_run_metadata), the first run's text; None for no runs."""
+    if not runs:
+        return None
+    out = dict(runs[0])
+    out.pop('azimuth_reference', None)          # written as its own attribute
+    for _, _, key in RUN_METADATA_VARIABLES:
+        out[key] = float(np.mean([run[key] for run in runs]))
+    if any(len({run.get(key, '') for run in runs}) > 1 for key in ('wind_units', 'wind_reference_direction')):
+        out.update(wind_along_track=float('nan'), wind_cross_track=float('nan'))
+    return out
 
 
 def write_averaged_sphere(filename, average, title=None, overwrite=True):
@@ -251,6 +282,11 @@ def write_averaged_sphere(filename, average, title=None, overwrite=True):
         azimuth_reference=average['azimuth_reference'],
         # Averaged in the frame the runs were filed in; unlabeled runs are PANAM's, level.
         sphere_frame=average.get('sphere_frame') or 'level',
+        sphere_type=average.get('sphere_type'),
+        BB=float(average.get('sphere_type', 'BB') == 'BB'),
+        NB=float(average.get('sphere_type') in ('NB', 'OB12')),
+        PT=float(average.get('sphere_type') == 'PT'),
+        run_metadata=average.get('run_metadata'),
         title=title if title is not None else 'Energy average of {} spheres'.format(
             len(average.get('sources', []))),
         overwrite=overwrite,

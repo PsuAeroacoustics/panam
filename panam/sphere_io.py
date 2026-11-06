@@ -13,6 +13,8 @@ all.
 """
 
 import contextlib
+import copy
+import functools
 import os
 import shutil
 from typing import Optional
@@ -57,7 +59,7 @@ def load_nc_sphere(filename):
     def read(variable):
         return np.ma.filled(np.ma.asarray(variable[:], dtype=float), np.nan)
 
-    with Dataset(filename, mode='r') as file_handle:
+    with read_dataset(filename) as file_handle:
         # Noise spheres sometimes contain NaN, which netCDF4's masking compares
         # against; they are handled downstream, so do not warn about them.
         with np.errstate(invalid='ignore'):
@@ -87,6 +89,67 @@ WIND_SPEED_UNITS = {'kt': KNOT_MPS, 'm/s': 1.0, 'ft/s': 0.3048, 'mph': 0.44704}
 #: Where a run's wind at the aircraft came from.  Several may be joined with '+', e.g.
 #: 'lidar+balloon' for a profile pieced together from both.
 WIND_SOURCES = ('lidar', 'balloon', 'station', 'none')
+
+
+#: While a database build runs (:func:`per_file_cache`), the metadata each sphere file was asked
+#: for, keyed by reader, path and arguments; None otherwise.
+_FILE_CACHE = None
+
+
+@contextlib.contextmanager
+def per_file_cache():
+    """Within it, each :func:`_per_file` reader opens a file once for a question asked again.
+
+    A build asks every sphere its type, vehicle, labels, condition and flags several times
+    over, and each was a netCDF open (about 20 a file), which tells on cloud storage.  The
+    cache lives only as long as the outermost block, in which the spheres are not written;
+    nested blocks share it.
+    """
+    global _FILE_CACHE
+    outer = _FILE_CACHE is not None
+    if not outer:
+        _FILE_CACHE = {}
+    try:
+        yield
+    finally:
+        if not outer:
+            cache, _FILE_CACHE = _FILE_CACHE, None
+            for key, value in cache.items():
+                if key[0] == _DATASET and value.isopen():
+                    value.close()
+
+
+_DATASET = 'dataset'
+
+
+@contextlib.contextmanager
+def read_dataset(filename):
+    """``Dataset(filename, mode='r')``, one handle per file inside :func:`per_file_cache` (closed
+    when it ends), so the metadata readers of a build open each sphere once; outside one, opened
+    and closed here."""
+    if _FILE_CACHE is None or not isinstance(filename, (str, os.PathLike)):
+        with Dataset(filename, mode='r') as handle:
+            yield handle
+        return
+    key = (_DATASET, os.path.abspath(os.fspath(filename)))
+    handle = _FILE_CACHE.get(key)
+    if handle is None or not handle.isopen():
+        handle = _FILE_CACHE[key] = Dataset(filename, mode='r')
+    yield handle
+
+
+def _per_file(reader):
+    """``reader(filename, ...)`` remembered inside :func:`per_file_cache`, each call given its
+    own copy (callers may change what they get).  Outside one, or for an open dataset, it reads."""
+    @functools.wraps(reader)
+    def cached(filename, *args, **kwargs):
+        if _FILE_CACHE is None or not isinstance(filename, (str, os.PathLike)):
+            return reader(filename, *args, **kwargs)
+        key = (reader.__qualname__, os.path.abspath(os.fspath(filename)), args, tuple(sorted(kwargs.items())))
+        if key not in _FILE_CACHE:
+            _FILE_CACHE[key] = reader(filename, *args, **kwargs)
+        return copy.deepcopy(_FILE_CACHE[key])
+    return cached
 
 
 #: Pounds-force to newtons.
@@ -125,6 +188,7 @@ def _empty_run_metadata():
     return out
 
 
+@_per_file
 def read_run_metadata(filename):
     """The per-run metadata a sphere file carries (see :data:`RUN_METADATA_VARIABLES`).
 
@@ -132,24 +196,38 @@ def read_run_metadata(filename):
     these existed), the text attributes ('' when absent) and ``azimuth_reference`` (None
     when absent).
     """
+    with read_dataset(filename) as handle:
+        return _run_metadata_of(handle)
+
+
+def _run_metadata_of(handle):
+    """:func:`read_run_metadata` of an open sphere ``handle``."""
     out = _empty_run_metadata()
     out['azimuth_reference'] = None
-    with Dataset(filename, mode='r') as handle:
-        for name, _, key in RUN_METADATA_VARIABLES:
-            if name in handle.variables:
-                value = _filled(handle.variables[name])
-                out[key] = float(np.ravel(value)[0])
-        for name in RUN_METADATA_ATTRIBUTES:
-            if name in handle.ncattrs():
-                out[name] = str(handle.getncattr(name))
-        if 'azimuth_reference' in handle.ncattrs():
-            out['azimuth_reference'] = str(handle.getncattr('azimuth_reference'))
+    for name, _, key in RUN_METADATA_VARIABLES:
+        if name in handle.variables:
+            value = _filled(handle.variables[name])
+            out[key] = float(np.ravel(value)[0])
+    # GROSS_WEIGHT is read back in pounds whatever unit the file names (PSU-WOPWOP may write
+    # NEWTON); an unknown unit is refused, as read_sphere_vehicle does.
+    if 'GROSS_WEIGHT' in handle.variables and 'unit' in handle.variables['GROSS_WEIGHT'].ncattrs():
+        unit = str(handle.variables['GROSS_WEIGHT'].getncattr('unit')).strip().upper()
+        to_pounds = {'POUNDS': 1.0, 'NEWTON': 1.0 / POUND_FORCE_NEWTONS}
+        if unit not in to_pounds:
+            raise ValueError('GROSS_WEIGHT in unit {!r}; expected one of {}'.format(unit, list(to_pounds)))
+        out['gross_weight_lb'] *= to_pounds[unit]
+    for name in RUN_METADATA_ATTRIBUTES:
+        if name in handle.ncattrs():
+            out[name] = str(handle.getncattr(name))
+    if 'azimuth_reference' in handle.ncattrs():
+        out['azimuth_reference'] = str(handle.getncattr('azimuth_reference'))
     return out
 
 
+@_per_file
 def _read_azimuth_reference(filename):
     """The azimuth_reference a sphere file carries, or None if it has none."""
-    with Dataset(filename, mode='r') as handle:
+    with read_dataset(filename) as handle:
         return _azimuth_reference_of(handle, filename)
 
 
@@ -164,6 +242,7 @@ def _azimuth_reference_of(handle, name):
     return value
 
 
+@_per_file
 def read_sphere_frame(filename):
     """The sphere_frame a sphere file records (one of :data:`geometry.SPHERE_FRAMES`), or None.
 
@@ -171,7 +250,7 @@ def read_sphere_frame(filename):
     existed is level, and AAM's own are in the flight-path frame of a deck flown
     with AOA 0.
     """
-    with Dataset(filename, mode='r') as handle:
+    with read_dataset(filename) as handle:
         return _sphere_frame_of(handle, filename)
 
 
@@ -185,13 +264,89 @@ def _sphere_frame_of(handle, name):
     return value
 
 
+#: The vehicle fields a sphere may carry (PSU-WOPWOP's): each name's key in
+#: :func:`read_sphere_vehicle` and the factor to SI of each unit its ``unit``
+#: attribute may name, the first being the one a field without it is taken in.
+SPHERE_VEHICLE_FIELDS = (
+    ('MAIN_ROTOR_RADIUS', 'main_rotor_radius_m', (('METER', 1.0), ('FEET', 0.3048))),
+    ('MAIN_ROTOR_TIP_SPEED', 'main_rotor_tip_speed_mps', (('M/S', 1.0), ('FT/S', 0.3048))),
+    ('MAIN_ROTOR_BLADES', 'main_rotor_blades', (('', 1.0),)),
+    ('GROSS_WEIGHT', 'gross_weight_newtons', (('POUNDS', POUND_FORCE_NEWTONS), ('NEWTON', 1.0))),
+    ('AIR_DENSITY', 'air_density_kg_m3', (('KG/M^3', 1.0),)),
+)
+
+
+@_per_file
+def read_sphere_vehicle(filename):
+    """The vehicle fields of a sphere file (:data:`SPHERE_VEHICLE_FIELDS`) in SI units.
+
+    Returns {key: value}: the main rotor's radius (m), tip speed (m/s) and blade
+    count, and the run's gross weight (N) and air density (kg/m^3); NaN where the
+    file has none, as every sphere PANAM measured.  A unit it does not know is
+    refused.
+    """
+    out = {}
+    with read_dataset(filename) as handle:
+        for name, key, units in SPHERE_VEHICLE_FIELDS:
+            out[key] = float('nan')
+            if name not in handle.variables:
+                continue
+            variable = handle.variables[name]
+            unit = str(variable.getncattr('unit')).strip().upper() if 'unit' in variable.ncattrs() else units[0][0]
+            factors = dict(units)
+            if unit not in factors:
+                raise ValueError('{}: {} in unit {!r}; expected one of {}'.format(
+                    filename, name, unit, [u for u, _ in units]))
+            out[key] = _read_scalar(handle, name) * factors[unit]
+    return out
+
+
+#: The sphere types a results folder may hold: one-third octave bands (BB),
+#: 1/12-octave bands (OB12), narrow bands (NB) and pure tones (PT).
+SPHERE_TYPES = ('BB', 'OB12', 'NB', 'PT')
+
+#: AAM's type flag each type sets: OB12 and NB are both narrowband to AAM.
+_AAM_TYPE_FLAG = {'BB': 'BB', 'OB12': 'NB', 'NB': 'NB', 'PT': 'PT'}
+
+
+@_per_file
+def read_sphere_type(filename):
+    """The type of a sphere file, one of :data:`SPHERE_TYPES`.
+
+    From its ``sphere_type`` attribute (PSU-WOPWOP's), else from AAM's BB, NB and
+    PT flags (NB=1 reads as NB: the flags do not tell OB12 from NB), else BB, as
+    every sphere PANAM measured is.  Refused: an unknown attribute, more than
+    one flag set, and an attribute its flags contradict.
+    """
+    with read_dataset(filename) as handle:
+        return _sphere_type_of(handle, filename)
+
+
+def _sphere_type_of(handle, filename):
+    """:func:`read_sphere_type` of an open sphere ``handle``; ``filename`` labels errors."""
+    flags = [name for name in ('BB', 'NB', 'PT')
+             if name in handle.variables and _read_scalar(handle, name) == 1.0]
+    if len(flags) > 1:
+        raise ValueError('{}: AAM type flags {} are all set; a sphere has one type'.format(
+            filename, ' and '.join(flags)))
+    if 'sphere_type' not in handle.ncattrs():
+        return flags[0] if flags else 'BB'
+    kind = str(handle.getncattr('sphere_type')).strip().upper()
+    if kind not in SPHERE_TYPES:
+        raise ValueError('{}: sphere_type must be one of {}, found {!r}'.format(filename, SPHERE_TYPES, kind))
+    if flags and flags[0] != _AAM_TYPE_FLAG[kind]:
+        raise ValueError('{}: sphere_type {} but the AAM type flag {} is set'.format(filename, kind, flags[0]))
+    return kind
+
+
+@_per_file
 def _read_doppler_shift_removed(filename):
     """The DOPPLER_SHIFT_REMOVED flag a sphere file carries, or None if it has none.
 
     0 means received-frame spheres (the normal case), 1 de-Dopplerized
     (stationary-frame) ones.  :func:`write_aam_hemisphere_netcdf` writes it.
     """
-    with Dataset(filename, mode='r') as file_handle:
+    with read_dataset(filename) as file_handle:
         return _doppler_shift_removed_of(file_handle, filename)
 
 
@@ -353,6 +508,7 @@ def write_aam_hemisphere_netcdf(
         overwrite: bool = True,
         azimuth_reference: Optional[str] = None,
         sphere_frame: str = 'flight_path',
+        sphere_type: Optional[str] = None,
         run_metadata: Optional[dict] = None,
         art_levels=None,
         extra_variables: Optional[dict] = None,
@@ -419,6 +575,8 @@ def write_aam_hemisphere_netcdf(
             ``sphere_frame``: 'flight_path' (default; AAM's, see above) or 'level'
             (PANAM's own, for spheres a database is built from, which then are not
             resampled twice).  With ``art_levels`` the levels must already be in it.
+        sphere_type: the sphere's type (:data:`SPHERE_TYPES`), written as the text
+            attribute ``sphere_type`` beside the BB/NB/PT flags; None writes nothing.
         run_metadata: optional dict describing the run the sphere was built
             from, written as the scalar variables of :data:`RUN_METADATA_VARIABLES`
             (left out where a key is absent, None or NaN, which
@@ -649,6 +807,8 @@ def write_aam_hemisphere_netcdf(
 
         ds.title = title if title is not None else 'AAM/RNM acoustic hemisphere'
         ds.sphere_frame = sphere_frame
+        if sphere_type is not None:
+            ds.sphere_type = sphere_type
         if azimuth_reference is not None:
             ds.azimuth_reference = azimuth_reference
         if metadata is not None:

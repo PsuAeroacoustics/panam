@@ -93,6 +93,7 @@ The library's modules, in `panam/`:
 | `nod_database.py` | Reading NICEOPS databases: `load_nod`, `validate_nod` (the rules of [file_formats.md](file_formats.md#checking-a-database)), `compare_databases`, `to_frame` (needs pandas), and the inspection behind `tools/nod_tool.py`: `summarize_condition`, `select_condition`, `plot_condition` (Lambert map of dBA, EAA, a band or coverage), `plot_envelope` |
 | `synthetic_flyover.py` | Synthetic recordings of a straight, level pass of a source of known directivity (`synthesize_pass`), its true level at the reference radius (`source_level_db`), and the recovered-minus-true Lambert map (`plot_level_difference`). The golden results and the depropagation tutorial use it |
 | `synthesis.py` | Forward synthesis of microphone band-level histories from a hemisphere (`synthesize_band_histories`, the inverse of `depropagate_hemisphere`), the Doppler band shift (`doppler_shift_band_power`), measured band histories (`measured_band_histories`), and the leave-microphones-out check of the gridding settings (`leave_mics_out`, `residual_statistics`) |
+| `directional_coherence.py` | The band coherency between emission directions (`band_coherency`), its fit (`fit_coherence`), and the database's record of it (`CoherenceRecord`, `write_coherence_record`, `read_coherence_record`, `save_coherence_record`, `load_coherence_record`) for NICEOPS's ray sums |
 | `order_tracking.py` | Order tracks as a fixed microphone hears them (propagation delay and Doppler shift along a track), ridge tracking, and clock offsets by cross-correlation |
 | `acoustics/` (`panam.acoustics`) | `signal_io` (recording loaders), `filters` (Butterworth helpers, the one-third-octave filter bank), `atmosphere` and `iso_9613_1_1993` (ISO 9613-1 absorption), `time_weighting` (IEC 61672-1 A/C/Z and F/S/I weighting, Lmax, Leq), `plotting` (`acoustic_plot_style`), `impulsiveness` (BVI crest factor, kurtosis, pulse peak-to-RMS and harmonic ratio), `psychoacoustics` (ISO 532-1 stationary loudness, DIN 45692 sharpness). See its `THIRD_PARTY_NOTICES.md` for the parts derived from python-acoustics |
 | `cli.py` | Argument types and figure output shared by the scripts: `colon_pair`, `colon_pair_or_single`, `add_output_options`, `save_or_show`, `save_all_or_show` |
@@ -306,7 +307,11 @@ Tests that need something this machine may not have skip instead of failing:
 - `skipif` on `sphere_helpers.executable(...)`: the NICEOPS executables
   `niceops` and `niceops_ray_geometry`. `executable` looks in `local_paths`
   (`PANAM_NICEOPS`, `local_paths.toml`), then in the unprefixed environment
-  variable (`NICEOPS`, `NICEOPS_RAY_GEOMETRY`), then on `PATH`.
+  variable (`NICEOPS`, `NICEOPS_RAY_GEOMETRY`), then on `PATH`. The tests that
+  run `niceops` take it through `sphere_helpers.niceops()`, which also skips one
+  whose `--version` is not the NICEOPS commit in `tests/niceops_pin.txt`, the one
+  that reads what PANAM writes (a dirty build of it runs). Re-pin it when a NICEOPS
+  change and a PANAM change go together; `PANAM_NICEOPS_ANY_VERSION=1` runs any.
 - `skipif` on `example_data/AS350B3108.nc`: the bundled example sphere.
 - `importorskip('pyuff')` in the UFF loader tests.
 - `vold_kalman_filter` uses the optional `scikits.umfpack` in its sparse

@@ -182,6 +182,69 @@ leaves out runs whose track check raised a flag. `--sphere FILE` names spheres o
 instead, and `--exclude` takes shell patterns as well as names. The database's root attribute
 `source_spheres` lists the file names used, and `excluded_spheres` those `--exclude` left out.
 
+A database is built from spheres of one type. `--sphere-type` (default `BB`, one-third
+octave bands) takes the spheres of that type and leaves the others out, since a PSU-WOPWOP
+results folder holds a sphere of every type it was asked for (`BB`, `OB12`, `NB`, `PT`); a
+sphere named with `--sphere` must be of it. `--sphere-type any` takes every sphere and refuses
+a mix. A sphere's type is its `sphere_type` attribute, else AAM's `BB`/`NB`/`PT` flags (which
+read `OB12` as `NB`), else `BB` ([sphere files](file_formats.md)).
+
+The vehicle (main rotor radius and tip speed, and the nominal weight and air density the
+weight coefficient is formed with) comes from `vehicle.cfg`. Spheres that carry it,
+PSU-WOPWOP's (`MAIN_ROTOR_RADIUS`, `MAIN_ROTOR_TIP_SPEED`, `GROSS_WEIGHT`, `AIR_DENSITY`, each
+read in the units its `unit` attribute names), need none: the spheres must then agree on all
+four, so a weight or density sweep still takes its nominal values from `vehicle.cfg`. Where
+both give the main rotor (radius, tip speed, blades) they must agree to 0.1%.
+
+A PSU-WOPWOP sphere's labels reach the database: its `speed_reference` (`air`) is the
+database's unless `--speed-reference` contradicts it (refused), its `PREDICTION_RADIUS`
+becomes the root `prediction_radius_meters` (with a warning under 50 main rotor radii, short of
+the far field), and its type, content, tag, floor and sound speed become group attributes. A
+sphere centered off the vehicle's origin (`XYZ` not zero) is refused, since a database holds
+one source at the origin; `--ignore-sphere-center` builds it as if centered there. Spheres other
+than one-third octave take `--absorption-band-method center` only.
+
+A database files its spheres level by default, pitching flight-path spheres (AAM's,
+PSU-WOPWOP's) to it. `--database-frame flight_path` keeps them in the flight-path frame instead,
+resampled once less, and records it at the root for NICEOPS, which then measures theta from the
+velocity; a level sphere off level flight is refused there. A hover has no flight path, so the
+copies of it written at other angles are its level directivity seen from the frame pitched by
+each angle. In steady flight the two give the same footprint, to the interpolation the pitch adds.
+
+PSU-WOPWOP predicts its spheres in lossless air, where PANAM depropagates a measured sphere
+through the run's atmosphere, so that its levels already hold what the air absorbed inside the
+sphere. A database built from WOPWOP's spheres (`air_density_source = "wopwop"`) carries the root
+flag `sphere_levels_lossless`, and NICEOPS absorbs it over the whole range from the center. A mix
+of the two is refused; `--sphere-levels-lossless yes` declares other lossless spheres, such as
+AAM's own.
+
+Each condition is filed at the vehicle's weight coefficient (`vehicle.cfg`'s weight and density)
+by default, so spheres at one speed and flight path angle are one condition. A weight or density
+sweep (spheres of one vehicle at several gross weights or air densities, as PSU-WOPWOP's carry
+them) takes `--thrust-from sphere`: each sphere's condition is then its run's own thrust
+coefficient, `GROSS_WEIGHT` / (`AIR_DENSITY` π R² V_tip²), spheres at one speed and angle but
+different thrust coefficients are separate conditions, and `--merge-repeats` merges only runs at
+one thrust coefficient. A sweep may hold a hover (SPEED 0) at each thrust coefficient, each written
+at the hover's flight path angles; two hovers at one thrust coefficient are refused. Without
+`--load-factors` each condition is written once; the database is `fixed_load_factor` only while
+every run has the same thrust coefficient.
+
+`tools/aam_sphere_set.py FOLDER ...` checks a vehicle's spheres before AAM reads them: spheres
+of one AAM type on one grid (radius, angles, bands, PT tone count), whole-foot centers, at most
+ten centers a type, no two spheres at one condition whatever their weights, no OB12 and NB at
+one center, one PT phase convention and one NB bandwidth (errors), and the speed and flight path
+angle spacing, lower hemispheres off level flight and the sound speed (warnings). It prints the
+set sorted by vehicle, type and condition, and the values the deck needs: each type's centers in
+whole feet, the AUDIB bandwidth, and that the track is flown at AOA 0. `--merge OUT` copies
+several results folders into one, renumbering a file whose name is taken. It writes no deck.
+
+PSU-WOPWOP raises a sphere's empty cells to one floor level per file and records it
+(`floor_level_dB`). Those cells are read as no energy, as a missing (-999) cell is, so that
+NICEOPS drops them from its dB blends rather than blending a level nothing produced
+(`--floor-masking auto`, the default; repeat runs are masked before they are averaged).
+`--floor-masking minimum` takes each sphere's lowest level as its floor, for spheres that do not
+record one; `--floor-masking off` keeps the cells as levels.
+
 NICEOPS takes one sphere per flight condition, so two spheres with the same speed and flight
 path angle are refused. `--merge-repeats` energy-averages such repeat runs into one condition
 instead (`sphere_statistics.average_spheres`), and `--merge-speed-tolerance KT` also merges
@@ -204,12 +267,37 @@ them with their units):
 - no extended flight path angles (`--extended-fpa LO:HI`, deg);
 - a hover synthesized from the slowest sphere within 2° of level flight, as built
   (`--hover-source`, `--level-flight-tolerance`; the `--hover-source` path is taken
-  relative to the current directory, not the sphere directory);
+  relative to the current directory, not the sphere directory), unless a sphere is at
+  SPEED 0 (a PSU-WOPWOP hover): that sphere is the hover, written as it is at the hover's
+  flight path angles, and `--hover-source` is refused beside it;
 - spectra stored (`--no-spectrum` leaves them out);
 - the EAA computed at 1000 m in 293.15 K, 101.325 kPa and 20% relative humidity
   (`--distance`, `--build-temperature`, `--build-pressure`, `--build-humidity`), with each
   band's absorption taken at its center frequency (`--absorption-band-method arp5534` or
   `integrated`, THEORY §5.4).
+
+**The vehicle's coherence between emission directions** (optional). NICEOPS's point-source
+urban model adds rays leaving the source in different directions with a model of how coherent the
+source is between them, and takes it from the database where the database records one
+([file_formats.md](file_formats.md#source-coherence)). To record the vehicle's own, measure it from
+the same runs the spheres came from, de-Dopplerized onto emission time, and fit it with the
+vehicle's passes and hovers as separate cases:
+
+```python
+from panam import directional_coherence as dc
+cases = [dc.band_coherency(signals, emission, fs, track_time, track, microphones, bands,
+                           window=1.0, rotation=(omega, 1)) for ...]   # a case per kind of run
+record = dc.fit_coherence(cases, bands, rotation_rate=omega, blades=4, rotation='counterclockwise',
+                          source='Be407, 2017 passes and hovers')
+dc.save_coherence_record(record, 'Be407_coherence.json')
+```
+
+and pass it as `--coherence Be407_coherence.json` (or `coherence=` in Python, or a recipe's
+`[database.coherence]` table of the record's fields). Without it, NICEOPS assumes nothing of the
+source's phase: it adds rays in energy, except those leaving within a small cone of each other.
+What a record leaves out NICEOPS fills with the same fit to the Bell 407's 2017 passes and hovers.
+Give `blades` and `rotation` only for a vehicle with one main rotor whose sense is known, since
+they are the only way NICEOPS applies the rotor's delay; a multirotor's record leaves them out.
 
 The script refuses to replace an existing database without `--overwrite`. The hover
 correction is a Python callable and has no flag; a [build recipe](#build-recipes) names it as

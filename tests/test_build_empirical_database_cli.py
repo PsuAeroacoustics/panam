@@ -58,6 +58,10 @@ def test_defaults_are_the_functions_defaults(tmp_path):
 
 
 def test_every_option_maps_to_its_keyword(tmp_path):
+    from panam import directional_coherence
+    record_path = tmp_path / 'coherence.json'
+    directional_coherence.save_coherence_record(
+        directional_coherence.CoherenceRecord(scale_hz_deg=700.0, exponent=1.8, source='cli'), record_path)
     args = script.parse_arguments([
         str(tmp_path), str(tmp_path / 'db.nod'), '--load-factors', '0,1,1.5', '--extended-fpa=-24:35',
         '--level-flight-tolerance', '3', '--hover-source', 'h.nc', '--speed-reference', 'air',
@@ -65,8 +69,12 @@ def test_every_option_maps_to_its_keyword(tmp_path):
         '--frequency-range', '50:5000', '--build-temperature', '280', '--build-pressure', '100',
         '--build-humidity', '50', '--no-spectrum', '--no-clamp-empty', '--sphere', 'a.nc',
         '--sphere', 'b.nc', '--exclude', 'c*.nc', '--absorption-band-method', 'arp5534',
-        '--merge-repeats', '--merge-speed-tolerance', '1.5'])
+        '--merge-repeats', '--merge-speed-tolerance', '1.5', '--coherence', str(record_path),
+        '--sphere-type', 'OB12', '--ignore-sphere-center', '--sphere-levels-lossless', 'yes',
+        '--floor-masking', 'minimum', '--database-frame', 'flight_path', '--thrust-from', 'sphere'])
     options = script.build_options(args)
+    coherence = options.pop('coherence')
+    assert (coherence.scale_hz_deg, coherence.exponent, coherence.source) == (700.0, 1.8, 'cli')
     atmosphere = options.pop('atmosphere')
     assert (atmosphere.temperature, atmosphere.pressure, atmosphere.relative_humidity) == (280, 100, 50)
     assert options == dict(load_factors=[0.0, 1.0, 1.5], extended_flight_path_angles=(-24.0, 35.0),
@@ -75,7 +83,14 @@ def test_every_option_maps_to_its_keyword(tmp_path):
                            distance=500.0,
                            infreqs=(50.0, 5000.0), store_spectrum=False, clamp_empty_directions=False,
                            spheres=['a.nc', 'b.nc'], exclude=['c*.nc'], absorption_band_method='arp5534',
-                           merge_repeats=True, merge_speed_tolerance=1.5)
+                           merge_repeats=True, merge_speed_tolerance=1.5, sphere_type='OB12',
+                           ignore_sphere_center=True, sphere_levels_lossless=True,
+                           floor_masking='minimum', database_frame='flight_path', thrust_from='sphere')
+
+
+def test_any_sphere_type_passes_none(tmp_path):
+    args = script.parse_arguments([str(tmp_path), str(tmp_path / 'db.nod'), '--sphere-type', 'any'])
+    assert script.build_options(args)['sphere_type'] is None
 
 
 def test_fixed_load_factor_passes_none(tmp_path):

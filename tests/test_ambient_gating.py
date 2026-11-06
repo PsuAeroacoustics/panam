@@ -414,3 +414,114 @@ def test_an_ambient_window_of_the_run_gates_like_a_recording():
     both = np.isfinite(a) & np.isfinite(b) & (a > -100.0) & (b > -100.0)
     assert both.sum() > 0.5 * a.size
     assert abs(float(np.median(a[both] - b[both]))) < 1.0
+
+
+def test_band_gate_mode_leaves_ambient_bands_missing_not_empty():
+    """gate_mode 'band': a band under the gate is missing (unknown), where the bin gate says
+    'measured, no energy' (-inf); a band well above the floor is kept."""
+    ambient = _scenario(noise_only=True, seed=2)['pressure']
+    noise = _scenario(noise_only=True, seed=1)
+    by_bin = _run(noise, ambient_pressure=ambient, band_snr_gate_db=10.0)['third_octave']['bands_db']
+    by_band = _run(noise, ambient_pressure=ambient, band_snr_gate_db=10.0, gate_mode='band')['third_octave']['bands_db']
+    assert np.isneginf(by_bin[np.isfinite(by_bin) | np.isneginf(by_bin)]).mean() > 0.9   # zeros: -inf
+    assert np.isnan(by_band).all()                                                     # all unknown
+    tones = _scenario(seed=3)
+    bin_out = _run(tones, ambient_pressure=ambient, band_snr_gate_db=10.0)['third_octave']
+    band_out = _run(tones, ambient_pressure=ambient, band_snr_gate_db=10.0, gate_mode='band')['third_octave']
+    centers = np.asarray(band_out['band_centers_hz'])
+    for f in (200.0, 500.0):                   # the tones' bands: measured wherever the bin gate measures them
+        k = int(np.argmin(np.abs(centers - f)))
+        reached = np.isfinite(bin_out['bands_db'][..., k])
+        assert reached.any() and np.isfinite(band_out['bands_db'][..., k][reached]).all()
+    k = int(np.argmin(np.abs(centers - 315.0)))   # between the tones: 'no energy' by bin, unknown by band
+    empty = np.isneginf(bin_out['bands_db'][..., k])
+    assert empty.any() and np.isnan(band_out['bands_db'][..., k][empty]).all()
+
+
+def test_band_gate_mode_is_refused_without_fft_bands():
+    scenario = _scenario(seed=3)
+    with pytest.raises(ValueError, match="gate_mode"):
+        _run(scenario, gate_mode='bands')
+    with pytest.raises(ValueError, match="gate_mode 'band'"):
+        _run(scenario, gate_mode='band', third_octave_method='filter_bank')
+
+
+def test_band_gate_window_judges_the_expected_level_not_the_fluctuation():
+    """A steady source near the gate: judged sample by sample, only its upward
+    fluctuations pass and the band comes out high; judged on the mean over a window,
+    the band is kept or dropped whole, and what is kept is not biased up."""
+    rng = np.random.default_rng(7)
+    scenario = _scenario(noise_only=True, seed=11)
+    t = scenario['time']
+    # a 300 Hz band of noise a few dB over the ambient: well under a 10 dB gate on its mean
+    from scipy import signal
+    b, a = signal.butter(4, [270.0, 340.0], btype='band', fs=2000.0)
+    source = signal.lfilter(b, a, rng.standard_normal(t.size)) * 0.13 * P_REF
+    scenario['pressure'] = scenario['pressure'] + source[None, :]
+    ambient = _scenario(noise_only=True, seed=12)['pressure']
+    k = None
+    per_sample = _run(scenario, ambient_pressure=ambient, band_snr_gate_db=10.0, gate_mode='band')['third_octave']
+    windowed = _run(scenario, ambient_pressure=ambient, band_snr_gate_db=10.0, gate_mode='band',
+                    gate_window_s=1.0)['third_octave']
+    k = int(np.argmin(np.abs(np.asarray(per_sample['band_centers_hz']) - 315.0)))
+    some = np.isfinite(per_sample['bands_db'][..., k])
+    assert some.any()                                       # a few fluctuations clear the gate
+    assert not np.isfinite(windowed['bands_db'][..., k]).any()   # its mean does not: unknown everywhere
+    with pytest.raises(ValueError, match='gate_window_s'):
+        _run(scenario, ambient_pressure=ambient, gate_window_s=1.0)
+
+
+def test_band_gate_mode_gates_the_overall_levels_too():
+    """gate_mode 'band' subtracts the ambient from every bin; the overall and A-weighted
+    levels summed from those bins are gated like the bands, so a run of ambient alone
+    leaves them unknown rather than its upward residuals."""
+    ambient = _scenario(noise_only=True, seed=2)['pressure']
+    noise = _run(_scenario(noise_only=True, seed=1), ambient_pressure=ambient, band_snr_gate_db=10.0,
+                 gate_mode='band')
+    assert np.isnan(noise['oaspl_db']).all() and np.isnan(noise['spl_a_db']).all()
+    tones = _run(_scenario(seed=3), ambient_pressure=ambient, band_snr_gate_db=10.0, gate_mode='band')
+    assert np.isfinite(tones['oaspl_db']).any() and np.isfinite(tones['spl_a_db']).any()
+
+
+def test_band_gate_judges_a_band_on_its_doppler_scaled_edges():
+    """With remove_doppler a band is integrated over [D f_lower, D f_upper]; the gate
+    judges it there too.  A 260 Hz tone heard from a fast source approaching is in the
+    200 Hz band's scaled edges (178 D to 224 D Hz) once D > 1.16, though above its
+    nominal 224 Hz edge, so that band is measured there and not gated as ambient."""
+    scenario = _scenario(noise_only=True, seed=5)
+    nt = scenario['track_time'].size
+    scenario['track_position'] = np.column_stack([np.linspace(-600.0, 600.0, nt), np.zeros(nt),
+                                                  300.0 * np.ones(nt)])
+    scenario['track_velocity'] = np.tile([1200.0 / scenario['track_time'][-1], 0.0, 0.0], (nt, 1))
+    t = scenario['time']
+    scenario['pressure'] = scenario['pressure'] + 0.5 * P_REF * np.sin(2 * np.pi * 260.0 * t)[None, :]
+    ambient = _scenario(noise_only=True, seed=6)['pressure']
+    # Half-second windows (2 Hz bins), so the tone's leakage does not reach the nominal edge.
+    # The bin gate, local in frequency, measures the band wherever the tone falls in it; the
+    # band gate should measure most of those cells too (on the nominal edges, under a third).
+    measured = {}
+    for mode in ('bin', 'band'):
+        out = _run(scenario, ambient_pressure=ambient, band_snr_gate_db=10.0, gate_mode=mode,
+                   remove_doppler=True, window_time=0.5)['third_octave']
+        k = int(np.argmin(np.abs(np.asarray(out['band_centers_hz']) - 200.0)))
+        measured[mode] = int(np.isfinite(out['bands_db'][..., k]).sum())
+    assert measured['bin'] > 0 and measured['band'] >= 0.5 * measured['bin']
+
+
+def test_a_windowed_band_gate_with_doppler_windows_the_ambient_too():
+    """With remove_doppler each sample's band edges move, and the ambient's band power with
+    them: an ambient hum near a band edge is in a band at some samples and out at others.
+    gate_window_s judges the measured power over a window, and so the ambient's too; a run
+    of that ambient alone then leaves every band unknown."""
+    hum = lambda t: 0.5 * P_REF * np.sin(2 * np.pi * 240.0 * t)
+    scenario = _scenario(noise_only=True, seed=21)
+    nt = scenario['track_time'].size
+    scenario['track_position'] = np.column_stack([np.linspace(-600.0, 600.0, nt), np.zeros(nt),
+                                                  300.0 * np.ones(nt)])
+    scenario['track_velocity'] = np.tile([1200.0 / scenario['track_time'][-1], 0.0, 0.0], (nt, 1))
+    scenario['pressure'] = scenario['pressure'] + hum(scenario['time'])[None, :]
+    ambient = _scenario(noise_only=True, seed=22)
+    ambient = ambient['pressure'] + hum(ambient['time'])[None, :]
+    out = _run(scenario, ambient_pressure=ambient, band_snr_gate_db=3.0, gate_mode='band', remove_doppler=True,
+               gate_window_s=1.0, window_time=0.5)
+    assert np.isnan(out['third_octave']['bands_db']).all()

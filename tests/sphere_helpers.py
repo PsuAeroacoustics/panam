@@ -7,6 +7,7 @@ another.
 
 import os
 import shutil
+import subprocess
 
 import numpy as np
 from netCDF4 import Dataset
@@ -20,6 +21,29 @@ def executable(name):
     local_paths.toml), then the variable <NAME>, then PATH."""
     return (local_paths.data_path(name, required=False) or os.environ.get(name.upper())
             or shutil.which(name))
+
+#: The NICEOPS commit these tests were last run against: one that reads what PANAM writes
+#: (tests/niceops_pin.txt; re-pinned as NICEOPS changes).
+with open(os.path.join(os.path.dirname(__file__), 'niceops_pin.txt')) as _pin:
+    NICEOPS_PIN = _pin.read().strip()
+
+
+def niceops():
+    """``(path, reason)``: the configured niceops when it reports the pinned commit
+    (``--version``; a dirty build of it too), else ``(None, why)`` for a test's skip.
+    PANAM_NICEOPS_ANY_VERSION=1 takes any version."""
+    path = executable('niceops')
+    if path is None:
+        return None, 'niceops not configured (local_paths: niceops)'
+    try:
+        version = subprocess.run([path, '--version'], capture_output=True, text=True, timeout=60).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return None, 'niceops {} does not run: {}'.format(path, error)
+    if os.environ.get('PANAM_NICEOPS_ANY_VERSION') or version.split('-')[0].startswith(NICEOPS_PIN[:7]):
+        return path, ''
+    return None, ('niceops {} is NICEOPS {}, not the pinned {} (tests/niceops_pin.txt); '
+                  'PANAM_NICEOPS_ANY_VERSION=1 runs it anyway'.format(path, version or '(no version)', NICEOPS_PIN))
+
 
 #: A vehicle.cfg for directories of spheres (AS350-like rotors): example_data/vehicle.cfg.
 with open(os.path.join(os.path.dirname(__file__), os.pardir, 'example_data', 'vehicle.cfg')) as _cfg:
@@ -102,3 +126,78 @@ def write_raw_sphere(path, phi=None, theta=None, frequency=None, amplitude=None,
                                   fill_value=fill_value)[:] = amplitude
         for name, value in scalars.items():
             sphere.createVariable(name, 'f4').assignValue(np.float32(value))
+
+
+#: PSU-WOPWOP's AAM sphere scalars, in the order AAM reads them, and their units.
+_WOPWOP_SCALARS = (('BB', ''), ('NB', ''), ('PT', ''), ('DOPPLER_SHIFT_REMOVED', ''), ('EMPTY_WEIGHT', 'POUNDS'),
+                   ('FUEL_WEIGHT', 'POUNDS'), ('LOAD_WEIGHT', 'POUNDS'), ('RADIUS', 'FEET'),
+                   ('FLIGHT_PATH_ANGLE', 'DEGREE'), ('PYLON_ANGLE', 'DEGREE'), ('SPEED', 'KNOTS'))
+_WOPWOP_FLAG = {'BB': 'BB', 'OB12': 'NB', 'NB': 'NB', 'PT': 'PT'}
+
+
+def write_wopwop_sphere(path, levels, phi, theta, frequency, kind='BB', speed=60.0, flight_path_angle=0.0,
+                        floor=-40.0, rotor=(5.334, 230.7, 4), gross_weight_lb=4960.0, air_density=1.07,
+                        prediction_radius=300.0, xyz=(0.0, 0.0, 0.0), phase=None):
+    """A sphere laid out as PSU-WOPWOP writes one (its noiseSphere.f90 WriteSphereFile).
+
+    netCDF classic; a singleton dimension per AAM scalar, the scalars in AAM's order
+    with their ``unit``s; XYZ, PHI, THETA, FREQUENCY, AMPLITUDE (and PHASE for PT);
+    then the metadata PANAM reads (GROSS_WEIGHT, AIR_DENSITY, AIRSPEED, MAIN_ROTOR_*,
+    PREDICTION_RADIUS, TONAL_MAX_FREQUENCY) and WOPWOP's text attributes.  ``levels``
+    (phi, theta, frequency) are written as given, so cells meant empty should hold
+    ``floor``.  ``rotor`` is (radius m, tip speed m/s, blades), or None for none.  The
+    frame is WOPWOP's, flight_path.
+    """
+    scalars = dict(BB=0.0, NB=0.0, PT=0.0, DOPPLER_SHIFT_REMOVED=0.0, EMPTY_WEIGHT=gross_weight_lb or 0.0,
+                   FUEL_WEIGHT=0.0, LOAD_WEIGHT=0.0, RADIUS=100.0, FLIGHT_PATH_ANGLE=flight_path_angle,
+                   PYLON_ANGLE=90.0, SPEED=speed)
+    scalars[_WOPWOP_FLAG[kind]] = 1.0
+    with Dataset(str(path), 'w', format='NETCDF3_CLASSIC') as sphere:
+        for name, _ in _WOPWOP_SCALARS:
+            sphere.createDimension(name, 1)
+        for name, size in (('XYZ', 3), ('PHI', len(phi)), ('THETA', len(theta)), ('FREQUENCY', len(frequency))):
+            sphere.createDimension(name, size)
+        for name, unit in _WOPWOP_SCALARS:
+            variable = sphere.createVariable(name, 'f4')
+            variable.assignValue(np.float32(scalars[name]))
+            variable.unit = unit
+        for name, dims, values, unit in (('XYZ', ('XYZ',), xyz, 'FEET'), ('PHI', ('PHI',), phi, 'DEGREE'),
+                                         ('THETA', ('THETA',), theta, 'DEGREE'),
+                                         ('FREQUENCY', ('FREQUENCY',), frequency, 'HERTZ'),
+                                         ('AMPLITUDE', ('PHI', 'THETA', 'FREQUENCY'), levels, 'DECIBEL')):
+            variable = sphere.createVariable(name, 'f4', dims)
+            variable[:] = values
+            variable.unit = unit
+        if phase is not None:
+            variable = sphere.createVariable('PHASE', 'f4', ('PHI', 'THETA', 'FREQUENCY'))
+            variable[:] = phase
+            variable.unit = 'DEGREE'
+        metadata = [('GROSS_WEIGHT', gross_weight_lb, 'POUNDS'), ('AIR_DENSITY', air_density, 'KG/M^3'),
+                    ('AIRSPEED', speed, 'KNOTS')]
+        if rotor is not None:
+            metadata += [('MAIN_ROTOR_RADIUS', rotor[0], 'METER'), ('MAIN_ROTOR_TIP_SPEED', rotor[1], 'M/S'),
+                         ('MAIN_ROTOR_BLADES', rotor[2], '')]
+        metadata += [('PREDICTION_RADIUS', prediction_radius, 'METER'),
+                     ('TONAL_MAX_FREQUENCY', float(np.max(frequency)), 'HERTZ')]
+        for name, value, unit in metadata:
+            if value is None:
+                continue
+            variable = sphere.createVariable(name, 'f4')
+            variable.assignValue(np.float32(value))
+            variable.unit = unit
+        sphere.title = 'WOPWOP-like test sphere'
+        sphere.sphere_frame = 'flight_path'
+        sphere.sphere_type = kind
+        sphere.content = 'discrete frequency'
+        sphere.wind_source = 'none'
+        sphere.air_density_source = 'wopwop'
+        sphere.center_xyz_ft = '   '.join('{:.8E}'.format(v) for v in xyz)
+        sphere.speed_reference = 'air'
+        sphere.azimuth_reference = 'track'
+        sphere.speed_of_sound_m_s = '{:.8E}'.format(340.0)
+        sphere.floor_level_dB = '{:.8E}'.format(floor)
+        if kind == 'NB':
+            sphere.nb_bandwidth_Hz = '{:.6f}'.format(float(frequency[1] - frequency[0]))
+        sphere.source = 'test'
+        sphere.case = 'test'
+    return path

@@ -56,6 +56,8 @@ PRE_EXISTING_ROOT_VARIABLES = {
     'same_grid', 'fixed_load_factor', 'database_version', 'main_rotor_radius_meters',
     'main_rotor_tip_speed_meters_per_sec', 'vehicle_weight_newtons',
     'shared_grid_and_frequency', 'phi', 'theta', 'frequency',
+    # Added since: the density the weight coefficient is formed with.
+    'air_density_kg_m3',
 }
 PRE_EXISTING_GROUP_VARIABLES = {
     'radius', 'rotor_scale', 'advance_ratio', 'flight_path_angle', 'thrust_coefficient',

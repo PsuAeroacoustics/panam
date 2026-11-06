@@ -257,3 +257,35 @@ def test_difference_map_uses_a_diverging_colormap(tmp_path):
     assert contour.get_cmap().name == 'RdBu_r'
     assert fig.axes[1].get_ylabel().startswith('100 Hz level difference')
     assert 'Sound Pressure Level' not in fig.axes[1].get_ylabel()
+
+
+def test_winds_in_different_units_average_to_unknown():
+    """Repeat runs whose winds are in different units or reference directions cannot be
+    averaged; the mean sphere's winds are unknown, as a database's merged condition's are."""
+    from panam.sphere_statistics import _mean_run_metadata
+    base = dict(gross_weight_lb=3505.0, air_density_kg_m3=1.04, wind_along_track=-8.0, wind_cross_track=2.0,
+                airspeed_knots=80.0, wind_units='kt', wind_reference_direction='ground track',
+                wind_source='lidar', air_density_source='')
+    same = _mean_run_metadata([base, dict(base, wind_along_track=-6.0)])
+    assert same['wind_along_track'] == -7.0
+    mixed = _mean_run_metadata([base, dict(base, wind_units='m/s')])
+    assert np.isnan(mixed['wind_along_track']) and np.isnan(mixed['wind_cross_track'])
+    assert mixed['gross_weight_lb'] == 3505.0
+
+
+def test_pt_spheres_are_not_averaged(tmp_path):
+    """A PT sphere's tones carry phases (PHASE), which an energy average neither keeps nor
+    forms; averaging them is refused rather than writing a PT sphere without them."""
+    import sphere_helpers
+    phi = np.arange(-180.0, 180.0 + 1e-9, 45.0)
+    theta = np.arange(0.0, 180.0 + 1e-9, 30.0)
+    tones = np.array([20.0, 40.0])
+    paths = []
+    for i in range(2):
+        path = tmp_path / f'PT{i}.nc'
+        levels = np.full((phi.size, theta.size, tones.size), 70.0)
+        sphere_helpers.write_wopwop_sphere(path, levels, phi, theta, tones, kind='PT', speed=60.0,
+                                           phase=np.zeros_like(levels))
+        paths.append(str(path))
+    with pytest.raises(ValueError, match='PT spheres'):
+        ss.average_spheres(paths)

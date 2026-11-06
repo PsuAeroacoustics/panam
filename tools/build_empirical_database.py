@@ -15,8 +15,10 @@ import sys
 from panam.acoustics.atmosphere import Atmosphere, BAND_ABSORPTION_METHODS
 
 from panam import cli
+from panam import directional_coherence
 from panam import flight_acoustics
 from panam.geometry import SPHERE_FRAMES
+from panam.sphere_io import SPHERE_TYPES
 
 EPILOG = """\
 hover_correction, a callable that adds dB to the synthesized hover per direction
@@ -72,6 +74,10 @@ def make_parser():
     selection.add_argument('--exclude', action='append', default=None, metavar='PATTERN',
                            help='leave out spheres whose file name matches this name or shell pattern '
                                 '(e.g. "Be407285236.nc" or "*_hover*.nc"); repeat for each one')
+    selection.add_argument('--sphere-type', choices=SPHERE_TYPES + ('any',), default='BB',
+                           help='build from the spheres of this type and leave out the others, as a '
+                                'PSU-WOPWOP results folder holds every type it wrote; "any" takes every '
+                                'sphere, which must then be of one type (default %(default)s)')
     selection.add_argument('--merge-repeats', action='store_true',
                            help='energy-average spheres at the same speed and flight path angle into one '
                                 'condition (default: refuse them, since NICEOPS takes one sphere per '
@@ -88,6 +94,10 @@ def make_parser():
                       help='write each condition once, at 1 g, and let NICEOPS scale it '
                            '(load_factors=None)')
 
+    parser.add_argument('--coherence', default=None, metavar='JSON',
+                        help="the vehicle's coherence between emission directions, as "
+                             "directional_coherence.save_coherence_record wrote it, recorded at the root "
+                             "for NICEOPS's ray sums (default none: NICEOPS takes its defaults)")
     parser.add_argument('--extended-fpa', type=cli.colon_pair, default=None, metavar='LO:HI',
                         help='re-emit every near-level condition at these two flight path angles, deg '
                              '(e.g. --extended-fpa=-24:35; default none: the hover is written at -12, 0 and +12)')
@@ -99,9 +109,27 @@ def make_parser():
                         help='path of the sphere file the hover is synthesized from, relative to the '
                              'current directory, not SPHERE_DIRECTORY (default: the slowest sphere '
                              'within the level-flight tolerance)')
-    parser.add_argument('--speed-reference', choices=flight_acoustics.SPEED_REFERENCES, default='ground',
-                        help='what the advance ratio and flight path angle are taken against '
-                             '(default %(default)s)')
+    parser.add_argument('--speed-reference', choices=flight_acoustics.SPEED_REFERENCES, default=None,
+                        help='what the advance ratio and flight path angle are taken against (default: '
+                             "what the spheres say, as PSU-WOPWOP's say air; else ground)")
+    parser.add_argument('--thrust-from', choices=('vehicle', 'sphere'), default='vehicle',
+                        help="each condition's thrust coefficient: vehicle, the nominal one of vehicle.cfg; or "
+                             "sphere, each sphere's run's own (GROSS_WEIGHT, AIR_DENSITY), for a weight or "
+                             'density sweep (default %(default)s)')
+    parser.add_argument('--database-frame', choices=SPHERE_FRAMES, default='level',
+                        help="the frame the database files its spheres in: level, pitching flight-path "
+                             "spheres to it, or flight_path, keeping them in AAM's frame for a NICEOPS that "
+                             'reads it (default %(default)s)')
+    parser.add_argument('--floor-masking', choices=('auto', 'minimum', 'off'), default='auto',
+                        help="how cells at a sphere's floor are read: auto, as no energy where the sphere "
+                             "records its floor (PSU-WOPWOP's floor_level_dB); minimum, taking each "
+                             'sphere\'s lowest level as its floor; off, as levels (default %(default)s)')
+    parser.add_argument('--sphere-levels-lossless', choices=('yes', 'no'), default=None,
+                        help="whether the spheres' levels carry no atmospheric absorption, so NICEOPS "
+                             "absorbs from the center (default: yes for PSU-WOPWOP's spheres, else no)")
+    parser.add_argument('--ignore-sphere-center', action='store_true',
+                        help="build spheres centered off the vehicle's origin (XYZ) as if centered there "
+                             '(default: refuse them)')
     parser.add_argument('--azimuth-reference', choices=flight_acoustics.AZIMUTH_REFERENCES, default=None,
                         help="what the spheres' azimuth is measured from, for spheres that carry no "
                              "azimuth_reference (default: the spheres' own, else track)")
@@ -172,6 +200,13 @@ def build_options(args):
         absorption_band_method=args.absorption_band_method,
         merge_repeats=args.merge_repeats,
         merge_speed_tolerance=args.merge_speed_tolerance,
+        coherence=None if args.coherence is None else directional_coherence.load_coherence_record(args.coherence),
+        sphere_type=None if args.sphere_type == 'any' else args.sphere_type,
+        ignore_sphere_center=args.ignore_sphere_center,
+        floor_masking=args.floor_masking,
+        database_frame=args.database_frame,
+        thrust_from=args.thrust_from,
+        sphere_levels_lossless=None if args.sphere_levels_lossless is None else args.sphere_levels_lossless == 'yes',
     )
     if args.fixed_load_factor:
         options['load_factors'] = None

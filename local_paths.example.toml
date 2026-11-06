@@ -23,3 +23,6 @@ b407_legacy_spheres = "/path/to/Sphere_Database/Be407"
 # Per-run NICEOPS atmosphere CSVs (<run>.csv, heights in ft) for the B407 runs, which the
 # 2017 release recipe depropagates along refracted rays.  PANAM does not build them.
 b407_ray_profiles = "/path/to/B407_ray_profiles"
+# PSU-WOPWOP noise spheres: WOPWOP's test/regression/NoiseSphere after its regression suite has
+# run (ROTOR000.nc, ITRRX000.nc, ...).  The data tests build databases from them.
+wopwop_noise_spheres = "/path/to/wopwop3/test/regression/NoiseSphere"

@@ -14,6 +14,7 @@ Databases are metric; sphere files keep ft and knots.
 
 import fnmatch
 import json
+import functools
 import os
 import warnings
 from collections import namedtuple
@@ -23,6 +24,7 @@ from glob import glob
 from netCDF4 import Dataset
 import numpy as np
 
+from panam import directional_coherence as _directional_coherence
 from panam import provenance as _provenance
 from panam.acoustics.atmosphere import Atmosphere
 from panam.spectra import dBAw, OASPL, power_to_db
@@ -30,9 +32,11 @@ from panam.geometry import art2umapr, SPHERE_FRAMES
 from panam.gridding import repitch_art_levels
 from panam.absorption import _band_attenuation_db
 from panam import sphere_statistics
-from panam.sphere_io import (AZIMUTH_REFERENCES, KNOT_MPS, load_nc_sphere, mask_missing_levels,
+from panam.sphere_io import (AZIMUTH_REFERENCES, KNOT_MPS, _per_file, per_file_cache, read_dataset, load_nc_sphere,
+                             mask_missing_levels,
                              POUND_FORCE_NEWTONS, read_run_metadata, read_sphere_frame, _atomic_output,
-                             _read_azimuth_reference, _read_doppler_shift_removed, _read_scalar)
+                             _read_azimuth_reference, _read_doppler_shift_removed, _read_scalar,
+                             read_sphere_type, SPHERE_TYPES, read_sphere_vehicle, SPHERE_VEHICLE_FIELDS)
 
 
 #: On-disk format version written into every database as "database_version".
@@ -83,6 +87,28 @@ GROUP_RUN_METADATA_NUMBERS = (
 #: Per-group text attributes alongside them.
 GROUP_RUN_METADATA_TEXT = ('wind_source', 'wind_units', 'wind_reference_direction',
                            'air_density_source', 'source_sphere', 'condition_origin')
+
+
+#: Labels a PSU-WOPWOP sphere carries, written as group attributes only where the
+#: sphere gives them (:func:`sphere_labels`): each number with its units, written
+#: beside it as ``<name>_units``, and the text ones.  sphere_center_xyz_ft is the
+#: sphere's XYZ, recorded when it is off the origin (ignore_sphere_center).
+SPHERE_LABEL_NUMBERS = (
+    ('prediction_radius', 'm'),
+    ('floor_level', 'dB'),
+    ('speed_of_sound', 'm s-1'),
+    ('nb_bandwidth', 'Hz'),
+)
+SPHERE_LABEL_TEXT = ('sphere_type', 'content', 'source_tag', 'sphere_center_xyz_ft')
+
+
+#: The root band_type of a database built from each sphere type.
+BAND_TYPES = {'BB': 'third_octave', 'OB12': 'twelfth_octave', 'NB': 'narrowband', 'PT': 'pure_tone'}
+
+
+#: A prediction radius under this many main rotor radii is warned about: not yet the
+#: far field the database's 1/r spreading from the center assumes.
+FAR_FIELD_ROTOR_RADII = 50.0
 
 
 #: Values of a group's condition_origin.
@@ -154,8 +180,9 @@ def read_vehicle_data(directory_name, runs=None, speeds=None, flight_path_angles
 
     Returns: a 14-tuple (main rotor radius m, main rotor area m^2, main rotor tip speed m/s,
         main rotor blade count, tail rotor radius m, tail rotor area m^2, tail rotor tip speed
-        m/s, tail rotor blade count, advance ratios, weight coefficients, hover tip Mach numbers,
-        alphas deg, nondimensional flat-plate drag, speeds kt).  With an ``[Option]`` reflist
+        m/s, tail rotor blade count (the four None without a ``[Tail Rotor]`` section), advance
+        ratios, weight coefficients, hover tip Mach numbers, alphas deg, nondimensional
+        flat-plate drag, speeds kt).  With an ``[Option]`` reflist
         and ``runs``, the rotor radii, areas and tail tip speed are None and the main rotor tip
         speed is the mean of the reflist's airspeeds over its advance ratios.  Otherwise the
         advance ratios and alphas are None without ``speeds``.  Alphas are None without
@@ -167,7 +194,9 @@ def read_vehicle_data(directory_name, runs=None, speeds=None, flight_path_angles
     config = ConfigParser()
     config.read(abs_config)
     number_of_main_rotor_blades = float(config['Main Rotor']['blades'])
-    number_of_tail_rotor_blades = float(config['Tail Rotor']['blades'])
+    # A vehicle without a tail rotor (a multirotor) leaves the section out: its entries are None.
+    tail = config['Tail Rotor'] if config.has_section('Tail Rotor') else None
+    number_of_tail_rotor_blades = float(tail['blades']) if tail is not None else None
     if config.has_section('Option') and runs is not None:
         # read drag value and then open Excel reflist file for individual conditions
         nondimensional_flat_plate_drag = float(config['Option']['fbar'])
@@ -211,9 +240,9 @@ def read_vehicle_data(directory_name, runs=None, speeds=None, flight_path_angles
         main_rotor_radius = np.array(float(config['Main Rotor']['radius']))
         main_rotor_area = np.pi * main_rotor_radius ** 2
         main_rotor_tip_speed = np.array(float(config['Main Rotor']['tip speed']))
-        tail_rotor_radius = np.array(float(config['Tail Rotor']['radius']))
-        tail_rotor_area = np.pi * tail_rotor_radius ** 2
-        tail_rotor_tip_speed = np.array(float(config['Tail Rotor']['tip speed']))
+        tail_rotor_radius = np.array(float(tail['radius'])) if tail is not None else None
+        tail_rotor_area = np.pi * tail_rotor_radius ** 2 if tail is not None else None
+        tail_rotor_tip_speed = np.array(float(tail['tip speed'])) if tail is not None else None
         ambient_temperature = np.array(float(config['Atmosphere']['temperature']))
         speed_of_sound = 20.05 * np.sqrt(ambient_temperature)
         ambient_density = np.array(float(config['Atmosphere']['density']))
@@ -263,7 +292,7 @@ def extract_SPL(filename, infreqs=None, distance=1000,
 
 def _reduce_sphere_levels(amplitude, phi, theta, frequency, radius, speed, flight_path_angle,
                           infreqs, distance, atmosphere, absorption_band_method, sphere_frame='level',
-                          with_measured=False):
+                          with_measured=False, database_frame='level'):
     """:func:`extract_SPL` from levels already read, as :func:`load_nc_sphere` returns them.
 
     amplitude is dB (phi, theta, frequency), any sentinel or NaN read as no energy;
@@ -280,15 +309,20 @@ def _reduce_sphere_levels(amplitude, phi, theta, frequency, radius, speed, fligh
     radius = radius * 0.3048
     # Replace masked values with no-energy SPL
     amplitude = mask_missing_levels(amplitude)
+    amplitude, phi = _drop_seam_copy(amplitude, phi)
     # Check frequency range
     if infreqs is not None:
         frequency_index = (frequency >= infreqs[0]) & (frequency <= infreqs[1])
         amplitude = amplitude[:, :, frequency_index]
         frequency = frequency[frequency_index]
-    if sphere_frame == 'flight_path':
+    gamma = float(np.ravel(flight_path_angle)[0])
+    if sphere_frame == 'flight_path' and database_frame == 'level':
         # AAM's frame: pitched nose-up by the flight path angle (THEORY 3.2).
-        amplitude, measured = repitch_art_levels(amplitude, phi, theta, float(np.ravel(flight_path_angle)[0]))
+        amplitude, measured = repitch_art_levels(amplitude, phi, theta, gamma)
     else:
+        if sphere_frame == 'level' and database_frame == 'flight_path' and gamma != 0.0:
+            raise ValueError('a level sphere at a flight path angle of {:g} deg cannot be filed in a '
+                             "flight_path database; build it with database_frame='level'".format(gamma))
         measured = np.isfinite(amplitude)
     SPLO = power_to_db(np.sum(np.power(10.0, amplitude / 10.0), axis=2))
     # A-weighted OASPL and excess atmospheric attenuation
@@ -300,6 +334,34 @@ def _reduce_sphere_levels(amplitude, phi, theta, frequency, radius, speed, fligh
     # quantities (e.g. EAA) after modifying the spectrum.
     out = (azi, elv, phi, theta, radius, SPLO, SPLA, EAA, speed, flight_path_angle, frequency, amplitude)
     return out + (measured,) if with_measured else out
+
+
+def _drop_seam_copy(amplitude, phi):
+    """A full sphere's levels with its seam stored once.
+
+    A full sphere (phi -180..180, as PSU-WOPWOP writes one) stores phi = 180 as a
+    copy of phi = -180: the same azimuth, the upper meridian.  A database keeps
+    phi in [-180, 180) (validate_nod C13), so the copy is dropped.  Two seam rows
+    that differ would be two levels for one direction, and are refused.  Any
+    other phi axis is returned as it is.  amplitude is masked already
+    (:func:`mask_missing_levels`), so a missing cell is -inf in either row,
+    whichever convention the file used.
+    """
+    phi = np.asarray(phi, dtype=float)
+    if phi.size < 2 or not (np.isclose(phi[0], -180.0, rtol=0.0, atol=1e-6)
+                            and np.isclose(phi[-1], 180.0, rtol=0.0, atol=1e-6)):
+        return amplitude, phi
+    if not np.allclose(amplitude[0], amplitude[-1], rtol=0.0, atol=1e-6):
+        raise ValueError('a full sphere stores phi = 180 as a copy of phi = -180 (the same azimuth, '
+                         'the upper meridian), but here the two rows differ')
+    return amplitude[:-1], phi[:-1]
+
+
+def _is_full_circle(phi_list):
+    """True for a full sphere's azimuths (phi from -180, its seam copy dropped):
+    measured all round, so there is no upper half to complete."""
+    phi_list = np.asarray(phi_list, dtype=float)
+    return phi_list.size > 0 and bool(np.isclose(phi_list.min(), -180.0, rtol=0.0, atol=1e-6))
 
 
 def spla_and_eaa_from_spectrum(spectrum, frequency, distance, atmosphere, absorption_band_method='center'):
@@ -392,9 +454,13 @@ def _complete_sphere_with_coverage(phi_list, theta_list, spla, eaa, amplitude, m
     The returned coverage has the completed shape and is True only on source
     rows, where the bin is measured.  The reflected upper surface is never
     measured: it is a symmetry fill, so it is recorded as unmeasured.  Returns
-    None for coverage when ``measured`` is None.
+    None for coverage when ``measured`` is None.  A full sphere (phi from -180)
+    is measured all round and is returned as it is, sorted.
     """
-    mirror_phi, source_index = mirror_phi_to_upper_surface(phi_list)
+    if _is_full_circle(phi_list):
+        mirror_phi, source_index = np.zeros(0), np.zeros(0, dtype=int)
+    else:
+        mirror_phi, source_index = mirror_phi_to_upper_surface(phi_list)
     n_source = len(phi_list)
     phi_full_list = np.concatenate((np.asarray(phi_list, dtype=float), mirror_phi))
     # Rows sorted by phi, so the spectra -- written gridded, without angles of
@@ -509,6 +575,11 @@ def _fore_aft_measured(measured):
 #: Flight path angles, degrees, a synthesized hover is written at when no
 #: extended angles are given (see :func:`_hover_flight_path_angles`).
 HOVER_FLIGHT_PATH_ANGLES = (-12, 0, 12)
+
+
+#: A sphere slower than this, kt, is a real hover (PSU-WOPWOP predicts one at SPEED 0):
+#: the database's hover, written at the hover's flight path angles, none synthesized.
+_REAL_HOVER_KNOTS = 1e-6
 
 
 def _hover_flight_path_angles(extended_flight_path_angles=None):
@@ -639,30 +710,125 @@ def _select_sphere_files(directory_name, spheres=None, exclude=None):
     return [f for f in candidates if f not in excluded], excluded
 
 
+#: How closely (relative) vehicle.cfg and the spheres must agree on the main rotor.
+VEHICLE_AGREEMENT = 1e-3
+
+
+def _build_vehicle(directory_name, file_list):
+    """The vehicle a database is built for: main_rotor_radius_m, main_rotor_tip_speed_mps,
+    vehicle_weight_newtons and air_density_kg_m3 (the nominal weight coefficient's).
+
+    From directory_name's vehicle.cfg where there is one (:func:`read_vehicle_rotor_data`):
+    its weight and density are the nominal ones, a sphere's its run's.  Else from the
+    spheres' vehicle fields (:func:`sphere_io.read_sphere_vehicle`, PSU-WOPWOP's), which
+    must then all give the same rotor, weight and density.  Where both give the main rotor
+    (radius, tip speed, blades), they must agree to :data:`VEHICLE_AGREEMENT`.
+    """
+    names = {key: name for name, key, _ in SPHERE_VEHICLE_FIELDS}
+    per_sphere = [read_sphere_vehicle(f) for f in file_list]
+    cfg = os.path.join(os.path.abspath(os.path.expanduser(str(directory_name))), 'vehicle.cfg')
+    have_cfg = os.path.isfile(cfg)
+
+    def common(key, why, required=True):
+        """The value every sphere gives for key; None if none gives it."""
+        values = np.array([v[key] for v in per_sphere])
+        known = values[np.isfinite(values)]
+        if known.size == 0:
+            if have_cfg or not required:
+                return None
+            raise ValueError('no vehicle.cfg in {}, and the spheres give no {}'.format(directory_name, names[key]))
+        if (known.size < values.size and not have_cfg) or not np.allclose(known, known[0], rtol=1e-6, atol=0.0):
+            raise ValueError('the spheres give different {} ({:.6g} to {:.6g}, or none){}'.format(
+                names[key], known.min(), known.max(), why))
+        return float(known[0])
+
+    rotor = {key: common(key, ': spheres of one rotor only', required=key != 'main_rotor_blades')
+             for key in ('main_rotor_radius_m', 'main_rotor_tip_speed_mps', 'main_rotor_blades')}
+    if not have_cfg:
+        return dict(main_rotor_radius_m=rotor['main_rotor_radius_m'],
+                    main_rotor_tip_speed_mps=rotor['main_rotor_tip_speed_mps'],
+                    vehicle_weight_newtons=common('gross_weight_newtons',
+                                                  '; a weight sweep takes its nominal weight from vehicle.cfg'),
+                    air_density_kg_m3=common('air_density_kg_m3',
+                                             '; a density sweep takes its nominal density from vehicle.cfg'))
+    vehicle = read_vehicle_rotor_data(cfg)
+    config = ConfigParser()
+    config.read(cfg)
+    cfg_rotor = dict(main_rotor_radius_m=vehicle['main_rotor_radius_m'],
+                     main_rotor_tip_speed_mps=vehicle['main_rotor_tip_speed_mps'],
+                     main_rotor_blades=config.getfloat('Main Rotor', 'blades', fallback=None))
+    for key, value in rotor.items():
+        if value is not None and cfg_rotor[key] is not None and \
+                abs(value - cfg_rotor[key]) > VEHICLE_AGREEMENT * abs(cfg_rotor[key]):
+            raise ValueError("the spheres' {} {:.6g} differs from vehicle.cfg's {:.6g} ({})".format(
+                names[key], value, cfg_rotor[key], cfg))
+    return {key: vehicle[key] for key in ('main_rotor_radius_m', 'main_rotor_tip_speed_mps',
+                                          'vehicle_weight_newtons', 'air_density_kg_m3')}
+
+
+def _select_sphere_type(file_list, sphere_type, named):
+    """The spheres of file_list that are of sphere_type (see :func:`build_empirical_database`).
+
+    named: the files were named by the caller, so one of another type is an error
+    rather than left out.
+    """
+    if sphere_type is not None and sphere_type not in SPHERE_TYPES:
+        raise ValueError('sphere_type must be one of {} or None, not {!r}'.format(SPHERE_TYPES, sphere_type))
+    kinds = {f: read_sphere_type(f) for f in file_list}
+    found = sorted(set(kinds.values()))
+    if sphere_type is None:
+        if len(found) > 1:
+            raise ValueError('a database is built from one sphere type, but these spheres are {}; '
+                             'choose one with sphere_type'.format(', '.join(found)))
+        return file_list
+    if named:
+        other = [f for f in file_list if kinds[f] != sphere_type]
+        if other:
+            raise ValueError('{} is a {} sphere, not {}'.format(
+                os.path.basename(other[0]), kinds[other[0]], sphere_type))
+    used = [f for f in file_list if kinds[f] == sphere_type]
+    if file_list and not used:
+        raise ValueError('no {} sphere among the {} sphere files (they are {}); choose a type with '
+                         'sphere_type'.format(sphere_type, len(file_list), ', '.join(found)))
+    return used
+
+
+@_per_file
 def _sphere_condition(filename):
     """The (SPEED kt, FLIGHT_PATH_ANGLE deg) a sphere file records, NaN where unreadable."""
-    with Dataset(filename, mode='r') as handle:
+    with read_dataset(filename) as handle:
         return _read_scalar(handle, 'SPEED'), _read_scalar(handle, 'FLIGHT_PATH_ANGLE')
 
 
-def _group_repeat_conditions(filenames, speed_tolerance_knots=0.0):
+def _group_repeat_conditions(filenames, speed_tolerance_knots=0.0, thrust_coefficients=None):
     """Group sphere files by flight condition, for :func:`build_empirical_database`.
 
     Two files share a condition when their FLIGHT_PATH_ANGLE agrees to 1e-9 deg
     and their SPEED agrees to 1e-9 kt, or lies within speed_tolerance_knots (kt)
     of the slowest file of the group.  Returns a list of tuples of file names,
     each in the order of ``filenames``, ordered by its first file, so that
-    files with no repeat give one 1-tuple each, in their own order.
+    files with no repeat give one 1-tuple each, in their own order.  With
+    ``thrust_coefficients`` ({file: C_T}, thrust_from='sphere'), files share a
+    condition only if their C_T agree to 1e-6 as well.
     """
     conditions = [_sphere_condition(f) for f in filenames]
+    ct = [None if thrust_coefficients is None else thrust_coefficients[f] for f in filenames]
+    # C_T that agree to 1e-6 are one thrust: cluster them first, so that the sort below is by
+    # angle, thrust and then speed, and a group's first file is its slowest.
+    cluster = [0] * len(filenames)
+    if thrust_coefficients is not None:
+        by_ct = sorted(range(len(filenames)), key=lambda i: ct[i])
+        for previous, i in zip(by_ct, by_ct[1:]):
+            cluster[i] = cluster[previous] + (abs(ct[i] - ct[previous]) > 1e-6 * abs(ct[i]))
     order = sorted(range(len(filenames)),
-                   key=lambda i: (round(conditions[i][1], 9), conditions[i][0], i))
+                   key=lambda i: (round(conditions[i][1], 9), cluster[i], conditions[i][0], i))
     groups = []
     for i in order:
         speed, angle = conditions[i]
         if groups:
             first_speed, first_angle = conditions[groups[-1][0]]
-            if round(angle, 9) == round(first_angle, 9) and (
+            same_thrust = cluster[i] == cluster[groups[-1][0]]
+            if round(angle, 9) == round(first_angle, 9) and same_thrust and (
                     round(speed, 9) == round(first_speed, 9)
                     or speed - first_speed <= speed_tolerance_knots):
                 groups[-1].append(i)
@@ -671,8 +837,51 @@ def _group_repeat_conditions(filenames, speed_tolerance_knots=0.0):
     return [tuple(filenames[i] for i in sorted(group)) for group in sorted(groups, key=min)]
 
 
+#: Where each condition's thrust coefficient comes from (build_empirical_database's thrust_from):
+#: the vehicle's nominal weight coefficient, or each sphere's run (a weight or density sweep).
+THRUST_SOURCES = ('vehicle', 'sphere')
+
+
+#: How the builder reads cells at a sphere's floor (build_empirical_database's floor_masking).
+FLOOR_MASKINGS = ('auto', 'minimum', 'off')
+
+
+#: A cell within this of its sphere's floor, dB, is at it: the floor is stored as text and
+#: the levels in single precision.
+_FLOOR_TOLERANCE_DB = 1e-4
+
+
+@_per_file
+def sphere_floor_db(filename, floor_masking='auto'):
+    """The level, dB, a sphere's empty cells were raised to, or None to mask none.
+
+    'auto': the file's ``floor_level_dB`` (PSU-WOPWOP's), None without it; 'minimum':
+    its lowest finite level; 'off': None.
+    """
+    if floor_masking not in FLOOR_MASKINGS:
+        raise ValueError('floor_masking must be one of {}, not {!r}'.format(FLOOR_MASKINGS, floor_masking))
+    if floor_masking == 'off':
+        return None
+    with read_dataset(filename) as handle:
+        if floor_masking == 'auto':
+            return float(handle.getncattr('floor_level_dB')) if 'floor_level_dB' in handle.ncattrs() else None
+        levels = mask_missing_levels(np.ma.filled(np.ma.asarray(handle['AMPLITUDE'][...], dtype=float), np.nan))
+    finite = levels[np.isfinite(levels)]
+    return float(finite.min()) if finite.size else None
+
+
+def _mask_floor(levels, floor):
+    """levels with the cells at ``floor`` (dB, None: none) as NaN, no data."""
+    if floor is None:
+        return levels
+    levels = np.array(levels, dtype=float)
+    levels[levels <= floor + _FLOOR_TOLERANCE_DB] = np.nan
+    return levels
+
+
 def _extract_condition_SPL(filenames, infreqs, distance, atmosphere, absorption_band_method,
-                           speed_tolerance_knots=0.0, sphere_frame='level'):
+                           speed_tolerance_knots=0.0, sphere_frame='level', floor_masking='off',
+                           database_frame='level'):
     """:func:`extract_SPL` for one condition: one sphere file, or the energy average of several.
 
     Several files are averaged by :func:`sphere_statistics.average_spheres`, a -999
@@ -680,20 +889,28 @@ def _extract_condition_SPL(filenames, infreqs, distance, atmosphere, absorption_
     :func:`extract_SPL` reads a -999.  speed_tolerance_knots (kt) is the SPEED
     spread allowed between them.  The speed returned is the runs' mean, kt.
     sphere_frame is the frame the files are filed in; they are averaged in it and
-    the average pitched to level.  Returns :func:`extract_SPL`'s tuple and the
+    the average pitched to level.  Each file's floor cells (:func:`sphere_floor_db`) are
+    read as no data, before any average.  Returns :func:`extract_SPL`'s tuple and the
     ``measured`` mask of :func:`_reduce_sphere_levels`.
     """
     if len(filenames) == 1:
-        return _reduce_sphere_levels(*load_nc_sphere(filenames[0]), infreqs, distance, atmosphere,
-                                     absorption_band_method, sphere_frame, with_measured=True)
+        amplitude, *rest = load_nc_sphere(filenames[0])
+        return _reduce_sphere_levels(_mask_floor(amplitude, sphere_floor_db(filenames[0], floor_masking)), *rest,
+                                     infreqs, distance, atmosphere, absorption_band_method, sphere_frame,
+                                     with_measured=True, database_frame=database_frame)
+    spheres = []
+    for filename in filenames:
+        sphere = sphere_statistics.read_sphere(filename, 'no_data')
+        sphere['levels_db'] = _mask_floor(sphere['levels_db'], sphere_floor_db(filename, floor_masking))
+        spheres.append(sphere)
     average = sphere_statistics.average_spheres(
-        filenames, speed_tolerance_knots=max(float(speed_tolerance_knots), 1e-9),
+        spheres, speed_tolerance_knots=max(float(speed_tolerance_knots), 1e-9),
         flight_path_angle_tolerance_deg=1e-9)
     return _reduce_sphere_levels(
         average['levels_db'], average['phi_deg'], average['theta_deg'], average['frequency_hz'],
         np.asarray(average['radius_ft']), np.asarray(average['speed_knots']),
         np.asarray(average['flight_path_angle_deg']), infreqs, distance, atmosphere,
-        absorption_band_method, sphere_frame, with_measured=True)
+        absorption_band_method, sphere_frame, with_measured=True, database_frame=database_frame)
 
 
 def group_run_metadata(filename, main_rotor_area=None, main_rotor_tip_speed=None,
@@ -733,7 +950,108 @@ def group_run_metadata(filename, main_rotor_area=None, main_rotor_tip_speed=None
     if condition_origin == 'synthesized_hover':
         out.update(wind_along_track=nan, wind_cross_track=nan, advance_ratio_air=nan,
                    wind_source='none', wind_units='', wind_reference_direction='')
+    out['sphere_labels'] = sphere_labels(filename)
     return out
+
+
+@_per_file
+def sphere_labels(filename):
+    """The labels of :data:`SPHERE_LABEL_NUMBERS` and :data:`SPHERE_LABEL_TEXT` sphere
+    ``filename`` gives (PSU-WOPWOP's), as {name: value}; a label it lacks is left out.
+
+    PREDICTION_RADIUS is read in m (its unit METER or FEET), floor_level from
+    ``floor_level_dB``, speed_of_sound from ``speed_of_sound_m_s``, nb_bandwidth from
+    ``nb_bandwidth_Hz``; sphere_center_xyz_ft is XYZ as text where it is not zero.
+    """
+    out = {}
+    with read_dataset(filename) as handle:
+        if 'PREDICTION_RADIUS' in handle.variables:
+            variable = handle.variables['PREDICTION_RADIUS']
+            unit = str(getattr(variable, 'unit', 'METER')).strip().upper()
+            factors = {'METER': 1.0, 'FEET': 0.3048}
+            if unit not in factors:
+                raise ValueError('{}: PREDICTION_RADIUS in unit {!r}; expected METER or FEET'.format(filename, unit))
+            out['prediction_radius'] = _read_scalar(handle, 'PREDICTION_RADIUS') * factors[unit]
+        for name, attribute in (('floor_level', 'floor_level_dB'), ('speed_of_sound', 'speed_of_sound_m_s'),
+                                ('nb_bandwidth', 'nb_bandwidth_Hz')):
+            if attribute in handle.ncattrs():
+                out[name] = float(handle.getncattr(attribute))
+        for name in ('sphere_type', 'content', 'source_tag'):
+            if name in handle.ncattrs():
+                out[name] = str(handle.getncattr(name))
+        center = _sphere_center_ft(handle)
+        if center is not None and np.any(center != 0.0):
+            out['sphere_center_xyz_ft'] = ' '.join('{:g}'.format(v) for v in center)
+    return out
+
+
+def _sphere_center_ft(handle):
+    """An open sphere's XYZ (ft), or None if it has none."""
+    if 'XYZ' not in handle.variables:
+        return None
+    return np.asarray(np.ma.filled(np.ma.asarray(handle.variables['XYZ'][...], dtype=float), np.nan)).ravel()
+
+
+def _check_sphere_centers(file_list, ignore_sphere_center):
+    """Refuse a sphere centered off the vehicle's origin, unless ignore_sphere_center."""
+    if ignore_sphere_center:
+        return
+    for filename in file_list:
+        with read_dataset(filename) as handle:
+            center = _sphere_center_ft(handle)
+        if center is not None and np.any(center != 0.0):
+            raise ValueError('{} is centered at XYZ = {} ft, but a database holds one source at the '
+                             "vehicle's origin; pass ignore_sphere_center=True (--ignore-sphere-center) "
+                             'to build it as if centered there'.format(
+                                 os.path.basename(filename), ', '.join('{:g}'.format(v) for v in center)))
+
+
+def _resolve_lossless(filenames, argument=None):
+    """Whether the spheres' levels carry no atmospheric absorption.
+
+    PSU-WOPWOP's spheres (air_density_source "wopwop") are lossless; PANAM's are
+    depropagated through the run's atmosphere, so absorbed inside the sphere.  A
+    mix is refused, and so is declaring WOPWOP's spheres absorbed (False);
+    True declares lossless spheres that do not say so, as AAM's own.
+    """
+    wopwop = [_air_density_source(f) == 'wopwop' for f in filenames]
+    if any(wopwop) and not all(wopwop):
+        raise ValueError('{} of {} spheres are PSU-WOPWOP\'s, whose levels are lossless, and the others '
+                         'are not; build a database from one kind'.format(sum(wopwop), len(wopwop)))
+    if all(wopwop) and argument is False:
+        raise ValueError("PSU-WOPWOP's spheres are lossless (no atmospheric absorption); "
+                         'sphere_levels_lossless=False would absorb them from the surface only')
+    return bool(argument) or all(wopwop)
+
+
+@_per_file
+def _air_density_source(filename):
+    with read_dataset(filename) as handle:
+        return str(getattr(handle, 'air_density_source', '')).strip().lower()
+
+
+def _resolve_speed_reference(filenames, argument=None):
+    """The speed_reference of a database: what its spheres' ``speed_reference`` says
+    (PSU-WOPWOP's spheres say 'air'), an argument given agreeing; 'ground', PANAM's,
+    where no sphere says.  Spheres that say different things are refused."""
+    if argument is not None and argument not in SPEED_REFERENCES:
+        raise ValueError('speed_reference must be one of {} or None, not {!r}'.format(
+            SPEED_REFERENCES, argument))
+    labeled = {}
+    for filename in filenames:
+        with read_dataset(filename) as handle:
+            if 'speed_reference' in handle.ncattrs():
+                labeled[filename] = str(handle.getncattr('speed_reference')).strip()
+    values = set(labeled.values())
+    if not values <= set(SPEED_REFERENCES) or len(values) > 1:
+        raise ValueError('the spheres give speed_reference {}; build from spheres of one'.format(sorted(values)))
+    if values and len(labeled) < len(filenames):
+        raise ValueError('{} of {} spheres give speed_reference; build from spheres that all do or '
+                         'none'.format(len(labeled), len(filenames)))
+    if values and argument is not None and argument not in values:
+        raise ValueError('the spheres give speed_reference {!r}, but the build was asked for {!r}'.format(
+            values.pop(), argument))
+    return values.pop() if values else (argument or 'ground')
 
 
 def _merged_run_metadata(rows):
@@ -868,6 +1186,16 @@ def _resolve_azimuth_reference(filenames, argument=None):
 
 # ---- Building a database ----
 
+def _in_per_file_cache(build):
+    """``build`` run inside :func:`sphere_io.per_file_cache`: each sphere is asked its metadata once."""
+    @functools.wraps(build)
+    def cached(*args, **kwargs):
+        with per_file_cache():
+            return build(*args, **kwargs)
+    return cached
+
+
+@_in_per_file_cache
 def build_empirical_database(directory_name, database_filename, load_factors=np.linspace(0.7, 2.3, 5), infreqs=None,
                              distance=1000,
                              atmosphere=Atmosphere(temperature=293.15, pressure=101.325,
@@ -876,14 +1204,18 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                              level_flight_tolerance=LEVEL_FLIGHT_TOLERANCE,
                              store_spectrum=True, clamp_empty_directions=True,
                              hover_correction=None, hover_source=None,
-                             speed_reference='ground', doppler_shift_removed=None,
+                             speed_reference=None, doppler_shift_removed=None,
                              azimuth_reference=None, spheres=None, exclude=None,
                              absorption_band_method='center', merge_repeats=False,
-                             merge_speed_tolerance=0.0, sphere_frame=None):
+                             merge_speed_tolerance=0.0, sphere_frame=None, coherence=None, sphere_type='BB',
+                             ignore_sphere_center=False, sphere_levels_lossless=None, floor_masking='auto',
+                             database_frame='level', thrust_from='vehicle'):
     """Build a NICEOPS sphere database from a directory of sphere files.
 
-    directory_name holds vehicle.cfg and, unless ``spheres`` says otherwise,
-    the sphere files: every ``*.nc`` in it.  database_filename is the output,
+    directory_name holds the sphere files (every ``*.nc`` in it, unless ``spheres``
+    says otherwise) and vehicle.cfg, which spheres that carry the vehicle
+    (PSU-WOPWOP's MAIN_ROTOR_*, GROSS_WEIGHT and AIR_DENSITY) do not need; see
+    :func:`_build_vehicle`.  database_filename is the output,
     replaced if it exists.  distance is the propagation distance of the
     broadband EAA, m; infreqs, when given, is the (low, high) band range kept,
     Hz; level_flight_tolerance is in degrees of flight path angle.
@@ -899,7 +1231,12 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     directory_name, so the names :func:`noise_abatement_2017.select_from_manifest`
     returns can be passed as they are.  exclude, when given, is a list of file
     names or shell-style patterns (``fnmatch``, matched against the file name)
-    whose spheres are left out.  The root text attribute source_spheres always
+    whose spheres are left out.  sphere_type is the type of sphere built from
+    (:data:`sphere_io.SPHERE_TYPES`, read by :func:`sphere_io.read_sphere_type`):
+    the candidates of other types are left out, as a PSU-WOPWOP results folder
+    holds every type it was asked for, but a file ``spheres`` names must be of
+    it.  None takes every candidate, which must then share one type.  The root
+    text attribute source_spheres always
     records the file names used, one per line, sorted; with exclude,
     excluded_spheres records those left out.  Neither holds a directory.
 
@@ -1028,6 +1365,14 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     (omitted with ``load_factors=None``; ``fixed_load_factor`` says so) and
     ``extended_flight_path_angles_deg`` (omitted when not given).
 
+    coherence, when given, is the vehicle's coherence between emission directions, which
+    NICEOPS's point-source urban model weights each pair of rays by: a
+    :class:`directional_coherence.CoherenceRecord` (or a mapping of its fields, as a build
+    recipe gives it), usually from :func:`directional_coherence.fit_coherence`. It is written
+    as root attributes (``docs/file_formats.md``), the tonal fraction interpolated onto the
+    database's bands and left out without stored spectra. Without it the database carries
+    none, and NICEOPS takes its defaults.
+
     NICEOPS takes one sphere per flight condition, so two spheres with the
     same SPEED and FLIGHT_PATH_ANGLE (equal to 1e-9 kt and deg) are refused.
     merge_repeats=True energy-averages them instead, with
@@ -1060,10 +1405,6 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
             [exclude] if isinstance(exclude, (str, os.PathLike)) else exclude))
     # TODO add reinterpolation flag
 
-    if speed_reference not in SPEED_REFERENCES:
-        raise ValueError('speed_reference must be one of {}, not {!r}'.format(
-            SPEED_REFERENCES, speed_reference))
-
     # None means "write the LF=1 reference only, let the reader scale it" --
     # see the docstring.  Every load-factor loop below iterates this instead
     # of the load_factors parameter directly, so add_sphere_group need not
@@ -1071,10 +1412,6 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
     # thrust_coefficient == weight_coefficient, which is exactly the reference.
     fixed_load_factor = load_factors is None
     load_factors_to_write = (1.0,) if fixed_load_factor else load_factors
-
-    # Get vehicle attributes
-    (main_rotor_radius, main_rotor_area, main_rotor_tip_speed,
-     _, _, _, _, _, _, weight_coefficient, _, _, _, _) = read_vehicle_data(directory_name)
 
     def run_metadata(filenames, origin='measured'):
         return _merged_run_metadata([group_run_metadata(filename, main_rotor_area,
@@ -1088,13 +1425,65 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
             raise ValueError('{} are filed in different frames ({}); merge spheres of one frame only'.format(
                 ' and '.join(os.path.basename(f) for f in filenames), ', '.join(sorted(names))))
         return _extract_condition_SPL(filenames, infreqs, distance, atmosphere,
-                                      absorption_band_method, merge_speed_tolerance, names.pop())
+                                      absorption_band_method, merge_speed_tolerance, names.pop(),
+                                      floor_masking, database_frame)
 
     # Sorted, so group numbering and hover-sphere ties do not depend on the
     # order the filesystem happens to list the directory in.
     file_list, excluded = _select_sphere_files(directory_name, spheres, exclude)
+    file_list = _select_sphere_type(file_list, sphere_type, named=spheres is not None)
     if not file_list:
         raise ValueError('No sphere files found in ' + str(directory_name))
+    vehicle = _build_vehicle(directory_name, file_list)
+    main_rotor_radius = vehicle['main_rotor_radius_m']
+    main_rotor_tip_speed = vehicle['main_rotor_tip_speed_mps']
+    main_rotor_area = np.pi * main_rotor_radius ** 2
+    weight_coefficient = vehicle['vehicle_weight_newtons'] / (
+        vehicle['air_density_kg_m3'] * main_rotor_area * main_rotor_tip_speed ** 2)
+    speed_reference = _resolve_speed_reference(file_list, speed_reference)
+    if floor_masking not in FLOOR_MASKINGS:
+        raise ValueError('floor_masking must be one of {}, not {!r}'.format(FLOOR_MASKINGS, floor_masking))
+    lossless = _resolve_lossless(file_list, sphere_levels_lossless)
+    # Recorded as resolved, so a build that leaves it to the spheres has the settings of
+    # one that names what they say.
+    settings['speed_reference'] = speed_reference
+    if database_frame not in SPHERE_FRAMES:
+        raise ValueError('database_frame must be one of {}, not {!r}'.format(SPHERE_FRAMES, database_frame))
+    if thrust_from not in THRUST_SOURCES:
+        raise ValueError('thrust_from must be one of {}, not {!r}'.format(THRUST_SOURCES, thrust_from))
+    # thrust_from='sphere': each sphere's own run's C_T, its condition's.
+    run_thrust = None
+    if thrust_from == 'sphere':
+        run_thrust = {}
+        # The hover source's synthesized hovers take its run's C_T too, so it must record one.
+        hover_file = [] if hover_source is None else [os.path.abspath(os.path.expanduser(hover_source))]
+        for f in list(file_list) + hover_file:
+            run = read_run_metadata(f)
+            ct = run['gross_weight_lb'] * POUND_FORCE_NEWTONS / (
+                run['air_density_kg_m3'] * main_rotor_area * main_rotor_tip_speed ** 2)
+            if not np.isfinite(ct):
+                raise ValueError("{} records no GROSS_WEIGHT or AIR_DENSITY, which thrust_from='sphere' forms "
+                                 'its thrust coefficient from'.format(os.path.basename(f)))
+            if f in file_list:
+                run_thrust[f] = float(ct)
+        # One fixed law only while every run has one C_T.
+        fixed_load_factor = fixed_load_factor and np.ptp(list(run_thrust.values())) <= 1e-6 * max(run_thrust.values())
+    _check_sphere_centers(file_list, ignore_sphere_center)
+    (kind,) = {read_sphere_type(f) for f in file_list}
+    if kind != 'BB' and absorption_band_method != 'center':
+        raise ValueError("absorption_band_method {!r} is for one-third octave bands; {} spheres take "
+                         "'center'".format(absorption_band_method, kind))
+    prediction_radii = {sphere_labels(f).get('prediction_radius', np.nan) for f in file_list}
+    prediction_radius = prediction_radii.pop() if len(prediction_radii) == 1 else None
+    if prediction_radius is not None and not np.isfinite(prediction_radius):
+        prediction_radius = None
+    # 1e-6: a sphere's radii are single precision, and WOPWOP's default is 50 rotor radii exactly.
+    close = sorted(r for r in prediction_radii | {prediction_radius}
+                   if r is not None and r < FAR_FIELD_ROTOR_RADII * main_rotor_radius * (1.0 - 1e-6))
+    if close:
+        warnings.warn('PREDICTION_RADIUS {:g} m is {:.3g} main rotor radii, under {:g}: the spheres '
+                      'are not yet in the far field the database spreads them from'.format(
+                          close[0], close[0] / main_rotor_radius, FAR_FIELD_ROTOR_RADII))
     if not merge_speed_tolerance >= 0.0:
         raise ValueError('merge_speed_tolerance must be at least 0 kt, not {!r}'.format(
             merge_speed_tolerance))
@@ -1102,7 +1491,7 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
         raise ValueError('merge_speed_tolerance applies to merge_repeats=True only')
     # One entry per condition to write: a tuple of the sphere files averaged into it.
     condition_files = _group_repeat_conditions(
-        file_list, merge_speed_tolerance if merge_repeats else 0.0)
+        file_list, merge_speed_tolerance if merge_repeats else 0.0, run_thrust)
     repeats = [files for files in condition_files if len(files) > 1]
     if repeats and not merge_repeats:
         speed, angle = _sphere_condition(repeats[0][0])
@@ -1112,6 +1501,21 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                              ' and '.join(os.path.basename(f) for f in repeats[0]), speed, angle))
     if repeats:
         inputs['merged_spheres'] = [[os.path.basename(f) for f in files] for files in repeats]
+    # A sphere at zero speed is the hover itself (_REAL_HOVER_KNOTS), and none is synthesized.
+    real_hovers = [files for files in condition_files
+                   if abs(_sphere_condition(files[0])[0]) < _REAL_HOVER_KNOTS]
+    # One hover per thrust: a weight or density sweep (thrust_from='sphere') may hold a hover at
+    # each of its C_T, each its own condition; two at one thrust are two hovers of one condition.
+    for i, first in enumerate(real_hovers):
+        for second in real_hovers[i + 1:]:
+            if run_thrust is None or abs(run_thrust[first[0]] - run_thrust[second[0]]) <= 1e-6 * abs(
+                    run_thrust[first[0]]):
+                raise ValueError('{} and {} are each a hover (SPEED 0) at one thrust; a database holds one '
+                                 'hover per thrust coefficient'.format(os.path.basename(first[0]),
+                                                                       os.path.basename(second[0])))
+    if real_hovers and (hover_source is not None or hover_correction is not None):
+        raise ValueError('{} is a hover (SPEED 0), which is the database\'s hover; hover_source and '
+                         'hover_correction shape a synthesized one'.format(os.path.basename(real_hovers[0][0])))
     # Settled before the output exists, so a refused mix of sources leaves no
     # half-written database behind.
     doppler = _resolve_doppler_shift_removed(file_list, doppler_shift_removed)
@@ -1126,14 +1530,17 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                              speed_reference=speed_reference, atmosphere=atmosphere,
                              main_rotor_radius=main_rotor_radius,
                              main_rotor_tip_speed=main_rotor_tip_speed,
-                             vehicle_weight_newtons=read_vehicle_weight_newtons(directory_name),
+                             vehicle_weight_newtons=vehicle['vehicle_weight_newtons'],
+                             band_type=BAND_TYPES[kind], prediction_radius=prediction_radius,
+                             sphere_levels_lossless=lossless, air_density=vehicle['air_density_kg_m3'],
+                             sphere_frame=database_frame,
                              azimuth_reference=azimuth,
                              # A fixed panam_tool value (docs/file_formats.md): it kept its name when the
                              # function moved here.
                              provenance=_provenance.build_provenance(
                                  'flight_acoustics.build_empirical_database', settings,
                                  inputs=inputs))
-        if not fixed_load_factor:
+        if load_factors is not None:
             ncdatabase.load_factors = np.asarray(load_factors, dtype=np.float64).ravel()
         if extended_flight_path_angles is not None:
             ncdatabase.extended_flight_path_angles_deg = np.asarray(
@@ -1150,6 +1557,8 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
         level_conditions = []
         # Each condition's levels, kept for the hover synthesis below.
         condition_inputs = {}
+        # The real hover's completed levels and its own flight path angle, if there is one.
+        real_hover_levels = []
         # Every condition to write, collected rather than written immediately, so
         # that whether phi/theta/frequency can be deduplicated (see
         # _grid_and_frequency_are_shared) is known before the first group is
@@ -1163,6 +1572,28 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
                 speed, flight_path_angle, load_factor,
                 frequency if store_spectrum else None,
                 amplitude if store_spectrum else None, coverage, metadata))
+
+        def add_hover(phi, theta, radius, spla, eaa, flight_path_angle, load_factor, frequency, amplitude,
+                      coverage, metadata):
+            # A hover has no flight path: its levels are level.  A flight-path database
+            # files every group in the frame pitched by its flight path angle, and NICEOPS
+            # reads a slow state there in that frame, so a hover written at a nonzero
+            # angle is the level hover re-expressed in that frame (repitched by -angle);
+            # a level database, and the copy at 0, keep it as it is.
+            if database_frame == 'flight_path' and flight_path_angle != 0.0:
+                # phi and theta are per channel; the amplitude is over their grid.
+                phi_axis, theta_axis = np.unique(phi), np.unique(theta)
+                if amplitude.shape[:2] != (phi_axis.size, theta_axis.size):
+                    raise ValueError('a hover filed in the flight-path frame needs its sphere on a full '
+                                     '(phi, theta) grid; this one is {}'.format(amplitude.shape[:2]))
+                pitched, read = repitch_art_levels(amplitude, phi_axis, theta_axis, -flight_path_angle)
+                spla, eaa = spla_and_eaa_from_spectrum(pitched, frequency, distance, atmosphere,
+                                                       absorption_band_method)
+                if clamp_empty_directions:
+                    spla, eaa = _finite_sphere_levels(spla, eaa)
+                amplitude, coverage = pitched, (None if coverage is None else coverage & read)
+            add(phi, theta, radius, spla, eaa, 0, flight_path_angle, load_factor, frequency, amplitude,
+                coverage, metadata)
 
         for filenames in condition_files:
             # Load the sphere data (the energy average of repeat runs, when merged)
@@ -1190,36 +1621,53 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
             for load_factor in load_factors_to_write:
                 add(phi_full, theta_full, radius, SPLA_full, EAA_full, speed, flight_path_angle,
                     load_factor, frequency, amplitude_full, coverage_full, measured_metadata)
+            if filenames in real_hovers:
+                real_hover_levels.append((phi_full, theta_full, radius, SPLA_full, EAA_full, frequency,
+                                          amplitude_full, coverage_full, filenames,
+                                          float(np.ravel(flight_path_angle)[0])))
 
-        min_speed_files = condition_files[_hover_source_index(source_conditions, level_flight_tolerance)]
+        for real_hover in real_hover_levels:
+            # Each real hover at the other angles a hover is written at, as a
+            # synthesized one would be (it has no flight path to keep).
+            (phi_full, theta_full, radius, SPLA_full, EAA_full, frequency, amplitude_full,
+             coverage_full, filenames, own_angle) = real_hover
+            hover_metadata = run_metadata(filenames, 'extended_flight_path_angle')
+            for flight_path_angle in _hover_flight_path_angles(extended_flight_path_angles):
+                if flight_path_angle == own_angle:
+                    continue
+                for load_factor in load_factors_to_write:
+                    add_hover(phi_full, theta_full, radius, SPLA_full, EAA_full, flight_path_angle,
+                              load_factor, frequency, amplitude_full, coverage_full, hover_metadata)
+        if not real_hover_levels:
+            min_speed_files = condition_files[_hover_source_index(source_conditions, level_flight_tolerance)]
 
-        if hover_source is not None:
-            # Its DOPPLER_SHIFT_REMOVED does not enter the database's flag: a hover
-            # has no Doppler shift, so its emitted and received frequencies are one
-            # and the group is received-frame like the flight spheres around it.
-            min_speed_files = (os.path.abspath(os.path.expanduser(hover_source)),)
-            (_, _, phi_list, theta_list, radius, _, _, eaa_source, _, _,
-             frequency, amplitude, in_hemisphere) = condition_levels(
-                min_speed_files, _resolve_sphere_frames(min_speed_files, sphere_frame))
-            measured = in_hemisphere & _measured_bins(amplitude, eaa_source)
-        else:
-            phi_list, theta_list, radius, frequency, amplitude, measured = condition_inputs[min_speed_files]
-        # Now, adapt the lowest speed sphere to a hover sphere by averaging from fore to aft
-        phi_full, theta_full, SPLA_full, EAA_full, amplitude_full, coverage_full = _synthesized_hover_sphere(
-            phi_list, theta_list, amplitude, measured, frequency,
-            distance, atmosphere, hover_correction=hover_correction,
-            clamp_empty_directions=clamp_empty_directions,
-            absorption_band_method=absorption_band_method)
-        # Set hover conditions.  Hover is a near-level condition, so it is written
-        # at the extended angles as well as level flight.
-        speed = 0
-        flight_path_angles = _hover_flight_path_angles(extended_flight_path_angles)
-        # Augment load factor data
-        hover_metadata = run_metadata(min_speed_files, 'synthesized_hover')
-        for load_factor in load_factors_to_write:
-            for flight_path_angle in flight_path_angles:
-                add(phi_full, theta_full, radius, SPLA_full, EAA_full, speed, flight_path_angle,
-                    load_factor, frequency, amplitude_full, coverage_full, hover_metadata)
+            if hover_source is not None:
+                # Its DOPPLER_SHIFT_REMOVED does not enter the database's flag: a hover
+                # has no Doppler shift, so its emitted and received frequencies are one
+                # and the group is received-frame like the flight spheres around it.
+                min_speed_files = (os.path.abspath(os.path.expanduser(hover_source)),)
+                (_, _, phi_list, theta_list, radius, _, _, eaa_source, _, _,
+                 frequency, amplitude, in_hemisphere) = condition_levels(
+                    min_speed_files, _resolve_sphere_frames(min_speed_files, sphere_frame))
+                measured = in_hemisphere & _measured_bins(amplitude, eaa_source)
+            else:
+                phi_list, theta_list, radius, frequency, amplitude, measured = condition_inputs[min_speed_files]
+            # Now, adapt the lowest speed sphere to a hover sphere by averaging from fore to aft
+            phi_full, theta_full, SPLA_full, EAA_full, amplitude_full, coverage_full = _synthesized_hover_sphere(
+                phi_list, theta_list, amplitude, measured, frequency,
+                distance, atmosphere, hover_correction=hover_correction,
+                clamp_empty_directions=clamp_empty_directions,
+                absorption_band_method=absorption_band_method)
+            # Set hover conditions.  Hover is a near-level condition, so it is written
+            # at the extended angles as well as level flight.
+            speed = 0
+            flight_path_angles = _hover_flight_path_angles(extended_flight_path_angles)
+            # Augment load factor data
+            hover_metadata = run_metadata(min_speed_files, 'synthesized_hover')
+            for load_factor in load_factors_to_write:
+                for flight_path_angle in flight_path_angles:
+                    add_hover(phi_full, theta_full, radius, SPLA_full, EAA_full, flight_path_angle,
+                              load_factor, frequency, amplitude_full, coverage_full, hover_metadata)
 
         # Widen the flight-path-angle envelope: re-emit each near-level condition at
         # the extended angles, keeping its own airspeed and directivity.  Hover is
@@ -1249,18 +1697,26 @@ def build_empirical_database(directory_name, database_filename, load_factors=np.
             add_sphere_group(ncdatabase, condition.name, condition.phi, condition.theta,
                              condition.radius, condition.SPLA, condition.EAA,
                              condition.speed, condition.flight_path_angle, condition.load_factor,
-                             main_rotor_radius, main_rotor_tip_speed, weight_coefficient,
+                             main_rotor_radius, main_rotor_tip_speed,
+                             weight_coefficient if run_thrust is None
+                             else condition.run_metadata['thrust_coefficient_run'],
                              condition.frequency, condition.amplitude,
                              write_grid_and_frequency=not shared_grid_and_frequency,
                              doppler_shift_removed=doppler, coverage=condition.coverage,
                              run_metadata=condition.run_metadata)
+        if coherence is not None:
+            if not isinstance(coherence, _directional_coherence.CoherenceRecord):
+                coherence = _directional_coherence.CoherenceRecord(**coherence)
+            _directional_coherence.write_coherence_record(ncdatabase, coherence,
+                                                          band_centers=pending_groups[0].frequency)
 
 
 # ---- Writing a database ----
 
 def _write_database_root(ncdatabase, *, fixed_load_factor, speed_reference, atmosphere,
                          main_rotor_radius, main_rotor_tip_speed, vehicle_weight_newtons,
-                         azimuth_reference, provenance=None):
+                         azimuth_reference, provenance=None, band_type=None, prediction_radius=None,
+                         sphere_levels_lossless=False, air_density=None, sphere_frame='level'):
     """Write the root flags, build atmosphere and vehicle data every database carries.
 
     Shared by :func:`build_empirical_database` and :func:`norah2.build_database_from_norah2`.
@@ -1297,8 +1753,11 @@ def _write_database_root(ncdatabase, *, fixed_load_factor, speed_reference, atmo
     # reference unit, as Atmosphere is written), relative humidity in percent.
     ncdatabase.speed_reference = speed_reference
     ncdatabase.azimuth_reference = azimuth_reference
-    # Every database is level: AAM's flight-path spheres are pitched to it as they are read.
-    ncdatabase.sphere_frame = 'level'
+    # The frame the spheres are filed in: level (AAM's flight-path spheres pitched to it as
+    # they are read), or flight_path (kept in it, build_empirical_database's database_frame).
+    if sphere_frame not in SPHERE_FRAMES:
+        raise ValueError('sphere_frame must be one of {}, not {!r}'.format(SPHERE_FRAMES, sphere_frame))
+    ncdatabase.sphere_frame = sphere_frame
     ncdatabase.build_temperature_K = float(atmosphere.temperature)
     ncdatabase.build_pressure_kPa = float(atmosphere.pressure)
     ncdatabase.build_relative_humidity_percent = float(atmosphere.relative_humidity)
@@ -1318,6 +1777,23 @@ def _write_database_root(ncdatabase, *, fixed_load_factor, speed_reference, atmo
     if vehicle_weight_newtons is not None:
         ncdatabase.createVariable("vehicle_weight_newtons", 'f8')
         ncdatabase['vehicle_weight_newtons'][:] = float(vehicle_weight_newtons)
+    # The density, kg/m^3, the weight coefficient is formed with: with the three
+    # above, the whole vehicle, so that NICEOPS needs no vehicle file.
+    if air_density is not None:
+        ncdatabase.createVariable("air_density_kg_m3", 'f8')
+        ncdatabase['air_density_kg_m3'][:] = float(air_density)
+    # What the bands are (BAND_TYPES), and the radius, m, the spheres were predicted at.
+    if band_type is not None:
+        ncdatabase.band_type = band_type
+    if prediction_radius is not None:
+        ncdatabase.createVariable("prediction_radius_meters", 'f8')
+        ncdatabase['prediction_radius_meters'][:] = float(prediction_radius)
+    # The spheres' levels carry no atmospheric absorption (PSU-WOPWOP's): NICEOPS
+    # absorbs over the whole range from the center, not from the sphere's surface.
+    # Left out otherwise, as every database before it.
+    if sphere_levels_lossless:
+        ncdatabase.createVariable("sphere_levels_lossless", 'b')
+        ncdatabase['sphere_levels_lossless'][:] = 1
     _provenance.write_provenance(ncdatabase, provenance)
 
 
@@ -1493,3 +1969,11 @@ def add_sphere_group(ncdatabase, groupname, phi, theta, radius, SPLA, EAA, speed
             this_group.setncattr(name + '_units', str(run_metadata['wind_units']) if units is None else units)
         for name in GROUP_RUN_METADATA_TEXT:
             this_group.setncattr(name, str(run_metadata[name]))
+        labels = run_metadata.get('sphere_labels', {})
+        for name, units in SPHERE_LABEL_NUMBERS:
+            if name in labels:
+                this_group.setncattr(name, np.float64(labels[name]))
+                this_group.setncattr(name + '_units', units)
+        for name in SPHERE_LABEL_TEXT:
+            if name in labels:
+                this_group.setncattr(name, str(labels[name]))

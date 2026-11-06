@@ -36,7 +36,7 @@ scalar also has a singleton dimension of its own name, declared in the same orde
 | `PYLON_ANGLE` | f4 scalar | DEGREE | 90 by default |
 | `SPEED` | f4 scalar | KNOTS | the mean ground speed for the 2017 build |
 | `XYZ` | f4 (`XYZ` = 3) | FEET | 0, 0, 0 by default |
-| `PHI` | f4 (`PHI`) | DEGREE | 0 straight down, positive to starboard, -90 to 90 |
+| `PHI` | f4 (`PHI`) | DEGREE | 0 straight down, positive to starboard, -90 to 90 (a full sphere, below: -180 to 180) |
 | `THETA` | f4 (`THETA`) | DEGREE | 0 at the nose, 180 at the tail |
 | `FREQUENCY` | f4 (`FREQUENCY`) | HERTZ | band centers |
 | `AMPLITUDE` | f4 (`PHI`, `THETA`, `FREQUENCY`) | DECIBEL | unweighted band level at `RADIUS`; -999 where missing (below) |
@@ -52,6 +52,9 @@ Attributes: `title`; `sphere_frame`, the frame `PHI` and `THETA` are filed in: `
 `level` (`build_sphere`'s; PANAM's, NICEOPS's and NORAH2's). A reader takes a sphere without it
 as `level`, with a warning ([THEORY §3.2](THEORY.md#32-directions)). And when known
 `azimuth_reference` (`track` or `heading`; a reader takes a sphere without it as `track`).
+A sphere's type is its `sphere_type` attribute (`BB`, `OB12`, `NB` or `PT`, PSU-WOPWOP's), which
+must agree with the AAM flags; a sphere without it is typed by the flags, and one with neither is
+`BB` ([PSU-WOPWOP spheres](#psu-wopwop-spheres)).
 Every sphere also carries the [provenance stamp](#provenance-stamp).
 
 **Per-run metadata.** When `build_sphere` passes `run_metadata`, the file also carries
@@ -107,8 +110,49 @@ Each ART point takes the values of the gridded node nearest it in azimuth and in
 they describe the neighborhood its `AMPLITUDE` was interpolated from, not that value exactly.
 The definitions are in [THEORY §6.4](THEORY.md#64-node-statistics).
 
+**Full spheres.** A sphere may store the whole circle, `PHI` from -180 to 180, as PSU-WOPWOP
+does with `hemisphere = 'full'`. Its `PHI` = 180 row is then a copy of the -180 row, the
+same azimuth (the upper meridian). The database builder reads the circle once: it drops the
+180 row, since a database keeps `phi` in [-180, 180) ([C13](#checking-a-database)), and refuses
+a sphere whose two seam rows differ (a missing cell matches a missing one, whichever
+convention each uses). A full sphere is not mirrored: its upper half is measured.
+
 **Missing values.** A missing band is stored as -999 (`AAM_MISSING_LEVEL`); see
 [how a bin's state travels](#how-a-bins-state-travels).
+
+### PSU-WOPWOP spheres
+
+PSU-WOPWOP writes AAM spheres predicted in still, lossless air: the layout above, in the
+`flight_path` frame, with `SPEED` the airspeed, then these f4 scalars, each with its `unit`, and
+text attributes. The database builder reads them as described in
+[database_build.md](database_build.md); none needs `vehicle.cfg`.
+
+| variable | `unit` | content |
+| --- | --- | --- |
+| `GROSS_WEIGHT` | POUNDS | the vehicle's weight, when given |
+| `AIR_DENSITY` | KG/M^3 | the air density the sphere was predicted in |
+| `AIRSPEED` | KNOTS | the airspeed, as `SPEED` |
+| `MAIN_ROTOR_RADIUS`, `MAIN_ROTOR_TIP_SPEED`, `MAIN_ROTOR_BLADES` | METER, M/S, (none) | the main rotor, when known |
+| `PREDICTION_RADIUS` | METER | the radius the levels were predicted at, scaled to `RADIUS` by 20 lg |
+| `ROTOR_SHAFT_RATE`, `ROTOR_AZIMUTH` | RAD/S, DEGREE | a per-source sphere's rotor |
+| `TONAL_MAX_FREQUENCY` | HERTZ | the highest tone the sphere holds |
+| `PHASE` | DEGREE | a `PT` sphere's tone phases, (`PHI`, `THETA`, `FREQUENCY`) |
+
+| attribute | content |
+| --- | --- |
+| `sphere_type` | `BB`, `OB12`, `NB` or `PT` |
+| `content` | `discrete frequency`, or `discrete frequency and broadband` |
+| `air_density_source` | `wopwop`: the mark of a PSU-WOPWOP sphere, whose levels hold no atmospheric absorption (the database's `sphere_levels_lossless`) |
+| `speed_reference`, `azimuth_reference` | `air` and `track` |
+| `floor_level_dB` | the level the empty cells were raised to; the builder reads cells at it as missing (`floor_masking`) |
+| `speed_of_sound_m_s` | the sound speed of the prediction |
+| `nb_bandwidth_Hz` | an `NB` sphere's band width |
+| `center_xyz_ft` | the true center, ft, where `XYZ` is a whole-foot label; both in AAM's body axes (aft, starboard, up) |
+| `source_tag`, `center`, `rotor` | a per-source sphere's tag, how its center was set and its rotor |
+
+A full sphere (`hemisphere = 'full'`, WOPWOP's default) is read as above; a sphere at `SPEED` 0 is
+the database's hover; a sphere centered away from the origin (`XYZ` not zero) is refused unless
+`ignore_sphere_center`, since a database holds one source at the origin.
 
 ## The NICEOPS database (`.nod`)
 
@@ -124,10 +168,13 @@ Variables:
 | --- | --- | --- |
 | `same_grid` (R) | byte | true |
 | `fixed_load_factor` | byte | true: each condition is stored once, at 1 g, and the reader scales it (`load_factors=None`) |
-| `database_version` | i4 | `DATABASE_FORMAT_VERSION` (1) |
-| `main_rotor_radius_meters` | f8 | from `vehicle.cfg`, m |
-| `main_rotor_tip_speed_meters_per_sec` | f8 | from `vehicle.cfg`, m/s |
-| `vehicle_weight_newtons` | f8 | `vehicle.cfg`'s weight × 9.80665, N |
+| `database_version` | i4 | `DATABASE_FORMAT_VERSION` (2) |
+| `main_rotor_radius_meters` | f8 | from `vehicle.cfg`, else the spheres' `MAIN_ROTOR_RADIUS`, m |
+| `main_rotor_tip_speed_meters_per_sec` | f8 | from `vehicle.cfg`, else the spheres' `MAIN_ROTOR_TIP_SPEED`, m/s |
+| `vehicle_weight_newtons` | f8 | `vehicle.cfg`'s weight × 9.80665, else the spheres' common `GROSS_WEIGHT`, N |
+| `sphere_levels_lossless` | byte | 1 when the spheres' levels carry no atmospheric absorption (PSU-WOPWOP's, or declared with `sphere_levels_lossless=True`): NICEOPS then absorbs over the whole range from the center rather than from the sphere's surface. Left out otherwise |
+| `air_density_kg_m3` | f8 | the air density the weight coefficient is formed with: `vehicle.cfg`'s, else the spheres' common `AIR_DENSITY`, kg/m^3. With the three above, the vehicle NICEOPS takes when it is given no vehicle file |
+| `prediction_radius_meters` | f8 | when every sphere gives the same `PREDICTION_RADIUS` (PSU-WOPWOP's): the radius, m, the levels were predicted at |
 | `shared_grid_and_frequency` | byte | true when every group has the same `phi`, `theta` and `frequency` |
 | `phi`, `theta` | f8 (`channels`) | only when shared |
 | `frequency` | f8 (`frequency`) | only when shared and spectra are stored |
@@ -136,14 +183,17 @@ Attributes:
 
 | attribute | content |
 | --- | --- |
-| `speed_reference` | `ground` or `air`: what the advance ratio and flight path angle are taken against |
+| `speed_reference` | `ground` or `air`: what the advance ratio and flight path angle are taken against; by default the spheres' own (PSU-WOPWOP's say `air`), else `ground` |
+| `band_type` | the bands of the spheres: `third_octave` (BB), `twelfth_octave` (OB12), `narrowband` (NB) or `pure_tone` (PT) |
 | `azimuth_reference` | `track` or `heading` (see [the heading frame](database_build.md#the-heading-frame)); always written |
-| `sphere_frame` | `level`, always: flight-path spheres are pitched to level as they are read. NICEOPS refuses any other value |
+| `sphere_frame` | `level` (the default: flight-path spheres are pitched to level as they are read), or `flight_path` (`database_frame='flight_path'`: kept in AAM's frame, theta from the velocity). NICEOPS reads both from the version that reads `flight_path` on, and refuses any other value |
 | `build_temperature_K`, `build_pressure_kPa`, `build_relative_humidity_percent` | the atmosphere the EAA was computed in (default 293.15 K, 101.325 kPa, 20%) |
 | `hover_correction` | when one was applied: its `description`, or `applied` |
 | `hover_source` | when given: the hover source sphere's file name |
 | `source_spheres` | the file names of the spheres used, one per line, sorted (no directory); always written by `build_empirical_database` |
 | `excluded_spheres` | when `exclude` was given: the file names it left out, one per line |
+| `main_rotor_blades`, `main_rotor_rotation` | when `coherence` gives them: the main rotor's blade count, and `counterclockwise` or `clockwise` seen from above ([source coherence](#source-coherence)) |
+| `coherence_rotation_limit_Hz`, `coherence_scale_Hz_deg` and `coherence_exponent`, `coherence_spread_scale_Hz_deg` and `coherence_spread_exponent`, `coherence_tonal_fraction`, `coherence_source` | when `coherence` gives them: the vehicle's coherence between emission directions ([source coherence](#source-coherence)) |
 
 `build_empirical_database` also records `load_factors` (f8 array; left out with
 `load_factors=None`, which `fixed_load_factor` records) and `extended_flight_path_angles_deg`
@@ -155,6 +205,36 @@ A NORAH2 import adds the attributes `source_format`, `norah2_speed_mapping`,
 `norah2_thrust_air_density_kg_m3`, `norah2_hover_source` (the file a synthesized hover was
 made from, or `none`) and `norah2_scale_tip_speed_by_rmomega` (1 when each advance ratio
 was formed with the file's RmOmega).
+
+### Source coherence
+
+The spheres carry levels, not phases. NICEOPS's point-source urban model (`niceops --buildings`)
+adds rays that leave the source in different directions with a model of how coherent the source
+is between two directions theta degrees apart, in a band at f Hz
+(`directional_coherence`, whose docstring has it in full): a mean coherency
+exp(-(f theta / `coherence_scale_Hz_deg`)^`coherence_exponent`), with the main rotor's delay
+(its azimuth difference about the shaft over its rotation rate) in the bands centered up to
+`coherence_rotation_limit_Hz`, and a spread about it from the coherence
+T + (1 - T) exp(-(f theta / `coherence_spread_scale_Hz_deg`)^`coherence_spread_exponent`), T the
+band's `coherence_tonal_fraction`. Every attribute is optional. A database that records any of
+them is taken with this model, what it leaves out filled with the fits to the Bell 407
+(`directional_coherence.DEFAULTS`); one that records none assumes nothing of the source's phase,
+and NICEOPS adds its rays in energy except those leaving within a small cone of each other
+(1° by default). The rotor's delay comes only from the database's `main_rotor_blades` and
+`main_rotor_rotation`, never from a vehicle file. The fits are the ones the database's own rotor
+implies, made with the delay removed where it gives those two and without it otherwise. NICEOPS
+turns the rotor at the database's `rotor_rpm` when it has one, and at the vehicle file's tip
+speed over radius otherwise.
+
+| attribute | content |
+| --- | --- |
+| `main_rotor_blades` | f8, the main rotor's blade count |
+| `main_rotor_rotation` | `counterclockwise` or `clockwise`, seen from above |
+| `coherence_rotation_limit_Hz` | f8, the band center up to which the rotor's delay holds (default 4.5 blade-passage frequencies) |
+| `coherence_scale_Hz_deg`, `coherence_exponent` | f8, the mean coherency's decay; together |
+| `coherence_spread_scale_Hz_deg`, `coherence_spread_exponent` | f8, the coherence's decay; together |
+| `coherence_tonal_fraction` | f8 array, T, one per band of the database's spectra, within [0, 1] |
+| `coherence_source` | text, what the fits were made from |
 
 ### Condition groups
 
@@ -219,7 +299,14 @@ source any run named in `wind_source`, and the first run's other text values) an
   but not the wind or `advance_ratio_air`, which describe a flight condition the hover is
   not.
 
-R and V_tip come from `vehicle.cfg`. A NORAH2 import writes none of these attributes.
+**Sphere labels.** A group built from a PSU-WOPWOP sphere also carries what it is labeled
+with, each only where the sphere gives it: `prediction_radius` (m), `floor_level` (dB, the
+level its empty cells were raised to), `speed_of_sound` (m s-1) and `nb_bandwidth` (Hz), each
+with its `<name>_units`, and the text attributes `sphere_type`, `content`, `source_tag` and,
+for a sphere built with `ignore_sphere_center`, `sphere_center_xyz_ft` (its `XYZ`).
+
+R and V_tip come from `vehicle.cfg`, or, without one, from the spheres' `MAIN_ROTOR_RADIUS`
+and `MAIN_ROTOR_TIP_SPEED` ([vehicle](database_build.md)). A NORAH2 import writes none of these attributes.
 Instead, each of its groups carries `norah2_source` and the file's constants as
 `norah2_<NAME>`. Its synthesized hover groups (`synthesize_hover`) also carry
 `condition_origin = 'synthesized_hover'`, with the source file's `norah2_source` and
@@ -233,6 +320,8 @@ constants.
   broken directivity.
 - 1: the corrected upper-surface mirror, and the hover averaged fore and aft in energy with
   EAA recomputed from the averaged spectrum.
+- 2: the root `sphere_frame` may be `flight_path`, whose spheres a NICEOPS that predates it
+  refuses.
 
 - 2: a database with pure-tone sources (`pt_database.PT_DATABASE_FORMAT_VERSION`; below).
   One without them stays at 1.
@@ -373,48 +462,53 @@ which the writers keep; a reader may rely on them.
    in the group or, when `shared_grid_and_frequency` is true, at the root.
 5. **R5.** `radius` × `rotor_scale` is the same in every group.
 6. **R6.** `EAA` is finite. `dBA` is finite or -inf, never NaN or +inf.
-7. **C1.** `database_version`, when present, is an integer from 0 to
+7. **R7.** The [source coherence](#source-coherence) attributes, when present: the numbers each
+   one positive value, `main_rotor_rotation` one of its two values, each scale with its exponent,
+   and `coherence_tonal_fraction` within [0, 1], one per band of the spectra.
+8. **C1.** `database_version`, when present, is an integer from 0 to
    `DATABASE_FORMAT_VERSION`.
-8. **C2.** `speed_reference` and `azimuth_reference`, when present, take the values listed
+9. **C2.** `speed_reference`, `azimuth_reference` and `sphere_frame`, when present, take the values listed
    above.
-9. **C3.** A group with `amplitude` has its band centers, in the group or shared at the
+10. **C3.** A group with `amplitude` has its band centers, in the group or shared at the
    root. A group's own `phi`, `theta` or `frequency` equals the shared one at the root.
-10. **C4.** `amplitude` is over (`PHI`, `THETA`, `frequency`), with PHI × THETA = channels and
+11. **C4.** `amplitude` is over (`PHI`, `THETA`, `frequency`), with PHI × THETA = channels and
     one band center per band, and the channels are its row-major flatten, rows sorted by
     `phi` (channel order, above).
-11. **C5.** `amplitude` is finite or -inf, never NaN or +inf.
-12. **C6.** `coverage` is 0 or 1, over the dimensions given above, and is 1 only where the
+12. **C5.** `amplitude` is finite or -inf, never NaN or +inf.
+13. **C6.** `coverage` is 0 or 1, over the dimensions given above, and is 1 only where the
     level it marks (the band, or `dBA` without spectra) is finite.
-13. **C7.** A direction with no finite band has `dBA` = -inf and `EAA` = 0.
-14. **C8.** With `fixed_load_factor` set, `thrust_coefficient` is the same in every group.
-15. **C9.** `DOPPLER_SHIFT_REMOVED`, when present, is 0 or 1 and the same in every group.
-16. **C10.** Every `rotor_scale` equals `main_rotor_radius_meters`, when present.
-17. **C11.** The groups are named `sphere0` to `sphere<N-1>`.
-18. **C12.** `condition_origin`, when present, is one of the three values above.
-19. **C13.** `phi` is in [-180, 180) deg and `theta` is in [0, 180] deg (ART angles, above).
+14. **C7.** A direction with no finite band has `dBA` = -inf and `EAA` = 0.
+15. **C8.** With `fixed_load_factor` set, `thrust_coefficient` is the same in every group.
+16. **C9.** `DOPPLER_SHIFT_REMOVED`, when present, is 0 or 1 and the same in every group.
+17. **C10.** Every `rotor_scale` equals `main_rotor_radius_meters`, when present.
+18. **C11.** The groups are named `sphere0` to `sphere<N-1>`.
+19. **C12.** `condition_origin`, when present, is one of the three values above.
+20. **C13.** `phi` is in [-180, 180) deg and `theta` is in [0, 180] deg (ART angles, above).
+21. **C14.** No two groups share a condition (`advance_ratio`, `flight_path_angle`,
+    `thrust_coefficient`).
 
 A database listing `sources` (format 2) also keeps the T rules:
 
-20. **T1.** Every tone is a whole shaft order of its source's `shaft_rate` (1e-5 relative).
-21. **T2.** Every condition holds exactly the sources the root lists.
-22. **T3.** Every source declares `phase_reference` (`rotor_azimuth`, `relative` or `none`),
+21. **T1.** Every tone is a whole shaft order of its source's `shaft_rate` (1e-5 relative).
+22. **T2.** Every condition holds exactly the sources the root lists.
+23. **T3.** Every source declares `phase_reference` (`rotor_azimuth`, `relative` or `none`),
     and has a finite `phase` wherever its `amplitude` is finite (unless `none`).
-23. **T4.** `database_version` is 2 and `band_content` is `broadband` or `total`.
-24. **T5.** `amplitude` and `phase` are over (`PHI`, `THETA`, `tone`), on the condition's grid.
+24. **T4.** `database_version` is 2 and `band_content` is `broadband` or `total`.
+25. **T5.** `amplitude` and `phase` are over (`PHI`, `THETA`, `tone`), on the condition's grid.
 
 C1 then allows `database_version` up to 2.
 
 A database with `condition_axes` also keeps the M rules:
 
-25. **M1.** `condition_axes` is `helicopter` or `multirotor`. A multirotor root gives
+26. **M1.** `condition_axes` is `helicopter` or `multirotor`. A multirotor root gives
     `rotor_count` (a whole number >= 1), `rotor_radius_m` and `hover_thrust_coefficient`,
     all positive.
-26. **M2.** Every multirotor condition carries `inplane_speed_ratio`, `axial_speed_ratio`,
+27. **M2.** Every multirotor condition carries `inplane_speed_ratio`, `axial_speed_ratio`,
     `hover_tip_mach`, `air_density`, `weight_n`, `airspeed` and `climb_rate` (and R2's `radius`
     and `rotor_scale`; the helicopter variables are not required).
-27. **M3.** x v_h is the in-plane part of `airspeed` and z v_h is `climb_rate`, v_h from the
+28. **M3.** x v_h is the in-plane part of `airspeed` and z v_h is `climb_rate`, v_h from the
     group's own weight and density (1e-6 relative).
-28. **M4.** Every source has a positive `speed_ratio`, and |`shaft_rate`| / `speed_ratio` is the
+29. **M4.** Every source has a positive `speed_ratio`, and |`shaft_rate`| / `speed_ratio` is the
     condition's Omega_h (1e-6 relative).
 
 `load_nod` reads a multirotor condition with `advance_ratio` and `thrust_coefficient` NaN,
@@ -566,7 +660,8 @@ drag = 0.82
 ```
 
 `ConfigParser` does not strip inline comments, so keep values bare. Comments go on lines of
-their own. A database build needs every key above. It forms the weight coefficient as
+their own. A database build needs every key above but the `[Tail Rotor]` section, which a vehicle
+without a tail rotor (a multirotor) leaves out; its entries are then None. It forms the weight coefficient as
 weight × 9.80665 / (density π radius² tip speed²). `tools/norah2_to_nod.py` needs only
 `[Main Rotor]` radius and tip speed, `[Vehicle]` weight and `[Atmosphere]` density.
 
@@ -630,7 +725,8 @@ a time axis whose units are not `seconds since <time_origin>`.
 - `tests/test_niceops_loads_databases.py` runs NICEOPS's self-test on PANAM-built
   databases, with the default load factors, `load_factors=None` and
   `store_spectrum=False`. It also checks that NICEOPS's AAM export of a stored condition
-  is the source sphere. It skips when the `niceops` executable is not configured.
+  is the source sphere. It skips when the `niceops` executable is not configured, or is not
+  the NICEOPS commit `tests/niceops_pin.txt` pins.
 - `tests/test_database_provenance.py` pins the root attributes, the group variables, their
   types and dimensions, and the coverage of gated and fore/aft-averaged cells. It also
   checks that a default build differs from the older format only by the added items.

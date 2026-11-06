@@ -51,6 +51,19 @@ def test_reflist_gives_angles_of_attack(tmp_path):
     np.testing.assert_allclose(alphas, [expected])
 
 
+def test_a_vehicle_without_a_tail_rotor(tmp_path):
+    # A multirotor's vehicle.cfg has no [Tail Rotor]: its entries are None and the rest as before.
+    (tmp_path / 'vehicle.cfg').write_text(
+        '[Main Rotor]\nblades = 2\nradius = 0.3556\ntip speed = 78.0\n'
+        '[Atmosphere]\ntemperature = 288.15\ndensity = 1.14\n'
+        '[Vehicle]\nweight = 16.2\ndrag = 0.16\n')
+    out = fa.read_vehicle_data(str(tmp_path), speeds=np.array([10.0]), flight_path_angles=np.array([0.0]))
+    assert out[4] is None and out[5] is None and out[6] is None and out[7] is None
+    area = np.pi * 0.3556 ** 2
+    np.testing.assert_allclose(out[9], 16.2 * 9.80665 / (1.14 * area * 78.0 ** 2))
+    np.testing.assert_allclose(out[8], [10.0 * 0.514444 / 78.0], rtol=1e-6)
+
+
 def test_vehicle_weight_uses_standard_gravity(tmp_path):
     (tmp_path / 'vehicle.cfg').write_text('[Vehicle]\nweight = 1000\n')
     assert fa.read_vehicle_weight_newtons(str(tmp_path)) == 9806.65

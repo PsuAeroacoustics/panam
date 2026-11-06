@@ -30,6 +30,10 @@ Known names:
 ``b407_legacy_spheres``
     The B407 spheres of the 2017 legacy ``Sphere_Database``, whose grids the 2017 release
     recipe (``docs/recipes/release_2017.toml``) takes.
+``wopwop_noise_spheres``
+    A directory of PSU-WOPWOP noise spheres: WOPWOP's ``test/regression/NoiseSphere``,
+    once its regression suite has run (ROTOR000.nc, ITRRX000.nc, ...), for the data
+    tests of building databases from WOPWOP's spheres.
 ``b407_ray_profiles``
     Per-run NICEOPS atmosphere CSVs (``<run>.csv``, heights in ft) for the B407 runs, the
     2017 release recipe's ``ray_profiles``.  PANAM does not build them.
