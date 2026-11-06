@@ -264,7 +264,9 @@ def depropagate_hemisphere(
     is kept only when its fluctuation is upward, so what is kept there is biased
     high; ``gate_window_s`` (s) judges each sample on the band's mean power over
     that much reception time around it instead, so a band is kept or rejected by
-    its expected level.
+    its expected level.  A band is judged on the edges it is integrated on
+    (Doppler-scaled where the bands are), and the overall and A-weighted levels
+    are gated by the same rule on their own power.
 
     An SNR gate alone is not sufficient, because it bounds the *relative*
     error of a bin but says nothing about how far the absorption correction
@@ -946,28 +948,47 @@ def depropagate_hemisphere(
         # gate_mode 'band': a band is missing at a sample whose measured band power is
         # less than band_snr_gate_db above the ambient's in that band -- not a valid
         # measurement of the source, so unknown rather than zero -- judged on the
-        # power at the microphone, before anything is subtracted or depropagated.
-        band_gated = None
+        # power at the microphone, before anything is subtracted or depropagated, and
+        # on the edges the band is integrated on below (Doppler-scaled where the bands
+        # are).  The overall and A-weighted levels are gated the same way.
+        band_gated = overall_gated = None
         if gate_mode == 'band' and amb_lin is not None:
             lower_g, upper_g = third_octave_band_edges(band_centers)
-            in_band = (f_sel[None, :] >= lower_g[:, None]) & (f_sel[None, :] < upper_g[:, None])
-            raw_band = in_band.astype(float) @ psd_v_lin
+            n_v = tobs_v.size
+            if doppler_geom is not None:
+                d_g = doppler_geom[tidx, im][valid]
+                edge0 = f_sel[0] - 0.5 * df
+                running = np.vstack((np.zeros((1, n_v)), np.cumsum(psd_v_lin * df, axis=0)))
+                raw_band = _band_integrals(running, edge0, df, lower_g, upper_g, d_g)
+                amb_running = np.repeat(np.concatenate(([0.0], np.cumsum(amb_lin * df)))[:, None], n_v, axis=1)
+                amb_band_power = _band_integrals(amb_running, edge0, df, lower_g, upper_g, d_g)
+            else:
+                in_band = ((f_sel[None, :] >= lower_g[:, None]) & (f_sel[None, :] < upper_g[:, None])).astype(float)
+                raw_band = in_band @ (psd_v_lin * df)
+                amb_band_power = (in_band @ (amb_lin * df))[:, None]
+            weights = np.vstack((np.ones(f_sel.size), Aweight_lin)) * df
+            raw_overall = weights @ psd_v_lin
+            amb_overall = (weights @ amb_lin)[:, None]
             if gate_window_s:
-                # Judged on the band's mean over gate_window_s of reception time
+                # Judged on the power's mean over gate_window_s of reception time
                 # around the sample, not the sample's own power: gating a noisy
                 # sample on its own value keeps it only when its fluctuation is
                 # upward, and so biases what is kept high near the threshold.
                 order = np.argsort(tobs_v)
                 t_sorted = tobs_v[order]
-                running = np.concatenate((np.zeros((raw_band.shape[0], 1)),
-                                          np.cumsum(raw_band[:, order], axis=1)), axis=1)
                 lo = np.searchsorted(t_sorted, t_sorted - 0.5 * gate_window_s, side='left')
                 hi = np.searchsorted(t_sorted, t_sorted + 0.5 * gate_window_s, side='right')
-                smoothed = np.empty_like(raw_band)
-                smoothed[:, order] = (running[:, hi] - running[:, lo]) / (hi - lo)
-                raw_band = smoothed
-            amb_band_power = in_band.astype(float) @ amb_lin
-            band_gated = raw_band < amb_band_power[:, None] * 10.0 ** (band_snr_gate_db / 10.0)
+
+                def windowed(power):
+                    total = np.concatenate((np.zeros((power.shape[0], 1)), np.cumsum(power[:, order], axis=1)),
+                                           axis=1)
+                    out = np.empty_like(power)
+                    out[:, order] = (total[:, hi] - total[:, lo]) / (hi - lo)
+                    return out
+                raw_band, raw_overall = windowed(raw_band), windowed(raw_overall)
+            threshold = 10.0 ** (band_snr_gate_db / 10.0)
+            band_gated = raw_band < amb_band_power * threshold
+            overall_gated = raw_overall < amb_overall * threshold
         psd_v_lin = _depropagate(psd_v_lin, amb_lin, spread_v, alpha_db_per_m, response_bins, path_v,
                                  delta_bins)
 
@@ -981,6 +1002,9 @@ def depropagate_hemisphere(
         else:
             power_oaspl = np.sum(psd_v_lin * df, axis=0)
             power_spl_a = np.sum((psd_v_lin * Aweight_lin[:, None]) * df, axis=0)
+        if overall_gated is not None:
+            power_oaspl = np.where(overall_gated[0], np.nan, power_oaspl)
+            power_spl_a = np.where(overall_gated[1], np.nan, power_spl_a)
 
         fazi_list.append(az_v)
         felv_list.append(el_v)
