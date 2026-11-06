@@ -45,6 +45,8 @@ Library modules, in `panam/`:
   `database.py` (`build_empirical_database`, `add_sphere_group`), `norah2.py`
   (`.hem` files, `build_database_from_norah2`), `lambert_plots.py`,
   `projection.py`, `array_design.py`, `tracks.py`, `ground_effect.py` (`ega`).
+- `uas_midstate.py`: reads the Mid-State UAS dataset's run files (`open_run`,
+  `list_runs`); the format is in `docs/file_formats.md`.
 - `noise_abatement_2017.py`: the 2017 flight-test build (`build_sphere`,
   `build_all`, track check, plate tables); its CLI is
   `tools/noise_abatement_2017.py`.
@@ -58,6 +60,19 @@ Library modules, in `panam/`:
 - `sphere_statistics.py`: energy averaging of repeat-run spheres,
   band-by-band sphere comparison (CLI `tools/sphere_diff.py`) and per-node sample
   statistics (`node_statistics`).
+- `rotor_tones.py`: rotor-locked tones from measured rotor angles (the measured side of format 2):
+  `rotor_azimuth`, `emission_azimuth`, `rotor_locked_tones` (the Vold-Kalman filter on given phase tracks),
+  `depropagate_tones`, `plate_tone_table`, `plate_tone_response` (complex, e^{+i omega t}), `grid_tones`
+  (energy-mean level, phase of the weighted sum), `clock_offsets` (each run's timing from its tone phases),
+  `tone_noise`, `fit_directivities` and `evaluate_directivity` (smooth complex directivities about each shaft, in
+  spherical harmonics, with run offsets fitted against them), `fit_summed_directivities` (each rotor's
+  directivity fitted to the order's sum over all rotors: separates rotors a fraction of a hertz apart; with
+  `azimuthal_orders`, a hover rotor's field that turns with it, which predicts azimuths never measured).
+- `pt_database.py`: format 2 databases of pure tones from PSU-WOPWOP's per-rotor PT spheres
+  (`build_pt_database`, CLI `tools/build_pt_database.py`): one source per rotor, phase locked to its
+  azimuth, nothing done that would damage phase; helicopter or multirotor (momentum-similarity)
+  condition axes; `write_pt_database`, `measured_pt_sphere` and `fitted_pt_sphere` take sources built
+  in memory (measured ones, or fitted directivities evaluated on the grid).
 - `nod_database.py`: reads `.nod` databases: `load_nod`, `validate_nod`,
   `compare_databases`, `to_frame`, and the maps and summaries of
   `tools/nod_tool.py` (`plot_condition`, `plot_envelope`).
