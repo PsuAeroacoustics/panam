@@ -637,7 +637,8 @@ def _check_multirotor(database, attributes, names, violate):
     rotor_radius_m and hover_thrust_coefficient (> 0). M2 every condition carries the multirotor variables (with R2).
     M3 each condition's axes follow from its own fields: inplane_speed_ratio x v_h is the in-plane part of airspeed
     and axial_speed_ratio x v_h is climb_rate, with v_h = sqrt(weight_n / (2 air_density N pi R^2)) (1e-6
-    relative). M4 every source carries a positive speed_ratio, and |shaft_rate| / speed_ratio is the condition's
+    relative), or, for an axis the root lists in multirotor_constant_axes (pt_database._constant_axes), within its
+    tolerance (pt_database.MULTIROTOR_AXIS_TOLERANCE, times v_h). M4 every source carries a positive speed_ratio, and |shaft_rate| / speed_ratio is the condition's
     Omega_h = sqrt(weight_n / (N air_density pi R^2 C_Th)) / R for each (1e-6 relative).
     """
     axes = attributes.get('condition_axes')
@@ -657,6 +658,7 @@ def _check_multirotor(database, attributes, names, violate):
             return None
         return value
     n, radius, ct_h = number('rotor_count'), number('rotor_radius_m'), number('hover_thrust_coefficient')
+    constant = set(str(attributes.get('multirotor_constant_axes', '')).split())
     if n is not None and not float(n).is_integer():
         violate('M1', None, f'rotor_count {n} is not a whole number')
     if None in (n, radius, ct_h):
@@ -677,9 +679,12 @@ def _check_multirotor(database, attributes, names, violate):
         v_h = pt.hover_induced_velocity(weight, rho, n, radius)
         inplane = np.sqrt(max(values['airspeed'] ** 2 - values['climb_rate'] ** 2, 0.0))
         x_name, z_name = pt.MULTIROTOR_AXES[:2]
-        for got, want, what in ((values[x_name] * v_h, inplane, f'{x_name} x v_h'),
-                                (values[z_name] * v_h, values['climb_rate'], f'{z_name} x v_h')):
-            if abs(got - want) > 1e-6 * max(abs(want), v_h):
+        for got, want, what, axis in ((values[x_name] * v_h, inplane, f'{x_name} x v_h', 0),
+                                      (values[z_name] * v_h, values['climb_rate'], f'{z_name} x v_h', 1)):
+            allowed = 1e-6 * max(abs(want), v_h)
+            if pt.MULTIROTOR_AXES[axis] in constant:
+                allowed += pt.MULTIROTOR_AXIS_TOLERANCE[axis] * v_h
+            if abs(got - want) > allowed:
                 violate('M3', name, f'{what} is {got:.6g} m/s, its airspeed and climb rate give {want:.6g} m/s')
         omega_h = pt.hover_shaft_rate(weight, rho, n, radius, ct_h)
         for tag, sub in group.groups.items():

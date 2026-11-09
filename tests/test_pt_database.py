@@ -352,6 +352,38 @@ def test_multirotor_climb_is_positive_axial_speed(tmp_path):
     assert nd.validate_nod(path) == []
 
 
+def test_multirotor_axes_within_noise_are_written_constant(tmp_path):
+    """Level conditions whose climb rate is noise (z 3e-4 here) and one weight in two airs 0.2 % apart (M_h): written at
+    z = 0 and one M_h, recorded on the root; x, which varies, as measured."""
+    files = hexacopter(tmp_path, conditions=((0.0, 0.0), (8.6898, 0.02)))
+    path = build(tmp_path, files, weight_newtons=HEX_WEIGHT, condition_axes='multirotor', rotor_count=6)
+    with Dataset(str(path)) as d:
+        assert d.multirotor_constant_axes == 'axial_speed_ratio'
+        assert float(np.ravel(d.multirotor_constant_axes_span)[0]) == pytest.approx(
+            8.6898 * KNOT * math.sin(math.radians(0.02)) / momentum(1.15), rel=1e-5)
+    hover, _ = read_group(path, 'sphere0')
+    ten, _ = read_group(path, 'sphere1')
+    assert hover['axial_speed_ratio'] == 0.0 and ten['axial_speed_ratio'] == 0.0
+    assert ten['inplane_speed_ratio'] == pytest.approx(8.6898 * KNOT / momentum(1.15), rel=1e-5)
+    assert ten['climb_rate'] == pytest.approx(8.6898 * KNOT * math.sin(math.radians(0.02)), rel=1e-5)  # as measured
+    assert nd.validate_nod(path) == []
+
+
+def test_multirotor_axes_that_tell_conditions_apart_are_kept():
+    """Two conditions that differ only on a near-constant axis keep it, as measured."""
+    var = lambda x, z, m: {'variables': {'inplane_speed_ratio': (x, '1'), 'axial_speed_ratio': (z, '1'),
+                                         'hover_tip_mach': (m, '1')}}
+    conditions = {0: var(0.0, 0.0, 0.25), 1: var(0.0, 0.01, 0.25), 2: var(1.0, 0.0, 0.25)}
+    assert pt._constant_axes(conditions) == {}
+    assert conditions[1]['variables']['axial_speed_ratio'][0] == 0.01
+    conditions = {0: var(0.0, 0.0, 0.2316), 1: var(0.84, -9.2e-5, 0.2326), 2: var(1.68, -0.0055, 0.2326)}
+    spans = pt._constant_axes(conditions)
+    assert set(spans) == {'axial_speed_ratio', 'hover_tip_mach'}
+    assert {c['variables']['axial_speed_ratio'][0] for c in conditions.values()} == {0.0}
+    m_h = {c['variables']['hover_tip_mach'][0] for c in conditions.values()}
+    assert len(m_h) == 1 and m_h.pop() == pytest.approx((0.2316 + 2 * 0.2326) / 3)
+
+
 def test_multirotor_hover_thrust_coefficient_can_be_given(tmp_path):
     files = hexacopter(tmp_path, conditions=((8.6898, 0.0),))
     with pytest.raises(ValueError, match='hover'):

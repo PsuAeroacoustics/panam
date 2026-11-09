@@ -1031,7 +1031,9 @@ M_h = \frac{\Omega_h R}{c},
 $$
 
 (`inplane_speed_ratio`, `axial_speed_ratio`, `hover_tip_mach`), with $\rho$ and $c$ each
-condition's own. Each source records its speed over the momentum prediction,
+condition's own. An axis whose conditions span no more than 0.02 ($x$, $z$) or 0.005 ($M_h$) is
+written as one value at every condition ($z = 0$ for level flight, else the mean), unless that
+would merge two conditions: measured conditions differ there only by noise. Each source records its speed over the momentum prediction,
 $|\Omega_r|/\Omega_h$ (`speed_ratio`); a multirotor's rotor speed changes with the condition by
 design, so only its radius must agree across conditions. The database is not `fixed_load_factor`
 (NICEOPS's load-factor law is in $C_T$, which these axes do not carry).

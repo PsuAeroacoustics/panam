@@ -40,6 +40,11 @@ PT_DATABASE_FORMAT_VERSION = 2
 
 #: A multirotor condition's momentum-similarity axes, in NICEOPS's order (x, z, M_h), and the fields they follow from.
 MULTIROTOR_AXES = ('inplane_speed_ratio', 'axial_speed_ratio', 'hover_tip_mach')
+#: A multirotor axis whose conditions span no more than this is written as one value at every condition: x and z
+#: (multiples of the hover induced velocity: 0.1 m/s of 5 m/s) and M_h.  Measured conditions are means, so level
+#: flight's z and one weight's M_h differ between them by noise, and an axis normalized by that noise put a state far
+#: outside it (NICEOPS treats such an axis as constant by the same tolerances).
+MULTIROTOR_AXIS_TOLERANCE = (0.02, 0.02, 0.005)
 MULTIROTOR_FIELDS = ('air_density', 'weight_n', 'airspeed', 'climb_rate')
 
 #: The speed references a sphere or a database may give (``speed_reference``).
@@ -554,6 +559,10 @@ def write_pt_database(spheres, database_filename, *, weight_newtons, sync_groups
             database.rotor_count = np.int32(rotor_count)
             database.rotor_radius_m = np.float64(multirotor['radius'])
             database.hover_thrust_coefficient = np.float64(multirotor['ct_h'])
+            if multirotor['constant_axes']:
+                # What was set to one value, and how far the measured conditions spread on it (_constant_axes).
+                database.multirotor_constant_axes = ' '.join(multirotor['constant_axes'])
+                database.multirotor_constant_axes_span = np.array(list(multirotor['constant_axes'].values()))
         database.thrust_coefficient_density = 'run'
         if azimuth_label is not None:
             database.azimuth_label = str(azimuth_label)
@@ -688,6 +697,35 @@ def _multirotor_axes(conditions, tags, main, weight, rotor_count, hover_thrust_c
                 (inplane / v_h, '1'), (climb / v_h, '1'), (omega_h * radius / c, '1'),
                 (rho, 'kg m-3'), (weight, 'N'), (u, 'm s-1'), (climb, 'm s-1')))),
             'speed_ratio': {t: abs(by_tag[t].shaft_rate) / omega_h for t in tags}}
+    out['constant_axes'] = _constant_axes(out['conditions'])
+    return out
+
+
+def _constant_axes(conditions, tolerance=MULTIROTOR_AXIS_TOLERANCE):
+    """Write each multirotor axis whose conditions span no more than its tolerance as one value at every condition:
+    0 for an axial ratio within the tolerance of level flight at every condition, else the mean.  Unless that would
+    leave two conditions at one point (then nothing is changed).  Returns {axis: measured span} of the axes set."""
+    keys = list(conditions)
+    if len(keys) < 2:
+        return {}
+    values = np.array([[conditions[k]['variables'][a][0] for a in MULTIROTOR_AXES] for k in keys])
+    spans = values.max(axis=0) - values.min(axis=0)
+    flat = [a for a in range(3) if 0.0 < spans[a] <= tolerance[a]]
+    if not flat:
+        return {}
+    kept = [a for a in range(3) if a not in flat]
+    for i in range(len(keys)):
+        for j in range(i + 1, len(keys)):
+            if all(abs(values[i, a] - values[j, a]) <= tolerance[a] for a in kept):
+                return {}
+    out = {}
+    for a in flat:
+        name = MULTIROTOR_AXES[a]
+        level = name == 'axial_speed_ratio' and np.all(np.abs(values[:, a]) <= tolerance[a])
+        value = 0.0 if level else float(values[:, a].mean())
+        for k in keys:
+            conditions[k]['variables'][name] = (value, conditions[k]['variables'][name][1])
+        out[name] = float(spans[a])
     return out
 
 

@@ -443,6 +443,14 @@ Each condition group carries these over `condition`, in place of `advance_ratio`
 | `air_density`, `weight_n` | rho (kg m-3) and W (N) of the condition |
 | `airspeed`, `climb_rate` | m s-1 |
 
+An axis whose conditions span no more than 0.02 (x, z) or 0.005 (M_h) is written as one value at
+every condition (z = 0 where every condition is that close to level, else the mean), unless that
+would put two conditions at one point. The root then lists those axes in
+`multirotor_constant_axes` and their measured spans in `multirotor_constant_axes_span`; the
+conditions' `airspeed`, `climb_rate`, `air_density` and `weight_n` stay as measured. Measured
+conditions are means, so level flight's z and one weight's M_h differ between them by noise, and
+an axis normalized by that noise put states far outside it.
+
 `fixed_load_factor` is 0: NICEOPS refuses it in multirotor axes, whose load factor enters
 through v_h and Omega_h rather than a C_T law. The thrust axis is taken as vertical (load factor 1,
 no attitude) when the axes are formed. Each source also carries
@@ -507,7 +515,8 @@ A database with `condition_axes` also keeps the M rules:
     `hover_tip_mach`, `air_density`, `weight_n`, `airspeed` and `climb_rate` (and R2's `radius`
     and `rotor_scale`; the helicopter variables are not required).
 28. **M3.** x v_h is the in-plane part of `airspeed` and z v_h is `climb_rate`, v_h from the
-    group's own weight and density (1e-6 relative).
+    group's own weight and density (1e-6 relative); for an axis in `multirotor_constant_axes`,
+    within its tolerance times v_h.
 29. **M4.** Every source has a positive `speed_ratio`, and |`shaft_rate`| / `speed_ratio` is the
     condition's Omega_h (1e-6 relative).
 
