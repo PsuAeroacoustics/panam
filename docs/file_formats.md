@@ -391,6 +391,10 @@ one in these ways:
   one speed that is a common phase, so relative azimuths in these labels (what a controller reading
   the same angles commands) predict the field as measured; only the physical angle between blades
   of opposite senses is uncertain;
+- the root's `tone_phase_across_conditions`, when present, says whether every condition's phases
+  are on one reference (`shared`: `build_pt_database` writes it for PSU-WOPWOP's spheres, locked
+  to each rotor's azimuth at emission; `write_pt_database` writes what it is given). NICEOPS
+  blends a tone's conditions as complex amplitudes where it is `shared`, and in dB otherwise;
 - the rotor's own measured state may be written beside it, each variable with `units` and a
   `description` (a scalar, or a vector over `xyz` in the sphere frame): its logged speed, its
   hub's air velocity, its disk's normal, an estimate of its thrust.
@@ -501,7 +505,8 @@ A database listing `sources` (format 2) also keeps the T rules:
 22. **T2.** Every condition holds exactly the sources the root lists.
 23. **T3.** Every source declares `phase_reference` (`rotor_azimuth`, `relative` or `none`),
     and has a finite `phase` wherever its `amplitude` is finite (unless `none`).
-24. **T4.** `database_version` is 2 and `band_content` is `broadband` or `total`.
+24. **T4.** `database_version` is 2, `band_content` is `broadband` or `total`, and
+    `tone_phase_across_conditions`, where given, is `shared` or `independent`.
 25. **T5.** `amplitude` and `phase` are over (`PHI`, `THETA`, `tone`), on the condition's grid.
 
 C1 then allows `database_version` up to 2.

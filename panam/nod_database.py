@@ -573,14 +573,17 @@ def _check_tone_sources(database, attributes, names, version, violate):
 
     T1 every tone a whole shaft order of its source's shaft rate (1e-5 relative); T2 the sources the root lists, in
     every condition, and nothing else; T3 a declared phase_reference, and a phase finite wherever the amplitude is;
-    T4 database_version 2 and a band_content of broadband or total; T5 amplitude and phase over (PHI, THETA, tone) on
-    the condition's grid.
+    T4 database_version 2 and a band_content of broadband or total, and a tone_phase_across_conditions, where given,
+    of shared or independent; T5 amplitude and phase over (PHI, THETA, tone) on the condition's grid.
     """
     tags = [t for t in re.split(r'[,\s]+', str(attributes['sources']).strip()) if t]
     if version is None or int(version) != PT_FORMAT_VERSION:
         violate('T4', None, f'pure-tone sources need database_version {PT_FORMAT_VERSION}, not {version}')
     if attributes.get('band_content') not in BAND_CONTENTS:
         violate('T4', None, f"band_content {attributes.get('band_content')!r} is not one of {BAND_CONTENTS}")
+    across = attributes.get('tone_phase_across_conditions')
+    if across is not None and across not in ('shared', 'independent'):
+        violate('T4', None, f"tone_phase_across_conditions {across!r} is not shared or independent")
     if not tags or len(set(tags)) != len(tags):
         violate('T2', None, f"sources {attributes['sources']!r} is empty or lists a source twice")
     for name in names:

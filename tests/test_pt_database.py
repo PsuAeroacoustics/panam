@@ -384,6 +384,29 @@ def test_multirotor_axes_that_tell_conditions_apart_are_kept():
     assert len(m_h) == 1 and m_h.pop() == pytest.approx((0.2316 + 2 * 0.2326) / 3)
 
 
+def test_predicted_databases_say_their_phases_share_one_reference(tmp_path):
+    """PSU-WOPWOP's spheres are locked to each rotor's azimuth at every condition: build_pt_database writes
+    tone_phase_across_conditions = shared (NICEOPS then blends conditions as complex amplitudes); write_pt_database
+    writes what it is given, and nothing by default."""
+    path = build(tmp_path, hexacopter(tmp_path), weight_newtons=HEX_WEIGHT, condition_axes='multirotor', rotor_count=6)
+    with Dataset(str(path)) as d:
+        assert d.tone_phase_across_conditions == 'shared'
+    assert nd.validate_nod(path) == []
+    spheres = [pt._close_seam(pt.read_pt_sphere(f)) for f in hexacopter(tmp_path, prefix='W')]
+    plain = tmp_path / 'plain.nod'
+    pt.write_pt_database(spheres, plain, weight_newtons=HEX_WEIGHT, condition_axes='multirotor', rotor_count=6)
+    with Dataset(str(plain)) as d:
+        assert 'tone_phase_across_conditions' not in d.ncattrs()
+    spheres = [pt._close_seam(pt.read_pt_sphere(f)) for f in hexacopter(tmp_path, prefix='V')]
+    measured = tmp_path / 'independent.nod'
+    pt.write_pt_database(spheres, measured, weight_newtons=HEX_WEIGHT, condition_axes='multirotor', rotor_count=6,
+                         phase_across_conditions='independent')
+    with Dataset(str(measured)) as d:
+        assert d.tone_phase_across_conditions == 'independent'
+    with pytest.raises(ValueError, match='phase_across_conditions'):
+        pt.write_pt_database(spheres, tmp_path / 'bad.nod', weight_newtons=HEX_WEIGHT, phase_across_conditions='yes')
+
+
 def test_multirotor_hover_thrust_coefficient_can_be_given(tmp_path):
     files = hexacopter(tmp_path, conditions=((8.6898, 0.0),))
     with pytest.raises(ValueError, match='hover'):
