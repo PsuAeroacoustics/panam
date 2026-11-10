@@ -573,14 +573,17 @@ def _check_tone_sources(database, attributes, names, version, violate):
 
     T1 every tone a whole shaft order of its source's shaft rate (1e-5 relative); T2 the sources the root lists, in
     every condition, and nothing else; T3 a declared phase_reference, and a phase finite wherever the amplitude is;
-    T4 database_version 2 and a band_content of broadband or total; T5 amplitude and phase over (PHI, THETA, tone) on
-    the condition's grid.
+    T4 database_version 2 and a band_content of broadband or total, and a tone_phase_across_conditions, where given,
+    of shared or independent; T5 amplitude and phase over (PHI, THETA, tone) on the condition's grid.
     """
     tags = [t for t in re.split(r'[,\s]+', str(attributes['sources']).strip()) if t]
     if version is None or int(version) != PT_FORMAT_VERSION:
         violate('T4', None, f'pure-tone sources need database_version {PT_FORMAT_VERSION}, not {version}')
     if attributes.get('band_content') not in BAND_CONTENTS:
         violate('T4', None, f"band_content {attributes.get('band_content')!r} is not one of {BAND_CONTENTS}")
+    across = attributes.get('tone_phase_across_conditions')
+    if across is not None and across not in ('shared', 'independent'):
+        violate('T4', None, f"tone_phase_across_conditions {across!r} is not shared or independent")
     if not tags or len(set(tags)) != len(tags):
         violate('T2', None, f"sources {attributes['sources']!r} is empty or lists a source twice")
     for name in names:
@@ -637,7 +640,8 @@ def _check_multirotor(database, attributes, names, violate):
     rotor_radius_m and hover_thrust_coefficient (> 0). M2 every condition carries the multirotor variables (with R2).
     M3 each condition's axes follow from its own fields: inplane_speed_ratio x v_h is the in-plane part of airspeed
     and axial_speed_ratio x v_h is climb_rate, with v_h = sqrt(weight_n / (2 air_density N pi R^2)) (1e-6
-    relative). M4 every source carries a positive speed_ratio, and |shaft_rate| / speed_ratio is the condition's
+    relative), or, for an axis the root lists in multirotor_constant_axes (pt_database._constant_axes), within its
+    tolerance (pt_database.MULTIROTOR_AXIS_TOLERANCE, times v_h). M4 every source carries a positive speed_ratio, and |shaft_rate| / speed_ratio is the condition's
     Omega_h = sqrt(weight_n / (N air_density pi R^2 C_Th)) / R for each (1e-6 relative).
     """
     axes = attributes.get('condition_axes')
@@ -657,6 +661,7 @@ def _check_multirotor(database, attributes, names, violate):
             return None
         return value
     n, radius, ct_h = number('rotor_count'), number('rotor_radius_m'), number('hover_thrust_coefficient')
+    constant = set(str(attributes.get('multirotor_constant_axes', '')).split())
     if n is not None and not float(n).is_integer():
         violate('M1', None, f'rotor_count {n} is not a whole number')
     if None in (n, radius, ct_h):
@@ -677,9 +682,12 @@ def _check_multirotor(database, attributes, names, violate):
         v_h = pt.hover_induced_velocity(weight, rho, n, radius)
         inplane = np.sqrt(max(values['airspeed'] ** 2 - values['climb_rate'] ** 2, 0.0))
         x_name, z_name = pt.MULTIROTOR_AXES[:2]
-        for got, want, what in ((values[x_name] * v_h, inplane, f'{x_name} x v_h'),
-                                (values[z_name] * v_h, values['climb_rate'], f'{z_name} x v_h')):
-            if abs(got - want) > 1e-6 * max(abs(want), v_h):
+        for got, want, what, axis in ((values[x_name] * v_h, inplane, f'{x_name} x v_h', 0),
+                                      (values[z_name] * v_h, values['climb_rate'], f'{z_name} x v_h', 1)):
+            allowed = 1e-6 * max(abs(want), v_h)
+            if pt.MULTIROTOR_AXES[axis] in constant:
+                allowed += pt.MULTIROTOR_AXIS_TOLERANCE[axis] * v_h
+            if abs(got - want) > allowed:
                 violate('M3', name, f'{what} is {got:.6g} m/s, its airspeed and climb rate give {want:.6g} m/s')
         omega_h = pt.hover_shaft_rate(weight, rho, n, radius, ct_h)
         for tag, sub in group.groups.items():

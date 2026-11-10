@@ -391,6 +391,10 @@ one in these ways:
   one speed that is a common phase, so relative azimuths in these labels (what a controller reading
   the same angles commands) predict the field as measured; only the physical angle between blades
   of opposite senses is uncertain;
+- the root's `tone_phase_across_conditions`, when present, says whether every condition's phases
+  are on one reference (`shared`: `build_pt_database` writes it for PSU-WOPWOP's spheres, locked
+  to each rotor's azimuth at emission; `write_pt_database` writes what it is given). NICEOPS
+  blends a tone's conditions as complex amplitudes where it is `shared`, and in dB otherwise;
 - the rotor's own measured state may be written beside it, each variable with `units` and a
   `description` (a scalar, or a vector over `xyz` in the sphere frame): its logged speed, its
   hub's air velocity, its disk's normal, an estimate of its thrust.
@@ -443,6 +447,14 @@ Each condition group carries these over `condition`, in place of `advance_ratio`
 | `air_density`, `weight_n` | rho (kg m-3) and W (N) of the condition |
 | `airspeed`, `climb_rate` | m s-1 |
 
+An axis whose conditions span no more than 0.02 (x, z) or 0.005 (M_h) is written as one value at
+every condition (z = 0 where every condition is that close to level, else the mean), unless that
+would put two conditions at one point. The root then lists those axes in
+`multirotor_constant_axes` and their measured spans in `multirotor_constant_axes_span`; the
+conditions' `airspeed`, `climb_rate`, `air_density` and `weight_n` stay as measured. Measured
+conditions are means, so level flight's z and one weight's M_h differ between them by noise, and
+an axis normalized by that noise put states far outside it.
+
 `fixed_load_factor` is 0: NICEOPS refuses it in multirotor axes, whose load factor enters
 through v_h and Omega_h rather than a C_T law. The thrust axis is taken as vertical (load factor 1,
 no attitude) when the axes are formed. Each source also carries
@@ -493,7 +505,8 @@ A database listing `sources` (format 2) also keeps the T rules:
 22. **T2.** Every condition holds exactly the sources the root lists.
 23. **T3.** Every source declares `phase_reference` (`rotor_azimuth`, `relative` or `none`),
     and has a finite `phase` wherever its `amplitude` is finite (unless `none`).
-24. **T4.** `database_version` is 2 and `band_content` is `broadband` or `total`.
+24. **T4.** `database_version` is 2, `band_content` is `broadband` or `total`, and
+    `tone_phase_across_conditions`, where given, is `shared` or `independent`.
 25. **T5.** `amplitude` and `phase` are over (`PHI`, `THETA`, `tone`), on the condition's grid.
 
 C1 then allows `database_version` up to 2.
@@ -507,7 +520,8 @@ A database with `condition_axes` also keeps the M rules:
     `hover_tip_mach`, `air_density`, `weight_n`, `airspeed` and `climb_rate` (and R2's `radius`
     and `rotor_scale`; the helicopter variables are not required).
 28. **M3.** x v_h is the in-plane part of `airspeed` and z v_h is `climb_rate`, v_h from the
-    group's own weight and density (1e-6 relative).
+    group's own weight and density (1e-6 relative); for an axis in `multirotor_constant_axes`,
+    within its tolerance times v_h.
 29. **M4.** Every source has a positive `speed_ratio`, and |`shaft_rate`| / `speed_ratio` is the
     condition's Omega_h (1e-6 relative).
 

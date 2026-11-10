@@ -40,6 +40,11 @@ PT_DATABASE_FORMAT_VERSION = 2
 
 #: A multirotor condition's momentum-similarity axes, in NICEOPS's order (x, z, M_h), and the fields they follow from.
 MULTIROTOR_AXES = ('inplane_speed_ratio', 'axial_speed_ratio', 'hover_tip_mach')
+#: A multirotor axis whose conditions span no more than this is written as one value at every condition: x and z
+#: (multiples of the hover induced velocity: 0.1 m/s of 5 m/s) and M_h.  Measured conditions are means, so level
+#: flight's z and one weight's M_h differ between them by noise, and an axis normalized by that noise put a state far
+#: outside it (NICEOPS treats such an axis as constant by the same tolerances).
+MULTIROTOR_AXIS_TOLERANCE = (0.02, 0.02, 0.005)
 MULTIROTOR_FIELDS = ('air_density', 'weight_n', 'airspeed', 'climb_rate')
 
 #: The speed references a sphere or a database may give (``speed_reference``).
@@ -437,14 +442,17 @@ def build_pt_database(sphere_files, database_filename, *, weight_newtons=None, s
         speed_reference=speed_reference, condition_axes=condition_axes, rotor_count=rotor_count,
         hover_thrust_coefficient=hover_thrust_coefficient, sound_speed_mps=sound_speed_mps,
         speed_tolerance_kt=speed_tolerance_kt, tool='pt_database.build_pt_database',
-        input_names=[os.path.basename(str(p)) for p in sphere_files])
+        input_names=[os.path.basename(str(p)) for p in sphere_files],
+        # PSU-WOPWOP's phases at every condition are locked to each rotor's azimuth at emission: one reference.
+        phase_across_conditions='shared' if all(
+            getattr(s, 'phase_reference', 'rotor_azimuth') == 'rotor_azimuth' for s in spheres) else None)
 
 
 def write_pt_database(spheres, database_filename, *, weight_newtons, sync_groups='shared_rate', main_rotor=None,
                       speed_reference=None, condition_axes='helicopter', rotor_count=None,
                       hover_thrust_coefficient=None, sound_speed_mps=None, speed_tolerance_kt=None,
                       azimuth_label=None, tool='pt_database.write_pt_database', input_names=None,
-                      tone_speed_exponent=None):
+                      tone_speed_exponent=None, phase_across_conditions=None):
     """Write a format 2 database from :class:`PTSphere` sources, one per rotor per condition: what
     :func:`build_pt_database` does once it has read PSU-WOPWOP's files, open to sources built otherwise (measured
     ones: :func:`measured_pt_sphere`).  Arguments as :func:`build_pt_database`, and:
@@ -456,6 +464,11 @@ def write_pt_database(spheres, database_filename, *, weight_newtons, sync_groups
         tone_speed_exponent: written as the root's ``tone_speed_exponent`` when given (>= 0): NICEOPS scales each
             tone's pressure by the run's shaft rate over the source's ``shaft_rate`` to this power (3: the level as
             rpm to the sixth), where a run turns a rotor at another speed (a replayed history, a sync group).
+        phase_across_conditions: written as the root's ``tone_phase_across_conditions`` when given: 'shared' where
+            every condition's phases are on one reference (a prediction's, locked to each rotor's azimuth at emission;
+            a measured build's whose runs' timing offsets were fitted together), so that NICEOPS blends a tone's
+            conditions as complex amplitudes; 'independent' where they are not (NICEOPS blends levels in dB, as it
+            does when the attribute is absent).
     """
     if weight_newtons is None or not np.isfinite(weight_newtons) or weight_newtons <= 0:
         raise ValueError('weight_newtons is required (N, > 0) for the thrust coefficient axis')
@@ -463,6 +476,8 @@ def write_pt_database(spheres, database_filename, *, weight_newtons, sync_groups
         raise ValueError(f'tone_speed_exponent must be finite and >= 0, not {tone_speed_exponent}')
     if condition_axes not in ('helicopter', 'multirotor'):
         raise ValueError(f"condition_axes must be 'helicopter' or 'multirotor', not {condition_axes!r}")
+    if phase_across_conditions not in (None, 'shared', 'independent'):
+        raise ValueError(f"phase_across_conditions must be 'shared' or 'independent', not {phase_across_conditions!r}")
     if condition_axes == 'multirotor' and (rotor_count is None or int(rotor_count) != rotor_count or rotor_count < 1):
         raise ValueError('a multirotor database needs rotor_count (the vehicle\'s number of rotors, >= 1)')
     spheres = list(spheres)
@@ -554,9 +569,15 @@ def write_pt_database(spheres, database_filename, *, weight_newtons, sync_groups
             database.rotor_count = np.int32(rotor_count)
             database.rotor_radius_m = np.float64(multirotor['radius'])
             database.hover_thrust_coefficient = np.float64(multirotor['ct_h'])
+            if multirotor['constant_axes']:
+                # What was set to one value, and how far the measured conditions spread on it (_constant_axes).
+                database.multirotor_constant_axes = ' '.join(multirotor['constant_axes'])
+                database.multirotor_constant_axes_span = np.array(list(multirotor['constant_axes'].values()))
         database.thrust_coefficient_density = 'run'
         if azimuth_label is not None:
             database.azimuth_label = str(azimuth_label)
+        if phase_across_conditions is not None:
+            database.tone_phase_across_conditions = str(phase_across_conditions)
         if tone_speed_exponent is not None:
             database.tone_speed_exponent = np.float64(tone_speed_exponent)
         database.sources = ','.join(tags)
@@ -688,6 +709,35 @@ def _multirotor_axes(conditions, tags, main, weight, rotor_count, hover_thrust_c
                 (inplane / v_h, '1'), (climb / v_h, '1'), (omega_h * radius / c, '1'),
                 (rho, 'kg m-3'), (weight, 'N'), (u, 'm s-1'), (climb, 'm s-1')))),
             'speed_ratio': {t: abs(by_tag[t].shaft_rate) / omega_h for t in tags}}
+    out['constant_axes'] = _constant_axes(out['conditions'])
+    return out
+
+
+def _constant_axes(conditions, tolerance=MULTIROTOR_AXIS_TOLERANCE):
+    """Write each multirotor axis whose conditions span no more than its tolerance as one value at every condition:
+    0 for an axial ratio within the tolerance of level flight at every condition, else the mean.  Unless that would
+    leave two conditions at one point (then nothing is changed).  Returns {axis: measured span} of the axes set."""
+    keys = list(conditions)
+    if len(keys) < 2:
+        return {}
+    values = np.array([[conditions[k]['variables'][a][0] for a in MULTIROTOR_AXES] for k in keys])
+    spans = values.max(axis=0) - values.min(axis=0)
+    flat = [a for a in range(3) if 0.0 < spans[a] <= tolerance[a]]
+    if not flat:
+        return {}
+    kept = [a for a in range(3) if a not in flat]
+    for i in range(len(keys)):
+        for j in range(i + 1, len(keys)):
+            if all(abs(values[i, a] - values[j, a]) <= tolerance[a] for a in kept):
+                return {}
+    out = {}
+    for a in flat:
+        name = MULTIROTOR_AXES[a]
+        level = name == 'axial_speed_ratio' and np.all(np.abs(values[:, a]) <= tolerance[a])
+        value = 0.0 if level else float(values[:, a].mean())
+        for k in keys:
+            conditions[k]['variables'][name] = (value, conditions[k]['variables'][name][1])
+        out[name] = float(spans[a])
     return out
 
 
